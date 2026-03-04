@@ -432,6 +432,22 @@ async def websocket_chat(
             if not content:
                 continue
 
+            # ── Quota checks ──
+            try:
+                from app.services.quota_guard import (
+                    check_conversation_quota, increment_conversation_usage,
+                    check_agent_expired, check_agent_llm_quota, increment_agent_llm_usage,
+                    QuotaExceeded, AgentExpired,
+                )
+                await check_conversation_quota(user_id)
+                await check_agent_expired(agent_id)
+            except QuotaExceeded as qe:
+                await websocket.send_json({"type": "done", "role": "assistant", "content": f"⚠️ {qe.message}"})
+                continue
+            except AgentExpired as ae:
+                await websocket.send_json({"type": "done", "role": "assistant", "content": f"⚠️ {ae.message}"})
+                continue
+
             # Add user message to conversation
             conversation.append({"role": "user", "content": content})
 
@@ -510,6 +526,13 @@ async def websocket_chat(
                         if _agent:
                             _agent.last_active_at = datetime.now(tz.utc)
                             await _db.commit()
+
+                    # Increment quota usage
+                    try:
+                        await increment_conversation_usage(user_id)
+                        await increment_agent_llm_usage(agent_id)
+                    except Exception:
+                        pass
 
                     # Log activity
                     from app.services.activity_logger import log_activity

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, String, func
+from sqlalchemy import Boolean, DateTime, Enum, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,3 +26,14 @@ class Tenant(Base):
     im_config: Mapped[dict | None] = mapped_column(JSON, default=None)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Default quotas for new users
+    default_message_limit: Mapped[int] = mapped_column(Integer, default=50)
+    default_message_period: Mapped[str] = mapped_column(String(20), default="permanent")
+    default_max_agents: Mapped[int] = mapped_column(Integer, default=2)
+    default_agent_ttl_hours: Mapped[int] = mapped_column(Integer, default=48)
+    default_max_llm_calls_per_day: Mapped[int] = mapped_column(Integer, default=100)
+
+    # Heartbeat frequency floor (minutes) — agents cannot heartbeat faster than this
+    min_heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=120)
+

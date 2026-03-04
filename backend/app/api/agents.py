@@ -61,11 +61,13 @@ async def list_agents(
 
     # agent_admin sees their own created agents + permitted
     # member sees only permitted
+    # All scoped to user's tenant
+    user_tenant = current_user.tenant_id
 
-    # Get agents user created
-    created = select(Agent).where(Agent.creator_id == current_user.id)
+    # Get agents user created (within their tenant)
+    created = select(Agent).where(Agent.creator_id == current_user.id, Agent.tenant_id == user_tenant)
 
-    # Get agents user has permission to
+    # Get agents user has permission to (within their tenant)
     permitted_ids = (
         select(AgentPermission.agent_id)
         .where(
@@ -77,7 +79,7 @@ async def list_agents(
             )
         )
     )
-    permitted = select(Agent).where(Agent.id.in_(permitted_ids))
+    permitted = select(Agent).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
 
     # Union
     from sqlalchemy import union_all
@@ -96,6 +98,26 @@ async def create_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new digital employee (any authenticated user)."""
+    # Check agent creation quota
+    from app.services.quota_guard import check_agent_creation_quota, QuotaExceeded
+    try:
+        await check_agent_creation_quota(current_user.id)
+    except QuotaExceeded as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
+
+    # Calculate expiry time
+    from datetime import datetime, timedelta, timezone as tz
+    expires_at = datetime.now(tz.utc) + timedelta(hours=current_user.quota_agent_ttl_hours or 48)
+
+    # Get default LLM calls limit from tenant
+    max_llm_calls = 100
+    if current_user.tenant_id:
+        from app.models.tenant import Tenant
+        tenant_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+        tenant = tenant_result.scalar_one_or_none()
+        if tenant:
+            max_llm_calls = tenant.default_max_llm_calls_per_day or 100
+
     agent = Agent(
         name=data.name,
         role_description=data.role_description,
@@ -109,6 +131,8 @@ async def create_agent(
         max_tokens_per_month=data.max_tokens_per_month,
         template_id=data.template_id,
         status="creating",
+        expires_at=expires_at,
+        max_llm_calls_per_day=max_llm_calls,
     )
     if data.autonomy_policy:
         agent.autonomy_policy = data.autonomy_policy
@@ -273,12 +297,37 @@ async def update_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update agent settings (creator only)."""
+    """Update agent settings (creator or admin)."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can update agent settings")
 
-    for field, value in data.model_dump(exclude_unset=True).items():
+    is_admin = current_user.role in ("platform_admin", "org_admin")
+
+    if not is_agent_creator(current_user, agent) and not is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator or admin can update agent settings")
+
+    update_data = data.model_dump(exclude_unset=True)
+
+    # expires_at: admin only
+    if "expires_at" in update_data:
+        if not is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin can modify agent expiry time")
+        # If extending expiry, re-activate the agent
+        from datetime import datetime, timezone as tz
+        new_expires = update_data["expires_at"]
+        if new_expires and (not agent.expires_at or new_expires > agent.expires_at):
+            if agent.is_expired:
+                agent.is_expired = False
+                agent.status = "idle"
+
+    # Enforce heartbeat floor from tenant
+    if "heartbeat_interval_minutes" in update_data and current_user.tenant_id:
+        from app.models.tenant import Tenant
+        t_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+        tenant = t_result.scalar_one_or_none()
+        if tenant and update_data["heartbeat_interval_minutes"] < tenant.min_heartbeat_interval_minutes:
+            update_data["heartbeat_interval_minutes"] = tenant.min_heartbeat_interval_minutes
+
+    for field, value in update_data.items():
         setattr(agent, field, value)
     await db.flush()
     return AgentOut.model_validate(agent)

@@ -496,6 +496,9 @@ export default function AgentDetail() {
                         }
                         return [...prev, { role: d.role, content: d.content }];
                     });
+                } else if (d.type === 'error' || d.type === 'quota_exceeded') {
+                    // Quota / expiry / system error — show as styled system message
+                    setChatMessages(prev => [...prev, { role: 'assistant', content: `⚠️ ${d.content || d.detail || d.message || 'Request denied'}` }]);
                 } else {
                     // Legacy non-streaming message
                     setChatMessages(prev => [...prev, { role: d.role, content: d.content }]);
@@ -731,6 +734,14 @@ export default function AgentDetail() {
                                 <span className={`status-dot ${statusKey}`} />
                                 {t(`agent.status.${statusKey}`)}
                                 {agent.role_description && <span>· {agent.role_description}</span>}
+                                {(agent as any).is_expired && (
+                                    <span style={{ background: 'var(--error)', color: '#fff', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>⏰ Expired</span>
+                                )}
+                                {!(agent as any).is_expired && (agent as any).expires_at && (
+                                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                        Expires: {new Date((agent as any).expires_at).toLocaleString()}
+                                    </span>
+                                )}
                             </p>
                         </div>
                     </div>
@@ -790,6 +801,11 @@ export default function AgentDetail() {
                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.settings.month')} Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{agent.tokens_used_month.toLocaleString()}</div>
                                     {agent.max_tokens_per_month && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {agent.max_tokens_per_month.toLocaleString()}</div>}
+                                </div>
+                                <div className="card">
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>LLM Calls Today</div>
+                                    <div style={{ fontSize: '22px', fontWeight: 600 }}>{((agent as any).llm_calls_today || 0).toLocaleString()}</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>Max: {((agent as any).max_llm_calls_per_day || 100).toLocaleString()}</div>
                                 </div>
                                 {metrics && (
                                     <>

@@ -6,6 +6,7 @@ import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
+import UserManagement from './UserManagement';
 
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -431,7 +432,43 @@ function CompanyNameEditor() {
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
     const qc = useQueryClient();
-    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills'>('info');
+    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users'>('info');
+
+    // Track selected tenant as state so page refreshes on company switch
+    const [selectedTenantId, setSelectedTenantId] = useState(localStorage.getItem('current_tenant_id') || '');
+    useEffect(() => {
+        const handler = (e: StorageEvent) => {
+            if (e.key === 'current_tenant_id') {
+                setSelectedTenantId(e.newValue || '');
+            }
+        };
+        window.addEventListener('storage', handler);
+        return () => window.removeEventListener('storage', handler);
+    }, []);
+
+    // Tenant quota defaults
+    const [quotaForm, setQuotaForm] = useState({
+        default_message_limit: 50, default_message_period: 'permanent',
+        default_max_agents: 2, default_agent_ttl_hours: 48,
+        default_max_llm_calls_per_day: 100, min_heartbeat_interval_minutes: 120,
+    });
+    const [quotaSaving, setQuotaSaving] = useState(false);
+    const [quotaSaved, setQuotaSaved] = useState(false);
+    useEffect(() => {
+        if (activeTab === 'quotas') {
+            fetchJson<any>('/enterprise/tenant-quotas').then(d => {
+                if (d && Object.keys(d).length) setQuotaForm(f => ({ ...f, ...d }));
+            }).catch(() => { });
+        }
+    }, [activeTab]);
+    const saveQuotas = async () => {
+        setQuotaSaving(true);
+        try {
+            await fetchJson('/enterprise/tenant-quotas', { method: 'PATCH', body: JSON.stringify(quotaForm) });
+            setQuotaSaved(true); setTimeout(() => setQuotaSaved(false), 2000);
+        } catch (e) { alert('Failed to save'); }
+        setQuotaSaving(false);
+    };
     const [companyIntro, setCompanyIntro] = useState('');
     const [companyIntroSaving, setCompanyIntroSaving] = useState(false);
     const [companyIntroSaved, setCompanyIntroSaved] = useState(false);
@@ -477,10 +514,10 @@ export default function EnterpriseSettings() {
     };
     useEffect(() => { if (activeTab === 'tools') loadAllTools(); }, [activeTab]);
 
-    // ─── Stats
+    // ─── Stats (scoped to selected tenant)
     const { data: stats } = useQuery({
-        queryKey: ['enterprise-stats'],
-        queryFn: () => fetchJson<any>('/enterprise/stats'),
+        queryKey: ['enterprise-stats', selectedTenantId],
+        queryFn: () => fetchJson<any>(`/enterprise/stats${selectedTenantId ? `?tenant_id=${selectedTenantId}` : ''}`),
     });
 
     // ─── LLM Models
@@ -547,9 +584,9 @@ export default function EnterpriseSettings() {
                 </div>
 
                 <div className="tabs">
-                    {(['info', 'llm', 'tools', 'skills', 'org', 'approvals', 'audit'] as const).map(tab => (
+                    {(['info', 'llm', 'tools', 'skills', 'quotas', 'users', 'org', 'approvals', 'audit'] as const).map(tab => (
                         <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
-                            {t(`enterprise.tabs.${tab}`)}
+                            {tab === 'quotas' ? 'Quotas' : tab === 'users' ? 'Users' : t(`enterprise.tabs.${tab}`)}
                         </div>
                     ))}
                 </div>
@@ -771,6 +808,83 @@ export default function EnterpriseSettings() {
                         {/* ── Theme Color ── */}
                         <ThemeColorPicker />
                     </div>
+                )}
+
+                {/* ── Quotas Tab ── */}
+                {activeTab === 'quotas' && (
+                    <div>
+                        <h3 style={{ marginBottom: '4px' }}>Default User Quotas</h3>
+                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+                            These defaults apply to newly registered users. Existing users are not affected.
+                        </p>
+                        <div className="card" style={{ padding: '16px' }}>
+                            {/* ── Conversation Limits ── */}
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>Conversation Limits</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+                                <div className="form-group">
+                                    <label className="form-label">Message Limit</label>
+                                    <input className="form-input" type="number" min={0} value={quotaForm.default_message_limit}
+                                        onChange={e => setQuotaForm({ ...quotaForm, default_message_limit: Number(e.target.value) })} />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Max messages per period</div>
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Message Period</label>
+                                    <select className="form-input" value={quotaForm.default_message_period}
+                                        onChange={e => setQuotaForm({ ...quotaForm, default_message_period: e.target.value })}>
+                                        <option value="permanent">Permanent</option>
+                                        <option value="daily">Daily</option>
+                                        <option value="weekly">Weekly</option>
+                                        <option value="monthly">Monthly</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            {/* ── Agent Limits ── */}
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>Agent Limits</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+                                <div className="form-group">
+                                    <label className="form-label">Max Agents</label>
+                                    <input className="form-input" type="number" min={0} value={quotaForm.default_max_agents}
+                                        onChange={e => setQuotaForm({ ...quotaForm, default_max_agents: Number(e.target.value) })} />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Agents a user can create</div>
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Agent TTL (hours)</label>
+                                    <input className="form-input" type="number" min={1} value={quotaForm.default_agent_ttl_hours}
+                                        onChange={e => setQuotaForm({ ...quotaForm, default_agent_ttl_hours: Number(e.target.value) })} />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Agent auto-expiry time from creation</div>
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Daily LLM Calls / Agent</label>
+                                    <input className="form-input" type="number" min={0} value={quotaForm.default_max_llm_calls_per_day}
+                                        onChange={e => setQuotaForm({ ...quotaForm, default_max_llm_calls_per_day: Number(e.target.value) })} />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Max LLM calls per agent per day</div>
+                                </div>
+                            </div>
+
+                            {/* ── System Limits ── */}
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>System</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
+                                <div className="form-group">
+                                    <label className="form-label">Min Heartbeat Interval (min)</label>
+                                    <input className="form-input" type="number" min={1} value={quotaForm.min_heartbeat_interval_minutes}
+                                        onChange={e => setQuotaForm({ ...quotaForm, min_heartbeat_interval_minutes: Number(e.target.value) })} />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Minimum heartbeat interval for all agents</div>
+                                </div>
+                            </div>
+                            <div style={{ marginTop: '16px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <button className="btn btn-primary" onClick={saveQuotas} disabled={quotaSaving}>
+                                    {quotaSaving ? t('common.loading') : t('common.save', 'Save')}
+                                </button>
+                                {quotaSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ Saved</span>}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* ── Users Tab ── */}
+                {activeTab === 'users' && (
+                    <UserManagement key={selectedTenantId} />
                 )}
 
                 {/* ── Tools Tab ── */}

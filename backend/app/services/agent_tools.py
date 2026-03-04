@@ -15,6 +15,7 @@ The agent reads/writes these files directly. No per-concept tools needed.
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -1115,6 +1116,10 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 all_r = await db.execute(select(Agent).where(Agent.id != from_agent_id))
                 names = [a.name for a in all_r.scalars().all()]
                 return f"❌ No agent found matching '{agent_name}'. Available: {', '.join(names) if names else 'none'}"
+
+            # Check if target agent has expired
+            if target.is_expired or (target.expires_at and datetime.now(timezone.utc) >= target.expires_at):
+                return f"⚠️ {target.name} is currently unavailable — their service period has ended. Please contact the platform administrator."
 
             # Prepare LLM for both agents
             from app.services.agent_context import build_agent_context

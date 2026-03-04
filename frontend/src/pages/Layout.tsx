@@ -131,6 +131,8 @@ export default function Layout() {
     const switchTenant = (tenantId: string) => {
         setCurrentTenant(tenantId);
         localStorage.setItem('current_tenant_id', tenantId);
+        // Notify other components about tenant change
+        window.dispatchEvent(new StorageEvent('storage', { key: 'current_tenant_id', newValue: tenantId }));
     };
     const currentTenantName = tenants.find((t: any) => t.id === currentTenant)?.name;
     const createCompany = async () => {

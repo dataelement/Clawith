@@ -300,6 +300,15 @@ async def _heartbeat_tick():
 
             triggered = 0
             for agent in agents:
+                # Skip expired agents
+                if agent.is_expired:
+                    continue
+                if agent.expires_at and now >= agent.expires_at:
+                    agent.is_expired = True
+                    agent.heartbeat_enabled = False
+                    agent.status = "stopped"
+                    continue
+
                 # Check active hours
                 if not _is_in_active_hours(agent.heartbeat_active_hours or "09:00-18:00"):
                     continue

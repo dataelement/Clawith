@@ -12,8 +12,9 @@ class UserRegister(BaseModel):
     username: str = Field(min_length=3, max_length=100)
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
-    display_name: str = Field(min_length=1, max_length=100)
+    display_name: str | None = None
     tenant_id: str | None = None  # UUID string of the company
+    invitation_code: str | None = None
 
 
 class UserLogin(BaseModel):
@@ -99,6 +100,10 @@ class AgentOut(BaseModel):
     heartbeat_interval_minutes: int = 30
     heartbeat_active_hours: str = "09:00-18:00"
     last_heartbeat_at: datetime | None = None
+    expires_at: datetime | None = None
+    is_expired: bool = False
+    llm_calls_today: int = 0
+    max_llm_calls_per_day: int = 100
     created_at: datetime
     last_active_at: datetime | None = None
 
@@ -119,6 +124,7 @@ class AgentUpdate(BaseModel):
     heartbeat_enabled: bool | None = None
     heartbeat_interval_minutes: int | None = None
     heartbeat_active_hours: str | None = None
+    expires_at: datetime | None = None  # Admin only — extend agent expiry
 
 
 class AgentStatusOut(BaseModel):

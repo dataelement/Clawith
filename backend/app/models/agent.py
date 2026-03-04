@@ -63,6 +63,15 @@ class Agent(Base):
     context_window_size: Mapped[int] = mapped_column(Integer, default=100)
     max_tool_rounds: Mapped[int] = mapped_column(Integer, default=50)
 
+    # Expiry control
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_expired: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Daily LLM call limit
+    llm_calls_today: Mapped[int] = mapped_column(Integer, default=0)
+    max_llm_calls_per_day: Mapped[int] = mapped_column(Integer, default=100)
+    llm_calls_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Template
     template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_templates.id"))
 

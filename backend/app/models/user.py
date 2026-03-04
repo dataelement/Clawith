@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,6 +40,14 @@ class User(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    # Usage quotas (set by admin, defaults from tenant)
+    quota_message_limit: Mapped[int] = mapped_column(Integer, default=50)
+    quota_message_period: Mapped[str] = mapped_column(String(20), default="permanent")  # permanent|daily|weekly|monthly
+    quota_messages_used: Mapped[int] = mapped_column(Integer, default=0)
+    quota_period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quota_max_agents: Mapped[int] = mapped_column(Integer, default=2)
+    quota_agent_ttl_hours: Mapped[int] = mapped_column(Integer, default=48)
 
     # Relationships
     department: Mapped["Department | None"] = relationship(back_populates="members", foreign_keys=[department_id])

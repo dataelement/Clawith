@@ -14,6 +14,16 @@ from app.schemas.schemas import TokenResponse, UserLogin, UserOut, UserRegister,
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+@router.get("/registration-config")
+async def get_registration_config(db: AsyncSession = Depends(get_db)):
+    """Public endpoint — returns registration requirements (no auth needed)."""
+    from app.models.system_settings import SystemSetting
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == "invitation_code_enabled"))
+    setting = result.scalar_one_or_none()
+    enabled = setting.value.get("enabled", False) if setting else False
+    return {"invitation_code_required": enabled}
+
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     """Register a new user account.
@@ -48,16 +58,45 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
         if tenant:
             tenant_uuid = tenant.id
 
+    # ── Invitation code check ──
+    from app.models.system_settings import SystemSetting
+    inv_setting = await db.execute(select(SystemSetting).where(SystemSetting.key == "invitation_code_enabled"))
+    inv_s = inv_setting.scalar_one_or_none()
+    invitation_required = inv_s.value.get("enabled", False) if inv_s else False
+
+    invitation_code_obj = None
+    if invitation_required:
+        if not data.invitation_code:
+            raise HTTPException(status_code=400, detail="Invitation code is required")
+        from app.models.invitation_code import InvitationCode
+        ic_result = await db.execute(
+            select(InvitationCode).where(InvitationCode.code == data.invitation_code, InvitationCode.is_active == True)
+        )
+        invitation_code_obj = ic_result.scalar_one_or_none()
+        if not invitation_code_obj:
+            raise HTTPException(status_code=400, detail="Invalid invitation code")
+        if invitation_code_obj.used_count >= invitation_code_obj.max_uses:
+            raise HTTPException(status_code=400, detail="Invitation code has reached its usage limit")
+
     user = User(
         username=data.username,
         email=data.email,
         password_hash=hash_password(data.password),
-        display_name=data.display_name,
+        display_name=data.display_name or data.username,
         role="platform_admin" if is_first_user else "member",
         tenant_id=tenant_uuid,
+        # Inherit quota defaults from tenant
+        quota_message_limit=tenant.default_message_limit if tenant else 50,
+        quota_message_period=tenant.default_message_period if tenant else "permanent",
+        quota_max_agents=tenant.default_max_agents if tenant else 2,
+        quota_agent_ttl_hours=tenant.default_agent_ttl_hours if tenant else 48,
     )
     db.add(user)
     await db.flush()
+
+    # Increment invitation code usage
+    if invitation_code_obj:
+        invitation_code_obj.used_count += 1
 
     # Seed default agents after first user (platform admin) registration
     if is_first_user:

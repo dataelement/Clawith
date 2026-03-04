@@ -3,6 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -180,15 +181,23 @@ async def list_audit_logs(
 
 @router.get("/stats")
 async def get_enterprise_stats(
+    tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get enterprise dashboard statistics."""
-    total_agents = await db.execute(select(func.count(Agent.id)))
-    running_agents = await db.execute(
-        select(func.count(Agent.id)).where(Agent.status == "running")
+    """Get enterprise dashboard statistics, optionally scoped to a tenant."""
+    # Determine which tenant to filter by
+    tid = tenant_id or str(current_user.tenant_id)
+
+    total_agents = await db.execute(
+        select(func.count(Agent.id)).where(Agent.tenant_id == tid)
     )
-    total_users = await db.execute(select(func.count(User.id)).where(User.is_active == True))
+    running_agents = await db.execute(
+        select(func.count(Agent.id)).where(Agent.tenant_id == tid, Agent.status == "running")
+    )
+    total_users = await db.execute(
+        select(func.count(User.id)).where(User.tenant_id == tid, User.is_active == True)
+    )
     pending_approvals = await db.execute(
         select(func.count(ApprovalRequest.id)).where(ApprovalRequest.status == "pending")
     )
@@ -201,10 +210,85 @@ async def get_enterprise_stats(
     }
 
 
+# ─── Tenant Quota Settings ──────────────────────────────
+
+from app.models.tenant import Tenant
+
+
+class TenantQuotaUpdate(BaseModel):
+    default_message_limit: int | None = None
+    default_message_period: str | None = None
+    default_max_agents: int | None = None
+    default_agent_ttl_hours: int | None = None
+    default_max_llm_calls_per_day: int | None = None
+    min_heartbeat_interval_minutes: int | None = None
+
+
+@router.get("/tenant-quotas")
+async def get_tenant_quotas(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get tenant quota defaults and heartbeat settings."""
+    if not current_user.tenant_id:
+        return {}
+    result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        return {}
+    return {
+        "default_message_limit": tenant.default_message_limit,
+        "default_message_period": tenant.default_message_period,
+        "default_max_agents": tenant.default_max_agents,
+        "default_agent_ttl_hours": tenant.default_agent_ttl_hours,
+        "default_max_llm_calls_per_day": tenant.default_max_llm_calls_per_day,
+        "min_heartbeat_interval_minutes": tenant.min_heartbeat_interval_minutes,
+    }
+
+
+@router.patch("/tenant-quotas")
+async def update_tenant_quotas(
+    data: TenantQuotaUpdate,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update tenant quota defaults (admin only). Enforces heartbeat floor on existing agents."""
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+
+    result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    if data.default_message_limit is not None:
+        tenant.default_message_limit = data.default_message_limit
+    if data.default_message_period is not None:
+        tenant.default_message_period = data.default_message_period
+    if data.default_max_agents is not None:
+        tenant.default_max_agents = data.default_max_agents
+    if data.default_agent_ttl_hours is not None:
+        tenant.default_agent_ttl_hours = data.default_agent_ttl_hours
+    if data.default_max_llm_calls_per_day is not None:
+        tenant.default_max_llm_calls_per_day = data.default_max_llm_calls_per_day
+
+    # Handle heartbeat floor — enforce on existing agents
+    adjusted_count = 0
+    if data.min_heartbeat_interval_minutes is not None:
+        tenant.min_heartbeat_interval_minutes = data.min_heartbeat_interval_minutes
+        from app.services.quota_guard import enforce_heartbeat_floor
+        adjusted_count = await enforce_heartbeat_floor(tenant.id)
+
+    await db.commit()
+    return {
+        "message": "Tenant quotas updated",
+        "heartbeat_agents_adjusted": adjusted_count,
+    }
+
+
 # ─── System Settings ───────────────────────────────────
 
 from app.models.system_settings import SystemSetting
-from pydantic import BaseModel
 
 
 class SettingUpdate(BaseModel):
@@ -314,3 +398,75 @@ async def trigger_org_sync(
     from app.services.org_sync_service import org_sync_service
     result = await org_sync_service.full_sync()
     return result
+
+
+# ─── Invitation Codes ───────────────────────────────────
+
+from app.models.invitation_code import InvitationCode
+
+
+class InvitationCodeCreate(BaseModel):
+    count: int = 1       # how many codes to generate
+    max_uses: int = 1    # max registrations per code
+
+
+@router.post("/invitation-codes")
+async def create_invitation_codes(
+    data: InvitationCodeCreate,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch-create invitation codes."""
+    import random
+    import string
+
+    codes_created = []
+    for _ in range(min(data.count, 100)):  # cap at 100 per batch
+        code_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        code = InvitationCode(code=code_str, max_uses=data.max_uses, created_by=current_user.id)
+        db.add(code)
+        codes_created.append(code_str)
+
+    await db.commit()
+    return {"created": len(codes_created), "codes": codes_created}
+
+
+@router.get("/invitation-codes")
+async def list_invitation_codes(
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all invitation codes with usage stats."""
+    result = await db.execute(
+        select(InvitationCode).order_by(InvitationCode.created_at.desc())
+    )
+    codes = result.scalars().all()
+    return [
+        {
+            "id": str(c.id),
+            "code": c.code,
+            "max_uses": c.max_uses,
+            "used_count": c.used_count,
+            "is_active": c.is_active,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+        for c in codes
+    ]
+
+
+@router.delete("/invitation-codes/{code_id}")
+async def deactivate_invitation_code(
+    code_id: str,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deactivate an invitation code."""
+    import uuid as _uuid
+    result = await db.execute(select(InvitationCode).where(InvitationCode.id == _uuid.UUID(code_id)))
+    code = result.scalar_one_or_none()
+    if not code:
+        raise HTTPException(status_code=404, detail="Code not found")
+    code.is_active = False
+    await db.commit()
+    return {"status": "deactivated"}
+
