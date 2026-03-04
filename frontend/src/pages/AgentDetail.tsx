@@ -2128,7 +2128,14 @@ export default function AgentDetail() {
                                 {/* Channel Config — multi-channel */}
                                 <div className="card" style={{ marginBottom: '12px' }}>
                                     <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.channel.title')}</h4>
-                                    <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>{t('agent.settings.channel.title')}</p>
+                                    <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>{t('agent.settings.channel.title')}</p>
+                                    <div style={{
+                                        padding: '10px 14px', borderRadius: '8px', marginBottom: '16px',
+                                        background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)',
+                                        fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.6',
+                                    }}>
+                                        💡 {t('agent.settings.channel.syncHint', 'Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders.')}
+                                    </div>
 
                                     {/* Feishu */}
                                     <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>

@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import async_session
 from app.models.org import OrgDepartment, OrgMember
 from app.models.system_settings import SystemSetting
+from app.models.user import User
+from app.core.security import hash_password
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +187,14 @@ class OrgSyncService:
             now = datetime.now(timezone.utc)
             dept_count = 0
             member_count = 0
+            user_count = 0
+
+            # Resolve tenant_id from the first admin user
+            admin_result = await db.execute(
+                select(User).where(User.role == "platform_admin").limit(1)
+            )
+            admin_user = admin_result.scalar_one_or_none()
+            tenant_id = admin_user.tenant_id if admin_user else None
 
             # --- Sync departments ---
             try:
@@ -209,6 +219,7 @@ class OrgSyncService:
                             name=d.get("name", ""),
                             member_count=d.get("member_count", 0),
                             path=d.get("name", ""),
+                            tenant_id=tenant_id,
                             synced_at=now,
                         )
                         db.add(dept)
@@ -293,10 +304,54 @@ class OrgSyncService:
                                 department_id=dept.id,
                                 department_path=dept.path or dept.name,
                                 phone=u.get("mobile", ""),
+                                tenant_id=tenant_id,
                                 synced_at=now,
                             )
                             db.add(member)
+                        # Ensure tenant_id is set on existing members
+                        if member.tenant_id is None and tenant_id:
+                            member.tenant_id = tenant_id
                         member_count += 1
+
+                        # --- Auto-create/update platform User ---
+                        platform_user = None
+                        if open_id:
+                            pu_result = await db.execute(
+                                select(User).where(User.feishu_open_id == open_id)
+                            )
+                            platform_user = pu_result.scalar_one_or_none()
+                        if not platform_user and user_id:
+                            pu_result = await db.execute(
+                                select(User).where(User.feishu_user_id == user_id)
+                            )
+                            platform_user = pu_result.scalar_one_or_none()
+
+                        member_name = u.get("name", "")
+                        if platform_user:
+                            # Update existing user info
+                            platform_user.display_name = member_name or platform_user.display_name
+                            if open_id and not platform_user.feishu_open_id:
+                                platform_user.feishu_open_id = open_id
+                            if user_id and not platform_user.feishu_user_id:
+                                platform_user.feishu_user_id = user_id
+                            if tenant_id and not platform_user.tenant_id:
+                                platform_user.tenant_id = tenant_id
+                        else:
+                            # Create new user
+                            username_base = f"feishu_{user_id or (open_id[:16] if open_id else uuid.uuid4().hex[:8])}"
+                            email = u.get("email") or f"{username_base}@feishu.local"
+                            platform_user = User(
+                                username=username_base,
+                                email=email,
+                                password_hash=hash_password(uuid.uuid4().hex),
+                                display_name=member_name,
+                                role="member",
+                                feishu_open_id=open_id or None,
+                                feishu_user_id=user_id or None,
+                                tenant_id=tenant_id,
+                            )
+                            db.add(platform_user)
+                            user_count += 1
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -313,7 +368,7 @@ class OrgSyncService:
 
             await db.commit()
 
-            stats = {"departments": dept_count, "members": member_count, "synced_at": now.isoformat()}
+            stats = {"departments": dept_count, "members": member_count, "users_created": user_count, "synced_at": now.isoformat()}
             print(f"[OrgSync] Complete: {stats}")
             return stats
 
