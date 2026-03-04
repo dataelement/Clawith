@@ -487,6 +487,8 @@ async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str,
 
         return "⚠️ 工具调用轮次过多"
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         error_msg = str(e) or repr(e)
         print(f"[LLM] Error: {error_msg}")
         return f"⚠️ 调用模型出错: {error_msg[:150]}"
