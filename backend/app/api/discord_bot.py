@@ -137,6 +137,7 @@ async def delete_discord_channel(
 async def _register_slash_commands(application_id: str, bot_token: str) -> dict:
     """Register /ask global slash command with Discord API."""
     import httpx
+    import os
     command = {
         "name": "ask",
         "description": "Ask the AI agent a question",
