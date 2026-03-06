@@ -267,7 +267,9 @@ async def discord_interaction_webhook(
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
             from app.api.feishu import _call_agent_llm
+            from app.services.channel_session import find_or_create_channel_session
             from app.database import async_session
+            from datetime import datetime, timezone
 
             async with async_session() as bg_db:
                 # Load agent
@@ -276,17 +278,29 @@ async def discord_interaction_webhook(
                 creator_id = agent_obj.creator_id if agent_obj else agent_id
                 ctx_size = agent_obj.context_window_size if agent_obj else 20
 
-                # Load history
+                # Find-or-create ChatSession for this Discord conversation
+                sess = await find_or_create_channel_session(
+                    db=bg_db,
+                    agent_id=agent_id,
+                    user_id=creator_id,
+                    external_conv_id=conv_id,
+                    source_channel="discord",
+                    first_message_title=user_text,
+                )
+                session_conv_id = str(sess.id)
+
+                # Load history from session
                 history_r = await bg_db.execute(
                     select(ChatMessage)
-                    .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
+                    .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
                     .order_by(ChatMessage.created_at.desc())
                     .limit(ctx_size)
                 )
                 history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
                 # Save user message
-                bg_db.add(ChatMessage(agent_id=agent_id, user_id=creator_id, role="user", content=user_text, conversation_id=conv_id))
+                bg_db.add(ChatMessage(agent_id=agent_id, user_id=creator_id, role="user", content=user_text, conversation_id=session_conv_id))
+                sess.last_message_at = datetime.now(timezone.utc)
                 await bg_db.commit()
 
                 # Call LLM
@@ -294,14 +308,24 @@ async def discord_interaction_webhook(
                 print(f"[Discord] LLM reply: {reply_text[:80]}")
 
                 # Save reply
-                bg_db.add(ChatMessage(agent_id=agent_id, user_id=creator_id, role="assistant", content=reply_text, conversation_id=conv_id))
+                bg_db.add(ChatMessage(agent_id=agent_id, user_id=creator_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+                sess.last_message_at = datetime.now(timezone.utc)
                 await bg_db.commit()
 
+                # Bot token stored in config — read from DB to avoid detached ORM issues
+                from sqlalchemy import select as _sel
+                cfg_r = await bg_db.execute(_sel(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "discord",
+                ))
+                cfg = cfg_r.scalar_one_or_none()
+                bot_token_bg = cfg.app_secret if cfg else ""
+                app_id_bg = cfg.app_id if cfg else ""
+
                 # Send chunked reply via Discord follow-up
-                bot_token = config.app_secret or ""
-                if bot_token and interaction_token and application_id:
+                if bot_token_bg and interaction_token and app_id_bg:
                     try:
-                        await _send_discord_followup(application_id, bot_token, interaction_token, reply_text)
+                        await _send_discord_followup(app_id_bg, bot_token_bg, interaction_token, reply_text)
                     except Exception as e:
                         print(f"[Discord] Failed to send follow-up: {e}")
 

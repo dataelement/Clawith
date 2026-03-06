@@ -426,6 +426,7 @@ async def websocket_chat(
                     _new_session = ChatSession(
                         agent_id=agent_id, user_id=user_id,
                         title=f"Session {now.strftime('%m-%d %H:%M')}",
+                        source_channel="web",
                         created_at=now,
                     )
                     db.add(_new_session)

@@ -30,7 +30,8 @@ class SessionOut(BaseModel):
     id: str
     agent_id: str
     user_id: str
-    username: Optional[str] = None
+    username: Optional[str] = None      # display_name ?? username
+    source_channel: str = "web"         # web / feishu / discord / slack
     title: str
     created_at: str
     last_message_at: Optional[str] = None
@@ -66,16 +67,17 @@ async def list_sessions(
         if not _is_admin_or_creator(current_user, agent):
             raise HTTPException(status_code=403, detail="Not authorized to view all sessions")
 
-        # Fetch all sessions with usernames
+        # Fetch all sessions with display names
+        from sqlalchemy import coalesce
         result = await db.execute(
-            select(ChatSession, User.username)
+            select(ChatSession, coalesce(User.display_name, User.username).label("display"))
             .join(User, ChatSession.user_id == User.id)
             .where(ChatSession.agent_id == agent_id)
             .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
         )
         rows = result.all()
         out = []
-        for session, username in rows:
+        for session, display in rows:
             count_result = await db.execute(
                 select(func.count(ChatMessage.id)).where(
                     ChatMessage.conversation_id == str(session.id),
@@ -89,7 +91,8 @@ async def list_sessions(
                 id=str(session.id),
                 agent_id=str(session.agent_id),
                 user_id=str(session.user_id),
-                username=username,
+                username=display,
+                source_channel=session.source_channel,
                 title=session.title,
                 created_at=session.created_at.isoformat(),
                 last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
@@ -106,19 +109,30 @@ async def list_sessions(
         sessions = result.scalars().all()
         out = []
         for session in sessions:
+            # Count only — skip sessions with no user messages (orphan assistant-only records)
             count_result = await db.execute(
+                select(func.count(ChatMessage.id)).where(
+                    ChatMessage.conversation_id == str(session.id),
+                    ChatMessage.agent_id == agent_id,
+                    ChatMessage.role == "user",
+                )
+            )
+            user_msg_count = count_result.scalar() or 0
+            if user_msg_count == 0:
+                continue  # hide empty or orphan sessions
+            # Total message count for display
+            total_result = await db.execute(
                 select(func.count(ChatMessage.id)).where(
                     ChatMessage.conversation_id == str(session.id),
                     ChatMessage.agent_id == agent_id,
                 )
             )
-            count = count_result.scalar() or 0
-            if count == 0:
-                continue  # hide empty sessions
+            count = total_result.scalar() or 0
             out.append(SessionOut(
                 id=str(session.id),
                 agent_id=str(session.agent_id),
                 user_id=str(session.user_id),
+                source_channel=session.source_channel,
                 title=session.title,
                 created_at=session.created_at.isoformat(),
                 last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,

@@ -229,21 +229,35 @@ async def slack_event_webhook(
     # Load history
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel
+    from app.services.channel_session import find_or_create_channel_session
     agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
     agent_obj = agent_r.scalar_one_or_none()
     creator_id = agent_obj.creator_id if agent_obj else agent_id
     ctx_size = agent_obj.context_window_size if agent_obj else 20
 
+    # Find-or-create session for this Slack conversation
+    sess = await find_or_create_channel_session(
+        db=db,
+        agent_id=agent_id,
+        user_id=creator_id,  # Slack doesn't resolve to platform users yet
+        external_conv_id=conv_id,
+        source_channel="slack",
+        first_message_title=user_text,
+    )
+    session_conv_id = str(sess.id)
+
     history_r = await db.execute(
         select(ChatMessage)
-        .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
+        .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
         .order_by(ChatMessage.created_at.desc())
         .limit(ctx_size)
     )
     history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
     # Save user message
-    db.add(ChatMessage(agent_id=agent_id, user_id=creator_id, role="user", content=user_text, conversation_id=conv_id))
+    from datetime import datetime, timezone
+    db.add(ChatMessage(agent_id=agent_id, user_id=creator_id, role="user", content=user_text, conversation_id=session_conv_id))
+    sess.last_message_at = datetime.now(timezone.utc)
     await db.commit()
 
     # Call LLM
@@ -252,7 +266,8 @@ async def slack_event_webhook(
     print(f"[Slack] LLM reply: {reply_text[:80]}")
 
     # Save reply
-    db.add(ChatMessage(agent_id=agent_id, user_id=creator_id, role="assistant", content=reply_text, conversation_id=conv_id))
+    db.add(ChatMessage(agent_id=agent_id, user_id=creator_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+    sess.last_message_at = datetime.now(timezone.utc)
     await db.commit()
 
     # Send to Slack (chunked)
