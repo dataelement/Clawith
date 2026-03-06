@@ -2867,7 +2867,8 @@ export default function AgentDetail() {
                                     取消
                                 </button>
                                 <button onClick={() => saveExpiry(false)} disabled={expirySaving || !expiryValue}
-                                    style={{ padding: '7px 16px', borderRadius: '8px', background: 'var(--accent)', border: 'none', cursor: 'pointer', fontSize: '13px', color: '#fff', fontWeight: 600, opacity: !expiryValue ? 0.5 : 1 }}>
+                                    className="btn btn-primary"
+                                    style={{ opacity: !expiryValue ? 0.5 : 1 }}>
                                     {expirySaving ? '保存中…' : '保存'}
                                 </button>
                             </div>
