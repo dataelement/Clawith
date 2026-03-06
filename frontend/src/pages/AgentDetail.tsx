@@ -666,12 +666,20 @@ export default function AgentDetail() {
     };
 
 
+    // Reset chat state whenever the viewed agent changes
+    useEffect(() => {
+        setActiveSession(null);
+        setChatMessages([]);
+        setHistoryMsgs([]);
+        setChatScope('mine');
+    }, [id]);
+
     useEffect(() => {
         if (!id || !token || activeTab !== 'chat') return;
         // Load sessions when entering chat tab; auto-select first and load its history
         fetchMySessions().then((data: any) => {
             setSessionsLoading(false);
-            if (data && data.length > 0 && !activeSession) selectSession(data[0]);
+            if (data && data.length > 0) selectSession(data[0]);
         });
     }, [id, activeTab]);
 
