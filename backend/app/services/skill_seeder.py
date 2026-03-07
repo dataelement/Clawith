@@ -661,6 +661,7 @@ async def push_default_skills_to_existing_agents():
         agents = agents_r.scalars().all()
 
         pushed = 0
+        updated = 0
         for agent in agents:
             agent_dir = agent_manager._agent_dir(agent.id)
             skills_dir = agent_dir / "skills"
@@ -668,19 +669,22 @@ async def push_default_skills_to_existing_agents():
                 if not skill.files:
                     continue
                 skill_folder = skills_dir / skill.folder_name
-                skill_md = skill_folder / "SKILL.md"
-                if skill_md.exists():
-                    continue  # already present
-                # Write the skill files
                 skill_folder.mkdir(parents=True, exist_ok=True)
                 for sf in skill.files:
                     fp = (skill_folder / sf.path).resolve()
                     fp.parent.mkdir(parents=True, exist_ok=True)
-                    fp.write_text(sf.content, encoding="utf-8")
-                pushed += 1
-                print(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
+                    if fp.exists():
+                        existing_content = fp.read_text(encoding="utf-8")
+                        if existing_content == sf.content:
+                            continue  # already up-to-date
+                        fp.write_text(sf.content, encoding="utf-8")
+                        updated += 1
+                    else:
+                        fp.write_text(sf.content, encoding="utf-8")
+                        pushed += 1
+                        print(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
 
-        if pushed:
-            print(f"[SkillSeeder] Pushed {pushed} skill installations to existing agents")
+        if pushed or updated:
+            print(f"[SkillSeeder] Pushed {pushed} new + {updated} updated skill files to existing agents")
         else:
-            print("[SkillSeeder] All existing agents already have default skills")
+            print("[SkillSeeder] All existing agents already have up-to-date default skills")
