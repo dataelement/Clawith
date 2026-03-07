@@ -364,7 +364,6 @@ async def import_mcp_from_smithery(
         auth_message = f"\n\n⚠️ Could not auto-create Smithery connection: {conn_result['error']}"
     else:
         smithery_config = {
-            "smithery_api_key": api_key,
             "smithery_namespace": conn_result["namespace"],
             "smithery_connection_id": conn_result["connection_id"],
         }

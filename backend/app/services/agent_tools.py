@@ -950,7 +950,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
         # Detect Smithery-hosted MCP servers (*.run.tools URLs)
         # These need Smithery Connect to route tool calls
         if ".run.tools" in mcp_url and merged_config:
-            return await _execute_via_smithery_connect(mcp_url, mcp_name, arguments, merged_config)
+            return await _execute_via_smithery_connect(mcp_url, mcp_name, arguments, merged_config, agent_id=agent_id)
 
         # Direct MCP call for non-Smithery servers
         client = MCPClient(mcp_url)
@@ -960,7 +960,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
         return f"❌ MCP tool execution error: {str(e)[:200]}"
 
 
-async def _execute_via_smithery_connect(mcp_url: str, tool_name: str, arguments: dict, config: dict) -> str:
+async def _execute_via_smithery_connect(mcp_url: str, tool_name: str, arguments: dict, config: dict, agent_id=None) -> str:
     """Execute an MCP tool via Smithery Connect API.
 
     Uses stored namespace/connection or falls back to creating one.
@@ -969,12 +969,9 @@ async def _execute_via_smithery_connect(mcp_url: str, tool_name: str, arguments:
     import httpx
     import json as json_mod
 
-    # Get Smithery API key from tool config (per-agent)
-    api_key = config.pop("smithery_api_key", None)
-    if not api_key:
-        # Fallback to system-level
-        from app.services.resource_discovery import _get_smithery_api_key
-        api_key = await _get_smithery_api_key()
+    # Get Smithery API key centrally (from discover_resources/import_mcp_server AgentTool config)
+    from app.services.resource_discovery import _get_smithery_api_key
+    api_key = await _get_smithery_api_key(agent_id)
     if not api_key:
         return (
             "❌ Smithery API key not configured.\n\n"
