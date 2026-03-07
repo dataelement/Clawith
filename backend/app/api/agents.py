@@ -214,6 +214,13 @@ async def get_agent(
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     out = AgentOut.model_validate(agent).model_dump()
     out["access_level"] = access_level
+
+    # Resolve creator username (one extra query, only on detail page)
+    if agent.creator_id:
+        creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
+        creator = creator_result.scalar_one_or_none()
+        out["creator_username"] = creator.username if creator else None
+
     return out
 
 

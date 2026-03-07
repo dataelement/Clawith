@@ -20,7 +20,7 @@ router = APIRouter(prefix="/agents/{agent_id}/schedules", tags=["schedules"])
 
 class ScheduleCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    instruction: str = Field(min_length=1)
+    instruction: str = Field(default='', max_length=5000)
     cron_expr: str = Field(min_length=1, max_length=100)
     is_enabled: bool = True
 

@@ -88,6 +88,7 @@ class AgentOut(BaseModel):
     bio: str | None = None
     status: str
     creator_id: uuid.UUID
+    creator_username: str | None = None  # Populated by API layer; not in ORM model directly
     primary_model_id: uuid.UUID | None = None
     fallback_model_id: uuid.UUID | None = None
     autonomy_policy: dict

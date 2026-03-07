@@ -1196,6 +1196,12 @@ export default function AgentDetail() {
                                             <span style={{ color: 'var(--text-tertiary)' }}>Created</span>
                                             <span>{agent.created_at ? formatDate(agent.created_at) : '—'}</span>
                                         </div>
+                                        {(agent as any).creator_username && (
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.fields.createdBy', 'Created by')}</span>
+                                                <span style={{ color: 'var(--text-secondary)' }}>@{(agent as any).creator_username}</span>
+                                            </div>
+                                        )}
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
                                             <span style={{ color: 'var(--text-tertiary)' }}>Last Active</span>
                                             <span>{agent.last_active_at ? formatDate(agent.last_active_at) : '—'}</span>
@@ -1433,7 +1439,7 @@ export default function AgentDetail() {
 
                                         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
                                             <button className="btn btn-secondary" onClick={() => setShowScheduleForm(false)}>{t('common.cancel')}</button>
-                                            <button className="btn btn-primary" disabled={!schedForm.name || !schedForm.instruction || createScheduleMut.isPending}
+                                            <button className="btn btn-primary" disabled={!schedForm.name || createScheduleMut.isPending}
                                                 onClick={() => createScheduleMut.mutate()}>
                                                 {createScheduleMut.isPending ? '⏳ Saving...' : t('agent.tasks.addSchedule')}
                                             </button>
