@@ -551,7 +551,7 @@
       "step3": "左侧菜单 → 凭证与基础信息 → 复制 App ID 和 App Secret",
       "step4": "将 App ID 和 App Secret 填入上方 → 点击保存配置 → 复制出现的 Webhook URL",
       "step5": "左侧菜单 → 事件订阅 → 打开「启用事件订阅」开关 → 将 Webhook URL 粘贴到「请求地址」中（自动验证）→ 点击「添加事件」→ 搜索并添加 im.message.receive_v1 → 保存",
-      "step6": "左侧菜单 → 权限管理 → 搜索并申请：im:message、im:message:send_as_bot、contact:user.id:readonly → 保存",
+      "step6": "左侧菜单 → 权限管理 → 点击「批量导入/导出权限」→ 粘贴下方权限 JSON → 确认导入",
       "step7": "左侧菜单 → 版本管理与发布 → 创建版本 → 填写说明 → 提交审核发布（企业自建应用可在管理后台自行审批）",
       "step8": "发布后，将机器人拉入飞书群，或让用户直接添加机器人为好友即可开始对话",
       "note": "企业自建应用审核通常即时通过。每次新增权限后都需要重新发布。"

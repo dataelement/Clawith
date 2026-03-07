@@ -541,7 +541,7 @@
       "step3": "Left sidebar → Credentials & Basic Info (凭证与基础信息) → copy App ID and App Secret",
       "step4": "Paste App ID and App Secret above → click Save Config → copy the Webhook URL that appears",
       "step5": "Left sidebar → Event Subscriptions (事件订阅) → toggle Enable Events ON → paste the Webhook URL into the Request URL field → it will verify automatically → click Add Event → search for im.message.receive_v1 → add it → Save",
-      "step6": "Left sidebar → Permissions & Scopes (权限管理) → search and add: im:message, im:message:send_as_bot, contact:user.id:readonly → Save",
+      "step6": "Left sidebar → Permissions & Scopes → click 'Bulk Import/Export Permissions' → paste the permission JSON below → confirm import",
       "step7": "Left sidebar → App Release (版本管理与发布) → Create Version → fill in description → click Release for Review → for internal apps, you can approve it yourself in the admin console",
       "step8": "After publishing, invite the bot to a Feishu group or have users add it as a direct contact to start chatting",
       "note": "For internal company apps, the review is usually instant. You must re-publish the app each time you add new permissions."
