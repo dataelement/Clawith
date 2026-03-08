@@ -846,9 +846,17 @@ export default function AgentDetail() {
         let userMsg = chatInput.trim();
         let contentForLLM = userMsg;
         if (attachedFile) {
-            if (attachedFile.imageUrl) {
+            if (attachedFile.imageUrl && supportsVision) {
+                // Vision model — embed image data for direct analysis
                 const imageMarker = `[image_data:${attachedFile.imageUrl}]`;
                 contentForLLM = userMsg ? `${imageMarker}\n${userMsg}` : `${imageMarker}\n请分析这张图片`;
+                userMsg = userMsg || `[图片] ${attachedFile.name}`;
+            } else if (attachedFile.imageUrl) {
+                // Non-vision model — just reference the file path
+                const wsPath = attachedFile.path || '';
+                contentForLLM = userMsg
+                    ? `[图片文件已上传: ${attachedFile.name}，保存在 ${wsPath}]\n\n${userMsg}`
+                    : `[图片文件已上传: ${attachedFile.name}，保存在 ${wsPath}]\n请描述或处理这个图片文件。你可以使用 read_document 工具读取它。`;
                 userMsg = userMsg || `[图片] ${attachedFile.name}`;
             } else {
                 const wsPath = attachedFile.path || '';
@@ -964,8 +972,12 @@ export default function AgentDetail() {
     const { data: llmModels = [] } = useQuery({
         queryKey: ['llm-models'],
         queryFn: () => enterpriseApi.llmModels(),
-        enabled: activeTab === 'settings' || activeTab === 'status',
+        enabled: activeTab === 'settings' || activeTab === 'status' || activeTab === 'chat',
     });
+
+    const supportsVision = !!agent?.primary_model_id && llmModels.some(
+        (m: any) => m.id === agent.primary_model_id && m.supports_vision
+    );
 
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],

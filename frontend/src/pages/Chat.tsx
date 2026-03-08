@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { agentApi } from '../services/api';
+import { agentApi, enterpriseApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 
@@ -82,6 +82,16 @@ export default function Chat() {
         queryFn: () => agentApi.get(id!),
         enabled: !!id,
     });
+
+    const { data: llmModels = [] } = useQuery({
+        queryKey: ['llm-models'],
+        queryFn: () => enterpriseApi.llmModels(),
+        enabled: !!agent?.primary_model_id,
+    });
+
+    const supportsVision = !!agent?.primary_model_id && llmModels.some(
+        (m: any) => m.id === agent.primary_model_id && m.supports_vision
+    );
 
     const parseMessage = (msg: Message): Message => {
         if (msg.role !== 'user') return msg;
@@ -262,12 +272,19 @@ export default function Chat() {
         let contentForLLM = userMsg;
 
         if (attachedFile) {
-            if (attachedFile.imageUrl) {
-                // Image file — embed image data marker for vision models
+            if (attachedFile.imageUrl && supportsVision) {
+                // Vision model — embed image data marker for direct analysis
                 const imageMarker = `[image_data:${attachedFile.imageUrl}]`;
                 contentForLLM = userMsg
                     ? `${imageMarker}\n${userMsg}`
                     : `${imageMarker}\n请分析这张图片`;
+                userMsg = userMsg || `[图片] ${attachedFile.name}`;
+            } else if (attachedFile.imageUrl) {
+                // Non-vision model — just reference the file path
+                const wsPath = attachedFile.path || '';
+                contentForLLM = userMsg
+                    ? `[图片文件已上传: ${attachedFile.name}，保存在 ${wsPath}]\n\n${userMsg}`
+                    : `[图片文件已上传: ${attachedFile.name}，保存在 ${wsPath}]\n请描述或处理这个图片文件。你可以使用 read_document 工具读取它。`;
                 userMsg = userMsg || `[图片] ${attachedFile.name}`;
             } else {
                 const wsPath = attachedFile.path || '';
