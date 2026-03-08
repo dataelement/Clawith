@@ -125,7 +125,19 @@ async def call_llm(
 
     # Build rich prompt with soul, memory, skills, relationships
     from app.services.agent_context import build_agent_context
-    system_prompt = await build_agent_context(agent_id, agent_name, role_description)
+    # Look up current user's display name so the agent knows who it's talking to
+    _current_user_name = None
+    if user_id:
+        try:
+            from app.models.user import User as _UserModel
+            async with async_session() as _udb:
+                _ur = await _udb.execute(select(_UserModel).where(_UserModel.id == user_id))
+                _u = _ur.scalar_one_or_none()
+                if _u:
+                    _current_user_name = _u.display_name or _u.username
+        except Exception:
+            pass
+    system_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS

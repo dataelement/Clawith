@@ -147,7 +147,7 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
     return "\n".join(lines)
 
 
-async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "") -> str:
+async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> str:
     """Build a rich system prompt incorporating agent's full context.
 
     Reads from workspace files:
@@ -309,6 +309,10 @@ You have a dedicated workspace with this structure:
 9. **Reply in the same language the user uses.**
 
 10. **Never assume a file exists — always verify with `list_files` first.**""")
+
+    # Inject current user identity
+    if current_user_name:
+        parts.append(f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate.")
 
     return "\n".join(parts)
 
