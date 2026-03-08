@@ -68,7 +68,16 @@ async def remove_llm_model(
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
+    # Nullify FK references in agents before deleting
+    from sqlalchemy import update
+    await db.execute(
+        update(Agent).where(Agent.primary_model_id == model_id).values(primary_model_id=None)
+    )
+    await db.execute(
+        update(Agent).where(Agent.fallback_model_id == model_id).values(fallback_model_id=None)
+    )
     await db.delete(model)
+    await db.commit()
 
 
 @router.put("/llm-models/{model_id}", response_model=LLMModelOut)
