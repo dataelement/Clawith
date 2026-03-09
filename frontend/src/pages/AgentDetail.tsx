@@ -1,14 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { agentApi, taskApi, fileApi, channelApi, enterpriseApi, activityApi, scheduleApi, skillApi, triggerApi } from '../services/api';
-import MarkdownRenderer from '../components/MarkdownRenderer';
-import { useAuthStore } from '../stores';
-import PromptModal from '../components/PromptModal';
+import { useNavigate, useParams } from 'react-router-dom';
 import ConfirmModal from '../components/ConfirmModal';
-import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
+import FileBrowser from '../components/FileBrowser';
+import MarkdownRenderer from '../components/MarkdownRenderer';
+import PromptModal from '../components/PromptModal';
+import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi } from '../services/api';
+import { useAuthStore } from '../stores';
 
 const TABS = ['status', 'pulse', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'settings'] as const;
 
@@ -675,6 +675,8 @@ export default function AgentDetail() {
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
     const [uploading, setUploading] = useState(false);
+    const [isWaiting, setIsWaiting] = useState(false);
+    const [isStreaming, setIsStreaming] = useState(false);
     const [attachedFile, setAttachedFile] = useState<{ name: string; text: string; path?: string; imageUrl?: string } | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
@@ -787,6 +789,12 @@ export default function AgentDetail() {
             ws.onerror = () => { if (!cancelled) setWsConnected(false); };
             ws.onmessage = (e) => {
                 const d = JSON.parse(e.data);
+                if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
+                    setIsWaiting(false);
+                    if (['thinking', 'chunk', 'tool_call'].includes(d.type)) setIsStreaming(true);
+                    if (['done', 'error', 'quota_exceeded'].includes(d.type)) setIsStreaming(false);
+                }
+
                 if (d.type === 'thinking') {
                     setChatMessages(prev => {
                         const last = prev[prev.length - 1];
@@ -910,6 +918,9 @@ export default function AgentDetail() {
                 userMsg = userMsg || `⌆ ${attachedFile.name}`;
             }
         }
+
+        setIsWaiting(true);
+        setIsStreaming(false);
         setChatMessages(prev => [...prev, { role: 'user', content: userMsg, fileName: attachedFile?.name, imageUrl: attachedFile?.imageUrl }]);
         wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '' }));
         setChatInput(''); setAttachedFile(null);
@@ -2115,6 +2126,18 @@ export default function AgentDetail() {
                                                     </div>
                                                 );
                                             })}
+                                            {isWaiting && (
+                                                <div className="chat-message assistant" style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                                                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
+                                                    <div style={{ maxWidth: '70%', padding: '8px 12px', borderRadius: '12px', background: 'var(--bg-secondary)', fontSize: '13px', lineHeight: '1.5' }}>
+                                                        <div className="typing-indicator">
+                                                            <div className="typing-dot"></div>
+                                                            <div className="typing-dot"></div>
+                                                            <div className="typing-dot"></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
                                             <div ref={chatEndRef} />
                                         </div>
                                         {showScrollBtn && (
@@ -2144,13 +2167,13 @@ export default function AgentDetail() {
                                         )}
                                         <div style={{ display: 'flex', gap: '8px', padding: '6px 12px', borderTop: '1px solid var(--border-subtle)' }}>
                                             <input type="file" ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
-                                            <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={!wsConnected || uploading} style={{ padding: '6px 10px', fontSize: '14px', minWidth: 'auto' }}>{uploading ? '⏳' : '⦹'}</button>
+                                            <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={!wsConnected || uploading || isWaiting || isStreaming} style={{ padding: '6px 10px', fontSize: '14px', minWidth: 'auto' }}>{uploading ? '⏳' : '⦹'}</button>
                                             <input ref={chatInputRef} className="chat-input" value={chatInput} onChange={e => setChatInput(e.target.value)}
                                                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMsg(); } }}
                                                 onPaste={handlePaste}
                                                 placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : attachedFile ? t('agent.chat.askAboutFile', { name: attachedFile.name }) : t('chat.placeholder')}
-                                                disabled={!wsConnected} style={{ flex: 1 }} autoFocus />
-                                            <button className="btn btn-primary" onClick={sendChatMsg} disabled={!wsConnected || (!chatInput.trim() && !attachedFile)} style={{ padding: '6px 16px' }}>{t('chat.send')}</button>
+                                                disabled={!wsConnected || isWaiting || isStreaming} style={{ flex: 1 }} autoFocus />
+                                            <button className="btn btn-primary" onClick={sendChatMsg} disabled={!wsConnected || isWaiting || isStreaming || (!chatInput.trim() && !attachedFile)} style={{ padding: '6px 16px' }}>{t('chat.send')}</button>
                                         </div>
                                     </>
                                 )}

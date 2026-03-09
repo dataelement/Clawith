@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useParams } from 'react-router-dom';
+import MarkdownRenderer from '../components/MarkdownRenderer';
 import { agentApi, enterpriseApi } from '../services/api';
 import { useAuthStore } from '../stores';
-import MarkdownRenderer from '../components/MarkdownRenderer';
 
 /* ── Inline SVG Icons ── */
 const Icons = {
@@ -69,6 +69,7 @@ export default function Chat() {
     const [connected, setConnected] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [streaming, setStreaming] = useState(false);
+    const [isWaiting, setIsWaiting] = useState(false);
     const [attachedFile, setAttachedFile] = useState<{ name: string; text: string; path?: string; imageUrl?: string } | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -157,6 +158,10 @@ export default function Chat() {
             };
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
+                if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(data.type)) {
+                    setIsWaiting(false);
+                }
+
                 if (data.type === 'thinking') {
                     // Accumulate thinking content
                     thinkingContent.current += data.content;
@@ -266,6 +271,7 @@ export default function Chat() {
         pendingToolCalls.current = [];
         streamContent.current = '';
         thinkingContent.current = '';
+        setIsWaiting(true);
         setStreaming(true);
 
         let userMsg = input.trim();
@@ -431,6 +437,20 @@ export default function Chat() {
                             </div>
                         </div>
                     ))}
+                    {isWaiting && (
+                        <div className="chat-message assistant">
+                            <div className="chat-avatar" style={{ color: 'var(--text-tertiary)' }}>
+                                {Icons.bot}
+                            </div>
+                            <div className="chat-bubble" style={{ padding: '8px 12px' }}>
+                                <div className="typing-indicator">
+                                    <div className="typing-dot"></div>
+                                    <div className="typing-dot"></div>
+                                    <div className="typing-dot"></div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                     <div ref={messagesEndRef} />
                 </div>
 
@@ -470,7 +490,7 @@ export default function Chat() {
                     <button
                         className="btn btn-secondary"
                         onClick={() => fileInputRef.current?.click()}
-                        disabled={!connected || uploading}
+                        disabled={!connected || uploading || isWaiting || streaming}
                         style={{ padding: '8px 12px', fontSize: '16px', minWidth: 'auto' }}
                         title={t('agent.workspace.uploadFile')}
                     >
@@ -482,9 +502,9 @@ export default function Chat() {
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder={attachedFile ? t('agent.chat.askAboutFile', { name: attachedFile.name }) : t('chat.placeholder')}
-                        disabled={!connected}
+                        disabled={!connected || isWaiting || streaming}
                     />
-                    <button className="btn btn-primary" onClick={sendMessage} disabled={!connected || (!input.trim() && !attachedFile)}>
+                    <button className="btn btn-primary" onClick={sendMessage} disabled={!connected || isWaiting || streaming || (!input.trim() && !attachedFile)}>
                         {t('chat.send')}
                     </button>
                 </div>
