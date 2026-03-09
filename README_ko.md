@@ -154,6 +154,10 @@ bash restart.sh   # 서비스 시작
 
 [Discord 서버](https://discord.gg/3AKMBM2G)에 참여하여 팀과 대화하고, 질문하고, 피드백을 공유하세요!
 
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/image?repos=dataelement/Clawith&type=date&legend=top-left)](https://www.star-history.com/?repos=dataelement%2FClawith&type=date&legend=top-left)
+
 ## 📄 라이선스
 
 [Apache 2.0](LICENSE)
