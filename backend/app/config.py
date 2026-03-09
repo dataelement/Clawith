@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     FEISHU_REDIRECT_URI: str = ""
 
     # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173" ]
 
     # Jina AI (Reader + Search APIs)
     JINA_API_KEY: str = ""
