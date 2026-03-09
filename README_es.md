@@ -153,6 +153,10 @@ Cambiar contraseñas predeterminadas · Configurar `SECRET_KEY` / `JWT_SECRET_KE
 
 ¡Únete a nuestro [servidor de Discord](https://discord.gg/3AKMBM2G) para chatear con el equipo, hacer preguntas y compartir feedback!
 
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/image?repos=dataelement/Clawith&type=date&legend=top-left)](https://www.star-history.com/?repos=dataelement%2FClawith&type=date&legend=top-left)
+
 ## 📄 Licencia
 
 [Apache 2.0](LICENSE)

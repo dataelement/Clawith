@@ -233,6 +233,10 @@ git clone https://gitclone.com/github.com/dataelement/Clawith.git
 
 加入我们的 [Discord 服务器](https://discord.gg/3AKMBM2G)，与团队交流、提问、分享反馈！
 
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/image?repos=dataelement/Clawith&type=date&legend=top-left)](https://www.star-history.com/?repos=dataelement%2FClawith&type=date&legend=top-left)
+
 ## 📄 许可证
 
 [Apache 2.0](LICENSE)

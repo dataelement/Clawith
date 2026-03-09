@@ -236,6 +236,10 @@ Change default passwords · Set strong `SECRET_KEY` / `JWT_SECRET_KEY` · Enable
 
 Join our [Discord server](https://discord.gg/3AKMBM2G) to chat with the team, ask questions, share feedback, or just hang out!
 
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/image?repos=dataelement/Clawith&type=date&legend=top-left)](https://www.star-history.com/?repos=dataelement%2FClawith&type=date&legend=top-left)
+
 ## 📄 License
 
 [Apache 2.0](LICENSE)
