@@ -1192,6 +1192,7 @@ export default function AgentDetail() {
     }
 
     const statusKey = agent.status === 'running' ? 'running' : agent.status === 'stopped' ? 'stopped' : agent.status === 'creating' ? 'creating' : 'idle';
+    const canManage = (agent as any).access_level === 'manage' || isAdmin;
 
     return (
         <>
@@ -1201,7 +1202,7 @@ export default function AgentDetail() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                         <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>{agent.name?.charAt(0).toUpperCase() || 'A'}</div>
                         <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-                            {editingName ? (
+                            {canManage && editingName ? (
                                 <input
                                     className="page-title"
                                     autoFocus
@@ -1229,11 +1230,11 @@ export default function AgentDetail() {
                                 />
                             ) : (
                                 <h1 className="page-title"
-                                    title="Click to edit name"
-                                    onClick={() => { setNameInput(agent.name); setEditingName(true); }}
-                                    style={{ cursor: 'text', borderBottom: '1px dashed transparent', display: 'inline-block', marginBottom: '0' }}
-                                    onMouseEnter={e => (e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)')}
-                                    onMouseLeave={e => (e.currentTarget.style.borderBottomColor = 'transparent')}
+                                    title={canManage ? "Click to edit name" : undefined}
+                                    onClick={() => { if (canManage) { setNameInput(agent.name); setEditingName(true); } }}
+                                    style={{ cursor: canManage ? 'text' : 'default', borderBottom: canManage ? '1px dashed transparent' : 'none', display: 'inline-block', marginBottom: '0' }}
+                                    onMouseEnter={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)'; }}
+                                    onMouseLeave={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'transparent'; }}
                                 >
                                     {agent.name}
                                 </h1>
@@ -1241,7 +1242,7 @@ export default function AgentDetail() {
                             <p className="page-subtitle" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
                                 <span className={`status-dot ${statusKey}`} />
                                 {t(`agent.status.${statusKey}`)}
-                                {editingRole ? (
+                                {canManage && editingRole ? (
                                     <textarea
                                         autoFocus
                                         value={roleInput}
@@ -1267,13 +1268,13 @@ export default function AgentDetail() {
                                     />
                                 ) : (
                                     <span
-                                        title={agent.role_description || 'Click to edit'}
-                                        onClick={() => { setRoleInput(agent.role_description || ''); setEditingRole(true); }}
-                                        style={{ cursor: 'text', borderBottom: '1px dashed transparent', maxWidth: '38vw', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', verticalAlign: 'middle' }}
-                                        onMouseEnter={e => (e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)')}
-                                        onMouseLeave={e => (e.currentTarget.style.borderBottomColor = 'transparent')}
+                                        title={canManage ? (agent.role_description || 'Click to edit') : (agent.role_description || '')}
+                                        onClick={() => { if (canManage) { setRoleInput(agent.role_description || ''); setEditingRole(true); } }}
+                                        style={{ cursor: canManage ? 'text' : 'default', borderBottom: canManage ? '1px dashed transparent' : 'none', maxWidth: '38vw', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', verticalAlign: 'middle' }}
+                                        onMouseEnter={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)'; }}
+                                        onMouseLeave={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'transparent'; }}
                                     >
-                                        {agent.role_description ? `· ${agent.role_description}` : <span style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>· {t('agent.fields.role', 'Click to add a description...')}</span>}
+                                        {agent.role_description ? `· ${agent.role_description}` : (canManage ? <span style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>· {t('agent.fields.role', 'Click to add a description...')}</span> : null)}
                                     </span>
                                 )}
                                 {(agent as any).is_expired && (
@@ -2637,11 +2638,13 @@ export default function AgentDetail() {
                                                 <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.heartbeat.enabled', 'Enable Heartbeat')}</div>
                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.settings.heartbeat.enabledDesc', 'Agent will periodically check plaza and work status')}</div>
                                             </div>
-                                            <label style={{ position: 'relative', display: 'inline-block', width: '44px', height: '24px', cursor: 'pointer' }}>
+                                            <label style={{ position: 'relative', display: 'inline-block', width: '44px', height: '24px', cursor: canManage ? 'pointer' : 'default' }}>
                                                 <input
                                                     type="checkbox"
                                                     checked={agent?.heartbeat_enabled ?? true}
+                                                    disabled={!canManage}
                                                     onChange={async (e) => {
+                                                        if (!canManage) return;
                                                         await agentApi.update(id!, { heartbeat_enabled: e.target.checked } as any);
                                                         queryClient.invalidateQueries({ queryKey: ['agent', id] });
                                                     }}
@@ -2651,6 +2654,7 @@ export default function AgentDetail() {
                                                     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
                                                     background: (agent?.heartbeat_enabled ?? true) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
                                                     borderRadius: '12px', transition: 'background 0.2s',
+                                                    opacity: canManage ? 1 : 0.6
                                                 }}>
                                                     <span style={{
                                                         position: 'absolute', top: '3px',
@@ -2676,16 +2680,18 @@ export default function AgentDetail() {
                                                 <input
                                                     type="number"
                                                     className="input"
+                                                    disabled={!canManage}
                                                     min={1}
                                                     defaultValue={agent?.heartbeat_interval_minutes ?? 120}
                                                     key={agent?.heartbeat_interval_minutes}
                                                     onBlur={async (e) => {
+                                                        if (!canManage) return;
                                                         const val = Math.max(1, Number(e.target.value) || 120);
                                                         e.target.value = String(val);
                                                         await agentApi.update(id!, { heartbeat_interval_minutes: val } as any);
                                                         queryClient.invalidateQueries({ queryKey: ['agent', id] });
                                                     }}
-                                                    style={{ width: '80px', fontSize: '12px' }}
+                                                    style={{ width: '80px', fontSize: '12px', opacity: canManage ? 1 : 0.6 }}
                                                 />
                                                 <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.minutes', 'min')}</span>
                                             </div>
@@ -2703,12 +2709,14 @@ export default function AgentDetail() {
                                             </div>
                                             <input
                                                 className="input"
+                                                disabled={!canManage}
                                                 value={agent?.heartbeat_active_hours ?? '09:00-18:00'}
                                                 onChange={async (e) => {
+                                                    if (!canManage) return;
                                                     await agentApi.update(id!, { heartbeat_active_hours: e.target.value } as any);
                                                     queryClient.invalidateQueries({ queryKey: ['agent', id] });
                                                 }}
-                                                style={{ width: '140px', fontSize: '12px', textAlign: 'center' }}
+                                                style={{ width: '140px', fontSize: '12px', textAlign: 'center', opacity: canManage ? 1 : 0.6 }}
                                                 placeholder="09:00-18:00"
                                             />
                                         </div>
@@ -2746,7 +2754,11 @@ export default function AgentDetail() {
                                             </div>
                                             {slackConfig && <span className={`badge ${slackConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{slackConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
                                         </div>
-                                        {slackConfig?.is_configured && !slackEditing ? (
+                                        {!canManage ? (
+                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+                                                Only the creator or admin can configure communication channels.
+                                            </div>
+                                        ) : slackConfig?.is_configured && !slackEditing ? (
                                             <div>
                                                 <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
                                                     <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>Webhook URL (Event Subscriptions URL)</div>
@@ -2830,7 +2842,11 @@ export default function AgentDetail() {
                                             </div>
                                             {discordConfig && <span className={`badge ${discordConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{discordConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
                                         </div>
-                                        {discordConfig?.is_configured && !discordEditing ? (
+                                        {!canManage ? (
+                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+                                                Only the creator or admin can configure communication channels.
+                                            </div>
+                                        ) : discordConfig?.is_configured && !discordEditing ? (
                                             <div>
                                                 <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
                                                     <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>Interactions Endpoint URL</div>
@@ -2919,7 +2935,11 @@ export default function AgentDetail() {
                                             )}
                                         </div>
 
-                                        {channelConfig && !feishuEditing ? (
+                                        {!canManage ? (
+                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+                                                Only the creator or admin can configure communication channels.
+                                            </div>
+                                        ) : channelConfig && !feishuEditing ? (
                                             <div>
                                                 <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>App ID: <code>{channelConfig.app_id}</code></div>
                                                 <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
