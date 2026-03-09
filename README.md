@@ -178,6 +178,12 @@ docker compose up -d --build
 > sudo systemctl daemon-reload && sudo systemctl restart docker
 > ```
 > Then re-run `docker compose up -d`.
+>
+> **Optional PyPI mirror:** Backend installs keep the normal `pip` defaults. If you want to opt into a regional mirror for `bash setup.sh` or `docker compose up -d --build`, set:
+> ```bash
+> export CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+> export CLAWITH_PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+> ```
 
 ### First Login
 

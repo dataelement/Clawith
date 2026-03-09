@@ -26,8 +26,14 @@ get_server_ip() {
     echo "$ip"
 }
 
-# --- Package mirrors (Tsinghua PyPI + npmmirror, fast globally) ---
-PIP_MIRROR="-i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn"
+# --- Optional package mirror overrides ---
+PIP_INSTALL_ARGS=()
+if [ -n "${CLAWITH_PIP_INDEX_URL:-}" ]; then
+    PIP_INSTALL_ARGS+=(--index-url "$CLAWITH_PIP_INDEX_URL")
+fi
+if [ -n "${CLAWITH_PIP_TRUSTED_HOST:-}" ]; then
+    PIP_INSTALL_ARGS+=(--trusted-host "$CLAWITH_PIP_TRUSTED_HOST")
+fi
 NPM_MIRROR="--registry https://registry.npmmirror.com"
 
 echo ""
@@ -350,7 +356,7 @@ else
     PIP_TARGET="."
     echo "  Installing dependencies (this may take 1-2 minutes)..."
 fi
-if .venv/bin/pip install -e "$PIP_TARGET" $PIP_MIRROR 2>&1; then
+if .venv/bin/pip install -e "$PIP_TARGET" "${PIP_INSTALL_ARGS[@]}" 2>&1; then
     echo -e "  ${GREEN}✓${NC} Backend dependencies installed"
 else
     echo -e "  ${RED}✗${NC} Failed to install backend dependencies."

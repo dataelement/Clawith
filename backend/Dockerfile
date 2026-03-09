@@ -8,7 +8,15 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn .
+ARG CLAWITH_PIP_INDEX_URL
+ARG CLAWITH_PIP_TRUSTED_HOST
+RUN if [ -n "$CLAWITH_PIP_INDEX_URL" ] && [ -n "$CLAWITH_PIP_TRUSTED_HOST" ]; then \
+        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" --trusted-host "$CLAWITH_PIP_TRUSTED_HOST" .; \
+    elif [ -n "$CLAWITH_PIP_INDEX_URL" ]; then \
+        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" .; \
+    else \
+        pip install --no-cache-dir .; \
+    fi
 
 # ─── Production ─────────────────────────────────────────
 FROM python:3.12-slim AS production
