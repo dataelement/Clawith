@@ -77,7 +77,7 @@ async def get_chat_history(
     messages = result.scalars().all()
     out = []
     for m in messages:
-        entry: dict = {"role": m.role, "content": m.content}
+        entry: dict = {"role": m.role, "content": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
         if m.role == "tool_call":
             # Parse JSON-encoded tool call data
             try:

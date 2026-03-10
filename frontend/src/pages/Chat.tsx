@@ -58,6 +58,7 @@ interface Message {
     toolCalls?: ToolCall[];
     thinking?: string;
     imageUrl?: string;
+    timestamp?: string;
 }
 
 export default function Chat() {
@@ -121,8 +122,12 @@ export default function Chat() {
             headers: { Authorization: `Bearer ${token}` },
         })
             .then(r => r.json())
-            .then((history: Message[]) => {
-                if (history.length > 0) setMessages(history.map(parseMessage));
+            .then((history: any[]) => {
+                if (history.length > 0) setMessages(history.map(h => {
+                    const msg = parseMessage({ role: h.role, content: h.content, fileName: h.fileName, toolCalls: h.toolCalls, thinking: h.thinking, imageUrl: h.imageUrl });
+                    msg.timestamp = h.created_at || undefined;
+                    return msg;
+                }));
             })
             .catch(() => { /* ignore */ });
     }, [id, token]);
@@ -167,7 +172,7 @@ export default function Chat() {
                             updated[updated.length - 1] = { ...last, thinking: thinkingContent.current };
                             return updated;
                         }
-                        return [...prev, { role: 'assistant', content: '', thinking: thinkingContent.current }];
+                        return [...prev, { role: 'assistant', content: '', thinking: thinkingContent.current, timestamp: new Date().toISOString() }];
                     });
                 } else if (data.type === 'chunk') {
                     // Streaming text chunk — accumulate and update live preview
@@ -180,7 +185,7 @@ export default function Chat() {
                             updated[updated.length - 1] = { ...last, content: streamContent.current };
                             return updated;
                         }
-                        return [...prev, { role: 'assistant', content: streamContent.current }];
+                        return [...prev, { role: 'assistant', content: streamContent.current, timestamp: new Date().toISOString() }];
                     });
                 } else if (data.type === 'tool_call') {
                     if (data.status === 'done') {
@@ -303,6 +308,7 @@ export default function Chat() {
             content: userMsg,
             fileName: attachedFile?.name,
             imageUrl: attachedFile?.imageUrl,
+            timestamp: new Date().toISOString(),
         }]);
         wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '' }));
         setInput('');
@@ -427,6 +433,11 @@ export default function Chat() {
                                     <MarkdownRenderer content={msg.content} />
                                 ) : (
                                     <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                                )}
+                                {msg.timestamp && (
+                                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.7 }}>
+                                        {new Date(msg.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                    </div>
                                 )}
                             </div>
                         </div>
