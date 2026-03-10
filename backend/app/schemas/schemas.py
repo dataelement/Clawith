@@ -58,6 +58,7 @@ class AgentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     role_description: str = Field(default="", max_length=500)
     bio: str | None = None
+    welcome_message: str | None = None
     avatar_url: str | None = None
     # Soul
     personality: str = ""
@@ -86,6 +87,7 @@ class AgentOut(BaseModel):
     avatar_url: str | None = None
     role_description: str
     bio: str | None = None
+    welcome_message: str | None = None
     status: str
     creator_id: uuid.UUID
     creator_username: str | None = None  # Populated by API layer; not in ORM model directly
@@ -116,6 +118,7 @@ class AgentUpdate(BaseModel):
     name: str | None = None
     role_description: str | None = None
     bio: str | None = None
+    welcome_message: str | None = None
     avatar_url: str | None = None
     autonomy_policy: dict | None = None
     primary_model_id: uuid.UUID | None = None

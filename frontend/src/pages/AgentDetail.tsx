@@ -2503,6 +2503,47 @@ export default function AgentDetail() {
                                     </div>
                                 </div>
 
+                                {/* Welcome Message */}
+                                {(() => {
+                                    const [wmDraft, setWmDraft] = useState((agent as any)?.welcome_message || '');
+                                    const [wmSaved, setWmSaved] = useState(false);
+                                    // Sync draft when agent data reloads
+                                    useEffect(() => { setWmDraft((agent as any)?.welcome_message || ''); }, [(agent as any)?.welcome_message]);
+                                    const saveWm = async () => {
+                                        try {
+                                            await agentApi.update(id!, { welcome_message: wmDraft } as any);
+                                            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                            setWmSaved(true);
+                                            setTimeout(() => setWmSaved(false), 2000);
+                                        } catch { }
+                                    };
+                                    return (
+                                        <div className="card" style={{ marginBottom: '12px' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                                <h4 style={{ margin: 0 }}>{isChinese ? '欢迎语' : 'Welcome Message'}</h4>
+                                                {wmSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>✓ {isChinese ? '已保存' : 'Saved'}</span>}
+                                            </div>
+                                            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                                {isChinese
+                                                    ? '当用户在网页端发起新对话时，Agent 会自动发送的欢迎语。支持 Markdown 语法。留空则不发送。'
+                                                    : 'Greeting message sent automatically when a user starts a new web conversation. Supports Markdown. Leave empty to disable.'}
+                                            </p>
+                                            <textarea
+                                                className="input"
+                                                rows={4}
+                                                value={wmDraft}
+                                                onChange={e => setWmDraft(e.target.value)}
+                                                onBlur={saveWm}
+                                                placeholder={isChinese ? '例如：你好！我是你的 AI 助手，有什么可以帮你的吗？' : "e.g. Hello! I'm your AI assistant. How can I help you?"}
+                                                style={{
+                                                    width: '100%', minHeight: '80px', resize: 'vertical',
+                                                    fontFamily: 'inherit', fontSize: '13px',
+                                                }}
+                                            />
+                                        </div>
+                                    );
+                                })()}
+
                                 {/* Autonomy Policy */}
                                 <div className="card" style={{ marginBottom: '12px' }}>
                                     <h4 style={{ marginBottom: '4px' }}>{t('agent.settings.autonomy.title')}</h4>

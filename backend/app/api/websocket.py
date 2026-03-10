@@ -553,6 +553,7 @@ async def websocket_chat(
     # Verify access and load agent + model
     agent_name = ""
     role_description = ""
+    welcome_message = ""
     llm_model = None
     history_messages = []
 
@@ -576,6 +577,7 @@ async def websocket_chat(
                 return
             agent_name = agent.name
             role_description = agent.role_description or ""
+            welcome_message = agent.welcome_message or ""
             ctx_size = agent.context_window_size or 100
             print(f"[WS] Agent: {agent_name}, model_id: {agent.primary_model_id}, ctx: {ctx_size}")
 
@@ -690,6 +692,10 @@ async def websocket_chat(
             conversation.append({"role": msg.role, "content": msg.content})
 
     try:
+        # Send welcome message on new session (no history)
+        if welcome_message and not history_messages:
+            await websocket.send_json({"type": "done", "role": "assistant", "content": welcome_message})
+
         while True:
             print(f"[WS] Waiting for message from {agent_name}...")
             data = await websocket.receive_json()

@@ -48,14 +48,14 @@ def extract_text(file_bytes: bytes, filename: str) -> str | None:
 def save_extracted_text(save_path: Path, file_bytes: bytes, filename: str) -> Path | None:
     """Extract text and save as a companion .txt file.
     
-    For example: report.pdf → report.pdf.txt
+    For example: report.pdf → report.txt
     Returns the path to the text file, or None if extraction failed.
     """
     text = extract_text(file_bytes, filename)
     if not text or not text.strip():
         return None
     
-    txt_path = save_path.parent / f"{save_path.name}.txt"
+    txt_path = save_path.parent / f"{save_path.stem}.txt"
     txt_path.write_text(text, encoding="utf-8")
     print(f"[TextExtractor] Extracted {len(text)} chars from {filename} → {txt_path.name}")
     return txt_path

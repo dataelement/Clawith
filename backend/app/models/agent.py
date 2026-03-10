@@ -20,6 +20,7 @@ class Agent(Base):
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     role_description: Mapped[str] = mapped_column(String(500), default="")
     bio: Mapped[str | None] = mapped_column(Text)
+    welcome_message: Mapped[str | None] = mapped_column(Text, default=None)
 
     # Ownership
     creator_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
