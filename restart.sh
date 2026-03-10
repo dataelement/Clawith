@@ -75,9 +75,30 @@ done
 
 cleanup
 
+# ── Check for Docker Multi-Instance ────────────────
+if command -v docker &>/dev/null && docker ps | grep -E 'frontend|backend|clawith' >/dev/null; then
+    echo -e "${YELLOW}🐳 Detected existing Docker containers! Starting in Docker mode to avoid conflicts...${NC}"
+    DIR_NAME=$(basename "$(dirname "$ROOT")")
+    [ -z "$DIR_NAME" ] && DIR_NAME="clawith"
+    
+    echo -e "  Using project name: ${GREEN}$DIR_NAME${NC}"
+    export COMPOSE_PROJECT_NAME="$DIR_NAME"
+    
+    cd "$ROOT"
+    
+    # Optionally define dynamic ports if needed, but per request we focus on container names.
+    # docker-compose with COMPOSE_PROJECT_NAME will automatically name containers like \${DIR_NAME}-backend-1
+    docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
+    docker compose up -d --build 2>/dev/null || docker-compose up -d --build
+    
+    echo -e "${GREEN}✅ Multiple instances deployed via Docker. Project suffix: $DIR_NAME${NC}"
+    exit 0
+fi
+
 # ── Ensure PostgreSQL is running ─────────────────
 if command -v pg_isready &>/dev/null; then
     if ! pg_isready -h localhost -p "$PG_PORT" -q 2>/dev/null; then
+
         echo -e "${YELLOW}🐘 Starting PostgreSQL (port $PG_PORT)...${NC}"
 
         STARTED=false
