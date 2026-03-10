@@ -192,7 +192,9 @@ async def create_session(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     now = datetime.now(tz.utc)
+    new_id = uuid.uuid4()
     session = ChatSession(
+        id=new_id,
         agent_id=agent_id,
         user_id=current_user.id,
         title=body.title or f"Session {now.strftime('%m-%d %H:%M')}",
