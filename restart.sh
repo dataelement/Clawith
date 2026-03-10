@@ -79,33 +79,40 @@ cleanup
 if command -v docker &>/dev/null && docker ps | grep -E 'clawith' >/dev/null; then
     echo -e "${YELLOW}🐳 Detected existing Docker containers! Starting in Docker mode to avoid conflicts...${NC}"
     DIR_NAME=$(basename "$(dirname "$ROOT")")
-    [ -z "$DIR_NAME" ] && DIR_NAME="clawith"
+    [ -z "$DIR_NAME" ] && DIR_NAME="custom"
     
-    echo -e "  Using project name: ${GREEN}$DIR_NAME${NC}"
-    export COMPOSE_PROJECT_NAME="$DIR_NAME"
+    PROJECT_NAME="clawith-${DIR_NAME}"
+    echo -e "  Using project name: ${GREEN}$PROJECT_NAME${NC}"
+    export COMPOSE_PROJECT_NAME="$PROJECT_NAME"
     
     cd "$ROOT"
     
     # Find an open port starting from 3008 for the frontend
     FRONTEND_PORT=3008
     while true; do
-        if command -v lsof &>/dev/null; then
-            lsof -nP -iTCP:$FRONTEND_PORT -sTCP:LISTEN >/dev/null 2>&1 || break
-        elif command -v ss &>/dev/null; then
-            ss -tln | grep -E ":$FRONTEND_PORT\b" >/dev/null 2>&1 || break
-        elif command -v netstat &>/dev/null; then
-            netstat -tln | grep -E ":$FRONTEND_PORT\b" >/dev/null 2>&1 || break
-        else
-            nc -z localhost $FRONTEND_PORT 2>/dev/null || break
+        if docker ps 2>/dev/null | grep -q ":$FRONTEND_PORT->"; then
+            FRONTEND_PORT=$((FRONTEND_PORT+1))
+            continue
         fi
-        FRONTEND_PORT=$((FRONTEND_PORT+1))
+        if command -v ss &>/dev/null && ss -tln 2>/dev/null | grep -qE ":$FRONTEND_PORT\b"; then
+            FRONTEND_PORT=$((FRONTEND_PORT+1))
+            continue
+        fi
+        if command -v netstat &>/dev/null && netstat -tln 2>/dev/null | grep -qE ":$FRONTEND_PORT\b"; then
+            FRONTEND_PORT=$((FRONTEND_PORT+1))
+            continue
+        fi
+        if command -v lsof &>/dev/null && lsof -nP -iTCP:$FRONTEND_PORT -sTCP:LISTEN >/dev/null 2>&1; then
+            FRONTEND_PORT=$((FRONTEND_PORT+1))
+            continue
+        fi
+        break
     done
     
     echo -e "  Allocated Frontend Port: ${GREEN}$FRONTEND_PORT${NC}"
     export FRONTEND_PORT
 
-    # Optionally define dynamic ports if needed, but per request we focus on container names.
-    # docker-compose with COMPOSE_PROJECT_NAME will automatically name containers like ${DIR_NAME}-backend-1
+    # docker-compose with COMPOSE_PROJECT_NAME will automatically name containers like ${PROJECT_NAME}-backend-1
     docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
     docker compose up -d --build 2>/dev/null || docker-compose up -d --build
     
