@@ -23,7 +23,10 @@ FROM python:3.12-slim AS production
 
 WORKDIR /app
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpq5 curl shadowsocks-libev && \
+    apt-get install -y --no-install-recommends libpq5 curl shadowsocks-libev sudo && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    npm install -g @clawhub/cli && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from deps stage
@@ -33,10 +36,16 @@ COPY --from=deps /usr/local/bin/ /usr/local/bin/
 # Copy application code
 COPY . .
 
-# Non-root user
-RUN useradd --create-home clawith && \
+# Create both users: admin (with sudo/root access) and clawith (default user)
+RUN useradd --create-home --shell /bin/bash admin && \
+    useradd --create-home --shell /bin/bash clawith && \
+    echo "admin ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers && \
     mkdir -p /data/agents && \
-    chown -R clawith:clawith /app /data
+    chown -R clawith:clawith /app /data/agents
+
+# Run as clawith by default (container runs as clawith user)
+# - admin user can use sudo to run commands as root
+# - To run as admin: docker compose exec backend su - admin
 USER clawith
 
 # Health check
