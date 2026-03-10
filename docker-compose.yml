@@ -7,8 +7,8 @@ services:
       POSTGRES_DB: clawith
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
+#     ports:
+#       - "5433:5432"
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U clawith" ]
       interval: 5s
@@ -17,8 +17,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+#     ports:
+#       - "6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -46,8 +46,8 @@ services:
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       DOCKER_NETWORK: clawith_network
       SS_CONFIG_FILE: /data/ss-nodes.json
-    ports:
-      - "8000:8000"
+#     ports:
+#       - "8000:8000"
     volumes:
       - ./backend:/app
       - agent_data:/data/agents
@@ -67,7 +67,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "3008:3000"
+      - "${FRONTEND_PORT:-3008}:3000"
     environment:
       VITE_API_URL: http://localhost:8000
     volumes:
