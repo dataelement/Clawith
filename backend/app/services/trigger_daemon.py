@@ -57,9 +57,22 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
         expr = cfg.get("expr", "* * * * *")
         base = trigger.last_fired_at or trigger.created_at
         try:
-            cron = croniter(expr, base)
+            # Resolve timezone: trigger config → agent → tenant → UTC
+            tz_name = cfg.get("timezone")
+            if not tz_name:
+                from app.services.timezone_utils import get_agent_timezone
+                tz_name = await get_agent_timezone(trigger.agent_id)
+            from zoneinfo import ZoneInfo
+            try:
+                tz = ZoneInfo(tz_name)
+            except (KeyError, Exception):
+                tz = ZoneInfo("UTC")
+            # Evaluate cron in agent's timezone
+            local_now = now.astimezone(tz)
+            local_base = base.astimezone(tz) if base.tzinfo else base.replace(tzinfo=tz)
+            cron = croniter(expr, local_base)
             next_run = cron.get_next(datetime)
-            return now >= next_run
+            return local_now >= next_run
         except Exception as e:
             logger.warning(f"Invalid cron expr '{expr}' for trigger {trigger.name}: {e}")
             return False
@@ -168,63 +181,121 @@ def _extract_json_path(data, path: str):
 
 
 async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
-    """Check if there are new agent-to-agent messages matching this trigger.
+    """Check if there are new messages matching this trigger.
+    
+    Supports two modes:
+    - from_agent_name: check for agent-to-agent messages
+    - from_user_name: check for human user messages (Feishu/Slack/Discord)
     
     Stores the actual message content in trigger.config['_matched_message']
     so the invocation context can include it.
     """
     from app.models.audit import ChatMessage
     from app.models.chat_session import ChatSession
-    from app.models.participant import Participant
 
     cfg = trigger.config or {}
     from_agent_name = cfg.get("from_agent_name")
-    if not from_agent_name:
+    from_user_name = cfg.get("from_user_name")
+
+    if not from_agent_name and not from_user_name:
         return False
 
     since = trigger.last_fired_at or trigger.created_at
+    # For never-fired on_message triggers, look back 5 minutes before creation
+    # to catch replies that arrived while the Agent was still creating the trigger
+    if trigger.fire_count == 0 and not trigger.last_fired_at and from_user_name:
+        since = trigger.created_at - timedelta(minutes=5)
 
     try:
         async with async_session() as db:
-            # Find the source agent and its participant
-            from app.models.agent import Agent as AgentModel
-            agent_r = await db.execute(
-                select(AgentModel).where(AgentModel.name.ilike(f"%{from_agent_name}%"))
-            )
-            source_agent = agent_r.scalars().first()
-            if not source_agent:
-                return False
-
-            # Find participant for the source agent
-            result = await db.execute(
-                select(Participant.id).where(
-                    Participant.type == "agent",
-                    Participant.ref_id == source_agent.id,
+            if from_agent_name:
+                # --- Agent-to-agent message check (existing logic) ---
+                from app.models.participant import Participant
+                from app.models.agent import Agent as AgentModel
+                agent_r = await db.execute(
+                    select(AgentModel).where(AgentModel.name.ilike(f"%{from_agent_name}%"))
                 )
-            )
-            from_participant = result.scalar_one_or_none()
-            if not from_participant:
-                return False
+                source_agent = agent_r.scalars().first()
+                if not source_agent:
+                    return False
 
-            # Check for new messages from this agent in shared sessions
-            from sqlalchemy import cast as sa_cast, String as SaString
-            result = await db.execute(
-                select(ChatMessage).join(
-                    ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
-                ).where(
-                    ChatMessage.participant_id == from_participant,
-                    ChatMessage.created_at > since,
-                    ChatMessage.role == "assistant",  # agent replies
-                ).order_by(ChatMessage.created_at.desc()).limit(1)
-            )
-            msg = result.scalar_one_or_none()
-            if not msg:
-                return False
+                result = await db.execute(
+                    select(Participant.id).where(
+                        Participant.type == "agent",
+                        Participant.ref_id == source_agent.id,
+                    )
+                )
+                from_participant = result.scalar_one_or_none()
+                if not from_participant:
+                    return False
 
-            # Store matched message content for invocation context
-            cfg["_matched_message"] = (msg.content or "")[:2000]
-            cfg["_matched_from"] = from_agent_name
-            return True
+                from sqlalchemy import cast as sa_cast, String as SaString
+                result = await db.execute(
+                    select(ChatMessage).join(
+                        ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
+                    ).where(
+                        ChatMessage.participant_id == from_participant,
+                        ChatMessage.created_at > since,
+                        ChatMessage.role == "assistant",
+                    ).order_by(ChatMessage.created_at.desc()).limit(1)
+                )
+                msg = result.scalar_one_or_none()
+                if not msg:
+                    return False
+                cfg["_matched_message"] = (msg.content or "")[:2000]
+                cfg["_matched_from"] = from_agent_name
+                return True
+
+            elif from_user_name:
+                # --- Human user message check (Feishu/Slack/Discord) ---
+                # Find sessions for this agent from external channels
+                from sqlalchemy import cast as sa_cast, String as SaString
+                from app.models.user import User
+
+                # Look up user by display name or username
+                from sqlalchemy import or_
+                user_r = await db.execute(
+                    select(User).where(
+                        or_(
+                            User.display_name.ilike(f"%{from_user_name}%"),
+                            User.username.ilike(f"%{from_user_name}%"),
+                        )
+                    )
+                )
+                target_user = user_r.scalars().first()
+
+                if target_user:
+                    # Find channel sessions for this user with this agent
+                    result = await db.execute(
+                        select(ChatMessage).join(
+                            ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
+                        ).where(
+                            ChatSession.agent_id == trigger.agent_id,
+                            ChatSession.user_id == target_user.id,
+                            ChatSession.source_channel.in_(["feishu", "slack", "discord"]),
+                            ChatMessage.role == "user",
+                            ChatMessage.created_at > since,
+                        ).order_by(ChatMessage.created_at.desc()).limit(1)
+                    )
+                else:
+                    # Fallback: search by message content or session title containing the name
+                    result = await db.execute(
+                        select(ChatMessage).join(
+                            ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
+                        ).where(
+                            ChatSession.agent_id == trigger.agent_id,
+                            ChatSession.source_channel.in_(["feishu", "slack", "discord"]),
+                            ChatMessage.role == "user",
+                            ChatMessage.created_at > since,
+                        ).order_by(ChatMessage.created_at.desc()).limit(1)
+                    )
+
+                msg = result.scalar_one_or_none()
+                if not msg:
+                    return False
+                cfg["_matched_message"] = (msg.content or "")[:2000]
+                cfg["_matched_from"] = from_user_name
+                return True
 
     except Exception as e:
         logger.warning(f"on_message check failed for trigger {trigger.name}: {e}")
@@ -504,7 +575,8 @@ async def _tick():
 
 async def start_trigger_daemon():
     """Start the background trigger daemon loop. Called from FastAPI startup."""
-    logger.info("⚡ Trigger Daemon started (15s tick)")
+    logger.info("⚡ Trigger Daemon started (15s tick, heartbeat every ~60s)")
+    _heartbeat_counter = 0
     while True:
         try:
             await _tick()
@@ -512,4 +584,15 @@ async def start_trigger_daemon():
             logger.error(f"Trigger Daemon error: {e}")
             import traceback
             traceback.print_exc()
+
+        # Run heartbeat check every 4th tick (~60 seconds)
+        _heartbeat_counter += 1
+        if _heartbeat_counter >= 4:
+            _heartbeat_counter = 0
+            try:
+                from app.services.heartbeat import _heartbeat_tick
+                await _heartbeat_tick()
+            except Exception as e:
+                logger.error(f"Heartbeat tick error: {e}")
+
         await asyncio.sleep(TICK_INTERVAL)

@@ -179,11 +179,14 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
         relationships = "\n".join(relationships.split("\n")[1:]).strip()
 
     # --- Compose system prompt ---
-    from datetime import datetime, timezone, timedelta
-    cst = timezone(timedelta(hours=8))
-    now_str = datetime.now(cst).strftime("%Y-%m-%d %H:%M:%S (CST, UTC+8)")
+    from datetime import datetime, timezone as _tz
+    from app.services.timezone_utils import get_agent_timezone, now_in_timezone
+    agent_tz_name = await get_agent_timezone(agent_id)
+    agent_local_now = now_in_timezone(agent_tz_name)
+    now_str = agent_local_now.strftime(f"%Y-%m-%d %H:%M:%S ({agent_tz_name})")
     parts = [f"You are {agent_name}, an enterprise digital employee."]
     parts.append(f"\n## Current Time\n{now_str}")
+    parts.append(f"Your timezone is **{agent_tz_name}**. When setting cron triggers, use this timezone for time references.")
 
     if role_description:
         parts.append(f"\n## Role\n{role_description}")
@@ -290,7 +293,7 @@ You have a dedicated workspace with this structure:
    - Archive completed items to task_history.md when they pile up
 
 6. **Use trigger tools to manage your own wake-up conditions:**
-   - `set_trigger` — schedule future actions, wait for agent replies
+   - `set_trigger` — schedule future actions, wait for agent or human replies
    - `update_trigger` — adjust parameters (e.g. change frequency)
    - `cancel_trigger` — remove triggers when tasks are complete
    - `list_triggers` — see your active triggers
@@ -305,10 +308,14 @@ You have a dedicated workspace with this structure:
    - When someone asks you to message another person, ALWAYS mention who asked you to do so in the message.
    - Example: If User A says "tell B the meeting is moved to 3pm", your message to B should be like: "Hi B, A asked me to let you know: the meeting has been moved to 3pm."
    - Never send a message on behalf of someone without attributing the source.
+   - **IMPORTANT: After sending a Feishu/Slack/Discord message and you need to wait for a reply, ALWAYS create an `on_message` trigger with `from_user_name` to auto-wake when they reply.**
+     Example: After sending a feishu message to 张三, create:
+     `set_trigger(name="wait_zhangsan_reply", type="on_message", config={"from_user_name": "张三"}, reason="张三 replied, process their response and continue the task")`
 
 9. **Reply in the same language the user uses.**
 
 10. **Never assume a file exists — always verify with `list_files` first.**""")
+
 
     # Inject current user identity
     if current_user_name:

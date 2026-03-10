@@ -99,7 +99,7 @@ BUILTIN_TOOLS = [
     {
         "name": "set_trigger",
         "display_name": "Set Trigger",
-        "description": "Set a new trigger to wake yourself up at a specific time or condition. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent replies).",
+        "description": "Set a new trigger to wake yourself up at a specific time or condition. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or human user replies).",
         "category": "pulse",
         "icon": "⚡",
         "is_default": True,
@@ -108,7 +108,7 @@ BUILTIN_TOOLS = [
             "properties": {
                 "name": {"type": "string", "description": "Unique name for this trigger"},
                 "type": {"type": "string", "enum": ["cron", "once", "interval", "poll", "on_message"], "description": "Trigger type"},
-                "config": {"type": "object", "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\"}. on_message: {\"from_agent_name\": \"Morty\"}"},
+                "config": {"type": "object", "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\"}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"张三\"}"},
                 "reason": {"type": "string", "description": "What to do when this trigger fires"},
                 "agenda_ref": {"type": "string", "description": "Optional: which agenda item this relates to"},
             },
@@ -432,6 +432,42 @@ BUILTIN_TOOLS = [
             "fields": [
                 {"key": "default_timeout", "label": "Default Timeout (seconds)", "type": "number", "default": 30, "min": 5, "max": 120},
                 {"key": "max_timeout", "label": "Max Timeout (seconds)", "type": "number", "default": 60, "min": 10, "max": 120},
+            ]
+        },
+    },
+    {
+        "name": "upload_image",
+        "display_name": "Upload Image",
+        "description": "Upload images from the workspace or a URL to ImageKit CDN and get a public URL. Useful for sharing images externally or embedding them in reports.",
+        "category": "code",
+        "icon": "🖼️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Workspace-relative path to image file"},
+                "url": {"type": "string", "description": "Public URL of image to upload"},
+                "file_name": {"type": "string", "description": "Custom filename (optional)"},
+                "folder": {"type": "string", "description": "CDN folder path (default /clawith)"},
+            },
+        },
+        "config": {"private_key": "", "url_endpoint": ""},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "private_key",
+                    "label": "ImageKit Private Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Your ImageKit private API key",
+                },
+                {
+                    "key": "url_endpoint",
+                    "label": "ImageKit URL Endpoint",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "https://ik.imagekit.io/your_imagekit_id",
+                },
             ]
         },
     },

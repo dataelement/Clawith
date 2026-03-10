@@ -37,3 +37,6 @@ class Tenant(Base):
     # Heartbeat frequency floor (minutes) — agents cannot heartbeat faster than this
     min_heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=120)
 
+    # Default timezone for all agents in this company (IANA format, e.g. "Asia/Shanghai")
+    timezone: Mapped[str] = mapped_column(String(50), default="UTC")
+

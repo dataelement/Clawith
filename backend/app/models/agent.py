@@ -81,6 +81,9 @@ class Agent(Base):
     heartbeat_active_hours: Mapped[str] = mapped_column(String(20), default="09:00-18:00")
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Timezone (IANA format, e.g. "Asia/Shanghai"). None = inherit from tenant.
+    timezone: Mapped[str | None] = mapped_column(String(50), default=None, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

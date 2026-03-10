@@ -223,11 +223,12 @@ async def call_llm(
             **get_tool_params(model.provider),
         }
 
-        # Stream the response (with retry for connection errors)
+        # Stream the response (with retry for connection errors & empty responses)
         full_content = ""
         tool_calls_data = []  # accumulate tool calls from stream
         last_finish_reason = None
         _max_retries = 3
+        _RETRIABLE_HTTP_CODES = {429, 500, 502, 503}
 
         # ── Streaming <think> tag filter state ──
         # Some reasoning models (MiniMax, DeepSeek-R1) wrap internal
@@ -239,8 +240,24 @@ async def call_llm(
             try:
                 async with httpx.AsyncClient(timeout=120) as client:
                     async with client.stream("POST", url, json=payload, headers=headers) as resp:
-                        # Debug: log HTTP status
-                        print(f"[LLM-DBG] HTTP status={resp.status_code}, url={url}", flush=True)
+                        # Debug: log HTTP status and request ID
+                        _req_id = resp.headers.get("x-request-id") or resp.headers.get("request-id") or resp.headers.get("cf-ray") or ""
+                        print(f"[LLM-DBG] HTTP status={resp.status_code}, url={url}, request_id={_req_id}", flush=True)
+                        if resp.status_code in _RETRIABLE_HTTP_CODES:
+                            error_body = ""
+                            async for chunk in resp.aiter_bytes():
+                                error_body += chunk.decode(errors="replace")
+                            print(f"[LLM-DBG] Retriable HTTP {resp.status_code}: {error_body[:300]}", flush=True)
+                            if _attempt < _max_retries - 1:
+                                import asyncio as _aio
+                                wait = (_attempt + 1) * 2  # 2s, 4s
+                                print(f"[LLM-RETRY] HTTP {resp.status_code}, retrying in {wait}s (attempt {_attempt+1}/{_max_retries})...", flush=True)
+                                await _aio.sleep(wait)
+                                full_content = ""
+                                tool_calls_data = []
+                                last_finish_reason = None
+                                continue
+                            return f"[LLM Error] HTTP {resp.status_code} after {_max_retries} retries: {error_body[:200]}"
                         if resp.status_code >= 400:
                             error_body = ""
                             async for chunk in resp.aiter_bytes():
@@ -263,7 +280,18 @@ async def call_llm(
                                 continue
 
                             if "error" in chunk:
-                                return f"[LLM Error] {chunk['error'].get('message', str(chunk['error']))[:200]}"
+                                err_msg = chunk['error'].get('message', str(chunk['error']))[:200]
+                                # Retry on server-side errors in SSE body
+                                if _attempt < _max_retries - 1 and any(kw in err_msg.lower() for kw in ["overloaded", "rate_limit", "capacity", "temporarily"]):
+                                    import asyncio as _aio
+                                    wait = (_attempt + 1) * 2
+                                    print(f"[LLM-RETRY] SSE error '{err_msg[:80]}', retrying in {wait}s...", flush=True)
+                                    await _aio.sleep(wait)
+                                    full_content = ""
+                                    tool_calls_data = []
+                                    last_finish_reason = None
+                                    break  # break inner loop to retry
+                                return f"[LLM Error] {err_msg}"
 
                             choices = chunk.get("choices", [])
                             if not choices:
@@ -284,11 +312,6 @@ async def call_llm(
                                 full_content += text
 
                                 # ── streaming think-tag filter ──
-                                # Process text through a simple state machine:
-                                #   _in_think=False: emit text via on_chunk
-                                #   _in_think=True:  emit text via on_thinking
-                                # We buffer chars that *might* be part of a tag to
-                                # avoid sending partial tags to the client.
                                 _tag_buffer += text
                                 emit = ""
                                 think_emit = ""
@@ -296,7 +319,6 @@ async def call_llm(
                                 buf = _tag_buffer
                                 while i < len(buf):
                                     if not _in_think:
-                                        # Look for <think> open tag
                                         if buf[i] == '<':
                                             tag_candidate = buf[i:]
                                             open_tag = "<think>"
@@ -305,7 +327,6 @@ async def call_llm(
                                                 i += len(open_tag)
                                                 continue
                                             elif open_tag.startswith(tag_candidate):
-                                                # Partial match — keep in buffer, wait for more
                                                 _tag_buffer = buf[i:]
                                                 break
                                             else:
@@ -315,7 +336,6 @@ async def call_llm(
                                             emit += buf[i]
                                             i += 1
                                     else:
-                                        # Inside <think> — look for </think> close tag
                                         if buf[i] == '<':
                                             tag_candidate = buf[i:]
                                             close_tag = "</think>"
@@ -376,17 +396,34 @@ async def call_llm(
                                         elif isinstance(inp, str) and inp:
                                             tc["function"]["arguments"] += inp
 
+                # Check for empty response — retry if LLM returned nothing
+                if not full_content.strip() and not tool_calls_data:
+                    if _attempt < _max_retries - 1:
+                        import asyncio as _aio
+                        wait = (_attempt + 1) * 2  # 2s, 4s
+                        print(f"[LLM-RETRY] Empty response from LLM (no content, no tool_calls), retrying in {wait}s (attempt {_attempt+1}/{_max_retries})...", flush=True)
+                        await _aio.sleep(wait)
+                        full_content = ""
+                        tool_calls_data = []
+                        last_finish_reason = None
+                        _in_think = False
+                        _tag_buffer = ""
+                        continue
+                    print(f"[LLM-WARN] Empty response after {_max_retries} attempts", flush=True)
+
                 break  # Success — exit retry loop
 
-            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
                 if _attempt < _max_retries - 1:
                     import asyncio as _aio
-                    wait = (_attempt + 1) * 1  # 1s, 2s
+                    wait = (_attempt + 1) * 2  # 2s, 4s
                     print(f"[LLM-RETRY] Attempt {_attempt+1} failed ({type(e).__name__}), retrying in {wait}s...", flush=True)
                     await _aio.sleep(wait)
                     full_content = ""
                     tool_calls_data = []
                     last_finish_reason = None
+                    _in_think = False
+                    _tag_buffer = ""
                     continue
                 import traceback
                 traceback.print_exc()

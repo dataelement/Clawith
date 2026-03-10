@@ -27,6 +27,7 @@ class TenantOut(BaseModel):
     name: str
     slug: str
     im_provider: str
+    timezone: str = "UTC"
     is_active: bool
     created_at: datetime | None = None
 
@@ -36,6 +37,7 @@ class TenantOut(BaseModel):
 class TenantUpdate(BaseModel):
     name: str | None = None
     im_provider: str | None = None
+    timezone: str | None = None
     is_active: bool | None = None
 
 

@@ -1441,6 +1441,10 @@ export default function AgentDetail() {
                                             <span style={{ color: 'var(--text-tertiary)' }}>Last Active</span>
                                             <span>{agent.last_active_at ? formatDate(agent.last_active_at) : '—'}</span>
                                         </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>🌐 Timezone</span>
+                                            <span>{(agent as any).timezone || t('agent.settings.heartbeat.timezoneDefault', '↩ Company default')}</span>
+                                        </div>
                                     </div>
                                 </div>
                                 <div className="card">
@@ -2789,6 +2793,42 @@ export default function AgentDetail() {
                                                 style={{ width: '140px', fontSize: '12px', textAlign: 'center', opacity: canManage ? 1 : 0.6 }}
                                                 placeholder="09:00-18:00"
                                             />
+                                        </div>
+
+                                        {/* Timezone */}
+                                        <div style={{
+                                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                            padding: '10px 14px', background: 'var(--bg-elevated)', borderRadius: '8px',
+                                            border: '1px solid var(--border-subtle)',
+                                        }}>
+                                            <div>
+                                                <div style={{ fontWeight: 500, fontSize: '13px' }}>🌐 {t('agent.settings.heartbeat.timezone', 'Timezone')}</div>
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                    {agent?.timezone
+                                                        ? t('agent.settings.heartbeat.timezoneOverride', 'Agent-level override')
+                                                        : t('agent.settings.heartbeat.timezoneInherited', 'Inherited from company')}
+                                                </div>
+                                            </div>
+                                            <select
+                                                className="input"
+                                                disabled={!canManage}
+                                                value={agent?.timezone || ''}
+                                                onChange={async (e) => {
+                                                    if (!canManage) return;
+                                                    const val = e.target.value || null;
+                                                    await agentApi.update(id!, { timezone: val } as any);
+                                                    queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                                }}
+                                                style={{ width: '200px', fontSize: '12px', opacity: canManage ? 1 : 0.6 }}
+                                            >
+                                                <option value="">{t('agent.settings.heartbeat.timezoneDefault', '↩ Company default')}</option>
+                                                {['UTC', 'Asia/Shanghai', 'Asia/Tokyo', 'Asia/Seoul', 'Asia/Singapore', 'Asia/Kolkata', 'Asia/Dubai',
+                                                    'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Moscow',
+                                                    'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+                                                    'America/Sao_Paulo', 'Australia/Sydney', 'Pacific/Auckland'].map(tz => (
+                                                        <option key={tz} value={tz}>{tz}</option>
+                                                    ))}
+                                            </select>
                                         </div>
 
                                         {/* Last Heartbeat */}

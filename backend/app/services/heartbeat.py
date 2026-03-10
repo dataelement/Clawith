@@ -89,17 +89,22 @@ Format for curiosity_journal.md entries:
 """
 
 
-def _is_in_active_hours(active_hours: str) -> bool:
+def _is_in_active_hours(active_hours: str, tz_name: str = "UTC") -> bool:
     """Check if current time is within the agent's active hours.
 
     Format: "HH:MM-HH:MM" (e.g., "09:00-18:00")
-    Uses local time (server timezone).
+    Uses agent's configured timezone (defaults to UTC).
     """
     try:
+        from zoneinfo import ZoneInfo
         start_str, end_str = active_hours.split("-")
         sh, sm = map(int, start_str.strip().split(":"))
         eh, em = map(int, end_str.strip().split(":"))
-        now = datetime.now()
+        try:
+            tz = ZoneInfo(tz_name)
+        except (KeyError, Exception):
+            tz = ZoneInfo("UTC")
+        now = datetime.now(tz)
         current_minutes = now.hour * 60 + now.minute
         start_minutes = sh * 60 + sm
         end_minutes = eh * 60 + em
@@ -303,6 +308,8 @@ async def _heartbeat_tick():
     from app.database import async_session
     from app.models.agent import Agent
     from app.services.audit_logger import write_audit_log
+    from app.services.timezone_utils import get_agent_timezone_sync
+    from app.models.tenant import Tenant
 
     now = datetime.now(timezone.utc)
 
@@ -316,6 +323,13 @@ async def _heartbeat_tick():
             )
             agents = result.scalars().all()
 
+            # Pre-load tenants for timezone resolution
+            tenant_ids = {a.tenant_id for a in agents if a.tenant_id}
+            tenants_by_id = {}
+            if tenant_ids:
+                t_result = await db.execute(select(Tenant).where(Tenant.id.in_(tenant_ids)))
+                tenants_by_id = {t.id: t for t in t_result.scalars().all()}
+
             triggered = 0
             for agent in agents:
                 # Skip expired agents
@@ -327,8 +341,12 @@ async def _heartbeat_tick():
                     agent.status = "stopped"
                     continue
 
-                # Check active hours
-                if not _is_in_active_hours(agent.heartbeat_active_hours or "09:00-18:00"):
+                # Resolve timezone
+                tenant = tenants_by_id.get(agent.tenant_id)
+                tz_name = get_agent_timezone_sync(agent, tenant)
+
+                # Check active hours (in agent's timezone)
+                if not _is_in_active_hours(agent.heartbeat_active_hours or "09:00-18:00", tz_name):
                     continue
 
                 # Check interval

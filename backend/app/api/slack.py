@@ -244,16 +244,45 @@ async def slack_event_webhook(
     _slack_username = f"slack_{sender_id}"
     _u_r = await db.execute(select(_User).where(_User.username == _slack_username))
     _platform_user = _u_r.scalar_one_or_none()
+
+    # Resolve real display name from Slack API
+    _bot_token_for_info = config.app_secret or ""
+    _slack_real_name = ""
+    if _bot_token_for_info and sender_id:
+        try:
+            import httpx as _httpx_info
+            async with _httpx_info.AsyncClient(timeout=5) as _info_client:
+                _info_resp = await _info_client.get(
+                    "https://slack.com/api/users.info",
+                    headers={"Authorization": f"Bearer {_bot_token_for_info}"},
+                    params={"user": sender_id},
+                )
+                _info_data = _info_resp.json()
+                if _info_data.get("ok"):
+                    _profile = _info_data.get("user", {}).get("profile", {})
+                    _slack_real_name = (
+                        _profile.get("display_name")
+                        or _profile.get("real_name")
+                        or _info_data.get("user", {}).get("real_name")
+                        or ""
+                    )
+        except Exception as _e_info:
+            print(f"[Slack] Failed to fetch user info for {sender_id}: {_e_info}")
+
     if not _platform_user:
         _platform_user = _User(
             username=_slack_username,
             email=f"{_slack_username}@slack.local",
             password_hash=_hp(_uuid2.uuid4().hex),
-            display_name=f"Slack User {sender_id[:8]}",
+            display_name=_slack_real_name or f"Slack User {sender_id[:8]}",
             role="member",
             tenant_id=agent_obj.tenant_id if agent_obj else None,
         )
         db.add(_platform_user)
+        await db.flush()
+    elif _slack_real_name and _platform_user.display_name.startswith("Slack User "):
+        # Update display_name if we now have the real name
+        _platform_user.display_name = _slack_real_name
         await db.flush()
     platform_user_id = _platform_user.id
 

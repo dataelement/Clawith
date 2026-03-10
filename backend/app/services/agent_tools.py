@@ -113,7 +113,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "set_trigger",
-            "description": "Set a new trigger to wake yourself up at a specific time or condition. Use this to schedule future actions, monitor changes, or wait for agent messages. The trigger will fire and invoke you with the reason text as context. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent replies).",
+            "description": "Set a new trigger to wake yourself up at a specific time or condition. Use this to schedule future actions, monitor changes, or wait for messages. The trigger will fire and invoke you with the reason text as context. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or a human user replies — use from_agent_name for agents, or from_user_name for human users on Feishu/Slack/Discord).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -128,7 +128,7 @@ AGENT_TOOLS = [
                     },
                     "config": {
                         "type": "object",
-                        "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"from_agent_name\": \"Morty\"}",
+                        "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"张三\"} (for human users on Feishu/Slack/Discord)",
                     },
                     "reason": {
                         "type": "string",
@@ -367,6 +367,34 @@ AGENT_TOOLS = [
                     },
                 },
                 "required": ["language", "code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "upload_image",
+            "description": "Upload an image file from your workspace (or from a public URL) to a cloud CDN and get a permanent public URL. Use this when you need to share images externally, embed them in messages/reports, or make workspace images accessible via URL. Supports common formats: PNG, JPG, GIF, WebP, SVG.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Workspace-relative path to the image file, e.g. workspace/chart.png or workspace/knowledge_base/diagram.jpg",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Alternative: a public URL of an image to upload (e.g. https://example.com/photo.jpg). Use this instead of file_path when the image is not in your workspace.",
+                    },
+                    "file_name": {
+                        "type": "string",
+                        "description": "Optional custom filename for the uploaded image. If omitted, the original filename is used.",
+                    },
+                    "folder": {
+                        "type": "string",
+                        "description": "Optional CDN folder path, e.g. /agents/reports. Defaults to /clawith.",
+                    },
+                },
             },
         },
     },
@@ -661,6 +689,8 @@ async def execute_tool(
             result = await _plaza_add_comment(agent_id, arguments)
         elif tool_name == "execute_code":
             result = await _execute_code(ws, arguments)
+        elif tool_name == "upload_image":
+            result = await _upload_image(agent_id, ws, arguments)
         elif tool_name == "discover_resources":
             result = await _discover_resources(arguments)
         elif tool_name == "import_mcp_server":
@@ -2274,8 +2304,8 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         if not config.get("url"):
             return "❌ poll trigger requires config.url"
     elif ttype == "on_message":
-        if not config.get("from_agent_name"):
-            return "❌ on_message trigger requires config.from_agent_name"
+        if not config.get("from_agent_name") and not config.get("from_user_name"):
+            return "❌ on_message trigger requires config.from_agent_name (for agents) or config.from_user_name (for human users on Feishu/Slack/Discord)"
 
     try:
         async with async_session() as db:
@@ -2455,4 +2485,136 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
 
     except Exception as e:
         return f"❌ Failed to list triggers: {e}"
+
+
+# ─── Image Upload (ImageKit CDN) ────────────────────────────────
+
+async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    """Upload an image to ImageKit CDN and return the public URL.
+
+    Credential resolution order:
+    1. Global tool config (admin-set, shared by all agents)
+    2. Per-agent tool config override (agent-specific)
+    """
+    import httpx
+    import base64
+
+    file_path = arguments.get("file_path")
+    url = arguments.get("url")
+    file_name = arguments.get("file_name")
+    folder = arguments.get("folder", "/clawith")
+
+    if not file_path and not url:
+        return "❌ Please provide either 'file_path' (workspace path) or 'url' (public image URL)"
+
+    # ── Load ImageKit credentials (global → per-agent fallback) ──
+    private_key = ""
+    url_endpoint = ""
+    try:
+        from app.models.tool import Tool, AgentTool
+        async with async_session() as db:
+            # Global config
+            r = await db.execute(select(Tool).where(Tool.name == "upload_image"))
+            tool = r.scalar_one_or_none()
+            if tool and tool.config:
+                private_key = tool.config.get("private_key", "")
+                url_endpoint = tool.config.get("url_endpoint", "")
+
+            # Per-agent override (if global key is empty)
+            if not private_key and tool:
+                r2 = await db.execute(
+                    select(AgentTool).where(
+                        AgentTool.agent_id == agent_id,
+                        AgentTool.tool_id == tool.id,
+                    )
+                )
+                agent_tool = r2.scalar_one_or_none()
+                if agent_tool and agent_tool.config:
+                    private_key = agent_tool.config.get("private_key", "") or private_key
+                    url_endpoint = agent_tool.config.get("url_endpoint", "") or url_endpoint
+    except Exception as e:
+        print(f"[UploadImage] Config load error: {e}")
+
+    if not private_key:
+        return "❌ ImageKit Private Key not configured. Ask your admin to configure it in Enterprise Settings → Tools → Upload Image, or set it in your agent's tool config."
+
+    # ── Prepare the file ──
+    form_data = {}
+    file_content = None
+
+    if file_path:
+        # Read from workspace
+        full_path = (ws / file_path).resolve()
+        if not str(full_path).startswith(str(ws)):
+            return "❌ Access denied: path is outside the workspace"
+        if not full_path.exists():
+            return f"❌ File not found: {file_path}"
+        if not full_path.is_file():
+            return f"❌ Not a file: {file_path}"
+
+        # Check file size (max 25MB for free plan)
+        size_mb = full_path.stat().st_size / (1024 * 1024)
+        if size_mb > 25:
+            return f"❌ File too large ({size_mb:.1f}MB). Maximum is 25MB."
+
+        file_content = full_path.read_bytes()
+        if not file_name:
+            file_name = full_path.name
+    elif url:
+        # Pass URL directly to ImageKit
+        form_data["file"] = url
+        if not file_name:
+            from urllib.parse import urlparse
+            file_name = urlparse(url).path.split("/")[-1] or "image.jpg"
+
+    if not file_name:
+        file_name = "image.png"
+
+    form_data["fileName"] = file_name
+    form_data["folder"] = folder
+    form_data["useUniqueFileName"] = "true"
+
+    # ── Upload to ImageKit V2 ──
+    auth_string = base64.b64encode(f"{private_key}:".encode()).decode()
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            if file_content:
+                # Binary upload via multipart
+                files = {"file": (file_name, file_content)}
+                resp = await client.post(
+                    "https://upload.imagekit.io/api/v2/files/upload",
+                    headers={"Authorization": f"Basic {auth_string}"},
+                    data=form_data,
+                    files=files,
+                )
+            else:
+                # URL upload via form data
+                resp = await client.post(
+                    "https://upload.imagekit.io/api/v2/files/upload",
+                    headers={"Authorization": f"Basic {auth_string}"},
+                    data=form_data,
+                )
+
+        if resp.status_code in (200, 201):
+            result = resp.json()
+            cdn_url = result.get("url", "")
+            file_id = result.get("fileId", "")
+            size = result.get("size", 0)
+            size_str = f"{size / 1024:.1f}KB" if size < 1024 * 1024 else f"{size / (1024 * 1024):.1f}MB"
+            return (
+                f"✅ Image uploaded successfully!\n\n"
+                f"**CDN URL**: {cdn_url}\n"
+                f"**File ID**: {file_id}\n"
+                f"**Size**: {size_str}\n"
+                f"**Name**: {result.get('name', file_name)}"
+            )
+        else:
+            error_detail = resp.text[:300]
+            return f"❌ Upload failed (HTTP {resp.status_code}): {error_detail}"
+
+    except httpx.TimeoutException:
+        return "❌ Upload timed out after 60s. The file may be too large or the network is slow."
+    except Exception as e:
+        return f"❌ Upload error: {type(e).__name__}: {str(e)[:300]}"
 
