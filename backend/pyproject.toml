@@ -29,6 +29,7 @@ dependencies = [
     "python-docx>=1.1.0",
     "openpyxl>=3.1.0",
     "python-pptx>=1.0.0",
+    "azure-identity>=1.15.0",
 ]
 
 [project.optional-dependencies]

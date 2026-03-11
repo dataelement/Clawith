@@ -19,7 +19,7 @@ class Tenant(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     im_provider: Mapped[str] = mapped_column(
-        Enum("feishu", "dingtalk", "wecom", "web_only", name="im_provider_enum"),
+        Enum("feishu", "dingtalk", "wecom", "microsoft_teams", "web_only", name="im_provider_enum"),
         default="web_only",
         nullable=False,
     )

@@ -586,7 +586,8 @@
     "channels": {
       "feishu": "飞书",
       "discord": "Discord",
-      "slack": "Slack"
+      "slack": "Slack",
+      "teams": "Microsoft Teams"
     }
   },
   "channelGuide": {
@@ -625,6 +626,17 @@
       "step7": "左侧菜单 → 版本管理与发布 → 创建版本 → 填写说明 → 提交审核发布（企业自建应用可在管理后台自行审批）",
       "step8": "发布后，将机器人拉入飞书群，或让用户直接添加机器人为好友即可开始对话",
       "note": "企业自建应用审核通常即时通过。每次新增权限后都需要重新发布。"
+    },
+    "teams": {
+      "step1": "打开 portal.azure.com → Azure Active Directory → 应用注册 → 新注册 → 输入名称 → 选择「仅此组织目录中的帐户」（单租户）→ 注册",
+      "step2": "在应用概述页面，复制应用程序（客户端）ID 并保存。然后转到证书和密码 → 新客户端密码 → 添加说明和过期时间 → 复制值（这是你的 App Secret）。同时从概述页面复制目录（租户）ID。",
+      "step3": "本地测试：启动 localtunnel 暴露后端：`npx --yes localtunnel --port 8000` → 复制隧道 URL（如 https://xxxxx.loca.lt）。在 Azure Bot 中配置消息传递终结点 URL 时，将 'localhost' 替换为你的 localtunnel URL。",
+      "step4": "将 App ID（客户端 ID）、App Secret（客户端密码）和租户 ID（目录 ID）填入上方。点击保存配置 → 复制出现的消息传递终结点 URL。",
+      "step5": "在 Azure Bot → 频道 → Microsoft Teams → 配置 → 粘贴消息传递终结点 URL（本地测试时请使用 localtunnel URL 而不是 localhost）→ 保存 → 机器人将在 Teams 中可用。",
+      "note": "服务器必须能被公网访问，Microsoft Teams 才能访问消息传递终结点 URL。本地测试请使用 localtunnel，并将 'localhost' 替换为隧道 URL。",
+      "tenantId": "租户 ID（目录 ID）",
+      "tenantIdPlaceholder": "请输入此单租户应用的租户 ID（目录 ID）",
+      "tenantIdHint": "单租户应用必填，请在 Azure AD → 应用注册 → 你的应用 → 概述 中复制目录（租户）ID。"
     }
   }
 }
