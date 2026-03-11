@@ -4,7 +4,7 @@
  * - Agent Workspace, Skills, Soul, Memory tabs
  * - Enterprise Knowledge Base
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from './MarkdownRenderer';
 
@@ -22,7 +22,8 @@ export interface FileBrowserApi {
     read: (path: string) => Promise<{ content: string }>;
     write: (path: string, content: string) => Promise<any>;
     delete: (path: string) => Promise<any>;
-    upload?: (file: File, path: string) => Promise<any>;
+    upload?: (file: File, path: string, onProgress?: (pct: number) => void) => Promise<any>;
+    downloadUrl?: (path: string) => string;
 }
 
 export interface FileBrowserProps {
@@ -92,6 +93,17 @@ export default function FileBrowser({
     const [deleteTarget, setDeleteTarget] = useState<{ path: string; name: string } | null>(null);
     const [promptModal, setPromptModal] = useState<{ title: string; placeholder: string; action: string } | null>(null);
     const [promptValue, setPromptValue] = useState('');
+    const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percent: number } | null>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    // Auto-resize textarea to match content height
+    useEffect(() => {
+        const el = textareaRef.current;
+        if (el && editing) {
+            el.style.height = 'auto';
+            el.style.height = Math.max(200, el.scrollHeight) + 'px';
+        }
+    }, [editing, editContent]);
 
     // ─── Helpers ───────────────────────────────────────
 
@@ -181,13 +193,19 @@ export default function FileBrowser({
         input.onchange = async () => {
             if (!input.files || input.files.length === 0) return;
             try {
-                for (const file of Array.from(input.files)) {
-                    await api.upload!(file, currentPath);
+                const fileList = Array.from(input.files);
+                for (const file of fileList) {
+                    setUploadProgress({ fileName: file.name, percent: 0 });
+                    await api.upload!(file, currentPath, (pct) => {
+                        setUploadProgress({ fileName: file.name, percent: pct });
+                    });
                 }
+                setUploadProgress(null);
                 reload();
                 onRefresh?.();
                 showToast('Upload successful');
             } catch (err: any) {
+                setUploadProgress(null);
                 showToast('Upload failed: ' + (err.message || ''), 'error');
             }
         };
@@ -340,8 +358,8 @@ export default function FileBrowser({
                     )}
                 </div>
                 {editing ? (
-                    <textarea className="form-textarea" value={editContent} onChange={e => setEditContent(e.target.value)}
-                        rows={20} style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '1.6' }} />
+                    <textarea ref={textareaRef} className="form-textarea" value={editContent} onChange={e => setEditContent(e.target.value)}
+                        style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '1.6', minHeight: '200px', resize: 'vertical', overflow: 'hidden' }} />
                 ) : !contentLoaded ? (
                     <div style={{ padding: '20px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('common.loading')}</div>
                 ) : content ? (
@@ -386,6 +404,11 @@ export default function FileBrowser({
                             </div>
                         )
                     )}
+                    {api.downloadUrl && (
+                        <a href={api.downloadUrl(viewing)} download style={{ textDecoration: 'none' }}>
+                            <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}>⬇ {t('common.download', 'Download')}</button>
+                        </a>
+                    )}
                     {canDelete && (
                         <button className="btn btn-danger" style={{ padding: '4px 10px', fontSize: '12px' }}
                             onClick={() => setDeleteTarget({ path: viewing, name: viewing.split('/').pop() || viewing })}>×</button>
@@ -394,8 +417,8 @@ export default function FileBrowser({
                 <div className="card">
                     {isText ? (
                         editing ? (
-                            <textarea className="form-textarea" value={editContent} onChange={e => setEditContent(e.target.value)}
-                                style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '1.6', minHeight: '400px' }} />
+                            <textarea ref={textareaRef} className="form-textarea" value={editContent} onChange={e => setEditContent(e.target.value)}
+                                style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '1.6', minHeight: '200px', resize: 'vertical', overflow: 'hidden' }} />
                         ) : viewing?.endsWith('.md') ? (
                             <MarkdownRenderer content={content || ''} style={{ padding: '4px' }} />
                         ) : (
@@ -407,7 +430,12 @@ export default function FileBrowser({
                         <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
                             <div style={{ fontSize: '48px', marginBottom: '12px' }}>⌇</div>
                             <div style={{ fontSize: '14px', fontWeight: 500, marginBottom: '4px' }}>{viewing.split('/').pop()}</div>
-                            <div style={{ fontSize: '12px' }}>Binary file — cannot preview</div>
+                            <div style={{ fontSize: '12px', marginBottom: '16px' }}>Binary file — cannot preview</div>
+                            {api.downloadUrl && (
+                                <a href={api.downloadUrl(viewing)} download style={{ textDecoration: 'none' }}>
+                                    <button className="btn btn-primary" style={{ fontSize: '13px', padding: '8px 20px' }}>⬇ {t('common.download', 'Download')}</button>
+                                </a>
+                            )}
                         </div>
                     )}
                 </div>
@@ -454,6 +482,17 @@ export default function FileBrowser({
             {/* File list */}
             {loading ? (
                 <div style={{ padding: '20px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('common.loading')}</div>
+            ) : uploadProgress ? (
+                <div className="card" style={{ padding: '16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                        <span style={{ fontSize: '13px' }}>⬆</span>
+                        <span style={{ fontSize: '13px', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{uploadProgress.fileName}</span>
+                        <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{uploadProgress.percent}%</span>
+                    </div>
+                    <div style={{ height: '4px', borderRadius: '2px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', borderRadius: '2px', background: 'var(--accent-primary)', width: `${uploadProgress.percent}%`, transition: 'width 0.15s ease' }} />
+                    </div>
+                </div>
             ) : files.length === 0 ? (
                 <div className="card" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
                     {t('common.noData')}
@@ -492,6 +531,14 @@ export default function FileBrowser({
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 {f.size != null && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{(f.size / 1024).toFixed(1)} KB</span>}
+                                {!f.is_dir && api.downloadUrl && (
+                                    <a href={api.downloadUrl(f.path || `${currentPath}/${f.name}`)} download
+                                        onClick={(e) => e.stopPropagation()}
+                                        title={t('common.download', 'Download')}
+                                        style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--accent-primary)', textDecoration: 'none', borderRadius: '4px' }}>
+                                        ⬇
+                                    </a>
+                                )}
                                 {canDelete && !f.is_dir && (
                                     <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                                         onClick={(e) => { e.stopPropagation(); setDeleteTarget({ path: f.path || `${currentPath}/${f.name}`, name: f.name }); }}>

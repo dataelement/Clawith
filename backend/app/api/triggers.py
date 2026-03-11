@@ -1,4 +1,4 @@
-"""Triggers REST API — CRUD endpoints for the Pulse page frontend."""
+"""Triggers REST API — CRUD endpoints for the Aware page frontend."""
 
 import uuid
 
@@ -19,7 +19,7 @@ class TriggerResponse(BaseModel):
     type: str
     config: dict
     reason: str
-    agenda_ref: str | None = None
+    focus_ref: str | None = None
     is_enabled: bool
     fire_count: int
     max_fires: int | None = None
@@ -56,7 +56,7 @@ async def list_agent_triggers(agent_id: uuid.UUID, user=Depends(get_current_user
             type=t.type,
             config=t.config or {},
             reason=t.reason or "",
-            agenda_ref=t.agenda_ref,
+            focus_ref=t.focus_ref,
             is_enabled=t.is_enabled,
             fire_count=t.fire_count,
             max_fires=t.max_fires,

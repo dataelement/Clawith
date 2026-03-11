@@ -44,7 +44,7 @@ services:
       SS_CONFIG_FILE: /data/ss-nodes.json
     volumes:
       - ./backend:/app
-      - agent_data:/data/agents
+      - ./backend/agent_data:/data/agents
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro
     depends_on:
@@ -72,7 +72,6 @@ services:
 volumes:
   pgdata:
   redisdata:
-  agent_data:
 
 
 networks:

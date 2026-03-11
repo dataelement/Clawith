@@ -109,14 +109,20 @@ async def create_agent(
     from datetime import datetime, timedelta, timezone as tz
     expires_at = datetime.now(tz.utc) + timedelta(hours=current_user.quota_agent_ttl_hours or 48)
 
-    # Get default LLM calls limit from tenant
+    # Get default limits from tenant
     max_llm_calls = 100
+    default_max_triggers = 20
+    default_min_poll = 5
+    default_webhook_rate = 5
     if current_user.tenant_id:
         from app.models.tenant import Tenant
         tenant_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
         tenant = tenant_result.scalar_one_or_none()
         if tenant:
             max_llm_calls = tenant.default_max_llm_calls_per_day or 100
+            default_max_triggers = tenant.default_max_triggers or 20
+            default_min_poll = tenant.min_poll_interval_floor or 5
+            default_webhook_rate = tenant.max_webhook_rate_ceiling or 5
 
     agent = Agent(
         name=data.name,
@@ -133,6 +139,9 @@ async def create_agent(
         status="creating",
         expires_at=expires_at,
         max_llm_calls_per_day=max_llm_calls,
+        max_triggers=default_max_triggers,
+        min_poll_interval_min=default_min_poll,
+        webhook_rate_limit=default_webhook_rate,
     )
     if data.autonomy_policy:
         agent.autonomy_policy = data.autonomy_policy
@@ -228,6 +237,16 @@ async def get_agent(
         creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
         creator = creator_result.scalar_one_or_none()
         out["creator_username"] = creator.username if creator else None
+
+    # Resolve effective timezone (agent → tenant → UTC)
+    effective_tz = agent.timezone
+    if not effective_tz and agent.tenant_id:
+        from app.models.tenant import Tenant
+        t_result = await db.execute(select(Tenant).where(Tenant.id == agent.tenant_id))
+        tenant = t_result.scalar_one_or_none()
+        if tenant:
+            effective_tz = tenant.timezone or "UTC"
+    out["effective_timezone"] = effective_tz or "UTC"
 
     return out
 
@@ -336,12 +355,47 @@ async def update_agent(
                 agent.status = "idle"
 
     # Enforce heartbeat floor from tenant
+    clamped_fields = []  # track fields adjusted by tenant floor
     if "heartbeat_interval_minutes" in update_data and current_user.tenant_id:
         from app.models.tenant import Tenant
         t_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
         tenant = t_result.scalar_one_or_none()
         if tenant and update_data["heartbeat_interval_minutes"] < tenant.min_heartbeat_interval_minutes:
             update_data["heartbeat_interval_minutes"] = tenant.min_heartbeat_interval_minutes
+            clamped_fields.append({
+                "field": "heartbeat_interval_minutes",
+                "requested": update_data["heartbeat_interval_minutes"],
+                "applied": tenant.min_heartbeat_interval_minutes,
+                "reason": "company_floor",
+            })
+
+    # Enforce trigger limit floors from tenant
+    trigger_fields = {"min_poll_interval_min", "webhook_rate_limit", "max_triggers"}
+    if trigger_fields & set(update_data.keys()) and current_user.tenant_id:
+        from app.models.tenant import Tenant
+        t_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+        tenant = t_result.scalar_one_or_none()
+        if tenant:
+            if "min_poll_interval_min" in update_data:
+                original = update_data["min_poll_interval_min"]
+                update_data["min_poll_interval_min"] = max(original, tenant.min_poll_interval_floor)
+                if update_data["min_poll_interval_min"] != original:
+                    clamped_fields.append({
+                        "field": "min_poll_interval_min",
+                        "requested": original,
+                        "applied": update_data["min_poll_interval_min"],
+                        "reason": "company_floor",
+                    })
+            if "webhook_rate_limit" in update_data:
+                original = update_data["webhook_rate_limit"]
+                update_data["webhook_rate_limit"] = min(original, tenant.max_webhook_rate_ceiling)
+                if update_data["webhook_rate_limit"] != original:
+                    clamped_fields.append({
+                        "field": "webhook_rate_limit",
+                        "requested": original,
+                        "applied": update_data["webhook_rate_limit"],
+                        "reason": "company_ceiling",
+                    })
 
     for field, value in update_data.items():
         setattr(agent, field, value)
@@ -359,7 +413,10 @@ async def update_agent(
                 p.avatar_url = agent.avatar_url
             await db.flush()
 
-    return AgentOut.model_validate(agent)
+    out = AgentOut.model_validate(agent).model_dump()
+    if clamped_fields:
+        out["_clamped_fields"] = clamped_fields
+    return out
 
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)

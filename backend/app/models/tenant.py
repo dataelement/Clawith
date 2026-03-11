@@ -19,7 +19,7 @@ class Tenant(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     im_provider: Mapped[str] = mapped_column(
-        Enum("feishu", "dingtalk", "wecom", "web_only", name="im_provider_enum"),
+        Enum("feishu", "dingtalk", "wecom", "microsoft_teams", "web_only", name="im_provider_enum"),
         default="web_only",
         nullable=False,
     )
@@ -36,4 +36,12 @@ class Tenant(Base):
 
     # Heartbeat frequency floor (minutes) — agents cannot heartbeat faster than this
     min_heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=120)
+
+    # Default timezone for all agents in this company (IANA format, e.g. "Asia/Shanghai")
+    timezone: Mapped[str] = mapped_column(String(50), default="UTC")
+
+    # Trigger limits — defaults for new agents & floor values
+    default_max_triggers: Mapped[int] = mapped_column(Integer, default=20)
+    min_poll_interval_floor: Mapped[int] = mapped_column(Integer, default=5)
+    max_webhook_rate_ceiling: Mapped[int] = mapped_column(Integer, default=5)
 

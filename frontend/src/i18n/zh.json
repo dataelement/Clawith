@@ -6,6 +6,8 @@
   "nav": {
     "dashboard": "仪表盘",
     "myAgents": "我的数字员工",
+    "myCreated": "我创建的",
+    "companyShared": "公司共用",
     "newAgent": "新建数字员工",
     "enterprise": "企业设置",
     "language": "语言",
@@ -103,7 +105,7 @@
     "tabs": {
       "status": "状态",
       "tasks": "任务",
-      "pulse": "Pulse",
+      "aware": "\u81ea\u6211\u610f\u8bc6",
       "mind": "心智",
       "tools": "工具",
       "skills": "技能",
@@ -171,27 +173,25 @@
       "every3days": "每隔3天",
       "weekly": "每周"
     },
-    "pulse": {
-      "agenda": "Agenda",
-      "agendaDesc": "Agent 自主管理的任务清单",
-      "agendaEmpty": "暂无 Agenda 内容。Agent 在对话中会自动创建和更新 agenda.md",
-      "viewRawMarkdown": "查看原始 Markdown",
-      "triggers": "触发器",
-      "triggersDesc": "由 Agent 自主设置和管理",
-      "triggersEmpty": "暂无触发器。在对话中告诉 Agent 你的需求，它会自动创建触发器。",
-      "fired": "触发 {{count}} 次",
+    "aware": {
+      "focus": "\u5173\u6ce8\u70b9",
+      "focusDesc": "Agent \u5f53\u524d\u6b63\u5728\u5173\u6ce8\u7684\u4e8b\u9879",
+      "focusEmpty": "\u6682\u65e0\u5173\u6ce8\u70b9\u3002Agent \u5728\u5bf9\u8bdd\u4e2d\u4f1a\u81ea\u52a8\u521b\u5efa\u548c\u66f4\u65b0\u5173\u6ce8\u70b9\u3002",
+      "viewRawMarkdown": "\u67e5\u770b\u539f\u59cb Markdown",
+      "standaloneTriggers": "\u72ec\u7acb\u89e6\u53d1\u5668",
+      "noTriggers": "无触发器",
+      "fired": "已触发 {{count}} 次",
       "disabled": "已禁用",
       "disable": "禁用",
       "enable": "启用",
       "deleteTriggerConfirm": "确定删除触发器 \"{{name}}\"？",
-      "monologue": "内心独白",
-      "monologueDesc": "Agent 被触发器唤醒后的自主行为记录",
-      "monologueEmpty": "暂无内心独白记录。当触发器触发时，Agent 的行为会记录在这里。",
-      "history": "历史",
-      "historyTitle": "任务历史",
-      "historyDesc": "已完成任务的归档记录",
-      "historyEmpty": "暂无历史记录。Agent 会将完成的 Agenda 条目归档到 task_history.md",
-      "scheduledTriggers": "计划中的触发器"
+      "reflections": "\u5185\u5fc3\u72ec\u767d",
+      "reflectionsDesc": "Agent \u81ea\u4e3b\u884c\u52a8\u7684\u601d\u8003\u8bb0\u5f55",
+      "reflectionsEmpty": "\u6682\u65e0\u5185\u5fc3\u72ec\u767d\u8bb0\u5f55\u3002Agent \u7684\u81ea\u4e3b\u884c\u52a8\u5c06\u663e\u793a\u5728\u8fd9\u91cc\u3002",
+      "taskHistory": "任务历史",
+      "taskHistoryEmpty": "暂无归档任务。",
+      "inProgress": "进行中",
+      "completed": "已完成"
     },
     "soul": {
       "title": "Soul.md — 人格定义",
@@ -247,7 +247,8 @@
       "fileSupport": "支持上传 PDF、Word、Excel、TXT 等文件",
       "attachment": "附件",
       "uploadFailed": "上传失败",
-      "askAboutFile": "关于 {{name}} 的问题..."
+      "askAboutFile": "关于 {{name}} 的问题...",
+      "thinking": "思考中..."
     },
     "activityLog": {
       "title": "工作日志",
@@ -582,10 +583,12 @@
     "no": "否",
     "all": "全部",
     "none": "无",
+    "download": "下载",
     "channels": {
       "feishu": "飞书",
       "discord": "Discord",
-      "slack": "Slack"
+      "slack": "Slack",
+      "teams": "Microsoft Teams"
     }
   },
   "channelGuide": {
@@ -624,6 +627,17 @@
       "step7": "左侧菜单 → 版本管理与发布 → 创建版本 → 填写说明 → 提交审核发布（企业自建应用可在管理后台自行审批）",
       "step8": "发布后，将机器人拉入飞书群，或让用户直接添加机器人为好友即可开始对话",
       "note": "企业自建应用审核通常即时通过。每次新增权限后都需要重新发布。"
+    },
+    "teams": {
+      "step1": "打开 portal.azure.com → Azure Active Directory → 应用注册 → 新注册 → 输入名称 → 选择「仅此组织目录中的帐户」（单租户）→ 注册",
+      "step2": "在应用概述页面，复制应用程序（客户端）ID 并保存。然后转到证书和密码 → 新客户端密码 → 添加说明和过期时间 → 复制值（这是你的 App Secret）。同时从概述页面复制目录（租户）ID。",
+      "step3": "本地测试：启动 localtunnel 暴露后端：`npx --yes localtunnel --port 8000` → 复制隧道 URL（如 https://xxxxx.loca.lt）。在 Azure Bot 中配置消息传递终结点 URL 时，将 'localhost' 替换为你的 localtunnel URL。",
+      "step4": "将 App ID（客户端 ID）、App Secret（客户端密码）和租户 ID（目录 ID）填入上方。点击保存配置 → 复制出现的消息传递终结点 URL。",
+      "step5": "在 Azure Bot → 频道 → Microsoft Teams → 配置 → 粘贴消息传递终结点 URL（本地测试时请使用 localtunnel URL 而不是 localhost）→ 保存 → 机器人将在 Teams 中可用。",
+      "note": "服务器必须能被公网访问，Microsoft Teams 才能访问消息传递终结点 URL。本地测试请使用 localtunnel，并将 'localhost' 替换为隧道 URL。",
+      "tenantId": "租户 ID（目录 ID）",
+      "tenantIdPlaceholder": "请输入此单租户应用的租户 ID（目录 ID）",
+      "tenantIdHint": "单租户应用必填，请在 Azure AD → 应用注册 → 你的应用 → 概述 中复制目录（租户）ID。"
     }
   }
 }

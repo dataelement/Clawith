@@ -5,15 +5,18 @@ with a unified trigger evaluation engine. Runs as an asyncio background task.
 
 Every 15 seconds:
   1. Load all enabled triggers from DB
-  2. Evaluate each trigger (cron/once/interval/poll/on_message)
+  2. Evaluate each trigger (cron/once/interval/poll/on_message/webhook)
   3. Group fired triggers by agent_id (30s dedup window)
   4. Invoke each agent once with all its fired triggers as context
 """
 
 import asyncio
+import ipaddress
+import json as _json
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
+from urllib.parse import urlparse
 
 from croniter import croniter
 from sqlalchemy import select
@@ -27,9 +30,44 @@ logger = logging.getLogger(__name__)
 TICK_INTERVAL = 15  # seconds
 DEDUP_WINDOW = 30   # seconds — same agent won't be invoked twice within this window
 MAX_AGENT_CHAIN_DEPTH = 5  # A→B→A→B→A max depth before stopping
+MIN_POLL_INTERVAL_MINUTES = 5  # minimum poll interval to prevent abuse
 
 # Track last invocation time per agent to enforce dedup window
 _last_invoke: dict[uuid.UUID, datetime] = {}
+
+# Webhook rate limiter: token -> list of timestamps
+_webhook_hits: dict[str, list[float]] = {}
+WEBHOOK_RATE_LIMIT = 5   # max hits per minute per token
+
+
+# ── SSRF Protection ─────────────────────────────────────────────────
+
+def _is_private_url(url: str) -> bool:
+    """Block private/internal URLs to prevent SSRF attacks."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return True
+
+        # Block obvious private hostnames
+        if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return True
+
+        # Try to resolve hostname and check IP
+        import socket
+        try:
+            infos = socket.getaddrinfo(hostname, None)
+            for info in infos:
+                ip = ipaddress.ip_address(info[4][0])
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    return True
+        except (socket.gaierror, ValueError):
+            return True  # Cannot resolve = block
+
+        return False
+    except Exception:
+        return True  # Block on any parsing error
 
 
 # ── Trigger Evaluation ──────────────────────────────────────────────
@@ -57,9 +95,22 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
         expr = cfg.get("expr", "* * * * *")
         base = trigger.last_fired_at or trigger.created_at
         try:
-            cron = croniter(expr, base)
+            # Resolve timezone: trigger config → agent → tenant → UTC
+            tz_name = cfg.get("timezone")
+            if not tz_name:
+                from app.services.timezone_utils import get_agent_timezone
+                tz_name = await get_agent_timezone(trigger.agent_id)
+            from zoneinfo import ZoneInfo
+            try:
+                tz = ZoneInfo(tz_name)
+            except (KeyError, Exception):
+                tz = ZoneInfo("UTC")
+            # Evaluate cron in agent's timezone
+            local_now = now.astimezone(tz)
+            local_base = base.astimezone(tz) if base.tzinfo else base.replace(tzinfo=tz)
+            cron = croniter(expr, local_base)
             next_run = cron.get_next(datetime)
-            return now >= next_run
+            return local_now >= next_run
         except Exception as e:
             logger.warning(f"Invalid cron expr '{expr}' for trigger {trigger.name}: {e}")
             return False
@@ -82,7 +133,7 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
         return (now - base) >= timedelta(minutes=minutes)
 
     elif t == "poll":
-        interval_min = cfg.get("interval_min", 5)
+        interval_min = max(cfg.get("interval_min", 5), MIN_POLL_INTERVAL_MINUTES)
         base = trigger.last_fired_at or trigger.created_at
         if (now - base) < timedelta(minutes=interval_min):
             return False
@@ -91,6 +142,12 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
 
     elif t == "on_message":
         return await _check_new_agent_messages(trigger)
+
+    elif t == "webhook":
+        # Check if a webhook payload is pending
+        if cfg.get("_webhook_pending"):
+            return True
+        return False
 
     return False
 
@@ -105,6 +162,11 @@ async def _poll_check(trigger: AgentTrigger) -> bool:
     cfg = trigger.config or {}
     url = cfg.get("url")
     if not url:
+        return False
+
+    # SSRF protection: block private/internal URLs
+    if _is_private_url(url):
+        logger.warning(f"Poll blocked for trigger {trigger.name}: private/internal URL '{url}'")
         return False
 
     try:
@@ -168,63 +230,121 @@ def _extract_json_path(data, path: str):
 
 
 async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
-    """Check if there are new agent-to-agent messages matching this trigger.
+    """Check if there are new messages matching this trigger.
+    
+    Supports two modes:
+    - from_agent_name: check for agent-to-agent messages
+    - from_user_name: check for human user messages (Feishu/Slack/Discord)
     
     Stores the actual message content in trigger.config['_matched_message']
     so the invocation context can include it.
     """
     from app.models.audit import ChatMessage
     from app.models.chat_session import ChatSession
-    from app.models.participant import Participant
 
     cfg = trigger.config or {}
     from_agent_name = cfg.get("from_agent_name")
-    if not from_agent_name:
+    from_user_name = cfg.get("from_user_name")
+
+    if not from_agent_name and not from_user_name:
         return False
 
     since = trigger.last_fired_at or trigger.created_at
+    # For never-fired on_message triggers, look back 5 minutes before creation
+    # to catch replies that arrived while the Agent was still creating the trigger
+    if trigger.fire_count == 0 and not trigger.last_fired_at and from_user_name:
+        since = trigger.created_at - timedelta(minutes=5)
 
     try:
         async with async_session() as db:
-            # Find the source agent and its participant
-            from app.models.agent import Agent as AgentModel
-            agent_r = await db.execute(
-                select(AgentModel).where(AgentModel.name.ilike(f"%{from_agent_name}%"))
-            )
-            source_agent = agent_r.scalars().first()
-            if not source_agent:
-                return False
-
-            # Find participant for the source agent
-            result = await db.execute(
-                select(Participant.id).where(
-                    Participant.type == "agent",
-                    Participant.ref_id == source_agent.id,
+            if from_agent_name:
+                # --- Agent-to-agent message check (existing logic) ---
+                from app.models.participant import Participant
+                from app.models.agent import Agent as AgentModel
+                agent_r = await db.execute(
+                    select(AgentModel).where(AgentModel.name.ilike(f"%{from_agent_name}%"))
                 )
-            )
-            from_participant = result.scalar_one_or_none()
-            if not from_participant:
-                return False
+                source_agent = agent_r.scalars().first()
+                if not source_agent:
+                    return False
 
-            # Check for new messages from this agent in shared sessions
-            from sqlalchemy import cast as sa_cast, String as SaString
-            result = await db.execute(
-                select(ChatMessage).join(
-                    ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
-                ).where(
-                    ChatMessage.participant_id == from_participant,
-                    ChatMessage.created_at > since,
-                    ChatMessage.role == "assistant",  # agent replies
-                ).order_by(ChatMessage.created_at.desc()).limit(1)
-            )
-            msg = result.scalar_one_or_none()
-            if not msg:
-                return False
+                result = await db.execute(
+                    select(Participant.id).where(
+                        Participant.type == "agent",
+                        Participant.ref_id == source_agent.id,
+                    )
+                )
+                from_participant = result.scalar_one_or_none()
+                if not from_participant:
+                    return False
 
-            # Store matched message content for invocation context
-            cfg["_matched_message"] = (msg.content or "")[:2000]
-            cfg["_matched_from"] = from_agent_name
-            return True
+                from sqlalchemy import cast as sa_cast, String as SaString
+                result = await db.execute(
+                    select(ChatMessage).join(
+                        ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
+                    ).where(
+                        ChatMessage.participant_id == from_participant,
+                        ChatMessage.created_at > since,
+                        ChatMessage.role == "assistant",
+                    ).order_by(ChatMessage.created_at.desc()).limit(1)
+                )
+                msg = result.scalar_one_or_none()
+                if not msg:
+                    return False
+                cfg["_matched_message"] = (msg.content or "")[:2000]
+                cfg["_matched_from"] = from_agent_name
+                return True
+
+            elif from_user_name:
+                # --- Human user message check (Feishu/Slack/Discord) ---
+                # Find sessions for this agent from external channels
+                from sqlalchemy import cast as sa_cast, String as SaString
+                from app.models.user import User
+
+                # Look up user by display name or username
+                from sqlalchemy import or_
+                user_r = await db.execute(
+                    select(User).where(
+                        or_(
+                            User.display_name.ilike(f"%{from_user_name}%"),
+                            User.username.ilike(f"%{from_user_name}%"),
+                        )
+                    )
+                )
+                target_user = user_r.scalars().first()
+
+                if target_user:
+                    # Find channel sessions for this user with this agent
+                    result = await db.execute(
+                        select(ChatMessage).join(
+                            ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
+                        ).where(
+                            ChatSession.agent_id == trigger.agent_id,
+                            ChatSession.user_id == target_user.id,
+                            ChatSession.source_channel.in_(["feishu", "slack", "discord"]),
+                            ChatMessage.role == "user",
+                            ChatMessage.created_at > since,
+                        ).order_by(ChatMessage.created_at.desc()).limit(1)
+                    )
+                else:
+                    # Fallback: search by message content or session title containing the name
+                    result = await db.execute(
+                        select(ChatMessage).join(
+                            ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
+                        ).where(
+                            ChatSession.agent_id == trigger.agent_id,
+                            ChatSession.source_channel.in_(["feishu", "slack", "discord"]),
+                            ChatMessage.role == "user",
+                            ChatMessage.created_at > since,
+                        ).order_by(ChatMessage.created_at.desc()).limit(1)
+                    )
+
+                msg = result.scalar_one_or_none()
+                if not msg:
+                    return False
+                cfg["_matched_message"] = (msg.content or "")[:2000]
+                cfg["_matched_from"] = from_user_name
+                return True
 
     except Exception as e:
         logger.warning(f"on_message check failed for trigger {trigger.name}: {e}")
@@ -268,12 +388,18 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             trigger_names = []
             for t in triggers:
                 part = f"触发器：{t.name} ({t.type})\n原因：{t.reason}"
-                if t.agenda_ref:
-                    part += f"\n关联 agenda：{t.agenda_ref}"
+                if t.focus_ref:
+                    part += f"\n关联 Focus：{t.focus_ref}"
                 # Include matched message for on_message triggers
                 cfg = t.config or {}
                 if t.type == "on_message" and cfg.get("_matched_message"):
                     part += f"\n收到来自 {cfg.get('_matched_from', '?')} 的消息：\n\"{cfg['_matched_message'][:500]}\""
+                # Include webhook payload
+                if t.type == "webhook" and cfg.get("_webhook_payload"):
+                    payload_str = cfg["_webhook_payload"]
+                    if len(payload_str) > 2000:
+                        payload_str = payload_str[:2000] + "... (truncated)"
+                    part += f"\nWebhook Payload:\n{payload_str}"
                 context_parts.append(part)
                 trigger_names.append(t.name)
 
@@ -322,12 +448,41 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 participant_id=agent_participant.id if agent_participant else None,
             ))
             await db.commit()
+            # Cache participant ID for callbacks
+            agent_participant_id = agent_participant.id if agent_participant else None
 
         # Call LLM (outside the DB session to avoid long transactions)
         collected_content = []
 
         async def on_chunk(text):
             collected_content.append(text)
+
+        # Persist tool calls into Pulse Session for Reflections visibility
+        async def on_tool_call(data):
+            try:
+                async with async_session() as _tc_db:
+                    if data["status"] == "running":
+                        _tc_db.add(ChatMessage(
+                            agent_id=agent_id,
+                            conversation_id=str(session_id),
+                            role="tool_call",
+                            content=_json.dumps({"name": data["name"], "args": data["args"]}, ensure_ascii=False, default=str),
+                            user_id=agent.creator_id,
+                            participant_id=agent_participant_id,
+                        ))
+                    elif data["status"] == "done":
+                        result_str = str(data.get("result", ""))[:2000]
+                        _tc_db.add(ChatMessage(
+                            agent_id=agent_id,
+                            conversation_id=str(session_id),
+                            role="tool_result",
+                            content=_json.dumps({"name": data["name"], "result": result_str}, ensure_ascii=False, default=str),
+                            user_id=agent.creator_id,
+                            participant_id=agent_participant_id,
+                        ))
+                    await _tc_db.commit()
+            except Exception as e:
+                logger.warning(f"Failed to persist tool call for trigger session: {e}")
 
         reply = await call_llm(
             model=model,
@@ -337,9 +492,10 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             agent_id=agent_id,
             user_id=agent.creator_id,
             on_chunk=on_chunk,
+            on_tool_call=on_tool_call,
         )
 
-        # Store the reply in the Pulse Session
+        # Save assistant reply to Pulse session
         async with async_session() as db:
             result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
@@ -355,21 +511,9 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 participant_id=agent_participant.id if agent_participant else None,
             ))
 
-            # Update trigger states
-            for t in triggers:
-                result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == t.id))
-                trigger = result.scalar_one_or_none()
-                if trigger:
-                    trigger.last_fired_at = datetime.now(timezone.utc)
-                    trigger.fire_count += 1
-                    # Auto-disable single-shot types
-                    if trigger.type == "once":
-                        trigger.is_enabled = False
-                    if trigger.type == "on_message":
-                        trigger.is_enabled = False  # single-shot for agent-to-agent
-                    # Auto-disable expired
-                    if trigger.max_fires and trigger.fire_count >= trigger.max_fires:
-                        trigger.is_enabled = False
+            # NOTE: trigger state (last_fired_at, fire_count, auto-disable)
+            # is already updated in _tick() BEFORE this task was launched,
+            # to prevent race-condition duplicate fires.
 
             await db.commit()
 
@@ -499,12 +643,44 @@ async def _tick():
         if last and (now - last).total_seconds() < DEDUP_WINDOW:
             continue  # Skip — invoked too recently
         _last_invoke[agent_id] = now
+
+        # ── Immediately update trigger state BEFORE launching async task ──
+        # This prevents the next tick from re-evaluating the same trigger as
+        # "should fire" while the LLM call is still running (which can take
+        # minutes). Without this, the 15s tick interval + 30s dedup window
+        # would cause repeated invocations for long-running triggers.
+        try:
+            async with async_session() as db:
+                for t in agent_triggers:
+                    result = await db.execute(
+                        select(AgentTrigger).where(AgentTrigger.id == t.id)
+                    )
+                    trigger = result.scalar_one_or_none()
+                    if trigger:
+                        trigger.last_fired_at = now
+                        trigger.fire_count += 1
+                        # Auto-disable single-shot types immediately
+                        if trigger.type in ("once", "on_message", "webhook"):
+                            trigger.is_enabled = False
+                        if trigger.type == "webhook" and trigger.config:
+                            trigger.config = {
+                                **trigger.config,
+                                "_webhook_pending": False,
+                                "_webhook_payload": None,
+                            }
+                        if trigger.max_fires and trigger.fire_count >= trigger.max_fires:
+                            trigger.is_enabled = False
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to pre-update trigger state: {e}")
+
         asyncio.create_task(_invoke_agent_for_triggers(agent_id, agent_triggers))
 
 
 async def start_trigger_daemon():
     """Start the background trigger daemon loop. Called from FastAPI startup."""
-    logger.info("⚡ Trigger Daemon started (15s tick)")
+    logger.info("⚡ Trigger Daemon started (15s tick, heartbeat every ~60s)")
+    _heartbeat_counter = 0
     while True:
         try:
             await _tick()
@@ -512,4 +688,15 @@ async def start_trigger_daemon():
             logger.error(f"Trigger Daemon error: {e}")
             import traceback
             traceback.print_exc()
+
+        # Run heartbeat check every 4th tick (~60 seconds)
+        _heartbeat_counter += 1
+        if _heartbeat_counter >= 4:
+            _heartbeat_counter = 0
+            try:
+                from app.services.heartbeat import _heartbeat_tick
+                await _heartbeat_tick()
+            except Exception as e:
+                logger.error(f"Heartbeat tick error: {e}")
+
         await asyncio.sleep(TICK_INTERVAL)

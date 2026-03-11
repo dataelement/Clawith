@@ -31,7 +31,7 @@ class AgentTrigger(Base):
     type: Mapped[str] = mapped_column(String(20), nullable=False)  # cron|once|interval|poll|on_message
     config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    agenda_ref: Mapped[str | None] = mapped_column(String(200))  # optional: related agenda item description
+    focus_ref: Mapped[str | None] = mapped_column(String(200))  # optional: related focus item identifier
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fire_count: Mapped[int] = mapped_column(Integer, default=0)

@@ -76,8 +76,8 @@ async def get_chat_history(
     messages = result.scalars().all()
     out = []
     for m in messages:
-        entry: dict = {"role": m.role, "content": m.content}
-        if m.thinking:
+        entry: dict = {"role": m.role, "content": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+        if getattr(m, 'thinking', None):
             entry["thinking"] = m.thinking
         if m.role == "tool_call":
             # Parse JSON-encoded tool call data
@@ -189,6 +189,22 @@ async def call_llm(
                 role=msg.role,
                 content=parts,  # type: ignore  # This is valid for vision models
             )
+    else:
+        # Strip base64 image markers for non-vision models to avoid wasting tokens
+        import re as _re_strip
+        _img_pattern = r'\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]'
+        for i, msg in enumerate(api_messages):
+            if msg.role != "user" or not isinstance(msg.content, str):
+                continue
+            if "[image_data:" in msg.content:
+                _n_imgs = len(_re_strip.findall(_img_pattern, msg.content))
+                cleaned = _re_strip.sub('', msg.content).strip()
+                if _n_imgs > 0:
+                    cleaned += f"\n[用户发送了 {_n_imgs} 张图片，但当前模型不支持视觉，无法查看图片内容]"
+                api_messages[i] = LLMMessage(
+                    role=msg.role,
+                    content=cleaned,
+                )
 
     # Create the unified LLM client
     try:
@@ -216,14 +232,14 @@ async def call_llm(
                 role="system",
                 content=(
                     f"⚠️ 你已使用 {round_i}/{_max_tool_rounds} 轮工具调用。"
-                    "如果当前任务尚未完成，请尽快保存进度到 agenda.md，"
+                    "如果当前任务尚未完成，请尽快保存进度到 focus.md，"
                     "并使用 set_trigger 设置续接触发器，在剩余轮次中做好收尾。"
                 ),
             ))
         elif round_i == _warn_threshold_96:
             api_messages.append(LLMMessage(
                 role="system",
-                content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 agenda.md 并设置续接触发器。",
+                content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 focus.md 并设置续接触发器。",
             ))
 
         try:
@@ -364,6 +380,7 @@ async def websocket_chat(
     # Verify access and load agent + model
     agent_name = ""
     role_description = ""
+    welcome_message = ""
     llm_model = None
     history_messages = []
 
@@ -387,6 +404,7 @@ async def websocket_chat(
                 return
             agent_name = agent.name
             role_description = agent.role_description or ""
+            welcome_message = agent.welcome_message or ""
             ctx_size = agent.context_window_size or 100
             print(f"[WS] Agent: {agent_name}, model_id: {agent.primary_model_id}, ctx: {ctx_size}")
 
@@ -507,6 +525,10 @@ async def websocket_chat(
             conversation.append(entry)
 
     try:
+        # Send welcome message on new session (no history)
+        if welcome_message and not history_messages:
+            await websocket.send_json({"type": "done", "role": "assistant", "content": welcome_message})
+
         while True:
             print(f"[WS] Waiting for message from {agent_name}...")
             data = await websocket.receive_json()

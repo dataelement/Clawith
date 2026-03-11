@@ -149,7 +149,39 @@ async def update_me(
     db: AsyncSession = Depends(get_db),
 ):
     """Update current user profile."""
-    for field, value in data.model_dump(exclude_unset=True).items():
+    update_data = data.model_dump(exclude_unset=True)
+
+    # Validate username uniqueness if changing
+    if "username" in update_data and update_data["username"] != current_user.username:
+        existing = await db.execute(select(User).where(User.username == update_data["username"]))
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Username already taken")
+
+    for field, value in update_data.items():
         setattr(current_user, field, value)
     await db.flush()
     return UserOut.model_validate(current_user)
+
+
+@router.put("/me/password")
+async def change_password(
+    data: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change current user's password. Requires old_password verification."""
+    old_password = data.get("old_password", "")
+    new_password = data.get("new_password", "")
+
+    if not old_password or not new_password:
+        raise HTTPException(status_code=400, detail="Both old_password and new_password are required")
+
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+
+    if not verify_password(old_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    current_user.password_hash = hash_password(new_password)
+    await db.flush()
+    return {"ok": True}

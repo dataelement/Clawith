@@ -14,8 +14,28 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
 
     if (!res.ok) {
+        // Auto-logout on expired/invalid token (but not on auth endpoints — let them show errors)
+        const isAuthEndpoint = url.startsWith('/auth/login') || url.startsWith('/auth/register');
+        if (res.status === 401 && !isAuthEndpoint) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            window.location.href = '/login';
+            throw new Error('Session expired');
+        }
         const error = await res.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(error.detail || `HTTP ${res.status}`);
+        // Pydantic validation errors return detail as an array of objects
+        let message = '';
+        if (Array.isArray(error.detail)) {
+            message = error.detail
+                .map((e: any) => {
+                    const field = e.loc?.slice(-1)[0] || '';
+                    return field ? `${field}: ${e.msg}` : e.msg;
+                })
+                .join('; ');
+        } else {
+            message = error.detail || `HTTP ${res.status}`;
+        }
+        throw new Error(message);
     }
 
     if (res.status === 204) return undefined as T;
@@ -41,6 +61,45 @@ async function uploadFile(url: string, file: File, extraFields?: Record<string, 
         throw new Error(error.detail || `HTTP ${res.status}`);
     }
     return res.json();
+}
+
+// Upload with progress tracking via XMLHttpRequest
+export function uploadFileWithProgress(
+    url: string,
+    file: File,
+    onProgress?: (percent: number) => void,
+    extraFields?: Record<string, string>,
+): Promise<any> {
+    return new Promise((resolve, reject) => {
+        const token = localStorage.getItem('token');
+        const formData = new FormData();
+        formData.append('file', file);
+        if (extraFields) {
+            for (const [k, v] of Object.entries(extraFields)) {
+                formData.append(k, v);
+            }
+        }
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API_BASE}${url}`);
+        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable && onProgress) {
+                onProgress(Math.round((e.loaded / e.total) * 100));
+            }
+        };
+        xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                try { resolve(JSON.parse(xhr.responseText)); } catch { resolve(undefined); }
+            } else {
+                try {
+                    const err = JSON.parse(xhr.responseText);
+                    reject(new Error(err.detail || `HTTP ${xhr.status}`));
+                } catch { reject(new Error(`HTTP ${xhr.status}`)); }
+            }
+        };
+        xhr.onerror = () => reject(new Error('Network error'));
+        xhr.send(formData);
+    });
 }
 
 // ─── Auth ─────────────────────────────────────────────
@@ -135,14 +194,21 @@ export const fileApi = {
             method: 'DELETE',
         }),
 
-    upload: (agentId: string, file: File, path: string = 'workspace/knowledge_base') =>
-        uploadFile(`/agents/${agentId}/files/upload?path=${encodeURIComponent(path)}`, file),
+    upload: (agentId: string, file: File, path: string = 'workspace/knowledge_base', onProgress?: (pct: number) => void) =>
+        onProgress
+            ? uploadFileWithProgress(`/agents/${agentId}/files/upload?path=${encodeURIComponent(path)}`, file, onProgress)
+            : uploadFile(`/agents/${agentId}/files/upload?path=${encodeURIComponent(path)}`, file),
 
     importSkill: (agentId: string, skillId: string) =>
         request<any>(`/agents/${agentId}/files/import-skill`, {
             method: 'POST',
             body: JSON.stringify({ skill_id: skillId }),
         }),
+
+    downloadUrl: (agentId: string, path: string) => {
+        const token = localStorage.getItem('token');
+        return `${API_BASE}/agents/${agentId}/files/download?path=${encodeURIComponent(path)}&token=${token}`;
+    },
 };
 
 // ─── Channel Config ───────────────────────────────────

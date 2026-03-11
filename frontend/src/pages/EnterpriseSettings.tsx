@@ -543,6 +543,83 @@ function CompanyNameEditor() {
 }
 
 
+// ─── Company Timezone Editor ───────────────────────
+const COMMON_TIMEZONES = [
+    'UTC',
+    'Asia/Shanghai',
+    'Asia/Tokyo',
+    'Asia/Seoul',
+    'Asia/Singapore',
+    'Asia/Kolkata',
+    'Asia/Dubai',
+    'Europe/London',
+    'Europe/Paris',
+    'Europe/Berlin',
+    'Europe/Moscow',
+    'America/New_York',
+    'America/Chicago',
+    'America/Denver',
+    'America/Los_Angeles',
+    'America/Sao_Paulo',
+    'Australia/Sydney',
+    'Pacific/Auckland',
+];
+
+function CompanyTimezoneEditor() {
+    const { t } = useTranslation();
+    const tenantId = localStorage.getItem('current_tenant_id') || '';
+    const [timezone, setTimezone] = useState('UTC');
+    const [saving, setSaving] = useState(false);
+    const [saved, setSaved] = useState(false);
+
+    useEffect(() => {
+        if (!tenantId) return;
+        fetchJson<any>(`/tenants/${tenantId}`)
+            .then(d => { if (d?.timezone) setTimezone(d.timezone); })
+            .catch(() => { });
+    }, [tenantId]);
+
+    const handleSave = async (tz: string) => {
+        if (!tenantId) return;
+        setTimezone(tz);
+        setSaving(true);
+        try {
+            await fetchJson(`/tenants/${tenantId}`, {
+                method: 'PUT', body: JSON.stringify({ timezone: tz }),
+            });
+            setSaved(true);
+            setTimeout(() => setSaved(false), 2000);
+        } catch (e) { }
+        setSaving(false);
+    };
+
+    return (
+        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '4px' }}>🌐 {t('enterprise.timezone.title', 'Company Timezone')}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                        {t('enterprise.timezone.description', 'Default timezone for all agents. Agents can override individually.')}
+                    </div>
+                </div>
+                <select
+                    className="form-input"
+                    value={timezone}
+                    onChange={e => handleSave(e.target.value)}
+                    style={{ width: '220px', fontSize: '13px' }}
+                    disabled={saving}
+                >
+                    {COMMON_TIMEZONES.map(tz => (
+                        <option key={tz} value={tz}>{tz}</option>
+                    ))}
+                </select>
+                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅</span>}
+            </div>
+        </div>
+    );
+}
+
+
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
     const qc = useQueryClient();
@@ -565,6 +642,7 @@ export default function EnterpriseSettings() {
         default_message_limit: 50, default_message_period: 'permanent',
         default_max_agents: 2, default_agent_ttl_hours: 48,
         default_max_llm_calls_per_day: 100, min_heartbeat_interval_minutes: 120,
+        default_max_triggers: 20, min_poll_interval_floor: 5, max_webhook_rate_ceiling: 5,
     });
     const [quotaSaving, setQuotaSaving] = useState(false);
     const [quotaSaved, setQuotaSaved] = useState(false);
@@ -900,16 +978,16 @@ export default function EnterpriseSettings() {
                         {/* Sub-filter pills */}
                         <div style={{ display: 'flex', gap: '8px', padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
                             {([
-                                ['all', `📋 ${t('enterprise.audit.filterAll')}`],
-                                ['background', `⚙️ ${t('enterprise.audit.filterBackground')}`],
-                                ['actions', `👤 ${t('enterprise.audit.filterActions')}`],
+                                ['all', t('enterprise.audit.filterAll')],
+                                ['background', t('enterprise.audit.filterBackground')],
+                                ['actions', t('enterprise.audit.filterActions')],
                             ] as const).map(([key, label]) => (
                                 <button key={key}
                                     onClick={() => setAuditFilter(key as any)}
                                     style={{
                                         padding: '4px 14px', borderRadius: '12px', fontSize: '12px', fontWeight: 500,
-                                        border: auditFilter === key ? '1px solid var(--accent-color)' : '1px solid var(--border-color)',
-                                        background: auditFilter === key ? 'var(--accent-color)' : 'transparent',
+                                        border: auditFilter === key ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                                        background: auditFilter === key ? 'var(--accent-primary)' : 'transparent',
                                         color: auditFilter === key ? '#fff' : 'var(--text-secondary)',
                                         cursor: 'pointer', transition: 'all 0.15s',
                                     }}
@@ -960,6 +1038,9 @@ export default function EnterpriseSettings() {
                         {/* ── 0. Company Name ── */}
                         <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyName.title', 'Company Name')}</h3>
                         <CompanyNameEditor />
+
+                        {/* ── 0.5. Company Timezone ── */}
+                        <CompanyTimezoneEditor />
 
                         {/* ── 1. Company Intro ── */}
                         <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyIntro.title', 'Company Intro')}</h3>
@@ -1069,6 +1150,35 @@ export default function EnterpriseSettings() {
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Minimum heartbeat interval for all agents</div>
                                 </div>
                             </div>
+
+                            {/* ── Trigger Limits ── */}
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>Trigger Limits</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+                                <div className="form-group">
+                                    <label className="form-label">{t('enterprise.quotas.defaultMaxTriggers', 'Default Max Triggers')}</label>
+                                    <input className="form-input" type="number" min={1} max={100} value={quotaForm.default_max_triggers}
+                                        onChange={e => setQuotaForm({ ...quotaForm, default_max_triggers: Number(e.target.value) })} />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                        {t('enterprise.quotas.defaultMaxTriggersDesc', 'Default trigger limit for new agents')}
+                                    </div>
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">{t('enterprise.quotas.minPollInterval', 'Min Poll Interval (min)')}</label>
+                                    <input className="form-input" type="number" min={1} max={60} value={quotaForm.min_poll_interval_floor}
+                                        onChange={e => setQuotaForm({ ...quotaForm, min_poll_interval_floor: Number(e.target.value) })} />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                        {t('enterprise.quotas.minPollIntervalDesc', 'Company-wide floor: agents cannot poll faster than this')}
+                                    </div>
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">{t('enterprise.quotas.maxWebhookRate', 'Max Webhook Rate (/min)')}</label>
+                                    <input className="form-input" type="number" min={1} max={60} value={quotaForm.max_webhook_rate_ceiling}
+                                        onChange={e => setQuotaForm({ ...quotaForm, max_webhook_rate_ceiling: Number(e.target.value) })} />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                        {t('enterprise.quotas.maxWebhookRateDesc', 'Company-wide ceiling: max webhook hits per minute per agent')}
+                                    </div>
+                                </div>
+                            </div>
                             <div style={{ marginTop: '16px', display: 'flex', gap: '8px', alignItems: 'center' }}>
                                 <button className="btn btn-primary" onClick={saveQuotas} disabled={quotaSaving}>
                                     {quotaSaving ? t('common.loading') : t('common.save', 'Save')}
@@ -1090,10 +1200,10 @@ export default function EnterpriseSettings() {
                     <div>
                         {/* Sub-tab pills */}
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px' }}>
-                            {([['global', '🔧 Global Tools'], ['agent-installed', '🤖 Agent-installed']] as const).map(([key, label]) => (
+                            {([['global', 'Global Tools'], ['agent-installed', 'Agent-installed']] as const).map(([key, label]) => (
                                 <button key={key} onClick={() => { setToolsView(key as any); if (key === 'agent-installed') loadAgentInstalledTools(); }} style={{
                                     padding: '4px 14px', borderRadius: '12px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', border: 'none',
-                                    background: toolsView === key ? 'var(--accent-color)' : 'var(--bg-tertiary)',
+                                    background: toolsView === key ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
                                     color: toolsView === key ? '#fff' : 'var(--text-secondary)', transition: 'all 0.15s',
                                 }}>{label}</button>
                             ))}

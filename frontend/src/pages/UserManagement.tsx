@@ -59,7 +59,8 @@ export default function UserManagement() {
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState('');
 
-    // Sort & pagination
+    // Search, sort & pagination
+    const [searchQuery, setSearchQuery] = useState('');
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
     const [page, setPage] = useState(1);
 
@@ -120,8 +121,18 @@ export default function UserManagement() {
         return d.toLocaleDateString(isChinese ? 'zh-CN' : 'en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
     };
 
+    // Search filter
+    const filtered = searchQuery.trim()
+        ? users.filter(u => {
+            const q = searchQuery.toLowerCase();
+            return (u.username?.toLowerCase().includes(q))
+                || (u.display_name?.toLowerCase().includes(q))
+                || (u.email?.toLowerCase().includes(q));
+        })
+        : users;
+
     // Sort
-    const sorted = [...users].sort((a, b) => {
+    const sorted = [...filtered].sort((a, b) => {
         const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
         const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
         return sortOrder === 'asc' ? ta - tb : tb - ta;
@@ -154,9 +165,26 @@ export default function UserManagement() {
                 </div>
             ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {/* Summary row */}
-                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>
-                        {isChinese ? `共 ${users.length} 位用户` : `${users.length} users total`}
+                    {/* Search bar */}
+                    <div style={{ position: 'relative', marginBottom: '4px' }}>
+                        <input
+                            className="form-input"
+                            type="text"
+                            placeholder={isChinese ? '搜索用户名、显示名或邮箱…' : 'Search username, name or email…'}
+                            value={searchQuery}
+                            onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
+                            style={{
+                                width: '100%', maxWidth: '360px', fontSize: '13px',
+                                padding: '8px 12px 8px 12px',
+                                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                                borderRadius: '8px',
+                            }}
+                        />
+                        {searchQuery && (
+                            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: '12px' }}>
+                                {isChinese ? `${filtered.length} / ${users.length} 位用户` : `${filtered.length} / ${users.length} users`}
+                            </span>
+                        )}
                     </div>
 
                     {/* Header */}

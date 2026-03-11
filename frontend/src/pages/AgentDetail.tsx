@@ -1,16 +1,17 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import React, { useState, useEffect, useRef, Component, ErrorInfo } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useParams } from 'react-router-dom';
+
 import ConfirmModal from '../components/ConfirmModal';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import FileBrowser from '../components/FileBrowser';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
-import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi } from '../services/api';
+import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAuthStore } from '../stores';
 
-const TABS = ['status', 'pulse', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'settings'] as const;
+const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'settings'] as const;
 
 const getCategoryLabels = (t: any): Record<string, string> => ({
     file: t('agent.toolCategories.file'),
@@ -337,6 +338,13 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
     const [agentRelation, setAgentRelation] = useState('collaborator');
     const [agentDescription, setAgentDescription] = useState('');
     const [selectedAgentId, setSelectedAgentId] = useState('');
+    // Editing state
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const [editRelation, setEditRelation] = useState('');
+    const [editDescription, setEditDescription] = useState('');
+    const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+    const [editAgentRelation, setEditAgentRelation] = useState('');
+    const [editAgentDescription, setEditAgentDescription] = useState('');
 
     const { data: relationships = [], refetch } = useQuery({
         queryKey: ['relationships', agentId],
@@ -372,6 +380,21 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         await fetchAuth(`/agents/${agentId}/relationships/${relId}`, { method: 'DELETE' });
         refetch();
     };
+    const startEditRelationship = (r: any) => {
+        setEditingId(r.id);
+        setEditRelation(r.relation || 'collaborator');
+        setEditDescription(r.description || '');
+    };
+    const saveEditRelationship = async (targetId: string) => {
+        const updated = relationships.map((r: any) => ({
+            member_id: r.member_id,
+            relation: r.id === targetId ? editRelation : r.relation,
+            description: r.id === targetId ? editDescription : r.description,
+        }));
+        await fetchAuth(`/agents/${agentId}/relationships/`, { method: 'PUT', body: JSON.stringify({ relationships: updated }) });
+        setEditingId(null);
+        refetch();
+    };
     const addAgentRelationship = async () => {
         if (!selectedAgentId) return;
         const existing = agentRelationships.map((r: any) => ({ target_agent_id: r.target_agent_id, relation: r.relation, description: r.description }));
@@ -384,6 +407,21 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         await fetchAuth(`/agents/${agentId}/relationships/agents/${relId}`, { method: 'DELETE' });
         refetchAgentRels();
     };
+    const startEditAgentRelationship = (r: any) => {
+        setEditingAgentId(r.id);
+        setEditAgentRelation(r.relation || 'collaborator');
+        setEditAgentDescription(r.description || '');
+    };
+    const saveEditAgentRelationship = async (targetId: string) => {
+        const updated = agentRelationships.map((r: any) => ({
+            target_agent_id: r.target_agent_id,
+            relation: r.id === targetId ? editAgentRelation : r.relation,
+            description: r.id === targetId ? editAgentDescription : r.description,
+        }));
+        await fetchAuth(`/agents/${agentId}/relationships/agents`, { method: 'PUT', body: JSON.stringify({ relationships: updated }) });
+        setEditingAgentId(null);
+        refetchAgentRels();
+    };
 
     return (
         <div>
@@ -394,14 +432,35 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                 {relationships.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {relationships.map((r: any) => (
-                            <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                            <div key={r.id} style={{ borderRadius: '8px', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                 <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 600, flexShrink: 0 }}>{r.member?.name?.[0] || '?'}</div>
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                     <div style={{ fontWeight: 600, fontSize: '13px' }}>{r.member?.name || '?'} <span className="badge" style={{ fontSize: '10px', marginLeft: '4px' }}>{r.relation_label}</span></div>
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{r.member?.title || ''} · {r.member?.department_path || ''}</div>
-                                    {r.description && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{r.description}</div>}
+                                        {r.description && editingId !== r.id && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{r.description}</div>}
                                 </div>
-                                {!readOnly && <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px', flexShrink: 0 }} onClick={() => removeRelationship(r.id)}>{t('common.delete')}</button>}
+                                    {!readOnly && editingId !== r.id && (
+                                        <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                                            <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => startEditRelationship(r)}>{t('common.edit', 'Edit')}</button>
+                                            <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={() => removeRelationship(r.id)}>{t('common.delete')}</button>
+                                        </div>
+                                    )}
+                                </div>
+                                {editingId === r.id && (
+                                    <div style={{ padding: '0 10px 10px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+                                        <div style={{ display: 'flex', gap: '8px', marginTop: '8px', marginBottom: '8px' }}>
+                                            <select className="input" value={editRelation} onChange={e => setEditRelation(e.target.value)} style={{ width: '140px', fontSize: '12px' }}>
+                                                {getRelationOptions(t).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                            </select>
+                                        </div>
+                                        <textarea className="input" value={editDescription} onChange={e => setEditDescription(e.target.value)} rows={2} style={{ fontSize: '12px', resize: 'vertical', marginBottom: '8px', width: '100%' }} placeholder={t('agent.detail.descriptionPlaceholder', 'Description...')} />
+                                        <div style={{ display: 'flex', gap: '8px' }}>
+                                            <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={() => saveEditRelationship(r.id)}>{t('common.save', 'Save')}</button>
+                                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setEditingId(null)}>{t('common.cancel')}</button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         ))}
                     </div>
@@ -447,14 +506,35 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                 {agentRelationships.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {agentRelationships.map((r: any) => (
-                            <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px', borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)', background: 'rgba(16,185,129,0.05)' }}>
+                            <div key={r.id} style={{ borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)', background: 'rgba(16,185,129,0.05)', overflow: 'hidden' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                 <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: 0 }}>A</div>
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                     <div style={{ fontWeight: 600, fontSize: '13px' }}>{r.target_agent?.name || '?'} <span className="badge" style={{ fontSize: '10px', marginLeft: '4px', background: 'rgba(16,185,129,0.15)', color: 'rgb(16,185,129)' }}>{r.relation_label}</span></div>
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{r.target_agent?.role_description || 'Agent'}</div>
-                                    {r.description && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{r.description}</div>}
+                                        {r.description && editingAgentId !== r.id && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{r.description}</div>}
                                 </div>
-                                {!readOnly && <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px', flexShrink: 0 }} onClick={() => removeAgentRelationship(r.id)}>{t('common.delete')}</button>}
+                                    {!readOnly && editingAgentId !== r.id && (
+                                        <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                                            <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => startEditAgentRelationship(r)}>{t('common.edit', 'Edit')}</button>
+                                            <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={() => removeAgentRelationship(r.id)}>{t('common.delete')}</button>
+                                        </div>
+                                    )}
+                                </div>
+                                {editingAgentId === r.id && (
+                                    <div style={{ padding: '0 10px 10px', borderTop: '1px solid rgba(16,185,129,0.2)', background: 'var(--bg-elevated)' }}>
+                                        <div style={{ display: 'flex', gap: '8px', marginTop: '8px', marginBottom: '8px' }}>
+                                            <select className="input" value={editAgentRelation} onChange={e => setEditAgentRelation(e.target.value)} style={{ width: '140px', fontSize: '12px' }}>
+                                                {getAgentRelationOptions(t).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                            </select>
+                                        </div>
+                                        <textarea className="input" value={editAgentDescription} onChange={e => setEditAgentDescription(e.target.value)} rows={2} style={{ fontSize: '12px', resize: 'vertical', marginBottom: '8px', width: '100%' }} placeholder={t('agent.detail.descriptionPlaceholder', 'Description...')} />
+                                        <div style={{ display: 'flex', gap: '8px' }}>
+                                            <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={() => saveEditAgentRelationship(r.id)}>{t('common.save', 'Save')}</button>
+                                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setEditingAgentId(null)}>{t('common.cancel')}</button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         ))}
                     </div>
@@ -485,12 +565,21 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
     );
 }
 
-export default function AgentDetail() {
+function AgentDetailInner() {
     const { t, i18n } = useTranslation();
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const queryClient = useQueryClient();
-    const [activeTab, setActiveTab] = useState<string>('status');
+    const location = useLocation();
+    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'settings'];
+    const hashTab = location.hash?.replace('#', '');
+    const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
+
+    // Sync URL hash when tab changes
+    const setActiveTab = (tab: string) => {
+        setActiveTabRaw(tab);
+        window.history.replaceState(null, '', `#${tab}`);
+    };
 
     const { data: agent, isLoading } = useQuery({
         queryKey: ['agent', id],
@@ -498,30 +587,51 @@ export default function AgentDetail() {
         enabled: !!id,
     });
 
-    // ── Pulse tab data: triggers ──
-    const { data: pulseTriggers = [], refetch: refetchTriggers } = useQuery({
+    // ── Aware tab data: triggers ──
+    const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
         queryKey: ['triggers', id],
         queryFn: () => triggerApi.list(id!),
-        enabled: !!id && activeTab === 'pulse',
-        refetchInterval: activeTab === 'pulse' ? 5000 : false,
+        enabled: !!id && activeTab === 'aware',
+        refetchInterval: activeTab === 'aware' ? 5000 : false,
     });
 
-    // ── Pulse tab data: agenda.md ──
-    const { data: agendaFile } = useQuery({
-        queryKey: ['file', id, 'agenda.md'],
-        queryFn: () => fileApi.read(id!, 'agenda.md').catch(() => null),
-        enabled: !!id && activeTab === 'pulse',
+    // ── Aware tab data: focus.md ──
+    const { data: focusFile } = useQuery({
+        queryKey: ['file', id, 'focus.md'],
+        queryFn: () => fileApi.read(id!, 'focus.md').catch(() => null),
+        enabled: !!id && activeTab === 'aware',
     });
 
-    // ── Pulse tab data: task_history.md ──
+    // ── Aware tab data: task_history.md ──
     const { data: taskHistoryFile } = useQuery({
         queryKey: ['file', id, 'task_history.md'],
         queryFn: () => fileApi.read(id!, 'task_history.md').catch(() => null),
-        enabled: !!id && activeTab === 'pulse',
+        enabled: !!id && activeTab === 'aware',
     });
 
-    // ── Pulse tab state ──
-    const [pulseSection, setPulseSection] = useState<'agenda' | 'triggers' | 'monologue' | 'history'>('agenda');
+    // ── Aware tab data: pulse sessions (trigger monologues) ──
+    const { data: pulseSessions = [] } = useQuery({
+        queryKey: ['pulse-sessions', id],
+        queryFn: async () => {
+            const tkn = localStorage.getItem('token');
+            const res = await fetch(`/api/agents/${id}/sessions?scope=all`, { headers: { Authorization: `Bearer ${tkn}` } });
+            if (!res.ok) return [];
+            const all = await res.json();
+            return all.filter((s: any) => s.source_channel === 'trigger').slice(0, 20);
+        },
+        enabled: !!id && activeTab === 'aware',
+        refetchInterval: activeTab === 'aware' ? 10000 : false,
+    });
+
+    // ── Aware tab state ──
+    const [expandedFocus, setExpandedFocus] = useState<string | null>(null);
+    const [expandedReflection, setExpandedReflection] = useState<string | null>(null);
+    const [reflectionMessages, setReflectionMessages] = useState<Record<string, any[]>>({});
+    const [showAllFocus, setShowAllFocus] = useState(false);
+    const [showCompletedFocus, setShowCompletedFocus] = useState(false);
+    const [showAllTriggers, setShowAllTriggers] = useState(false);
+    const [showAllReflections, setShowAllReflections] = useState(false);
+    const SECTION_PAGE_SIZE = 5;
 
     const { data: soulContent } = useQuery({
         queryKey: ['file', id, 'soul.md'],
@@ -594,6 +704,7 @@ export default function AgentDetail() {
     };
 
     const createNewSession = async () => {
+        try {
         const tkn = localStorage.getItem('token');
         const res = await fetch(`/api/agents/${id}/sessions`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tkn}` },
@@ -605,6 +716,14 @@ export default function AgentDetail() {
             setChatMessages([]);
             setHistoryMsgs([]);
             setActiveSession(newSess);
+            } else {
+                const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+                console.error('Failed to create session:', err);
+                alert(`Failed to create session: ${err.detail || res.status}`);
+            }
+        } catch (err: any) {
+            console.error('Failed to create session:', err);
+            alert(`Failed to create session: ${err.message || err}`);
         }
     };
 
@@ -678,6 +797,7 @@ export default function AgentDetail() {
     const [uploading, setUploading] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(-1);
     const [attachedFile, setAttachedFile] = useState<{ name: string; text: string; path?: string; imageUrl?: string } | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
@@ -693,6 +813,9 @@ export default function AgentDetail() {
         max_tool_rounds: 50,
         max_tokens_per_day: '' as string | number,
         max_tokens_per_month: '' as string | number,
+        max_triggers: 20,
+        min_poll_interval_min: 5,
+        webhook_rate_limit: 5,
     });
     const [settingsSaving, setSettingsSaving] = useState(false);
     const [settingsSaved, setSettingsSaved] = useState(false);
@@ -709,10 +832,35 @@ export default function AgentDetail() {
                 max_tool_rounds: (agent as any).max_tool_rounds ?? 50,
                 max_tokens_per_day: agent.max_tokens_per_day || '',
                 max_tokens_per_month: agent.max_tokens_per_month || '',
+                max_triggers: (agent as any).max_triggers ?? 20,
+                min_poll_interval_min: (agent as any).min_poll_interval_min ?? 5,
+                webhook_rate_limit: (agent as any).webhook_rate_limit ?? 5,
             });
             settingsInitRef.current = true;
         }
     }, [agent]);
+
+    // Welcome message editor state (must be at top level -- not inside IIFE)
+    const [wmDraft, setWmDraft] = useState('');
+    const [wmSaved, setWmSaved] = useState(false);
+    useEffect(() => { setWmDraft((agent as any)?.welcome_message || ''); }, [(agent as any)?.welcome_message]);
+
+    // Reset cached state when switching to a different agent
+    const prevIdRef = useRef(id);
+    useEffect(() => {
+        if (id && id !== prevIdRef.current) {
+            prevIdRef.current = id;
+            settingsInitRef.current = false;
+            setSettingsSaved(false);
+            setSettingsError('');
+            setWmDraft('');
+            setWmSaved(false);
+            // Invalidate all queries for the old agent to force fresh data
+            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+            // Re-apply hash so refresh preserves the current tab
+            window.history.replaceState(null, '', `#${activeTab}`);
+        }
+    }, [id]);
 
     // Load chat history + connect websocket when chat tab is active
     const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
@@ -860,6 +1008,31 @@ export default function AgentDetail() {
     const isNearBottom = useRef(true);
     const isFirstLoad = useRef(true);
     const [showScrollBtn, setShowScrollBtn] = useState(false);
+    // Read-only history scroll-to-bottom
+    const historyContainerRef = useRef<HTMLDivElement>(null);
+    const [showHistoryScrollBtn, setShowHistoryScrollBtn] = useState(false);
+    const handleHistoryScroll = () => {
+        const el = historyContainerRef.current;
+        if (!el) return;
+        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        setShowHistoryScrollBtn(distFromBottom > 200);
+    };
+    const scrollHistoryToBottom = () => {
+        const el = historyContainerRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+        setShowHistoryScrollBtn(false);
+    };
+    // Auto-show button when history messages overflow the container
+    useEffect(() => {
+        const el = historyContainerRef.current;
+        if (!el) return;
+        // Use a small timeout to let the DOM render the messages first
+        const timer = setTimeout(() => {
+            const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+            setShowHistoryScrollBtn(distFromBottom > 200);
+        }, 100);
+        return () => clearTimeout(timer);
+    }, [historyMsgs, activeSession?.id]);
     const handleChatScroll = () => {
         const el = chatContainerRef.current;
         if (!el) return;
@@ -930,13 +1103,16 @@ export default function AgentDetail() {
 
     const handleChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0]; if (!file) return;
-        setUploading(true);
+        setUploading(true); setUploadProgress(0);
         try {
-            const fd = new FormData(); fd.append('file', file); if (id) fd.append('agent_id', id);
-            const resp = await fetch('/api/chat/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
-            if (!resp.ok) { const err = await resp.json(); alert(err.detail || t('agent.upload.failed')); return; }
-            const data = await resp.json(); setAttachedFile({ name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined });
-        } catch (err) { alert(t('agent.upload.failed')); } finally { setUploading(false); if (fileInputRef.current) fileInputRef.current.value = ''; }
+            const data = await uploadFileWithProgress(
+                `/chat/upload`,
+                file,
+                (pct) => setUploadProgress(pct),
+                id ? { agent_id: id } : undefined,
+            );
+            setAttachedFile({ name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined });
+        } catch (err) { alert(t('agent.upload.failed')); } finally { setUploading(false); setUploadProgress(-1); if (fileInputRef.current) fileInputRef.current.value = ''; }
     };
 
     // Clipboard paste handler — auto-upload pasted images
@@ -952,14 +1128,16 @@ export default function AgentDetail() {
                 const ext = blob.type.split('/')[1] || 'png';
                 const fileName = `paste-${Date.now()}.${ext}`;
                 const file = new File([blob], fileName, { type: blob.type });
-                setUploading(true);
+                setUploading(true); setUploadProgress(0);
                 try {
-                    const fd = new FormData(); fd.append('file', file); if (id) fd.append('agent_id', id);
-                    const resp = await fetch('/api/chat/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
-                    if (!resp.ok) { const err = await resp.json(); alert(err.detail || t('agent.upload.failed')); return; }
-                    const data = await resp.json();
+                    const data = await uploadFileWithProgress(
+                        `/chat/upload`,
+                        file,
+                        (pct) => setUploadProgress(pct),
+                        id ? { agent_id: id } : undefined,
+                    );
                     setAttachedFile({ name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined });
-                } catch (err) { alert(t('agent.upload.failed')); } finally { setUploading(false); }
+                } catch (err) { alert(t('agent.upload.failed')); } finally { setUploading(false); setUploadProgress(-1); }
                 return; // Only handle the first image
             }
         }
@@ -1035,8 +1213,9 @@ export default function AgentDetail() {
 
     const { data: metrics } = useQuery({
         queryKey: ['metrics', id],
-        queryFn: () => agentApi.metrics(id!),
+        queryFn: () => agentApi.metrics(id!).catch(() => null),
         enabled: !!id && activeTab === 'status',
+        retry: false,
     });
 
     const { data: channelConfig } = useQuery({
@@ -1116,6 +1295,38 @@ export default function AgentDetail() {
     // ─── Channel config — Discord ────────────────────────
     const [discordForm, setDiscordForm] = useState({ application_id: '', bot_token: '', public_key: '' });
     const [discordEditing, setDiscordEditing] = useState(false);
+    
+    // ─── Channel config — Microsoft Teams ────────────────────────
+    const [teamsForm, setTeamsForm] = useState({ app_id: '', app_secret: '', tenant_id: '' });
+    const [teamsEditing, setTeamsEditing] = useState(false);
+    const { data: teamsConfig } = useQuery({
+        queryKey: ['teams-channel', id],
+        queryFn: () => fetchAuth<any>(`/agents/${id}/teams-channel`).catch(() => null),
+        enabled: !!id && activeTab === 'settings',
+    });
+    const { data: teamsWebhookData } = useQuery({
+        queryKey: ['teams-webhook-url', id],
+        queryFn: () => fetchAuth<any>(`/agents/${id}/teams-channel/webhook-url`).catch(() => null),
+        enabled: !!id && activeTab === 'settings',
+    });
+    const saveTeams = useMutation({
+        mutationFn: () => fetchAuth(`/agents/${id}/teams-channel`, { method: 'POST', body: JSON.stringify(teamsForm) }),
+        onSuccess: () => { 
+            queryClient.invalidateQueries({ queryKey: ['teams-channel', id] }); 
+            queryClient.invalidateQueries({ queryKey: ['teams-webhook-url', id] }); 
+            setTeamsForm({ app_id: '', app_secret: '', tenant_id: '' }); 
+        },
+    });
+    const deleteTeams = useMutation({
+        mutationFn: () => fetchAuth(`/agents/${id}/teams-channel`, { method: 'DELETE' }),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['teams-channel', id] }),
+    });
+    
+    // Collapsible state for channel settings sections
+    const [slackOpen, setSlackOpen] = useState(false);
+    const [discordOpen, setDiscordOpen] = useState(false);
+    const [teamsOpen, setTeamsOpen] = useState(false);
+    const [feishuOpen, setFeishuOpen] = useState(false);
     // Shared password-field visibility map: key = field id, value = shown/hidden
     const [showPwds, setShowPwds] = useState<Record<string, boolean>>({});
     const togglePwd = (fieldId: string) => setShowPwds(p => ({ ...p, [fieldId]: !p[fieldId] }));
@@ -1383,8 +1594,12 @@ export default function AgentDetail() {
                                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>Pending</div>
                                             <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>{metrics.approvals?.pending || 0}</div>
                                         </div>
-                                        <div className="card">
-                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>24h Ops</div>
+                                        <div className="card" style={{ position: 'relative' }}>
+                                            <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                {i18n.language?.startsWith('zh') ? '24h 活动' : '24h Actions'}
+                                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
+                                                <span className="metric-tooltip">{i18n.language?.startsWith('zh') ? '过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等' : 'Total recorded operations in the past 24 hours, including chats, tool calls, task executions, etc.'}</span>
+                                            </div>
                                             <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
                                         </div>
                                     </>
@@ -1413,6 +1628,10 @@ export default function AgentDetail() {
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
                                             <span style={{ color: 'var(--text-tertiary)' }}>Last Active</span>
                                             <span>{agent.last_active_at ? formatDate(agent.last_active_at) : '—'}</span>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>🌐 Timezone</span>
+                                            <span>{(agent as any).effective_timezone || agent.timezone || 'UTC'}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1458,240 +1677,668 @@ export default function AgentDetail() {
                             {/* Quick Actions */}
                             <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
                                 <button className="btn btn-secondary" onClick={() => setActiveTab('chat')}>💬 {t('agent.actions.chat')}</button>
-                                <button className="btn btn-secondary" onClick={() => setActiveTab('pulse')}>⚡ Pulse</button>
+                                <button className="btn btn-secondary" onClick={() => setActiveTab('aware')}>Aware</button>
                                 <button className="btn btn-secondary" onClick={() => setActiveTab('settings')}>⚙️ {t('agent.tabs.settings')}</button>
                             </div>
                         </div>
                     );
                 })()}
 
-                {/* ── Pulse Tab ── */}
-                {activeTab === 'pulse' && (
-                    <div>
-                        {/* Sub-navigation */}
-                        <div style={{ display: 'flex', gap: '2px', marginBottom: '16px', background: 'var(--bg-secondary)', borderRadius: '8px', padding: '3px' }}>
-                            {(['agenda', 'triggers', 'monologue', 'history'] as const).map(sec => (
-                                <button key={sec} onClick={() => setPulseSection(sec)} style={{
-                                    flex: 1, padding: '8px 12px', borderRadius: '6px', border: 'none',
-                                    background: pulseSection === sec ? 'var(--accent-primary)' : 'transparent',
-                                    color: pulseSection === sec ? '#fff' : 'var(--text-secondary)',
-                                    fontSize: '13px', fontWeight: 600, cursor: 'pointer', transition: 'all .2s',
-                                }}>
-                                    {sec === 'agenda' ? `📋 ${t('agent.pulse.agenda')}` : sec === 'triggers' ? `⚡ ${t('agent.pulse.triggers')}` : sec === 'monologue' ? `🤖 ${t('agent.pulse.monologue')}` : `📜 ${t('agent.pulse.history')}`}
-                                </button>
-                            ))}
+                {/* ── Aware Tab ── */}
+                {activeTab === 'aware' && (() => {
+                    // Parse focus.md into focus items with multi-line descriptions
+                    const raw = focusFile?.content || '';
+                    const lines = raw.split('\n');
+                    const focusItems: { id: string; name: string; description: string; done: boolean; inProgress: boolean }[] = [];
+                    let currentItem: any = null;
+                    for (const line of lines) {
+                        const match = line.match(/^\s*-\s*\[([ x/])\]\s*(.+)/i);
+                        if (match) {
+                            if (currentItem) focusItems.push(currentItem);
+                            const marker = match[1];
+                            const fullText = match[2].trim();
+                            // Split on first colon: "identifier: description"
+                            const colonIdx = fullText.indexOf(':');
+                            const itemName = colonIdx > 0 ? fullText.substring(0, colonIdx).trim() : fullText;
+                            const itemDesc = colonIdx > 0 ? fullText.substring(colonIdx + 1).trim() : '';
+                            currentItem = {
+                                id: itemName,
+                                name: itemName,
+                                description: itemDesc,
+                                done: marker.toLowerCase() === 'x',
+                                inProgress: marker === '/',
+                            };
+                        } else if (currentItem && line.trim() && /^\s{2,}/.test(line)) {
+                            // Indented continuation line = description
+                            currentItem.description = currentItem.description
+                                ? currentItem.description + ' ' + line.trim()
+                                : line.trim();
+                        }
+                    }
+                    if (currentItem) focusItems.push(currentItem);
+
+                    // Helper: convert trigger config to natural language
+                    const triggerToHuman = (trig: any): string => {
+                        if (trig.type === 'cron' && trig.config?.expr) {
+                            const expr = trig.config.expr;
+                            const parts = expr.split(' ');
+                            if (parts.length >= 5) {
+                                const [min, hour, , , dow] = parts;
+                                const timeStr = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
+                                if (dow === '*' && min !== '*' && hour !== '*') return `Every day at ${timeStr}`;
+                                if (dow === '1-5' && min !== '*' && hour !== '*') return `Weekdays at ${timeStr}`;
+                                if (dow === '0' || dow === '7') return `Sundays at ${timeStr}`;
+                                if (hour === '*' && min === '0') {
+                                    if (dow === '1-5') return 'Every hour on weekdays';
+                                    return 'Every hour';
+                                }
+                                if (hour === '*' && min !== '*') return `Every hour at :${min.padStart(2, '0')}`;
+                            }
+                            return `Cron: ${expr}`;
+                        }
+                        if (trig.type === 'once' && trig.config?.at) {
+                            try {
+                                return `Once at ${new Date(trig.config.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+                            } catch { return `Once at ${trig.config.at}`; }
+                        }
+                        if (trig.type === 'interval' && trig.config?.minutes) {
+                            const m = trig.config.minutes;
+                            return m >= 60 ? `Every ${m / 60}h` : `Every ${m} min`;
+                        }
+                        if (trig.type === 'poll') return `Poll: ${trig.config?.url?.substring(0, 40) || 'URL'}`;
+                        if (trig.type === 'on_message') {
+                            return `On message from ${trig.config?.from_agent_name || trig.config?.from_user_name || 'unknown'}`;
+                        }
+                        if (trig.type === 'webhook') {
+                            return `Webhook${trig.config?.token ? ` (${trig.config.token.substring(0, 6)}...)` : ''}`;
+                        }
+                        return trig.type;
+                    };
+
+                    // Group triggers by focus_ref
+                    const triggersByFocus: Record<string, any[]> = {};
+                    const standaloneTriggers: any[] = [];
+                    for (const trig of awareTriggers) {
+                        if (trig.focus_ref && focusItems.some(f => f.name === trig.focus_ref)) {
+                            if (!triggersByFocus[trig.focus_ref]) triggersByFocus[trig.focus_ref] = [];
+                            triggersByFocus[trig.focus_ref].push(trig);
+                        } else {
+                            standaloneTriggers.push(trig);
+                        }
+                    }
+
+                    // Group activity logs by trigger name -> focus_ref
+                    const triggerLogsByFocus: Record<string, any[]> = {};
+                    const triggerNameToFocus: Record<string, string> = {};
+                    for (const trig of awareTriggers) {
+                        if (trig.focus_ref) triggerNameToFocus[trig.name] = trig.focus_ref;
+                    }
+                    const triggerRelatedLogs = activityLogs.filter((log: any) =>
+                        log.action_type === 'trigger_fired' || log.action_type === 'trigger_created' ||
+                        log.action_type === 'trigger_updated' || log.action_type === 'trigger_cancelled' ||
+                        log.summary?.includes('trigger')
+                    );
+                    for (const log of triggerRelatedLogs) {
+                        // Try to match log to a focus item via trigger name in the summary
+                        let matched = false;
+                        for (const [trigName, focusName] of Object.entries(triggerNameToFocus)) {
+                            if (log.summary?.includes(trigName) || log.detail?.tool === trigName) {
+                                if (!triggerLogsByFocus[focusName]) triggerLogsByFocus[focusName] = [];
+                                triggerLogsByFocus[focusName].push(log);
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if (!matched) {
+                            if (!triggerLogsByFocus['__unmatched__']) triggerLogsByFocus['__unmatched__'] = [];
+                            triggerLogsByFocus['__unmatched__'].push(log);
+                        }
+                    }
+
+                    const hasFocusItems = focusItems.length > 0;
+                    const hasStandalone = standaloneTriggers.length > 0;
+
+                    // Split focus items: active first, completed separately
+                    const activeFocusItems = focusItems.filter(f => !f.done);
+                    const completedFocusItems = focusItems.filter(f => f.done);
+                    const visibleActiveFocus = showAllFocus ? activeFocusItems : activeFocusItems.slice(0, SECTION_PAGE_SIZE);
+                    const hiddenActiveCount = activeFocusItems.length - visibleActiveFocus.length;
+
+                    // Render a focus item row
+                    const renderFocusItem = (item: typeof focusItems[0]) => {
+                        const isExpanded = expandedFocus === item.id;
+                        const itemTriggers = triggersByFocus[item.name] || [];
+                        const itemLogs = triggerLogsByFocus[item.name] || [];
+                        const displayTitle = item.description || item.name;
+                        const displaySubtitle = item.description ? item.name : null;
+
+                        return (
+                            <div key={item.id} style={{
+                                borderRadius: '8px',
+                                border: '1px solid var(--border-subtle)',
+                                overflow: 'hidden',
+                                marginBottom: '6px',
+                                background: 'var(--bg-primary)',
+                            }}>
+                                {/* Focus Item Header */}
+                                <div
+                                    onClick={() => setExpandedFocus(isExpanded ? null : item.id)}
+                                    style={{
+                                        padding: '12px 16px',
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: '12px',
+                                        cursor: 'pointer',
+                                        transition: 'background 0.15s',
+                                    }}
+                                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-secondary)')}
+                                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                                >
+                                    {/* Status indicator */}
+                                    <div style={{
+                                        width: '8px', height: '8px', borderRadius: '50%', marginTop: '5px', flexShrink: 0,
+                                        background: item.done ? 'var(--success, #10b981)' : item.inProgress ? 'var(--accent-primary)' : 'var(--border-subtle)',
+                                    }} />
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{
+                                            fontSize: '13px', fontWeight: 500, lineHeight: '20px',
+                                            textDecoration: item.done ? 'line-through' : 'none',
+                                            color: item.done ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                                        }}>{displayTitle}</div>
+                                        {displaySubtitle && (
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'monospace', marginTop: '2px' }}>
+                                                {displaySubtitle}
+                                            </div>
+                                        )}
+                                    </div>
+                                    {/* Trigger count badge */}
+                                    {itemTriggers.length > 0 && (
+                                        <span style={{
+                                            fontSize: '11px', color: 'var(--text-tertiary)',
+                                            padding: '2px 8px', borderRadius: '10px',
+                                            background: 'var(--bg-secondary)',
+                                            whiteSpace: 'nowrap',
+                                        }}>
+                                            {itemTriggers.length} trigger{itemTriggers.length > 1 ? 's' : ''}
+                                        </span>
+                                    )}
+                                    {/* Expand arrow */}
+                                    <span style={{
+                                        fontSize: '11px', color: 'var(--text-tertiary)',
+                                        transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                                        transition: 'transform 0.15s',
+                                        marginTop: '4px',
+                                    }}>&#9654;</span>
                         </div>
 
-                        {/* AGENDA section */}
-                        {pulseSection === 'agenda' && (() => {
-                            const raw = agendaFile?.content || '';
-                            const lines = raw.split('\n');
-                            const items = lines.filter((l: string) => /^\s*-\s*\[/.test(l)).map((l: string, i: number) => {
-                                const done = /\[x\]/i.test(l);
-                                const inProgress = /\[\//.test(l);
-                                const text = l.replace(/^\s*-\s*\[.\]\s*/, '').trim();
-                                return { id: i, text, done, inProgress };
-                            });
-                            // Active triggers as fallback agenda items
-                            const activeTriggers = pulseTriggers.filter((trig: any) => trig.is_enabled);
-                            const hasAgenda = items.length > 0;
-                            const hasActiveTriggers = activeTriggers.length > 0;
-                            return (
-                                <div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                        <h4 style={{ margin: 0 }}>📋 {t('agent.pulse.agenda')}</h4>
-                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.pulse.agendaDesc')}</span>
+                                {/* Expanded content */}
+                                {isExpanded && (
+                                    <div style={{ padding: '0 16px 12px 36px', borderTop: '1px solid var(--border-subtle)' }}>
+                                        {/* Nested Triggers */}
+                                        {itemTriggers.length > 0 && (
+                                            <div style={{ marginTop: '12px' }}>
+                                                {itemTriggers.map((trig: any) => (
+                                                    <div key={trig.id} style={{
+                                                        display: 'flex', alignItems: 'center', gap: '10px',
+                                                        padding: '8px 12px', marginBottom: '4px',
+                                                        borderRadius: '6px', background: 'var(--bg-secondary)',
+                                                        opacity: trig.is_enabled ? 1 : 0.5,
+                                                    }}>
+                                                        <div style={{ flex: 1 }}>
+                                                            <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                                                                {triggerToHuman(trig)}
                                     </div>
-                                    {/* Agenda items from agenda.md */}
-                                    {hasAgenda && (
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: hasActiveTriggers ? '16px' : '0' }}>
-                                            {items.map((it: any) => (
-                                                <div key={it.id} className="card" style={{
-                                                    padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px',
-                                                    opacity: it.done ? 0.5 : 1,
-                                                    borderLeft: it.inProgress ? '3px solid var(--accent-primary)' : it.done ? '3px solid var(--success)' : '3px solid var(--border-subtle)',
-                                                }}>
-                                                    <span style={{ fontSize: '16px' }}>{it.done ? '✅' : it.inProgress ? '🔄' : '⬜'}</span>
-                                                    <span style={{ fontSize: '13px', textDecoration: it.done ? 'line-through' : 'none' }}>{it.text}</span>
+                                                            {trig.reason && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{trig.reason}</div>}
+                                                            <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '2px', fontFamily: 'monospace' }}>
+                                                                {trig.type === 'cron' ? trig.config?.expr : ''}{' '}
+                                                            </div>
+                                                        </div>
+                                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                                                            {t('agent.aware.fired', { count: trig.fire_count })}
+                                                        </span>
+                                                        {!trig.is_enabled && (
+                                                            <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{t('agent.aware.disabled')}</span>
+                                                        )}
+                                                        <div style={{ display: 'flex', gap: '4px' }}>
+                                                            <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px' }}
+                                                                onClick={async (e) => {
+                                                                    e.stopPropagation();
+                                                                    await triggerApi.update(id!, trig.id, { is_enabled: !trig.is_enabled });
+                                                                    refetchTriggers();
+                                                                }}>
+                                                                {trig.is_enabled ? t('agent.aware.disable') : t('agent.aware.enable')}
+                                                            </button>
+                                                            <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
+                                                                onClick={async (e) => {
+                                                                    e.stopPropagation();
+                                                                    if (confirm(t('agent.aware.deleteTriggerConfirm', { name: trig.name }))) {
+                                                                        await triggerApi.delete(id!, trig.id);
+                                                                        refetchTriggers();
+                                                                    }
+                                                                }}>
+                                                                {t('common.delete', 'Delete')}
+                                                            </button>
+                                                        </div>
                                                 </div>
                                             ))}
                                         </div>
                                     )}
-                                    {/* Active triggers shown as scheduled items */}
-                                    {hasActiveTriggers && (
-                                        <div>
-                                            {hasAgenda && (
-                                                <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                    <span>⏰</span> {t('agent.pulse.scheduledTriggers', 'Scheduled Triggers')}
+
+                                        {/* Activity Logs for this focus */}
+                                        {itemLogs.length > 0 && (
+                                            <div style={{ marginTop: '12px' }}>
+                                                <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '6px' }}>
+                                                    {t('agent.aware.reflections')}
                                                 </div>
-                                            )}
                                             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                                {activeTriggers.map((trig: any) => (
-                                                    <div key={trig.id} className="card" style={{
-                                                        padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px',
-                                                        borderLeft: `3px solid ${trig.type === 'cron' ? '#7c3aed' : trig.type === 'once' ? '#059669' : trig.type === 'interval' ? '#0284c7' : trig.type === 'poll' ? '#ea580c' : '#db2777'}`,
-                                                    }}>
-                                                        <span style={{ fontSize: '16px' }}>⏰</span>
-                                                        <div style={{ flex: 1 }}>
-                                                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{trig.name}</div>
-                                                            {trig.reason && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{trig.reason}</div>}
-                                                        </div>
+                                                    {itemLogs.slice(0, 10).map((log: any) => (
+                                                        <div key={log.id} style={{
+                                                            padding: '6px 12px', borderRadius: '6px',
+                                                            background: 'var(--bg-secondary)',
+                                                            borderLeft: '2px solid var(--border-subtle)',
+                                                        }}>
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
                                                         <span style={{
-                                                            fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                                            background: trig.type === 'cron' ? '#ede9fe' : trig.type === 'once' ? '#d1fae5' : trig.type === 'interval' ? '#dbeafe' : trig.type === 'poll' ? '#ffedd5' : '#fce7f3',
-                                                            color: trig.type === 'cron' ? '#7c3aed' : trig.type === 'once' ? '#059669' : trig.type === 'interval' ? '#0284c7' : trig.type === 'poll' ? '#ea580c' : '#db2777',
-                                                            fontWeight: 600,
-                                                        }}>{trig.type}</span>
+                                                                    fontSize: '10px', padding: '1px 5px', borderRadius: '3px',
+                                                                    background: log.action_type === 'trigger_fired' ? 'rgba(var(--accent-primary-rgb, 99,102,241), 0.1)' : 'var(--bg-tertiary, #e5e7eb)',
+                                                                    color: log.action_type === 'trigger_fired' ? 'var(--accent-primary)' : 'var(--text-tertiary)',
+                                                                    fontWeight: 500,
+                                                                }}>{log.action_type?.replace('trigger_', '')}</span>
+                                                                <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                                                                    {new Date(log.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                                                </span>
+                                                            </div>
+                                                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{log.summary}</div>
                                                     </div>
                                                 ))}
                                             </div>
                                         </div>
                                     )}
-                                    {/* Empty state only when BOTH are empty */}
-                                    {!hasAgenda && !hasActiveTriggers && (
-                                        <div className="card" style={{ padding: '32px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-                                            {t('agent.pulse.agendaEmpty')}
+
+                                        {itemTriggers.length === 0 && itemLogs.length === 0 && (
+                                            <div style={{ padding: '12px 0', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                {t('agent.aware.noTriggers')}
                                         </div>
                                     )}
-                                    {/* Raw markdown */}
-                                    {raw && (
-                                        <details style={{ marginTop: '12px' }}>
-                                            <summary style={{ fontSize: '11px', color: 'var(--text-tertiary)', cursor: 'pointer' }}>{t('agent.pulse.viewRawMarkdown')}</summary>
-                                            <pre style={{ fontSize: '11px', marginTop: '8px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', whiteSpace: 'pre-wrap', maxHeight: '300px', overflow: 'auto' }}>{raw}</pre>
-                                        </details>
+                                    </div>
                                     )}
                                 </div>
                             );
-                        })()}
+                    };
 
-
-                        {/* TRIGGERS section */}
-                        {pulseSection === 'triggers' && (
-                            <div>
+                    return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            {/* ── Focus Section ── */}
+                            <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                    <h4 style={{ margin: 0 }}>⚡ {t('agent.pulse.triggers')}</h4>
-                                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.pulse.triggersDesc')}</span>
-                                </div>
-                                {pulseTriggers.length === 0 ? (
-                                    <div className="card" style={{ padding: '32px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-                                        {t('agent.pulse.triggersEmpty')}
+                            <div>
+                                        <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.focus')}</h4>
+                                        <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.focusDesc')}</span>
                                     </div>
-                                ) : (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                        {pulseTriggers.map((trig: any) => (
-                                            <div key={trig.id} className="card" style={{
-                                                padding: '12px 16px',
+                                    {hasFocusItems && (
+                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                            {activeFocusItems.length} active{completedFocusItems.length > 0 ? ` · ${completedFocusItems.length} done` : ''}
+                                        </span>
+                                    )}
+                                </div>
+
+                                {/* Active Focus Items */}
+                                {visibleActiveFocus.map(renderFocusItem)}
+
+                                {/* Show more active items */}
+                                {hiddenActiveCount > 0 && (
+                                    <button
+                                        onClick={() => setShowAllFocus(true)}
+                                        className="btn btn-ghost"
+                                        style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
+                                    >
+                                        {i18n.language?.startsWith('zh') ? `显示更多 ${hiddenActiveCount} 项...` : `Show ${hiddenActiveCount} more...`}
+                                    </button>
+                                )}
+                                {showAllFocus && activeFocusItems.length > SECTION_PAGE_SIZE && (
+                                    <button
+                                        onClick={(e) => { setShowAllFocus(false); e.currentTarget.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+                                        className="btn btn-ghost"
+                                        style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
+                                    >
+                                        {i18n.language?.startsWith('zh') ? '收起' : 'Show less'}
+                                    </button>
+                                )}
+
+                                {/* Completed Focus Items — auto-collapsed */}
+                                {completedFocusItems.length > 0 && (
+                                    <>
+                                        <button
+                                            onClick={() => setShowCompletedFocus(!showCompletedFocus)}
+                                            className="btn btn-ghost"
+                                            style={{
+                                                width: '100%', fontSize: '12px', color: 'var(--text-tertiary)',
+                                                padding: '8px', marginTop: '8px',
+                                                borderTop: '1px solid var(--border-subtle)',
+                                                borderRadius: 0,
+                                            }}
+                                        >
+                                            {showCompletedFocus
+                                                ? (i18n.language?.startsWith('zh') ? '隐藏已完成' : 'Hide completed')
+                                                : (i18n.language?.startsWith('zh') ? `显示 ${completedFocusItems.length} 项已完成` : `Show ${completedFocusItems.length} completed`)
+                                            }
+                                        </button>
+                                        {showCompletedFocus && completedFocusItems.map(renderFocusItem)}
+                                    </>
+                                )}
+
+                                {/* Empty state */}
+                                {!hasFocusItems && (
+                                    <div style={{
+                                        padding: '24px', textAlign: 'center', color: 'var(--text-tertiary)',
+                                        border: '1px dashed var(--border-subtle)', borderRadius: '8px',
+                                    }}>
+                                        {t('agent.aware.focusEmpty')}
+                                    </div>
+                                )}
+                            </div>
+                            {/* ── Standalone Triggers Card ── */}
+                            {hasStandalone && (
+                                <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                        <div>
+                                            <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.standaloneTriggers')}</h4>
+                                </div>
+                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                            {standaloneTriggers.length} trigger{standaloneTriggers.length > 1 ? 's' : ''}
+                                        </span>
+                                    </div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        {[...standaloneTriggers].sort((a: any, b: any) => (b.is_enabled ? 1 : 0) - (a.is_enabled ? 1 : 0)).slice(0, showAllTriggers ? undefined : SECTION_PAGE_SIZE).map((trig: any) => (
+                                            <div key={trig.id} style={{
+                                                padding: '10px 14px', borderRadius: '8px',
+                                                border: '1px solid var(--border-subtle)',
+                                                display: 'flex', alignItems: 'center', gap: '10px',
                                                 opacity: trig.is_enabled ? 1 : 0.5,
-                                                borderLeft: `3px solid ${trig.is_enabled ? (trig.type === 'cron' ? '#7c3aed' : trig.type === 'once' ? '#059669' : trig.type === 'interval' ? '#0284c7' : trig.type === 'poll' ? '#ea580c' : '#db2777') : '#999'}`,
+                                                background: 'var(--bg-primary)',
                                             }}>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                                                    <span style={{ fontWeight: 600, fontSize: '13px' }}>{trig.name}</span>
-                                                    <span style={{
-                                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                                        background: trig.type === 'cron' ? '#ede9fe' : trig.type === 'once' ? '#d1fae5' : trig.type === 'interval' ? '#dbeafe' : trig.type === 'poll' ? '#ffedd5' : '#fce7f3',
-                                                        color: trig.type === 'cron' ? '#7c3aed' : trig.type === 'once' ? '#059669' : trig.type === 'interval' ? '#0284c7' : trig.type === 'poll' ? '#ea580c' : '#db2777',
-                                                        fontWeight: 600,
-                                                    }}>{trig.type}</span>
-                                                    {!trig.is_enabled && <span style={{ fontSize: '10px', color: '#999' }}>⏸ {t('agent.pulse.disabled')}</span>}
-                                                    <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.pulse.fired', { count: trig.fire_count })}</span>
+                                                <div style={{ flex: 1 }}>
+                                                    <div style={{ fontSize: '13px', fontWeight: 500 }}>{triggerToHuman(trig)}</div>
+                                                    {trig.reason && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{trig.reason}</div>}
+                                                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontFamily: 'monospace', marginTop: '2px' }}>
+                                                        {trig.name}{trig.type === 'cron' ? ` · ${trig.config?.expr}` : ''}
                                                 </div>
-                                                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>{trig.reason}</div>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
-                                                    <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>
-                                                        {JSON.stringify(trig.config).substring(0, 80)}
+                                                </div>
+                                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                                                    {t('agent.aware.fired', { count: trig.fire_count })}
                                                     </span>
+                                                {!trig.is_enabled && (
+                                                    <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{t('agent.aware.disabled')}</span>
+                                                )}
                                                     <div style={{ display: 'flex', gap: '4px' }}>
                                                         <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px' }}
                                                             onClick={async () => {
                                                                 await triggerApi.update(id!, trig.id, { is_enabled: !trig.is_enabled });
                                                                 refetchTriggers();
                                                             }}>
-                                                            {trig.is_enabled ? `⏸ ${t('agent.pulse.disable')}` : `▶️ ${t('agent.pulse.enable')}`}
+                                                        {trig.is_enabled ? t('agent.aware.disable') : t('agent.aware.enable')}
                                                         </button>
                                                         <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                                                             onClick={async () => {
-                                                                if (confirm(t('agent.pulse.deleteTriggerConfirm', { name: trig.name }))) {
+                                                            if (confirm(t('agent.aware.deleteTriggerConfirm', { name: trig.name }))) {
                                                                     await triggerApi.delete(id!, trig.id);
                                                                     refetchTriggers();
                                                                 }
                                                             }}>
-                                                            🗑
+                                                        {t('common.delete', 'Delete')}
                                                         </button>
-                                                    </div>
                                                 </div>
                                             </div>
                                         ))}
-
                                     </div>
+                                    {standaloneTriggers.length > SECTION_PAGE_SIZE && (
+                                        <button
+                                            onClick={(e) => { const collapse = showAllTriggers; setShowAllTriggers(!showAllTriggers); if (collapse) e.currentTarget.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+                                            className="btn btn-ghost"
+                                            style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
+                                        >
+                                            {showAllTriggers
+                                                ? (i18n.language?.startsWith('zh') ? '收起' : 'Show less')
+                                                : (i18n.language?.startsWith('zh') ? `显示更多 ${standaloneTriggers.length - SECTION_PAGE_SIZE} 项...` : `Show ${standaloneTriggers.length - SECTION_PAGE_SIZE} more...`)
+                                            }
+                                        </button>
                                 )}
                             </div>
                         )}
 
-                        {/* INNER MONOLOGUE section */}
-                        {pulseSection === 'monologue' && (() => {
-                            // Filter activity logs for trigger-related entries
-                            const triggerLogs = activityLogs.filter((log: any) =>
-                                log.action_type === 'trigger_fired' || log.action_type === 'trigger_created' ||
-                                log.action_type === 'trigger_updated' || log.action_type === 'trigger_cancelled' ||
-                                log.summary?.includes('内心独白') || log.summary?.includes('trigger')
-                            );
+                            {/* Raw markdown toggle */}
+                            {raw && (
+                                <details style={{ marginTop: '4px', marginBottom: '16px' }}>
+                                    <summary style={{ fontSize: '11px', color: 'var(--text-tertiary)', cursor: 'pointer' }}>{t('agent.aware.viewRawMarkdown')}</summary>
+                                    <pre style={{ fontSize: '11px', marginTop: '8px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', whiteSpace: 'pre-wrap', maxHeight: '300px', overflow: 'auto' }}>{raw}</pre>
+                                </details>
+                            )}
+
+                            {/* ── Reflections Card ── */}
+                            {pulseSessions.length > 0 && (() => {
+                                const visibleSessions = showAllReflections ? pulseSessions : pulseSessions.slice(0, SECTION_PAGE_SIZE);
+                                const hiddenCount = pulseSessions.length - visibleSessions.length;
                             return (
-                                <div>
+                                    <div className="card" style={{ padding: '16px' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                        <h4 style={{ margin: 0 }}>🤖 {t('agent.pulse.monologue')}</h4>
-                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.pulse.monologueDesc')}</span>
+                                            <div>
+                                                <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.reflections')}</h4>
+                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.reflectionsDesc')}</span>
                                     </div>
-                                    {triggerLogs.length === 0 ? (
-                                        <div className="card" style={{ padding: '32px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-                                            {t('agent.pulse.monologueEmpty')}
-                                        </div>
-                                    ) : (
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                            {triggerLogs.slice(0, 30).map((log: any) => (
-                                                <div key={log.id} className="card" style={{ padding: '10px 14px' }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                                                        <span style={{
-                                                            fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                                            background: log.action_type === 'trigger_fired' ? '#fce7f3' : '#e0f2fe',
-                                                            color: log.action_type === 'trigger_fired' ? '#db2777' : '#0284c7',
-                                                            fontWeight: 600,
-                                                        }}>{log.action_type}</span>
                                                         <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                                            {new Date(log.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                                {pulseSessions.length} session{pulseSessions.length > 1 ? 's' : ''}
                                                         </span>
                                                     </div>
-                                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{log.summary}</div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                            {visibleSessions.map((session: any) => {
+                                                const isExpanded = expandedReflection === session.id;
+                                                const msgs = reflectionMessages[session.id] || [];
+                                                return (
+                                                    <div key={session.id} style={{
+                                                        borderRadius: '8px',
+                                                        border: '1px solid var(--border-subtle)',
+                                                        overflow: 'hidden',
+                                                        background: 'var(--bg-primary)',
+                                                    }}>
+                                                        <div
+                                                            onClick={async () => {
+                                                                if (isExpanded) {
+                                                                    setExpandedReflection(null);
+                                                                    return;
+                                                                }
+                                                                setExpandedReflection(session.id);
+                                                                // Load messages if not cached
+                                                                if (!reflectionMessages[session.id]) {
+                                                                    try {
+                                                                        const tkn = localStorage.getItem('token');
+                                                                        const res = await fetch(`/api/agents/${id}/sessions/${session.id}/messages`, {
+                                                                            headers: { Authorization: `Bearer ${tkn}` },
+                                                                        });
+                                                                        if (res.ok) {
+                                                                            const data = await res.json();
+                                                                            setReflectionMessages(prev => ({ ...prev, [session.id]: data }));
+                                                                        }
+                                                                    } catch { /* ignore */ }
+                                                                }
+                                                            }}
+                                                            style={{
+                                                                padding: '10px 16px',
+                                                                display: 'flex', alignItems: 'center', gap: '10px',
+                                                                cursor: 'pointer', transition: 'background 0.15s',
+                                                            }}
+                                                            onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-secondary)')}
+                                                            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                                                        >
+                                                            <div style={{
+                                                                width: '6px', height: '6px', borderRadius: '50%',
+                                                                background: 'var(--accent-primary)', flexShrink: 0,
+                                                            }} />
+                                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                                <div style={{ fontSize: '12px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                                    {(session.title || 'Trigger execution').replace(/^🤖\s*/, '')}
                                                 </div>
-                                            ))}
+                                                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '1px' }}>
+                                                                    {new Date(session.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                                                    {session.message_count > 0 && ` · ${session.message_count} msg`}
                                         </div>
+                                                            </div>
+                                                            <span style={{
+                                                                fontSize: '11px', color: 'var(--text-tertiary)',
+                                                                transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                                                                transition: 'transform 0.15s',
+                                                            }}>&#9654;</span>
+                                                        </div>
+                                                        {isExpanded && (
+                                                            <div style={{ padding: '0 16px 12px', borderTop: '1px solid var(--border-subtle)' }}>
+                                                                {msgs.length === 0 ? (
+                                                                    <div style={{ padding: '12px 0', fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading...</div>
+                                                                ) : (
+                                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                                                                        {msgs.map((msg: any, mi: number) => {
+                                                                            if (msg.role === 'tool_call') {
+                                                                                const tName = msg.toolName || (() => { try { return JSON.parse(msg.content || '{}').name; } catch { return ''; } })() || 'tool';
+                                                                                const tArgs = msg.toolArgs || (() => { try { return JSON.parse(msg.content || '{}').args; } catch { return {}; } })();
+                                                                                const tResult = msg.toolResult || '';
+                                                                                const argsStr = typeof tArgs === 'string' ? tArgs : JSON.stringify(tArgs || {}, null, 2);
+                                                                                const resultStr = typeof tResult === 'string' ? tResult : JSON.stringify(tResult, null, 2);
+                                                                                const hasDetail = argsStr.length > 60 || resultStr;
+                                                                                const Tag = hasDetail ? 'details' : 'div';
+                                                                                const HeaderTag = hasDetail ? 'summary' : 'div';
+                                                                                return (
+                                                                                    <Tag key={mi} style={{ borderRadius: '6px', background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+                                                                                        <HeaderTag style={{
+                                                                                            padding: '5px 10px',
+                                                                                            fontSize: '11px', cursor: hasDetail ? 'pointer' : 'default',
+                                                                                            display: 'flex', alignItems: 'center', gap: '8px',
+                                                                                            listStyle: 'none',
+                                                                                            WebkitAppearance: 'none',
+                                                                                        } as any}>
+                                                                                            {hasDetail && <span style={{ fontSize: '8px', color: 'var(--text-tertiary)', flexShrink: 0 }}>&#9654;</span>}
+                                                                                            <span style={{
+                                                                                                fontWeight: 600, fontSize: '10px', color: 'var(--text-primary)',
+                                                                                                padding: '1px 6px', borderRadius: '3px',
+                                                                                                background: 'var(--bg-tertiary, rgba(0,0,0,0.06))',
+                                                                                                flexShrink: 0, fontFamily: 'monospace',
+                                                                                            }}>{tName}</span>
+                                                                                            <span style={{
+                                                                                                color: 'var(--text-tertiary)', fontFamily: 'monospace', fontSize: '10px',
+                                                                                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                                                            }}>
+                                                                                                {argsStr.replace(/\n/g, ' ').substring(0, 60)}{argsStr.length > 60 ? '...' : ''}
+                                                                                            </span>
+                                                                                        </HeaderTag>
+                                                                                        {hasDetail && (
+                                                                                            <div style={{
+                                                                                                padding: '8px 10px', borderTop: '1px solid var(--border-subtle)',
+                                                                                                fontFamily: 'monospace', fontSize: '10px', lineHeight: 1.5,
+                                                                                                whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto',
+                                                                                                color: 'var(--text-secondary)',
+                                                                                            }}>
+                                                                                                {argsStr}
+                                                                                                {resultStr && (
+                                                                                                    <>
+                                                                                                        <div style={{ borderTop: '1px dashed var(--border-subtle)', margin: '6px 0', opacity: 0.5 }} />
+                                                                                                        <span style={{ color: 'var(--text-tertiary)' }}>→ </span>{resultStr.substring(0, 500)}
+                                                                                                    </>
                                     )}
                                 </div>
-                            );
-                        })()}
-
-                        {/* TASK HISTORY section */}
-                        {pulseSection === 'history' && (() => {
-                            const histRaw = taskHistoryFile?.content || '';
+                                                                                        )}
+                                                                                    </Tag>
+                                                                                );
+                                                                            }
+                                                                            if (msg.role === 'tool_result') {
+                                                                                const tName = msg.toolName || (() => { try { return JSON.parse(msg.content || '{}').name; } catch { return ''; } })() || 'result';
+                                                                                const tResult = msg.toolResult || msg.content || '';
+                                                                                const resultStr = typeof tResult === 'string' ? tResult : JSON.stringify(tResult, null, 2);
+                                                                                if (!resultStr) return null;
                             return (
-                                <div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                        <h4 style={{ margin: 0 }}>📜 {t('agent.pulse.historyTitle')}</h4>
-                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.pulse.historyDesc')}</span>
+                                                                                    <details key={mi} style={{ borderRadius: '6px', background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+                                                                                        <summary style={{
+                                                                                            padding: '5px 10px',
+                                                                                            fontSize: '11px', cursor: 'pointer',
+                                                                                            display: 'flex', alignItems: 'center', gap: '8px',
+                                                                                            listStyle: 'none',
+                                                                                            WebkitAppearance: 'none',
+                                                                                        } as any}>
+                                                                                            <span style={{ fontSize: '8px', color: 'var(--text-tertiary)', flexShrink: 0 }}>&#9654;</span>
+                                                                                            <span style={{
+                                                                                                fontWeight: 600, fontSize: '10px', color: 'var(--text-primary)',
+                                                                                                padding: '1px 6px', borderRadius: '3px',
+                                                                                                background: 'var(--bg-tertiary, rgba(0,0,0,0.06))',
+                                                                                                flexShrink: 0, fontFamily: 'monospace',
+                                                                                            }}>{tName}</span>
+                                                                                            <span style={{
+                                                                                                color: 'var(--text-tertiary)', fontFamily: 'monospace', fontSize: '10px',
+                                                                                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                                                            }}>
+                                                                                                → {resultStr.replace(/\n/g, ' ').substring(0, 80)}
+                                                                                            </span>
+                                                                                        </summary>
+                                                                                        <div style={{
+                                                                                            padding: '8px 10px', borderTop: '1px solid var(--border-subtle)',
+                                                                                            fontFamily: 'monospace', fontSize: '10px', lineHeight: 1.5,
+                                                                                            whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto',
+                                                                                            color: 'var(--text-secondary)',
+                                                                                        }}>
+                                                                                            {resultStr.substring(0, 1000)}
                                     </div>
-                                    {!histRaw ? (
-                                        <div className="card" style={{ padding: '32px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-                                            {t('agent.pulse.historyEmpty')}
+                                                                                    </details>
+                                                                                );
+                                                                            }
+                                                                            if (msg.role === 'assistant') {
+                                                                                return (
+                                                                                    <div key={mi} style={{
+                                                                                        padding: '8px 10px', borderRadius: '6px',
+                                                                                        background: 'var(--bg-secondary)',
+                                                                                        fontSize: '12px', color: 'var(--text-primary)',
+                                                                                        whiteSpace: 'pre-wrap', lineHeight: '1.5',
+                                                                                        maxHeight: '200px', overflow: 'auto',
+                                                                                    }}>
+                                                                                        {msg.content}
                                         </div>
-                                    ) : (
-                                        <div className="card" style={{ padding: '16px' }}>
-                                            <MarkdownRenderer content={histRaw} />
+                                                                                );
+                                                                            }
+                                                                            if (msg.role === 'user') {
+                                                                                return (
+                                                                                    <div key={mi} style={{
+                                                                                        padding: '6px 10px', borderRadius: '6px',
+                                                                                        background: 'var(--bg-secondary)',
+                                                                                        borderLeft: '2px solid var(--border-subtle)',
+                                                                                        fontSize: '11px', color: 'var(--text-secondary)',
+                                                                                        whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto',
+                                                                                    }}>
+                                                                                        {(msg.content || '').substring(0, 300)}
+                                                                                    </div>
+                                                                                );
+                                                                            }
+                                                                            return null;
+                                                                        })}
+                                                                    </div>
+                                                                )}
                                         </div>
                                     )}
                                 </div>
                             );
-                        })()}
+                                            })}
                     </div>
-                )}
+                                        {pulseSessions.length > SECTION_PAGE_SIZE && (
+                                            <button
+                                                onClick={(e) => { const collapse = showAllReflections; setShowAllReflections(!showAllReflections); if (collapse) e.currentTarget.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+                                                className="btn btn-ghost"
+                                                style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
+                                            >
+                                                {showAllReflections
+                                                    ? (i18n.language?.startsWith('zh') ? '收起' : 'Show less')
+                                                    : (i18n.language?.startsWith('zh') ? `显示更多 ${hiddenCount} 条...` : `Show ${hiddenCount} more...`)
+                                                }
+                                            </button>
+                                        )}
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                    );
+                })()}
 
 
                 {/* ── Mind Tab (Soul + Memory + Heartbeat) ── */}
@@ -1702,6 +2349,7 @@ export default function AgentDetail() {
                             read: (p) => fileApi.read(id!, p),
                             write: (p, c) => fileApi.write(id!, p, c),
                             delete: (p) => fileApi.delete(id!, p),
+                            downloadUrl: (p) => fileApi.downloadUrl(id!, p),
                         };
                         return (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -1763,7 +2411,8 @@ export default function AgentDetail() {
                             read: (p) => fileApi.read(id!, p),
                             write: (p, c) => fileApi.write(id!, p, c),
                             delete: (p) => fileApi.delete(id!, p),
-                            upload: (file, path) => fileApi.upload(id!, file, path),
+                            upload: (file, path, onProgress) => fileApi.upload(id!, file, path, onProgress),
+                            downloadUrl: (p) => fileApi.downloadUrl(id!, p),
                         };
                         return (
                             <div>
@@ -1877,7 +2526,8 @@ export default function AgentDetail() {
                             read: (p) => fileApi.read(id!, p),
                             write: (p, c) => fileApi.write(id!, p, c),
                             delete: (p) => fileApi.delete(id!, p),
-                            upload: (file, path) => fileApi.upload(id!, file, path + '/'),
+                            upload: (file, path, onProgress) => fileApi.upload(id!, file, path + '/', onProgress),
+                            downloadUrl: (p) => fileApi.downloadUrl(id!, p),
                         };
                         return <FileBrowser api={adapter} rootPath="workspace" features={{ upload: true, newFile: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }} />;
                     })()
@@ -1983,11 +2633,11 @@ export default function AgentDetail() {
                                                                     slack: t('common.channels.slack'),
                                                                 } as Record<string, string>)[s.source_channel] && (
                                                                     <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>
-                                                                        {({
-                                                                            feishu: t('common.channels.feishu'),
-                                                                            discord: t('common.channels.discord'),
-                                                                            slack: t('common.channels.slack'),
-                                                                        } as Record<string, string>)[s.source_channel]}
+                                                                            {({
+                                                                                feishu: t('common.channels.feishu'),
+                                                                                discord: t('common.channels.discord'),
+                                                                                slack: t('common.channels.slack'),
+                                                                            } as Record<string, string>)[s.source_channel]}
                                                                     </span>
                                                                 )}
                                                             </div>
@@ -2012,7 +2662,8 @@ export default function AgentDetail() {
                                     </div>
                                 ) : (activeSession.user_id && currentUser && activeSession.user_id !== String(currentUser.id)) || activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent' ? (
                                     /* ── Read-only history view (other user's session or agent-to-agent) ── */
-                                    <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+                                    <>
+                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px', padding: '4px 8px', background: 'var(--bg-secondary)', borderRadius: '4px', display: 'inline-block' }}>
                                             {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
                                         </div>
@@ -2081,6 +2732,10 @@ export default function AgentDetail() {
                                             );
                                         })}
                                     </div>
+                                        {showHistoryScrollBtn && (
+                                            <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                        )}
+                                    </>
                                 ) : (
                                     /* ── Live WebSocket chat (own session) ── */
                                     <>
@@ -2147,19 +2802,29 @@ export default function AgentDetail() {
                                                                     </div>
                                                                 </details>
                                                             )}
-                                                            {msg.role === 'assistant' ? <MarkdownRenderer content={msg.content} /> : msg.content ? <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div> : null}
+                                                            {msg.role === 'assistant' ? (
+                                                                (msg as any)._streaming && !msg.content ? (
+                                                                    <div className="thinking-indicator">
+                                                                        <div className="thinking-dots">
+                                                                            <span /><span /><span />
+                                                                        </div>
+                                                                        <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
+                                                                    </div>
+                                                                ) : <MarkdownRenderer content={msg.content} />
+                                                            ) : msg.content ? <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div> : null}
                                                         </div>
                                                     </div>
                                                 );
                                             })}
-                                            {isWaiting && (
-                                                <div className="chat-message assistant" style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                                            {(isWaiting || (chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === 'user' && wsConnected)) && (
+                                                <div style={{ display: 'flex', gap: '10px', padding: '12px 0', animation: 'fadeIn .2s ease' }}>
                                                     <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
-                                                    <div style={{ maxWidth: '70%', padding: '8px 12px', borderRadius: '12px', background: 'var(--bg-secondary)', fontSize: '13px', lineHeight: '1.5' }}>
-                                                        <div className="typing-indicator">
-                                                            <div className="typing-dot"></div>
-                                                            <div className="typing-dot"></div>
-                                                            <div className="typing-dot"></div>
+                                                    <div className="chat-bubble" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: '10px 14px' }}>
+                                                        <div className="thinking-indicator">
+                                                            <div className="thinking-dots">
+                                                                <span /><span /><span />
+                                                            </div>
+                                                            <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -2194,6 +2859,14 @@ export default function AgentDetail() {
                                         <div style={{ display: 'flex', gap: '8px', padding: '6px 12px', borderTop: '1px solid var(--border-subtle)' }}>
                                             <input type="file" ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
                                             <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={!wsConnected || uploading || isWaiting || isStreaming} style={{ padding: '6px 10px', fontSize: '14px', minWidth: 'auto' }}>{uploading ? '⏳' : '⦹'}</button>
+                                            {uploading && uploadProgress >= 0 && (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '0 0 120px' }}>
+                                                    <div style={{ flex: 1, height: '4px', borderRadius: '2px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
+                                                        <div style={{ height: '100%', borderRadius: '2px', background: 'var(--accent-primary)', width: `${uploadProgress}%`, transition: 'width 0.15s ease' }} />
+                                                    </div>
+                                                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{uploadProgress}%</span>
+                                                </div>
+                                            )}
                                             <input ref={chatInputRef} className="chat-input" value={chatInput} onChange={e => setChatInput(e.target.value)}
                                                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMsg(); } }}
                                                 onPaste={handlePaste}
@@ -2339,23 +3012,47 @@ export default function AgentDetail() {
                             settingsForm.context_window_size !== (agent?.context_window_size ?? 100) ||
                             settingsForm.max_tool_rounds !== ((agent as any)?.max_tool_rounds ?? 50) ||
                             String(settingsForm.max_tokens_per_day) !== String(agent?.max_tokens_per_day || '') ||
-                            String(settingsForm.max_tokens_per_month) !== String(agent?.max_tokens_per_month || '')
+                            String(settingsForm.max_tokens_per_month) !== String(agent?.max_tokens_per_month || '') ||
+                            settingsForm.max_triggers !== ((agent as any)?.max_triggers ?? 20) ||
+                            settingsForm.min_poll_interval_min !== ((agent as any)?.min_poll_interval_min ?? 5) ||
+                            settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5)
                         );
 
                         const handleSaveSettings = async () => {
                             setSettingsSaving(true);
                             setSettingsError('');
                             try {
-                                await agentApi.update(id!, {
+                                const result: any = await agentApi.update(id!, {
                                     primary_model_id: settingsForm.primary_model_id || null,
                                     fallback_model_id: settingsForm.fallback_model_id || null,
                                     context_window_size: settingsForm.context_window_size,
                                     max_tool_rounds: settingsForm.max_tool_rounds,
                                     max_tokens_per_day: settingsForm.max_tokens_per_day ? Number(settingsForm.max_tokens_per_day) : null,
                                     max_tokens_per_month: settingsForm.max_tokens_per_month ? Number(settingsForm.max_tokens_per_month) : null,
+                                    max_triggers: settingsForm.max_triggers,
+                                    min_poll_interval_min: settingsForm.min_poll_interval_min,
+                                    webhook_rate_limit: settingsForm.webhook_rate_limit,
                                 } as any);
                                 queryClient.invalidateQueries({ queryKey: ['agent', id] });
                                 settingsInitRef.current = false;
+
+                                // Check if any values were clamped by company policy
+                                const clamped = result?._clamped_fields;
+                                if (clamped && clamped.length > 0) {
+                                    const isCh = i18n.language?.startsWith('zh');
+                                    const fieldNames: Record<string, string> = isCh
+                                        ? { min_poll_interval_min: 'Poll 最短间隔', webhook_rate_limit: 'Webhook 频率限制', heartbeat_interval_minutes: '心跳间隔' }
+                                        : { min_poll_interval_min: 'Min Poll Interval', webhook_rate_limit: 'Webhook Rate Limit', heartbeat_interval_minutes: 'Heartbeat Interval' };
+                                    const msgs = clamped.map((c: any) => {
+                                        const name = fieldNames[c.field] || c.field;
+                                        return isCh
+                                            ? `${name}: ${c.requested} -> ${c.applied} (公司策略限制)`
+                                            : `${name}: ${c.requested} -> ${c.applied} (company policy)`;
+                                    });
+                                    setSettingsError((isCh ? 'Some values were adjusted:\n' : 'Some values were adjusted:\n') + msgs.join('\n'));
+                                    setTimeout(() => setSettingsError(''), 5000);
+                                }
+
                                 setSettingsSaved(true);
                                 setTimeout(() => setSettingsSaved(false), 2000);
                             } catch (e: any) {
@@ -2367,11 +3064,11 @@ export default function AgentDetail() {
 
                         return (
                             <div>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)', paddingTop: '4px', paddingBottom: '12px', borderBottom: '1px solid var(--border-subtle)' }}>
                                     <h3 style={{ margin: 0 }}>{t('agent.settings.title')}</h3>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                        {settingsSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>✅ {t('agent.settings.saved', 'Saved')}</span>}
-                                        {settingsError && <span style={{ fontSize: '12px', color: 'var(--error)' }}>❌ {settingsError}</span>}
+                                        {settingsSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>{t('agent.settings.saved', 'Saved')}</span>}
+                                        {settingsError && <span style={{ fontSize: '12px', color: settingsError.includes('adjusted') ? 'var(--warning)' : 'var(--error)', whiteSpace: 'pre-line' }}>{settingsError}</span>}
                                         <button
                                             className="btn btn-primary"
                                             disabled={!hasChanges || settingsSaving}
@@ -2491,6 +3188,112 @@ export default function AgentDetail() {
                                         </div>
                                     </div>
                                 </div>
+
+                                {/* Trigger Limits */}
+                                {(() => {
+                                    const isChinese = i18n.language?.startsWith('zh');
+                                    return (
+                                        <div className="card" style={{ marginBottom: '12px' }}>
+                                            <h4 style={{ marginBottom: '4px' }}>{isChinese ? '触发器限制' : 'Trigger Limits'}</h4>
+                                            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                                {isChinese
+                                                    ? '控制该 Agent 可以创建的触发器数量和行为限制'
+                                                    : 'Limit how many triggers this agent can create and their behavior'}
+                                            </p>
+                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+                                                <div>
+                                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+                                                        {isChinese ? '最大触发器数' : 'Max Triggers'}
+                                                    </label>
+                                                    <input
+                                                        className="input"
+                                                        type="number"
+                                                        min={1}
+                                                        max={100}
+                                                        value={settingsForm.max_triggers}
+                                                        onChange={(e) => setSettingsForm(f => ({ ...f, max_triggers: Math.max(1, Math.min(100, parseInt(e.target.value) || 20)) }))}
+                                                        style={{ width: '100%' }}
+                                                    />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                                        {isChinese ? 'Agent 最多可同时拥有的触发器数量' : 'Max active triggers the agent can have'}
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+                                                        {isChinese ? 'Poll 最短间隔 (分钟)' : 'Min Poll Interval (min)'}
+                                                    </label>
+                                                    <input
+                                                        className="input"
+                                                        type="number"
+                                                        min={1}
+                                                        max={60}
+                                                        value={settingsForm.min_poll_interval_min}
+                                                        onChange={(e) => setSettingsForm(f => ({ ...f, min_poll_interval_min: Math.max(1, Math.min(60, parseInt(e.target.value) || 5)) }))}
+                                                        style={{ width: '100%' }}
+                                                    />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                                        {isChinese ? '定时轮询外部接口的最短间隔' : 'Minimum interval for polling external URLs'}
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+                                                        {isChinese ? 'Webhook 频率限制 (次/分钟)' : 'Webhook Rate Limit (/min)'}
+                                                    </label>
+                                                    <input
+                                                        className="input"
+                                                        type="number"
+                                                        min={1}
+                                                        max={60}
+                                                        value={settingsForm.webhook_rate_limit}
+                                                        onChange={(e) => setSettingsForm(f => ({ ...f, webhook_rate_limit: Math.max(1, Math.min(60, parseInt(e.target.value) || 5)) }))}
+                                                        style={{ width: '100%' }}
+                                                    />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                                        {isChinese ? '外部系统每分钟最多可调用的 Webhook 次数' : 'Max webhook calls per minute from external services'}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* Welcome Message */}
+                                {(() => {
+                                    const isChinese = i18n.language?.startsWith('zh');
+                                    const saveWm = async () => {
+                                        try {
+                                            await agentApi.update(id!, { welcome_message: wmDraft } as any);
+                                            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                            setWmSaved(true);
+                                            setTimeout(() => setWmSaved(false), 2000);
+                                        } catch { }
+                                    };
+                                    return (
+                                        <div className="card" style={{ marginBottom: '12px' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                                <h4 style={{ margin: 0 }}>{isChinese ? '欢迎语' : 'Welcome Message'}</h4>
+                                                {wmSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>✓ {isChinese ? '已保存' : 'Saved'}</span>}
+                                            </div>
+                                            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                                {isChinese
+                                                    ? '当用户在网页端发起新对话时，Agent 会自动发送的欢迎语。支持 Markdown 语法。留空则不发送。'
+                                                    : 'Greeting message sent automatically when a user starts a new web conversation. Supports Markdown. Leave empty to disable.'}
+                                            </p>
+                                            <textarea
+                                                className="input"
+                                                rows={4}
+                                                value={wmDraft}
+                                                onChange={e => setWmDraft(e.target.value)}
+                                                onBlur={saveWm}
+                                                placeholder={isChinese ? '例如：你好！我是你的 AI 助手，有什么可以帮你的吗？' : "e.g. Hello! I'm your AI assistant. How can I help you?"}
+                                                style={{
+                                                    width: '100%', minHeight: '80px', resize: 'vertical',
+                                                    fontFamily: 'inherit', fontSize: '13px',
+                                                }}
+                                            />
+                                        </div>
+                                    );
+                                })()}
 
                                 {/* Autonomy Policy */}
                                 <div className="card" style={{ marginBottom: '12px' }}>
@@ -2682,6 +3485,50 @@ export default function AgentDetail() {
                                     );
                                 })()}
 
+                                {/* Timezone */}
+                                <div className="card" style={{ marginBottom: '12px' }}>
+                                    <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        {t('agent.settings.timezone.title', '🌐 Timezone')}
+                                    </h4>
+                                    <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+                                        {t('agent.settings.timezone.description', 'The timezone used for this agent\'s scheduling, active hours, and time awareness. Defaults to the company timezone if not set.')}
+                                    </p>
+                                    <div style={{
+                                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                        padding: '10px 14px', background: 'var(--bg-elevated)', borderRadius: '8px',
+                                        border: '1px solid var(--border-subtle)',
+                                    }}>
+                                        <div>
+                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.timezone.current', 'Agent Timezone')}</div>
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                {agent?.timezone
+                                                    ? t('agent.settings.timezone.override', 'Custom timezone for this agent')
+                                                    : t('agent.settings.timezone.inherited', 'Using company default timezone')}
+                                            </div>
+                                        </div>
+                                        <select
+                                            className="input"
+                                            disabled={!canManage}
+                                            value={agent?.timezone || ''}
+                                            onChange={async (e) => {
+                                                if (!canManage) return;
+                                                const val = e.target.value || null;
+                                                await agentApi.update(id!, { timezone: val } as any);
+                                                queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                            }}
+                                            style={{ width: '200px', fontSize: '12px', opacity: canManage ? 1 : 0.6 }}
+                                        >
+                                            <option value="">{t('agent.settings.timezone.default', '↩ Company default')}</option>
+                                            {['UTC', 'Asia/Shanghai', 'Asia/Tokyo', 'Asia/Seoul', 'Asia/Singapore', 'Asia/Kolkata', 'Asia/Dubai',
+                                                'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Moscow',
+                                                'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+                                                'America/Sao_Paulo', 'Australia/Sydney', 'Pacific/Auckland'].map(tz => (
+                                                    <option key={tz} value={tz}>{tz}</option>
+                                                ))}
+                                        </select>
+                                    </div>
+                                </div>
+
                                 {/* Heartbeat */}
                                 <div className="card" style={{ marginBottom: '12px' }}>
                                     <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -2784,6 +3631,8 @@ export default function AgentDetail() {
                                             />
                                         </div>
 
+
+
                                         {/* Last Heartbeat */}
                                         {agent?.last_heartbeat_at && (
                                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', paddingLeft: '4px' }}>
@@ -2806,8 +3655,8 @@ export default function AgentDetail() {
                                     </div>
 
                                     {/* Slack */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
+                                        <div onClick={() => setSlackOpen(!slackOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M6.194 14.644a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm-2.194 0H0v-2.194a2.194 2.194 0 014.388 0v2.194zm16.612 0a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm0-2.194a2.194 2.194 0 010-4.388 2.194 2.194 0 010 4.388zm0 0v2.194h2.194A2.194 2.194 0 0024 12.45a2.194 2.194 0 00-2.194-2.194h-1.194zm-16.612 0a2.194 2.194 0 010-4.388 2.194 2.194 0 010 4.388zm0 0v2.194H2A2.194 2.194 0 010 12.45a2.194 2.194 0 012.194-2.194h1.806z" fill="#611F69" opacity=".4" /><path d="M9.388 4.388a2.194 2.194 0 110-4.388 2.194 2.194 0 010 4.388zm0 2.194v-2.194H7.194A2.194 2.194 0 005 6.582a2.194 2.194 0 002.194 2.194h2.194zm0 12.612a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm0-2.194v2.194H7.194A2.194 2.194 0 005 17.418a2.194 2.194 0 002.194 2.194h.194zm4.224-12.612a2.194 2.194 0 110-4.388 2.194 2.194 0 010 4.388zm2.194 0H13.612V2.194a2.194 2.194 0 014.388 0v2.194zm-2.194 14.806a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm-2.194 0h2.194v2.194a2.194 2.194 0 01-4.388 0v-2.194z" fill="#611F69" /></svg>
                                                 <div>
@@ -2815,8 +3664,12 @@ export default function AgentDetail() {
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Slack Bot</div>
                                                 </div>
                                             </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                             {slackConfig && <span className={`badge ${slackConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{slackConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
+                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: slackOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
                                         </div>
+                                        </div>
+                                        {slackOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
                                         {!canManage ? (
                                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
                                                 Only the creator or admin can configure communication channels.
@@ -2891,11 +3744,12 @@ export default function AgentDetail() {
                                                 </div>
                                             </div>
                                         )}
+                                        </div>)}
                                     </div>
 
                                     {/* Discord */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
+                                        <div onClick={() => setDiscordOpen(!discordOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="#5865F2"><path d="M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028 14.09 14.09 0 001.226-1.994.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" /></svg>
                                                 <div>
@@ -2903,8 +3757,12 @@ export default function AgentDetail() {
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Slash Commands (/ask)</div>
                                                 </div>
                                             </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                             {discordConfig && <span className={`badge ${discordConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{discordConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
+                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: discordOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
                                         </div>
+                                        </div>
+                                        {discordOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
                                         {!canManage ? (
                                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
                                                 Only the creator or admin can configure communication channels.
@@ -2979,11 +3837,114 @@ export default function AgentDetail() {
                                                 </div>
                                             </div>
                                         )}
+                                        </div>)}
+                                    </div>
+
+                                    {/* Microsoft Teams */}
+                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
+                                        <div onClick={() => setTeamsOpen(!teamsOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                {/* Microsoft Teams icon (larger, similar visual weight to Discord/Slack) */}
+                                                <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+                                                    {/* Main Teams tile */}
+                                                    <rect x="3" y="4" width="13" height="13" rx="3" fill="#6264A7" />
+                                                    {/* T letter */}
+                                                    <path
+                                                        d="M7.2 9h5.6c.3 0 .5.2.5.5v1.3c0 .3-.2.5-.5.5H11v5c0 .3-.2.5-.5.5H9.3c-.3 0-.5-.2-.5-.5v-5H7.2c-.3 0-.5-.2-.5-.5V9.5c0-.3.2-.5.5-.5Z"
+                                                        fill="#FFFFFF"
+                                                    />
+                                                    {/* Right-side presence shapes */}
+                                                    <circle cx="18.5" cy="7.5" r="2.3" fill="#7B83EB" />
+                                                    <rect x="16.2" y="10.5" width="5" height="6.2" rx="2" fill="#7B83EB" />
+                                                </svg>
+                                                <div>
+                                                    <div style={{ fontWeight: 600, fontSize: '14px' }}>Microsoft Teams</div>
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Teams Bot</div>
+                                                </div>
+                                            </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                {teamsConfig && <span className={`badge ${teamsConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{teamsConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
+                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: teamsOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
+                                            </div>
+                                        </div>
+                                        {teamsOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+                                            {!canManage ? (
+                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+                                                    Only the creator or admin can configure communication channels.
+                                                </div>
+                                            ) : teamsConfig?.is_configured && !teamsEditing ? (
+                                                <div>
+                                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
+                                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>Messaging Endpoint URL</div>
+                                                        <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
+                                                            <span style={{ color: 'var(--accent-primary)' }}>{teamsWebhookData?.webhook_url || `${window.location.origin}/api/channel/teams/${id}/webhook`}</span>
+                                                            <CopyBtn url={teamsWebhookData?.webhook_url || `${window.location.origin}/api/channel/teams/${id}/webhook`} />
+                                                        </div>
+                                                    </div>
+                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
+                                                        </summary>
+                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
+                                                            <li>{t('channelGuide.teams.step1')}</li>
+                                                            <li>{t('channelGuide.teams.step2')}</li>
+                                                            <li>{t('channelGuide.teams.step3')}</li>
+                                                            <li>{t('channelGuide.teams.step4')}</li>
+                                                            <li>{t('channelGuide.teams.step5')}</li>
+                                                        </ol>
+                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.teams.note')}</div>
+                                                    </details>
+                                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => { setTeamsForm({ app_id: teamsConfig?.app_id || '', app_secret: teamsConfig?.app_secret || '', tenant_id: teamsConfig?.extra_config?.tenant_id || '' }); setTeamsEditing(true); }}>Edit</button>
+                                                        <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => deleteTeams.mutate()}>Disconnect</button>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                    <div>
+                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App ID (Client ID) *</label>
+                                                        <input className="input" value={teamsForm.app_id} onChange={e => setTeamsForm({ ...teamsForm, app_id: e.target.value })} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style={{ fontSize: '12px' }} />
+                                                    </div>
+                                                    <div>
+                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App Secret (Client Secret) *</label>
+                                                        <div style={{ position: 'relative' }}>
+                                                            <input className="input" type={showPwds['teams_secret'] ? 'text' : 'password'} value={teamsForm.app_secret} onChange={e => setTeamsForm({ ...teamsForm, app_secret: e.target.value })} style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
+                                                            <button type="button" onClick={() => togglePwd('teams_secret')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['teams_secret'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>{t('channelGuide.teams.tenantId')} <span style={{ color: 'var(--text-tertiary)', fontWeight: 'normal' }}>(Optional)</span></label>
+                                                        <input className="input" value={teamsForm.tenant_id} onChange={e => setTeamsForm({ ...teamsForm, tenant_id: e.target.value })} placeholder={t('channelGuide.teams.tenantIdPlaceholder')} style={{ fontSize: '12px' }} />
+                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('channelGuide.teams.tenantIdHint')}</div>
+                                                    </div>
+                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
+                                                        </summary>
+                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
+                                                            <li>{t('channelGuide.teams.step1')}</li>
+                                                            <li>{t('channelGuide.teams.step2')}</li>
+                                                            <li>{t('channelGuide.teams.step3')}</li>
+                                                            <li>{t('channelGuide.teams.step4')}</li>
+                                                            <li>{t('channelGuide.teams.step5')}</li>
+                                                            <li>{t('channelGuide.teams.step6')}</li>
+                                                        </ol>
+                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.teams.note')}</div>
+                                                    </details>
+                                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                                        <button className="btn btn-primary" style={{ fontSize: '12px', alignSelf: 'flex-start' }} onClick={() => { saveTeams.mutate(); setTeamsEditing(false); }} disabled={(!teamsForm.app_id || !teamsForm.app_secret) || saveTeams.isPending}>
+                                                            {saveTeams.isPending ? t('common.loading') : (teamsEditing ? 'Save Changes' : t('agent.settings.channel.saveChannel'))}
+                                                        </button>
+                                                        {teamsEditing && <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setTeamsEditing(false)}>Cancel</button>}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>)}
                                     </div>
 
                                     {/* Feishu */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
+                                        <div onClick={() => setFeishuOpen(!feishuOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                                 <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-tertiary)' }}>Feishu</span>
                                                 <div>
@@ -2991,12 +3952,16 @@ export default function AgentDetail() {
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Feishu / Lark</div>
                                                 </div>
                                             </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                             {channelConfig && (
                                                 <span className={`badge ${channelConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>
                                                     {channelConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}
                                                 </span>
                                             )}
+                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: feishuOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
                                         </div>
+                                        </div>
+                                        {feishuOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
 
                                         {!canManage ? (
                                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
@@ -3143,6 +4108,7 @@ export default function AgentDetail() {
                                                 </div>
                                             </div>
                                         )}
+                                        </div>)}
                                     </div>
 
                                     {/* DingTalk — coming soon */}
@@ -3166,11 +4132,10 @@ export default function AgentDetail() {
                                             </div>
                                         </div>
                                     </div>
-                                </div >
+                                </div>
 
                                 {/* Danger Zone */}
-                                < div className="card" style={{ borderColor: 'var(--error)' }
-                                }>
+                                <div className="card" style={{ borderColor: 'var(--error)' }}>
                                     <h4 style={{ color: 'var(--error)', marginBottom: '12px' }}>{t('agent.settings.danger.title')}</h4>
                                     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
                                         {t('agent.settings.danger.deleteWarning')}
@@ -3330,5 +4295,48 @@ export default function AgentDetail() {
             }
 
         </>
+    );
+}
+
+// Error boundary to catch unhandled React errors and prevent white screen
+class AgentDetailErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
+    constructor(props: { children: React.ReactNode }) {
+        super(props);
+        this.state = { hasError: false, error: null };
+    }
+    static getDerivedStateFromError(error: Error) {
+        return { hasError: true, error };
+    }
+    componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+        console.error('AgentDetail crash caught by error boundary:', error, errorInfo);
+    }
+    render() {
+        if (this.state.hasError) {
+            return (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh', gap: '16px' }}>
+                    <div style={{ fontSize: '20px', fontWeight: 600, color: 'var(--text-primary)' }}>Something went wrong</div>
+                    <div style={{ fontSize: '13px', color: 'var(--text-tertiary)', maxWidth: '400px', textAlign: 'center' }}>
+                        {this.state.error?.message || 'An unexpected error occurred while loading this page.'}
+                    </div>
+                    <button
+                        className="btn btn-primary"
+                        onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
+                        style={{ marginTop: '8px' }}
+                    >
+                        Reload Page
+                    </button>
+                </div>
+            );
+        }
+        return this.props.children;
+    }
+}
+
+// Wrap the AgentDetail component with error boundary
+export default function AgentDetailWithErrorBoundary() {
+    return (
+        <AgentDetailErrorBoundary>
+            <AgentDetailInner />
+        </AgentDetailErrorBoundary>
     );
 }

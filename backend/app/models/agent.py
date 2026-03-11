@@ -20,6 +20,7 @@ class Agent(Base):
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     role_description: Mapped[str] = mapped_column(String(500), default="")
     bio: Mapped[str | None] = mapped_column(Text)
+    welcome_message: Mapped[str | None] = mapped_column(Text, default=None)
 
     # Ownership
     creator_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
@@ -63,6 +64,11 @@ class Agent(Base):
     context_window_size: Mapped[int] = mapped_column(Integer, default=100)
     max_tool_rounds: Mapped[int] = mapped_column(Integer, default=50)
 
+    # Trigger limits (per-agent, configurable from Settings UI)
+    max_triggers: Mapped[int] = mapped_column(Integer, default=20)
+    min_poll_interval_min: Mapped[int] = mapped_column(Integer, default=5)
+    webhook_rate_limit: Mapped[int] = mapped_column(Integer, default=5)
+
     # Expiry control
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_expired: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -80,6 +86,9 @@ class Agent(Base):
     heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=120)
     heartbeat_active_hours: Mapped[str] = mapped_column(String(20), default="09:00-18:00")
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Timezone (IANA format, e.g. "Asia/Shanghai"). None = inherit from tenant.
+    timezone: Mapped[str | None] = mapped_column(String(50), default=None, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

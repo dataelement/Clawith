@@ -74,7 +74,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write or update a file in the workspace. Can update memory/memory.md, agenda.md, task_history.md, create documents in workspace/, create skills in skills/.",
+            "description": "Write or update a file in the workspace. Can update memory/memory.md, focus.md, task_history.md, create documents in workspace/, create skills in skills/.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -113,7 +113,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "set_trigger",
-            "description": "Set a new trigger to wake yourself up at a specific time or condition. Use this to schedule future actions, monitor changes, or wait for agent messages. The trigger will fire and invoke you with the reason text as context. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent replies).",
+            "description": "Set a new trigger to wake yourself up at a specific time or condition. Use this to schedule future actions, monitor changes, or wait for messages. The trigger will fire and invoke you with the reason text as context. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or a human user replies — use from_agent_name for agents, or from_user_name for human users on Feishu/Slack/Discord), 'webhook' (receive external HTTP POST — system generates a unique URL, give it to the user so they can configure it in external services like GitHub, Grafana, etc.).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -123,20 +123,20 @@ AGENT_TOOLS = [
                     },
                     "type": {
                         "type": "string",
-                        "enum": ["cron", "once", "interval", "poll", "on_message"],
+                        "enum": ["cron", "once", "interval", "poll", "on_message", "webhook"],
                         "description": "Trigger type",
                     },
                     "config": {
                         "type": "object",
-                        "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"from_agent_name\": \"Morty\"}",
+                        "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"张三\"} (for human users on Feishu/Slack/Discord). webhook: {\"secret\": \"optional_hmac_secret\"} (system auto-generates the URL)",
                     },
                     "reason": {
                         "type": "string",
                         "description": "What you should do when this trigger fires. This will be shown to you as context when you wake up.",
                     },
-                    "agenda_ref": {
+                    "focus_ref": {
                         "type": "string",
-                        "description": "Optional: which agenda item this trigger relates to",
+                        "description": "Optional: identifier of the focus item in focus.md that this trigger relates to (use the checklist identifier, e.g. 'daily_news_check')",
                     },
                 },
                 "required": ["name", "type", "config", "reason"],
@@ -373,6 +373,34 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "upload_image",
+            "description": "Upload an image file from your workspace (or from a public URL) to a cloud CDN and get a permanent public URL. Use this when you need to share images externally, embed them in messages/reports, or make workspace images accessible via URL. Supports common formats: PNG, JPG, GIF, WebP, SVG.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Workspace-relative path to the image file, e.g. workspace/chart.png or workspace/knowledge_base/diagram.jpg",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Alternative: a public URL of an image to upload (e.g. https://example.com/photo.jpg). Use this instead of file_path when the image is not in your workspace.",
+                    },
+                    "file_name": {
+                        "type": "string",
+                        "description": "Optional custom filename for the uploaded image. If omitted, the original filename is used.",
+                    },
+                    "folder": {
+                        "type": "string",
+                        "description": "Optional CDN folder path, e.g. /agents/reports. Defaults to /clawith.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "discover_resources",
             "description": "Search public MCP registries (Smithery) for tools and capabilities that can extend your abilities. Use this when you encounter a task you cannot handle with your current tools.",
             "parameters": {
@@ -490,11 +518,6 @@ async def ensure_workspace(agent_id: uuid.UUID) -> Path:
     # Ensure shared enterprise_info directory exists
     enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
     enterprise_dir.mkdir(parents=True, exist_ok=True)
-    (enterprise_dir / "knowledge_base").mkdir(exist_ok=True)
-    # Create default company profile if missing
-    profile_path = enterprise_dir / "company_profile.md"
-    if not profile_path.exists():
-        profile_path.write_text("# Company Profile\n\n_Edit company information here. All digital employees can access this._\n\n## Basic Info\n- Company Name:\n- Industry:\n- Founded:\n\n## Business Overview\n\n## Organization Structure\n\n## Company Culture\n", encoding="utf-8")
 
     # Migrate: move root-level memory.md into memory/ directory
     if (ws / "memory.md").exists() and not (ws / "memory" / "memory.md").exists():
@@ -661,6 +684,8 @@ async def execute_tool(
             result = await _plaza_add_comment(agent_id, arguments)
         elif tool_name == "execute_code":
             result = await _execute_code(ws, arguments)
+        elif tool_name == "upload_image":
+            result = await _upload_image(agent_id, ws, arguments)
         elif tool_name == "discover_resources":
             result = await _discover_resources(arguments)
         elif tool_name == "import_mcp_server":
@@ -2234,7 +2259,7 @@ async def _import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
 # ─── Trigger Management Handlers (Pulse Engine) ────────────────────
 
 MAX_TRIGGERS_PER_AGENT = 20
-VALID_TRIGGER_TYPES = {"cron", "once", "interval", "poll", "on_message"}
+VALID_TRIGGER_TYPES = {"cron", "once", "interval", "poll", "on_message", "webhook"}
 
 
 async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -2245,7 +2270,7 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     ttype = arguments.get("type", "").strip()
     config = arguments.get("config", {})
     reason = arguments.get("reason", "").strip()
-    agenda_ref = arguments.get("agenda_ref", "")
+    focus_ref = arguments.get("focus_ref", "") or arguments.get("agenda_ref", "")  # backward compat
 
     if not name:
         return "❌ Missing required argument 'name'"
@@ -2274,11 +2299,22 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         if not config.get("url"):
             return "❌ poll trigger requires config.url"
     elif ttype == "on_message":
-        if not config.get("from_agent_name"):
-            return "❌ on_message trigger requires config.from_agent_name"
+        if not config.get("from_agent_name") and not config.get("from_user_name"):
+            return "❌ on_message trigger requires config.from_agent_name (for agents) or config.from_user_name (for human users on Feishu/Slack/Discord)"
+    elif ttype == "webhook":
+        # Auto-generate a unique token for the webhook URL
+        import secrets
+        token = secrets.token_urlsafe(8)  # ~11 chars, URL-safe
+        config["token"] = token
 
     try:
         async with async_session() as db:
+            # Load agent to get per-agent trigger limit
+            from app.models.agent import Agent as _AgentModel
+            _a_result = await db.execute(select(_AgentModel).where(_AgentModel.id == agent_id))
+            _agent_obj = _a_result.scalar_one_or_none()
+            agent_max_triggers = (_agent_obj.max_triggers if _agent_obj else None) or MAX_TRIGGERS_PER_AGENT
+
             # Check max triggers
             from sqlalchemy import func as sa_func
             result = await db.execute(
@@ -2288,8 +2324,8 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 )
             )
             count = result.scalar() or 0
-            if count >= MAX_TRIGGERS_PER_AGENT:
-                return f"❌ Maximum trigger limit reached ({MAX_TRIGGERS_PER_AGENT}). Cancel some triggers first."
+            if count >= agent_max_triggers:
+                return f"❌ Maximum trigger limit reached ({agent_max_triggers}). Cancel some triggers first."
 
             # Check for duplicate name
             result = await db.execute(
@@ -2307,7 +2343,7 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                     existing.type = ttype
                     existing.config = config
                     existing.reason = reason
-                    existing.agenda_ref = agenda_ref or None
+                    existing.focus_ref = focus_ref or None
                     existing.is_enabled = True
                     existing.fire_count = 0
                     existing.last_fired_at = None
@@ -2320,7 +2356,7 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 type=ttype,
                 config=config,
                 reason=reason,
-                agenda_ref=agenda_ref or None,
+                focus_ref=focus_ref or None,
             )
             db.add(trigger)
             await db.commit()
@@ -2333,6 +2369,16 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             }, agent_id=agent_id)
         except Exception:
             pass
+
+        # Return webhook URL for webhook triggers
+        if ttype == "webhook":
+            from app.config import get_settings
+            settings = get_settings()
+            base = getattr(settings, 'PUBLIC_URL', '') or ''
+            if not base:
+                base = 'https://try.clawith.ai'  # fallback
+            webhook_url = f"{base.rstrip('/')}/api/webhooks/t/{config['token']}"
+            return f"✅ Webhook trigger '{name}' created.\n\nWebhook URL: {webhook_url}\n\nTell the user to configure this URL in their external service (e.g. GitHub, Grafana). When the service sends a POST to this URL, you will be woken up with the payload as context."
 
         return f"✅ Trigger '{name}' created ({ttype}). It will fire according to your config and wake you up with the reason as context."
 
@@ -2455,4 +2501,136 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
 
     except Exception as e:
         return f"❌ Failed to list triggers: {e}"
+
+
+# ─── Image Upload (ImageKit CDN) ────────────────────────────────
+
+async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    """Upload an image to ImageKit CDN and return the public URL.
+
+    Credential resolution order:
+    1. Global tool config (admin-set, shared by all agents)
+    2. Per-agent tool config override (agent-specific)
+    """
+    import httpx
+    import base64
+
+    file_path = arguments.get("file_path")
+    url = arguments.get("url")
+    file_name = arguments.get("file_name")
+    folder = arguments.get("folder", "/clawith")
+
+    if not file_path and not url:
+        return "❌ Please provide either 'file_path' (workspace path) or 'url' (public image URL)"
+
+    # ── Load ImageKit credentials (global → per-agent fallback) ──
+    private_key = ""
+    url_endpoint = ""
+    try:
+        from app.models.tool import Tool, AgentTool
+        async with async_session() as db:
+            # Global config
+            r = await db.execute(select(Tool).where(Tool.name == "upload_image"))
+            tool = r.scalar_one_or_none()
+            if tool and tool.config:
+                private_key = tool.config.get("private_key", "")
+                url_endpoint = tool.config.get("url_endpoint", "")
+
+            # Per-agent override (if global key is empty)
+            if not private_key and tool:
+                r2 = await db.execute(
+                    select(AgentTool).where(
+                        AgentTool.agent_id == agent_id,
+                        AgentTool.tool_id == tool.id,
+                    )
+                )
+                agent_tool = r2.scalar_one_or_none()
+                if agent_tool and agent_tool.config:
+                    private_key = agent_tool.config.get("private_key", "") or private_key
+                    url_endpoint = agent_tool.config.get("url_endpoint", "") or url_endpoint
+    except Exception as e:
+        print(f"[UploadImage] Config load error: {e}")
+
+    if not private_key:
+        return "❌ ImageKit Private Key not configured. Ask your admin to configure it in Enterprise Settings → Tools → Upload Image, or set it in your agent's tool config."
+
+    # ── Prepare the file ──
+    form_data = {}
+    file_content = None
+
+    if file_path:
+        # Read from workspace
+        full_path = (ws / file_path).resolve()
+        if not str(full_path).startswith(str(ws)):
+            return "❌ Access denied: path is outside the workspace"
+        if not full_path.exists():
+            return f"❌ File not found: {file_path}"
+        if not full_path.is_file():
+            return f"❌ Not a file: {file_path}"
+
+        # Check file size (max 25MB for free plan)
+        size_mb = full_path.stat().st_size / (1024 * 1024)
+        if size_mb > 25:
+            return f"❌ File too large ({size_mb:.1f}MB). Maximum is 25MB."
+
+        file_content = full_path.read_bytes()
+        if not file_name:
+            file_name = full_path.name
+    elif url:
+        # Pass URL directly to ImageKit
+        form_data["file"] = url
+        if not file_name:
+            from urllib.parse import urlparse
+            file_name = urlparse(url).path.split("/")[-1] or "image.jpg"
+
+    if not file_name:
+        file_name = "image.png"
+
+    form_data["fileName"] = file_name
+    form_data["folder"] = folder
+    form_data["useUniqueFileName"] = "true"
+
+    # ── Upload to ImageKit V2 ──
+    auth_string = base64.b64encode(f"{private_key}:".encode()).decode()
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            if file_content:
+                # Binary upload via multipart
+                files = {"file": (file_name, file_content)}
+                resp = await client.post(
+                    "https://upload.imagekit.io/api/v2/files/upload",
+                    headers={"Authorization": f"Basic {auth_string}"},
+                    data=form_data,
+                    files=files,
+                )
+            else:
+                # URL upload via form data
+                resp = await client.post(
+                    "https://upload.imagekit.io/api/v2/files/upload",
+                    headers={"Authorization": f"Basic {auth_string}"},
+                    data=form_data,
+                )
+
+        if resp.status_code in (200, 201):
+            result = resp.json()
+            cdn_url = result.get("url", "")
+            file_id = result.get("fileId", "")
+            size = result.get("size", 0)
+            size_str = f"{size / 1024:.1f}KB" if size < 1024 * 1024 else f"{size / (1024 * 1024):.1f}MB"
+            return (
+                f"✅ Image uploaded successfully!\n\n"
+                f"**CDN URL**: {cdn_url}\n"
+                f"**File ID**: {file_id}\n"
+                f"**Size**: {size_str}\n"
+                f"**Name**: {result.get('name', file_name)}"
+            )
+        else:
+            error_detail = resp.text[:300]
+            return f"❌ Upload failed (HTTP {resp.status_code}): {error_detail}"
+
+    except httpx.TimeoutException:
+        return "❌ Upload timed out after 60s. The file may be too large or the network is slow."
+    except Exception as e:
+        return f"❌ Upload error: {type(e).__name__}: {str(e)[:300]}"
 

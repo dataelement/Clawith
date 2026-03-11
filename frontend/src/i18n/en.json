@@ -6,6 +6,8 @@
   "nav": {
     "dashboard": "Dashboard",
     "myAgents": "My Digital Employees",
+    "myCreated": "Created by me",
+    "companyShared": "Company shared",
     "newAgent": "New Digital Employee",
     "enterprise": "Enterprise Settings",
     "language": "Language",
@@ -103,7 +105,7 @@
     "tabs": {
       "status": "Status",
       "tasks": "Tasks",
-      "pulse": "Pulse",
+      "aware": "Aware",
       "mind": "Mind",
       "tools": "Tools",
       "skills": "Skills",
@@ -171,27 +173,25 @@
       "every3days": "Every 3 days",
       "weekly": "Weekly"
     },
-    "pulse": {
-      "agenda": "Agenda",
-      "agendaDesc": "Agent's self-managed task list",
-      "agendaEmpty": "No Agenda items yet. The agent will create and update agenda.md during conversations.",
+    "aware": {
+      "focus": "Focus",
+      "focusDesc": "What the agent is currently working on",
+      "focusEmpty": "No focus items yet. The agent will create and update its focus during conversations.",
       "viewRawMarkdown": "View raw Markdown",
-      "triggers": "Triggers",
-      "triggersDesc": "Set and managed by the agent autonomously",
-      "triggersEmpty": "No triggers yet. Tell the agent what you need, and it will create triggers automatically.",
-      "fired": "fired {{count}} times",
+      "standaloneTriggers": "Standalone Triggers",
+      "noTriggers": "No triggers",
+      "fired": "Fired {{count}} times",
       "disabled": "Disabled",
       "disable": "Disable",
       "enable": "Enable",
       "deleteTriggerConfirm": "Delete trigger \"{{name}}\"?",
-      "monologue": "Inner Monologue",
-      "monologueDesc": "Records of the agent's autonomous actions when awakened by triggers",
-      "monologueEmpty": "No inner monologue records yet. The agent's actions taken by trigger will appear here.",
-      "history": "History",
-      "historyTitle": "Task History",
-      "historyDesc": "Archive of completed tasks",
-      "historyEmpty": "No history records yet. The agent will archive completed Agenda items to task_history.md.",
-      "scheduledTriggers": "Scheduled Triggers"
+      "reflections": "Reflections",
+      "reflectionsDesc": "Records of the agent's autonomous actions",
+      "reflectionsEmpty": "No reflections yet. The agent's autonomous actions will appear here.",
+      "taskHistory": "Task History",
+      "taskHistoryEmpty": "No archived tasks yet.",
+      "inProgress": "In progress",
+      "completed": "Completed"
     },
     "soul": {
       "title": "Soul.md — Personality Definition",
@@ -248,7 +248,8 @@
       "fileSupport": "Supports PDF, Word, Excel, TXT files",
       "attachment": "Attachment",
       "uploadFailed": "Upload failed",
-      "askAboutFile": "Ask about {{name}}..."
+      "askAboutFile": "Ask about {{name}}...",
+      "thinking": "Thinking..."
     },
     "activityLog": {
       "title": "Activity Log",
@@ -572,10 +573,12 @@
     "no": "No",
     "all": "All",
     "none": "None",
+    "download": "Download",
     "channels": {
       "feishu": "Feishu",
       "discord": "Discord",
-      "slack": "Slack"
+      "slack": "Slack",
+      "teams": "Microsoft Teams"
     }
   },
   "channelGuide": {
@@ -614,6 +617,17 @@
       "step7": "Left sidebar → App Release (版本管理与发布) → Create Version → fill in description → click Release for Review → for internal apps, you can approve it yourself in the admin console",
       "step8": "After publishing, invite the bot to a Feishu group or have users add it as a direct contact to start chatting",
       "note": "For internal company apps, the review is usually instant. You must re-publish the app each time you add new permissions."
+    },
+    "teams": {
+      "step1": "Go to portal.azure.com → Azure Active Directory → App registrations → New registration → enter name → select 'Accounts in this organizational directory only' (single-tenant) → Register",
+      "step2": "In the app overview page, copy the Application (client) ID and save it. Then go to Certificates & secrets → New client secret → add description and expiration → copy the Value (this is your App Secret). Also copy your Directory (tenant) ID from the Overview page.",
+      "step3": "For local testing: Start a localtunnel to expose your backend: `npx --yes localtunnel --port 8000` → copy the tunnel URL (e.g., https://xxxxx.loca.lt). When configuring the Messaging Endpoint URL in Azure Bot, replace 'localhost' with your localtunnel URL.",
+      "step4": "Paste App ID (Client ID), App Secret (Client Secret), and Tenant ID (Directory ID) above. Click Save Config → copy the Messaging Endpoint URL that appears.",
+      "step5": "In Azure Bot → Channels → Microsoft Teams → Configure → paste the Messaging Endpoint URL (use your localtunnel URL instead of localhost if testing locally) → Save → the bot will be available in Teams.",
+      "note": "Your server must be publicly accessible on the internet so Microsoft Teams can reach the Messaging Endpoint URL. For local testing, use localtunnel and replace 'localhost' with your tunnel URL.",
+      "tenantId": "Tenant ID (Directory ID)",
+      "tenantIdPlaceholder": "Enter your tenant ID (Directory ID) for this single-tenant app",
+      "tenantIdHint": "Required for single-tenant apps. Get it from Azure AD → App registrations → your app → Overview."
     }
   }
 }

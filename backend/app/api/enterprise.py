@@ -253,6 +253,9 @@ class TenantQuotaUpdate(BaseModel):
     default_agent_ttl_hours: int | None = None
     default_max_llm_calls_per_day: int | None = None
     min_heartbeat_interval_minutes: int | None = None
+    default_max_triggers: int | None = None
+    min_poll_interval_floor: int | None = None
+    max_webhook_rate_ceiling: int | None = None
 
 
 @router.get("/tenant-quotas")
@@ -274,6 +277,9 @@ async def get_tenant_quotas(
         "default_agent_ttl_hours": tenant.default_agent_ttl_hours,
         "default_max_llm_calls_per_day": tenant.default_max_llm_calls_per_day,
         "min_heartbeat_interval_minutes": tenant.min_heartbeat_interval_minutes,
+        "default_max_triggers": tenant.default_max_triggers,
+        "min_poll_interval_floor": tenant.min_poll_interval_floor,
+        "max_webhook_rate_ceiling": tenant.max_webhook_rate_ceiling,
     }
 
 
@@ -309,6 +315,14 @@ async def update_tenant_quotas(
         tenant.min_heartbeat_interval_minutes = data.min_heartbeat_interval_minutes
         from app.services.quota_guard import enforce_heartbeat_floor
         adjusted_count = await enforce_heartbeat_floor(tenant.id)
+
+    # Handle trigger limit fields
+    if data.default_max_triggers is not None:
+        tenant.default_max_triggers = data.default_max_triggers
+    if data.min_poll_interval_floor is not None:
+        tenant.min_poll_interval_floor = data.min_poll_interval_floor
+    if data.max_webhook_rate_ceiling is not None:
+        tenant.max_webhook_rate_ceiling = data.max_webhook_rate_ceiling
 
     await db.commit()
     return {

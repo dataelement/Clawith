@@ -34,6 +34,7 @@ export interface Agent {
     heartbeat_interval_minutes: number;
     heartbeat_active_hours: string;
     last_heartbeat_at?: string;
+    timezone?: string;
     context_window_size?: number;
     created_at: string;
     last_active_at?: string;

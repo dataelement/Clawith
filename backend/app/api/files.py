@@ -318,7 +318,6 @@ async def list_enterprise_kb_files(
     """List files in enterprise knowledge base."""
     info_dir = _enterprise_info_dir().resolve()
     info_dir.mkdir(parents=True, exist_ok=True)
-    (_enterprise_kb_dir()).mkdir(parents=True, exist_ok=True)
 
     if path:
         target = (info_dir / path).resolve()
