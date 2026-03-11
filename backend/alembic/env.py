@@ -20,6 +20,15 @@ from app.models.audit import AuditLog, ApprovalRequest, ChatMessage, EnterpriseI
 from app.models.skill import Skill, SkillFile  # noqa: F401
 from app.models.chat_session import ChatSession  # noqa: F401
 from app.models.participant import Participant  # noqa: F401
+from app.models.activity_log import AgentActivityLog  # noqa: F401
+from app.models.invitation_code import InvitationCode  # noqa: F401
+from app.models.org import OrgDepartment, OrgMember, AgentRelationship, AgentAgentRelationship  # noqa: F401
+from app.models.plaza import PlazaPost, PlazaComment, PlazaLike  # noqa: F401
+from app.models.schedule import AgentSchedule  # noqa: F401
+from app.models.system_settings import SystemSetting  # noqa: F401
+from app.models.tenant import Tenant  # noqa: F401
+from app.models.tool import Tool  # noqa: F401
+from app.models.trigger import AgentTrigger  # noqa: F401
 
 config = context.config
 settings = get_settings()

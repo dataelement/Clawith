@@ -200,83 +200,99 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 {"role": "user", "content": full_instruction},
             ]
 
-            # Call LLM with tools
-            import json as _json
-            from app.services.llm_utils import get_provider_base_url, get_tool_params
+            # Call LLM with tools using unified client
+            from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
             from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
 
-            base_url = get_provider_base_url(model.provider, model.base_url)
-            if not base_url:
+            try:
+                client = create_llm_client(
+                    provider=model.provider,
+                    api_key=model.api_key_encrypted,
+                    model=model.model,
+                    base_url=model.base_url,
+                    timeout=120.0,
+                )
+            except Exception as e:
+                logger.error(f"Failed to create LLM client: {e}")
                 return
 
-            url = f"{base_url.rstrip('/')}/chat/completions"
-            api_key = model.api_key_encrypted
             tools_for_llm = await get_agent_tools_for_llm(agent_id)
 
             reply = ""
             plaza_posts_made = 0       # hard limit: 1 new post per heartbeat
             plaza_comments_made = 0    # hard limit: 2 comments per heartbeat
+
+            # Convert messages to LLMMessage format
+            llm_messages = [
+                LLMMessage(role=m["role"], content=m["content"]) for m in messages
+            ]
+
             for round_i in range(20):  # More rounds for search + write + plaza
-                payload = {
-                    "model": model.model,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 8192,  # Larger for search results + journal writing
-                    "tools": tools_for_llm,
-                    **get_tool_params(model.provider),
-                }
+                try:
+                    response = await client.complete(
+                        messages=llm_messages,
+                        tools=tools_for_llm,
+                        temperature=0.7,
+                        max_tokens=get_max_tokens(model.provider, model.model),
+                    )
+                except LLMError as e:
+                    logger.error(f"LLM error in heartbeat: {e}")
+                    reply = ""
+                    break
+                except Exception as e:
+                    logger.error(f"LLM call error in heartbeat: {e}")
+                    reply = ""
+                    break
 
-                payload_str = _json.dumps(payload, ensure_ascii=False)
-                proc = await asyncio.create_subprocess_exec(
-                    "curl", "-s", "-X", "POST", url,
-                    "-H", f"Authorization: Bearer {api_key}",
-                    "-H", "Content-Type: application/json",
-                    "-d", payload_str,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, _ = await proc.communicate()
-                resp = _json.loads(stdout.decode())
+                if response.tool_calls:
+                    # Add assistant message with tool calls
+                    llm_messages.append(LLMMessage(
+                        role="assistant",
+                        content=response.content or None,
+                        tool_calls=[{
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": tc["function"],
+                        } for tc in response.tool_calls],
+                        reasoning_content=response.reasoning_content,
+                    ))
 
-                choice = resp.get("choices", [{}])[0]
-                msg = choice.get("message", {})
-                finish_reason = choice.get("finish_reason", "stop")
-
-                if finish_reason == "tool_calls" and msg.get("tool_calls"):
-                    messages.append(msg)
-                    for tc in msg["tool_calls"]:
+                    for tc in response.tool_calls:
                         fn = tc["function"]
+                        tool_name = fn["name"]
                         try:
-                            args = _json.loads(fn["arguments"])
+                            args = json.loads(fn["arguments"]) if fn.get("arguments") else {}
                         except Exception:
                             args = {}
 
                         # ── Hard rate limits for plaza actions ──
-                        if fn["name"] == "plaza_create_post":
+                        if tool_name == "plaza_create_post":
                             if plaza_posts_made >= 1:
                                 tool_result = "[BLOCKED] You have already made 1 plaza post this heartbeat. Do not post again."
                             else:
-                                tool_result = await execute_tool(fn["name"], args, agent_id, agent.creator_id)
+                                tool_result = await execute_tool(tool_name, args, agent_id, agent.creator_id)
                                 plaza_posts_made += 1
-                        elif fn["name"] == "plaza_add_comment":
+                        elif tool_name == "plaza_add_comment":
                             if plaza_comments_made >= 2:
                                 tool_result = "[BLOCKED] You have already made 2 comments this heartbeat. Do not comment again."
                             else:
-                                tool_result = await execute_tool(fn["name"], args, agent_id, agent.creator_id)
+                                tool_result = await execute_tool(tool_name, args, agent_id, agent.creator_id)
                                 plaza_comments_made += 1
                         else:
-                            tool_result = await execute_tool(fn["name"], args, agent_id, agent.creator_id)
+                            tool_result = await execute_tool(tool_name, args, agent_id, agent.creator_id)
 
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": str(tool_result),
-                        })
+                        llm_messages.append(LLMMessage(
+                            role="tool",
+                            tool_call_id=tc["id"],
+                            content=str(tool_result),
+                        ))
                 else:
-                    reply = msg.get("content", "")
+                    reply = response.content or ""
                     break
             else:
-                reply = msg.get("content", "")
+                reply = ""
+
+            await client.close()
 
             # Suppress HEARTBEAT_OK
             is_ok = "HEARTBEAT_OK" in reply.upper().replace(" ", "_") if reply else False

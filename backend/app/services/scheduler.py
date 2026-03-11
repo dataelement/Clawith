@@ -64,89 +64,83 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
 
             # Build context and call LLM
             from app.services.agent_context import build_agent_context
+            from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
+            from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
+
             system_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "")
 
             messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"[自动调度任务] {instruction}"},
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=f"[自动调度任务] {instruction}"),
             ]
-
-            # Call LLM with tool loop (reuse websocket logic)
-            import json as _json
-
-            from app.services.llm_utils import get_provider_base_url, get_tool_params
-            base_url = get_provider_base_url(model.provider, model.base_url)
-
-            url = f"{base_url.rstrip('/')}/chat/completions"
-            # Normalize: strip /chat/completions if already included in base_url
-            if base_url.rstrip('/').endswith('/chat/completions'):
-                url = base_url.rstrip('/')
-            api_key = model.api_key_encrypted
-            from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
 
             # Load tools dynamically from DB (respects per-agent config and MCP tools)
             tools_for_llm = await get_agent_tools_for_llm(agent_id)
 
-            # Tool-calling loop (max 50 rounds for scheduled tasks)
-            for round_i in range(50):
-                payload = {
-                    "model": model.model,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 40960,
-                    "tools": tools_for_llm if tools_for_llm else None,
-                    **get_tool_params(model.provider),
-                }
-                if not payload.get("tools"):
-                    payload.pop("tools", None)
-
-                payload_str = _json.dumps(payload, ensure_ascii=False)
-                proc = await asyncio.create_subprocess_exec(
-                    "curl", "-s", "--max-time", "120",
-                    "-X", "POST", url,
-                    "-H", f"Authorization: Bearer {api_key}",
-                    "-H", "Content-Type: application/json",
-                    "-d", payload_str,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+            # Create unified LLM client
+            try:
+                client = create_llm_client(
+                    provider=model.provider,
+                    api_key=model.api_key_encrypted,
+                    model=model.model,
+                    base_url=model.base_url,
+                    timeout=120.0,
                 )
-                stdout, _ = await proc.communicate()
+            except Exception as e:
+                logger.error(f"Schedule {schedule_id}: Failed to create LLM client: {e}")
+                return
 
-                stdout_text = stdout.decode().strip() if stdout else ""
-                if not stdout_text:
-                    logger.warning(f"Schedule {schedule_id}: LLM returned empty response")
-                    reply = "(LLM 返回空响应)"
+            # Tool-calling loop (max 50 rounds for scheduled tasks)
+            reply = ""
+            for round_i in range(50):
+                try:
+                    response = await client.complete(
+                        messages=messages,
+                        tools=tools_for_llm if tools_for_llm else None,
+                        temperature=0.7,
+                        max_tokens=get_max_tokens(model.provider, model.model),
+                    )
+                except LLMError as e:
+                    logger.error(f"Schedule {schedule_id}: LLM error: {e}")
+                    reply = f"(LLM 错误: {e})"
+                    break
+                except Exception as e:
+                    logger.error(f"Schedule {schedule_id}: LLM call error: {e}")
+                    reply = f"(LLM 调用异常: {str(e)[:200]})"
                     break
 
-                resp = _json.loads(stdout_text)
-                if not isinstance(resp, dict):
-                    logger.warning(f"Schedule {schedule_id}: LLM returned non-dict: {stdout_text[:200]}")
-                    reply = f"(LLM 返回异常: {stdout_text[:100]})"
-                    break
+                if response.tool_calls:
+                    # Add assistant message with tool calls
+                    messages.append(LLMMessage(
+                        role="assistant",
+                        content=response.content or None,
+                        tool_calls=[{
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": tc["function"],
+                        } for tc in response.tool_calls],
+                        reasoning_content=response.reasoning_content,
+                    ))
 
-                choice = resp.get("choices", [{}])[0]
-                msg = choice.get("message", {})
-                finish_reason = choice.get("finish_reason", "stop")
-
-                if finish_reason == "tool_calls" and msg.get("tool_calls"):
-                    messages.append(msg)
-                    for tc in msg["tool_calls"]:
+                    for tc in response.tool_calls:
                         fn = tc["function"]
                         try:
-                            args = _json.loads(fn["arguments"])
+                            args = json.loads(fn["arguments"]) if fn.get("arguments") else {}
                         except Exception:
                             args = {}
                         tool_result = await execute_tool(fn["name"], args, agent_id, agent.creator_id)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": str(tool_result),
-                        })
+                        messages.append(LLMMessage(
+                            role="tool",
+                            tool_call_id=tc["id"],
+                            content=str(tool_result),
+                        ))
                 else:
-                    reply = msg.get("content", "")
+                    reply = response.content or ""
                     break
             else:
-                reply = msg.get("content", "(已达到最大工具调用轮数)")
+                reply = "(已达到最大工具调用轮数)"
+
+            await client.close()
 
             # Log activity
             from app.services.activity_logger import log_activity

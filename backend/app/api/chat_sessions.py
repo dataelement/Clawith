@@ -314,6 +314,8 @@ async def get_session_messages(
                 out.append(part)
         else:
             entry = {"role": m.role, "content": m.content}
+            if hasattr(m, 'thinking') and m.thinking:
+                entry["thinking"] = m.thinking
             if sender_name:
                 entry["sender_name"] = sender_name
             out.append(entry)

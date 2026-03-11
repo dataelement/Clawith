@@ -118,20 +118,29 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
     ]
 
     # Step 4: Call LLM with tool loop
-    from app.services.llm_utils import get_provider_base_url, get_tool_params
-    base_url = get_provider_base_url(model.provider, model.base_url)
+    from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
 
+    # Normalize base_url
     if not base_url:
         await _log_error(task_id, f"未配置 {model.provider} 的 API 地址")
         if task_type == 'supervision':
             await _restore_supervision_status(task_id)
         return
 
-    # Normalize: strip /chat/completions if user accidentally included the full endpoint
-    if base_url.rstrip('/').endswith('/chat/completions'):
-        base_url = base_url.rstrip('/').rsplit('/chat/completions', 1)[0]
-    url = f"{base_url.rstrip('/')}/chat/completions"
-    api_key = model.api_key_encrypted
+    # Create unified LLM client
+    try:
+        client = create_llm_client(
+            provider=model.provider,
+            api_key=api_key,
+            model=model.model,
+            base_url=base_url,
+            timeout=1200.0,
+        )
+    except Exception as e:
+        await _log_error(task_id, f"创建 LLM 客户端失败: {e}")
+        if task_type == 'supervision':
+            await _restore_supervision_status(task_id)
+        return
 
     # Load tools (same as chat dialog)
     from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
@@ -143,92 +152,60 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
 
         # Tool-calling loop (max 50 rounds for task execution)
         for round_i in range(50):
-            payload = {
-                "model": model.model,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 40960,
-                "tools": tools_for_llm if tools_for_llm else None,
-                **get_tool_params(model.provider),
-            }
-            # Remove None tools key
-            if not payload.get("tools"):
-                payload.pop("tools", None)
-
-            payload_str = json.dumps(payload, ensure_ascii=False)
-            proc = await asyncio.create_subprocess_exec(
-                "curl", "-s", "--max-time", "1200",
-                "-X", "POST", url,
-                "-H", "Content-Type: application/json",
-                "-H", f"Authorization: Bearer {api_key}",
-                "-d", payload_str,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-
-            if proc.returncode != 0:
-                stderr_msg = stderr.decode().strip()[:200] if stderr else ''
-                await _log_error(task_id, f"调用模型失败 (curl exit {proc.returncode}) {stderr_msg}")
+            try:
+                response = await client.complete(
+                    messages=messages,
+                    tools=tools_for_llm if tools_for_llm else None,
+                    temperature=0.7,
+                    max_tokens=get_max_tokens(model.provider, model.model),
+                )
+            except LLMError as e:
+                await _log_error(task_id, f"LLM 错误: {e}")
+                if task_type == 'supervision':
+                    await _restore_supervision_status(task_id)
+                return
+            except Exception as e:
+                await _log_error(task_id, f"调用模型失败: {str(e)[:200]}")
                 if task_type == 'supervision':
                     await _restore_supervision_status(task_id)
                 return
 
-            stdout_text = stdout.decode().strip()
-            if not stdout_text:
-                await _log_error(task_id, "LLM 返回空响应（可能网络超时或服务不可用）")
-                if task_type == 'supervision':
-                    await _restore_supervision_status(task_id)
-                return
+            if response.tool_calls:
+                # Add assistant message with tool calls
+                messages.append(LLMMessage(
+                    role="assistant",
+                    content=response.content or None,
+                    tool_calls=[{
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": tc["function"],
+                    } for tc in response.tool_calls],
+                    reasoning_content=response.reasoning_content,
+                ))
 
-            data = json.loads(stdout_text)
-            if not isinstance(data, dict):
-                await _log_error(task_id, f"LLM 返回非预期格式: {stdout_text[:300]}")
-                if task_type == 'supervision':
-                    await _restore_supervision_status(task_id)
-                return
-            if "error" in data:
-                err_msg = data['error'].get('message', str(data['error']))[:200] if isinstance(data['error'], dict) else str(data['error'])[:200]
-                await _log_error(task_id, f"LLM 错误: {err_msg}")
-                if task_type == 'supervision':
-                    await _restore_supervision_status(task_id)
-                return
-
-            choices = data.get("choices")
-            if not choices or not isinstance(choices, list):
-                await _log_error(task_id, f"LLM 响应格式异常: {stdout_text[:300]}")
-                if task_type == 'supervision':
-                    await _restore_supervision_status(task_id)
-                return
-
-            choice = choices[0]
-            msg = choice.get("message", {})
-            finish_reason = choice.get("finish_reason", "stop")
-
-            # Handle tool calls
-            if finish_reason == "tool_calls" and msg.get("tool_calls"):
-                messages.append(msg)
-                for tc in msg["tool_calls"]:
+                for tc in response.tool_calls:
                     fn = tc["function"]
+                    tool_name = fn["name"]
+                    raw_args = fn.get("arguments", "{}")
+                    print(f"[TaskExec] Round {round_i+1} calling tool: {tool_name}({json.dumps(raw_args, ensure_ascii=False)[:100]})")
                     try:
-                        args = json.loads(fn["arguments"])
+                        args = json.loads(raw_args) if raw_args else {}
                     except Exception:
                         args = {}
 
-                    print(f"[TaskExec] Round {round_i+1} calling tool: {fn['name']}({json.dumps(args, ensure_ascii=False)[:100]})")
-                    tool_result = await execute_tool(fn["name"], args, agent_id, creator_id)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": str(tool_result),
-                    })
-                continue  # Next round
+                    tool_result = await execute_tool(tool_name, args, agent_id, creator_id)
+                    messages.append(LLMMessage(
+                        role="tool",
+                        tool_call_id=tc["id"],
+                        content=str(tool_result),
+                    ))
             else:
-                reply = msg.get("content", "")
+                reply = response.content or ""
                 break
         else:
-            reply = msg.get("content", "(已达到最大工具调用轮数)")
+            reply = "(已达到最大工具调用轮数)"
 
+        await client.close()
         print(f"[TaskExec] LLM reply: {reply[:80]}")
     except Exception as e:
         error_msg = str(e) or repr(e)

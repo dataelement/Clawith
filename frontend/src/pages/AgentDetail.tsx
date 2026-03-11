@@ -624,6 +624,7 @@ export default function AgentDetail() {
                 setChatMessages(msgs.map((m: any) => parseChatMsg({
                     role: m.role, content: m.content,
                     ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult }),
+                    ...(m.thinking && { thinking: m.thinking }),
                 })));
             } else {
                 // Other user's session or agent-to-agent: read-only view
@@ -745,13 +746,14 @@ export default function AgentDetail() {
     };
 
 
-    // Reset chat state whenever the viewed agent changes
+    // Reset state whenever the viewed agent changes
     useEffect(() => {
         setActiveSession(null);
         setChatMessages([]);
         setHistoryMsgs([]);
         setChatScope('mine');
         setAgentExpired(false);
+        settingsInitRef.current = false;
     }, [id]);
 
     useEffect(() => {
@@ -2040,6 +2042,30 @@ export default function AgentDetail() {
                                                             const fi = fe === 'pdf' ? '📄' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '📊' : (fe === 'docx' || fe === 'doc') ? '📝' : '📎';
                                                             return (
                                                                 <>
+                                                                    {m.thinking && (
+                                                                        <details style={{
+                                                                            marginBottom: '8px', fontSize: '12px',
+                                                                            background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
+                                                                            border: '1px solid rgba(147, 130, 220, 0.15)',
+                                                                        }}>
+                                                                            <summary style={{
+                                                                                padding: '6px 10px', cursor: 'pointer',
+                                                                                color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
+                                                                                userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
+                                                                            }}>
+                                                                                💭 Thinking
+                                                                            </summary>
+                                                                            <div style={{
+                                                                                padding: '4px 10px 8px',
+                                                                                fontSize: '12px', lineHeight: '1.6',
+                                                                                color: 'var(--text-secondary)',
+                                                                                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                                                                maxHeight: '300px', overflow: 'auto',
+                                                                            }}>
+                                                                                {m.thinking}
+                                                                            </div>
+                                                                        </details>
+                                                                    )}
                                                                     {pm.fileName && (
                                                                         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'var(--bg-elevated)', borderRadius: '6px', padding: '4px 8px', marginBottom: pm.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
                                                                             <span>{fi}</span>
