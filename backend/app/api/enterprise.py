@@ -314,7 +314,9 @@ async def update_tenant_quotas(
     if data.min_heartbeat_interval_minutes is not None:
         tenant.min_heartbeat_interval_minutes = data.min_heartbeat_interval_minutes
         from app.services.quota_guard import enforce_heartbeat_floor
-        adjusted_count = await enforce_heartbeat_floor(tenant.id)
+        adjusted_count = await enforce_heartbeat_floor(
+            tenant.id, floor=data.min_heartbeat_interval_minutes, db=db
+        )
 
     # Handle trigger limit fields
     if data.default_max_triggers is not None:

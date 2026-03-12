@@ -2816,10 +2816,10 @@ function AgentDetailInner() {
                                                     </div>
                                                 );
                                             })}
-                                            {(isWaiting || (chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === 'user' && wsConnected)) && (
-                                                <div style={{ display: 'flex', gap: '10px', padding: '12px 0', animation: 'fadeIn .2s ease' }}>
+                                            {isWaiting && (
+                                                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
                                                     <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
-                                                    <div className="chat-bubble" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: '10px 14px' }}>
+                                                    <div style={{ padding: '8px 12px', borderRadius: '12px', background: 'var(--bg-secondary)', fontSize: '13px' }}>
                                                         <div className="thinking-indicator">
                                                             <div className="thinking-dots">
                                                                 <span /><span /><span />

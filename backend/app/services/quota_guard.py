@@ -192,36 +192,48 @@ async def check_agent_creation_quota(user_id: uuid.UUID) -> None:
 
 # ── Heartbeat floor enforcement ────────────────────────────────────
 
-async def enforce_heartbeat_floor(tenant_id: uuid.UUID) -> int:
+async def enforce_heartbeat_floor(tenant_id: uuid.UUID, floor: int | None = None, db=None) -> int:
     """Enforce heartbeat floor on all agents in the tenant.
+
+    Args:
+        tenant_id: The tenant to enforce for.
+        floor: The minimum interval in minutes. If None, reads from tenant.
+        db: Optional existing database session to reuse (avoids session isolation bugs).
 
     Returns number of agents adjusted.
     """
     from app.models.agent import Agent
     from app.models.tenant import Tenant
 
-    async with async_session() as db:
-        result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-        tenant = result.scalar_one_or_none()
-        if not tenant:
-            return 0
-
-        floor = tenant.min_heartbeat_interval_minutes
+    async def _enforce(session, floor_val):
+        # If floor not provided, read from tenant
+        if floor_val is None:
+            result = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
+            tenant = result.scalar_one_or_none()
+            if not tenant:
+                return 0
+            floor_val = tenant.min_heartbeat_interval_minutes
 
         # Find agents with interval below floor
-        agents_result = await db.execute(
+        agents_result = await session.execute(
             select(Agent).where(
                 Agent.tenant_id == tenant_id,
-                Agent.heartbeat_interval_minutes < floor,
+                Agent.heartbeat_interval_minutes < floor_val,
             )
         )
         agents = agents_result.scalars().all()
         for agent in agents:
-            agent.heartbeat_interval_minutes = floor
+            agent.heartbeat_interval_minutes = floor_val
 
         if agents:
-            await db.commit()
+            await session.commit()
         return len(agents)
+
+    if db is not None:
+        return await _enforce(db, floor)
+    else:
+        async with async_session() as new_db:
+            return await _enforce(new_db, floor)
 
 
 # ── Helper ─────────────────────────────────────────────────────────
