@@ -270,6 +270,9 @@
       "currentUsage": "当前用量",
       "today": "今日",
       "month": "本月",
+      "maxToolRounds": "最大工具调用轮次",
+      "maxToolRoundsLabel": "每条消息的最大轮次",
+      "maxToolRoundsDesc": "智能体每条消息可执行的工具调用轮次数（搜索、写入等）。默认值：50",
       "saveSettings": "保存设置",
       "saved": "已保存",
       "autonomy": {
