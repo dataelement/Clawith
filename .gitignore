@@ -21,6 +21,6 @@ ss-nodes.json
 
 # Ignore Antigravity / Claude Code agent configurations
 .agent/
-.agents/*
+.agents/
 _agent/
 _agents/
