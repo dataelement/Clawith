@@ -560,6 +560,36 @@ export default function AgentCreate() {
                                 )}
                             </div>
 
+                            {/* Microsoft Teams (configure after creation in Agent settings) */}
+                            <div style={{ border: '1px solid var(--border-default)', borderRadius: '8px', overflow: 'hidden' }}>
+                                <div
+                                    style={{
+                                        display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',
+                                        background: 'var(--bg-elevated)',
+                                    }}
+                                >
+                                    {/* Simple Teams icon */}
+                                    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+                                        <rect x="2.5" y="4" width="12" height="12" rx="3" fill="#6264A7" />
+                                        <path
+                                            d="M7 9h5c.3 0 .5.2.5.5v1.1c0 .3-.2.5-.5.5H10.9v4.7c0 .3-.2.5-.5.5H8.7c-.3 0-.5-.2-.5-.5v-4.7H7c-.3 0-.5-.2-.5-.5V9.5C6.5 9.2 6.7 9 7 9Z"
+                                            fill="#FFFFFF"
+                                        />
+                                        <circle cx="18.5" cy="7.5" r="2.1" fill="#7B83EB" />
+                                        <rect x="16.4" y="10.3" width="4.6" height="5.8" rx="2" fill="#7B83EB" />
+                                    </svg>
+                                    <div style={{ flex: 1 }}>
+                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>Microsoft Teams</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                            Teams Bot (configure details in Agent Settings after creation)
+                                        </div>
+                                    </div>
+                                    <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'var(--bg-secondary)', color: 'var(--text-tertiary)', fontWeight: 500 }}>
+                                        Available
+                                    </span>
+                                </div>
+                            </div>
+
                             {/* Other channels — coming soon */}
                             {[
                                 { icon: '💬', name: t('wizard.step5.dingtalk', 'DingTalk'), desc: t('wizard.step5.dingtalkDesc', 'DingTalk custom robot integration') },

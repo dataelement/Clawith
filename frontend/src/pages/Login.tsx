@@ -174,19 +174,24 @@ export default function Login() {
                                         placeholder={t('auth.emailPlaceholder')}
                                     />
                                 </div>
-                                <div className="login-field">
-                                    <label>{t('auth.selectCompany')}</label>
-                                    <select
-                                        value={form.tenant_id}
-                                        onChange={(e) => setForm({ ...form, tenant_id: e.target.value })}
-                                        required
-                                    >
-                                        <option value="">{t('auth.selectCompanyPlaceholder')}</option>
-                                        {tenants.map((tenant) => (
-                                            <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
-                                        ))}
-                                    </select>
-                                </div>
+
+                                {/* Only show company selector if there are tenants to choose from */}
+                                {tenants.length > 0 && (
+                                    <div className="login-field">
+                                        <label>{t('auth.selectCompany')}</label>
+                                        <select
+                                            value={form.tenant_id}
+                                            onChange={(e) => setForm({ ...form, tenant_id: e.target.value })}
+                                            required
+                                        >
+                                            <option value="">{t('auth.selectCompanyPlaceholder')}</option>
+                                            {tenants.map((tenant) => (
+                                                <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                )}
+
                                 {invitationRequired && (
                                     <div className="login-field">
                                         <label>{t('auth.invitationCode')}</label>
