@@ -112,16 +112,16 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
             user_prompt += f"\n任务描述: {task_description}"
         user_prompt += "\n\n请认真完成此任务，给出详细的执行结果。"
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-
     # Step 4: Call LLM with tool loop
     from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
 
+    messages = [
+        LLMMessage(role="system", content=system_prompt),
+        LLMMessage(role="user", content=user_prompt),
+    ]
+
     # Normalize base_url
-    if not base_url:
+    if not model.base_url:
         await _log_error(task_id, f"未配置 {model.provider} 的 API 地址")
         if task_type == 'supervision':
             await _restore_supervision_status(task_id)
@@ -131,9 +131,9 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
     try:
         client = create_llm_client(
             provider=model.provider,
-            api_key=api_key,
+            api_key=model.api_key_encrypted,
             model=model.model,
-            base_url=base_url,
+            base_url=model.base_url,
             timeout=1200.0,
         )
     except Exception as e:
