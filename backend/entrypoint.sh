@@ -15,7 +15,7 @@ if [ "$(id -u)" = '0' ]; then
     chown -R clawith:clawith /app/agent_data
     
     echo "[entrypoint] Dropping privileges to 'clawith' and re-executing..."
-    exec gosu clawith "$0" "$@"
+    exec gosu clawith /bin/bash "$0" "$@"
 fi
 # -------------------------------------------------------
 
