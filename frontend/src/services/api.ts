@@ -120,6 +120,11 @@ export const authApi = {
 export const tenantApi = {
     listPublic: () =>
         request<{ id: string; name: string; slug: string }[]>('/tenants/public/list'),
+    createPublic: (name: string) =>
+        request<{ id: string; name: string; slug: string }>('/tenants/public/create', {
+            method: 'POST',
+            body: JSON.stringify({ name }),
+        }),
 };
 
 // ─── Agents ───────────────────────────────────────────

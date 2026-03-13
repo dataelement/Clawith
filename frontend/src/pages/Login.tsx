@@ -13,6 +13,9 @@ export default function Login() {
     const [loading, setLoading] = useState(false);
     const [tenants, setTenants] = useState<{ id: string; name: string; slug: string }[]>([]);
     const [invitationRequired, setInvitationRequired] = useState(false);
+    const [showNewTenantModal, setShowNewTenantModal] = useState(false);
+    const [newTenantName, setNewTenantName] = useState('');
+    const [creatingTenant, setCreatingTenant] = useState(false);
 
     const [form, setForm] = useState({
         username: '',
@@ -72,6 +75,22 @@ export default function Login() {
             setError(err.message || t('common.error'));
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleCreateTenant = async () => {
+        if (!newTenantName.trim()) return;
+        setCreatingTenant(true);
+        try {
+            const newTenant = await tenantApi.createPublic(newTenantName.trim());
+            setTenants([...tenants, newTenant]);
+            setForm(f => ({ ...f, tenant_id: newTenant.id }));
+            setShowNewTenantModal(false);
+            setNewTenantName('');
+        } catch (err: any) {
+            setError(err.message || t('common.error'));
+        } finally {
+            setCreatingTenant(false);
         }
     };
 
@@ -176,16 +195,34 @@ export default function Login() {
                                 </div>
                                 <div className="login-field">
                                     <label>{t('auth.selectCompany')}</label>
-                                    <select
-                                        value={form.tenant_id}
-                                        onChange={(e) => setForm({ ...form, tenant_id: e.target.value })}
-                                        required
-                                    >
-                                        <option value="">{t('auth.selectCompanyPlaceholder')}</option>
-                                        {tenants.map((tenant) => (
-                                            <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
-                                        ))}
-                                    </select>
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                        <select
+                                            value={form.tenant_id}
+                                            onChange={(e) => setForm({ ...form, tenant_id: e.target.value })}
+                                            required
+                                            style={{ flex: 1 }}
+                                        >
+                                            <option value="">{t('auth.selectCompanyPlaceholder')}</option>
+                                            {tenants.map((tenant) => (
+                                                <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
+                                            ))}
+                                        </select>
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowNewTenantModal(true)}
+                                            style={{
+                                                padding: '8px 12px',
+                                                borderRadius: '6px',
+                                                border: '1px solid var(--border-subtle)',
+                                                background: 'var(--bg-secondary)',
+                                                color: 'var(--text-primary)',
+                                                cursor: 'pointer',
+                                                whiteSpace: 'nowrap',
+                                            }}
+                                        >
+                                            + {t('auth.createCompany') || '新建公司'}
+                                        </button>
+                                    </div>
                                 </div>
                                 {invitationRequired && (
                                     <div className="login-field">
@@ -238,6 +275,59 @@ export default function Login() {
                     </div>
                 </div>
             </div>
+
+            {/* New Company Modal */}
+            {showNewTenantModal && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    zIndex: 1000,
+                }} onClick={() => setShowNewTenantModal(false)}>
+                    <div style={{
+                        background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px',
+                        width: '90%', maxWidth: '400px', border: '1px solid var(--border-subtle)',
+                    }} onClick={e => e.stopPropagation()}>
+                        <h3 style={{ margin: '0 0 16px', fontSize: '18px' }}>
+                            {t('auth.createCompany') || '新建公司'}
+                        </h3>
+                        <div className="login-field">
+                            <label>{t('auth.companyName') || '公司名称'}</label>
+                            <input
+                                type="text"
+                                value={newTenantName}
+                                onChange={(e) => setNewTenantName(e.target.value)}
+                                placeholder={t('auth.companyNamePlaceholder') || '请输入公司名称'}
+                                autoFocus
+                                onKeyDown={(e) => e.key === 'Enter' && handleCreateTenant()}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', gap: '12px', marginTop: '20px', justifyContent: 'flex-end' }}>
+                            <button
+                                type="button"
+                                onClick={() => { setShowNewTenantModal(false); setNewTenantName(''); }}
+                                style={{
+                                    padding: '8px 16px', borderRadius: '6px', border: '1px solid var(--border-subtle)',
+                                    background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer',
+                                }}
+                            >
+                                {t('common.cancel') || '取消'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleCreateTenant}
+                                disabled={!newTenantName.trim() || creatingTenant}
+                                style={{
+                                    padding: '8px 16px', borderRadius: '6px', border: 'none',
+                                    background: 'var(--color-primary)', color: '#fff', cursor: 'pointer',
+                                    opacity: (!newTenantName.trim() || creatingTenant) ? 0.6 : 1,
+                                }}
+                            >
+                                {creatingTenant ? (t('common.loading') || '创建中...') : (t('common.confirm') || '创建')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
