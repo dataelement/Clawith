@@ -44,9 +44,21 @@ load_env() {
     : "${DATABASE_URL:=postgresql+asyncpg://clawith:clawith@localhost:5432/clawith?ssl=disable}"
     export DATABASE_URL
 
-    PG_PORT=$(echo "$DATABASE_URL" | grep -oP 'localhost:\K[0-9]+' 2>/dev/null || echo "$DATABASE_URL" | sed -n 's/.*localhost:\([0-9]*\).*/\1/p')
+    # Parse host and port from DATABASE_URL regardless of hostname
+    # Format: postgresql+asyncpg://user:pass@host:port/dbname?...
+    _db_hostpart=$(echo "$DATABASE_URL" | sed 's|.*://[^@]*@||' | sed 's|/.*||' | sed 's|?.*||')
+    PG_HOST="${_db_hostpart%%:*}"
+    PG_PORT="${_db_hostpart##*:}"
+    [ "$PG_PORT" = "$PG_HOST" ] && PG_PORT="5432"
     PG_PORT=${PG_PORT:-5432}
-    export PG_PORT
+    export PG_HOST PG_PORT
+
+    # Detect external (non-localhost) database
+    EXTERNAL_DB=false
+    if [ "$PG_HOST" != "localhost" ] && [ "$PG_HOST" != "127.0.0.1" ]; then
+        EXTERNAL_DB=true
+    fi
+    export EXTERNAL_DB
 }
 
 # ═══════════════════════════════════════════════════════
@@ -107,6 +119,12 @@ add_pg_path() {
 # 启动 PostgreSQL
 # ═══════════════════════════════════════════════════════
 start_postgres() {
+    # Skip local PostgreSQL management when using an external database
+    if [ "$EXTERNAL_DB" = true ]; then
+        echo -e "${GREEN}🐘 Using external database at ${PG_HOST}:${PG_PORT} — skipping local PostgreSQL startup${NC}"
+        return 0
+    fi
+
     add_pg_path
 
     if command -v pg_isready &>/dev/null; then
