@@ -47,6 +47,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                 return
 
             from app.core.permissions import is_agent_expired
+
             if is_agent_expired(agent):
                 logger.info(f"Schedule {schedule_id}: agent {agent.name} has expired, skipping")
                 return
@@ -79,12 +80,24 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
 
             # Create unified LLM client
             try:
+                from app.core.security import decrypt_symmetric
+
+                headers_dict = None
+                if getattr(model, "headers_encrypted", None):
+                    try:
+                        import json as _hdr_json
+
+                        headers_dict = _hdr_json.loads(decrypt_symmetric(model.headers_encrypted))
+                    except Exception:
+                        pass
+
                 client = create_llm_client(
                     provider=model.provider,
-                    api_key=model.api_key_encrypted,
+                    api_key=decrypt_symmetric(model.api_key_encrypted),
                     model=model.model,
                     base_url=model.base_url,
                     timeout=120.0,
+                    headers=headers_dict,
                 )
             except Exception as e:
                 logger.error(f"Schedule {schedule_id}: Failed to create LLM client: {e}")
@@ -111,16 +124,21 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
 
                 if response.tool_calls:
                     # Add assistant message with tool calls
-                    messages.append(LLMMessage(
-                        role="assistant",
-                        content=response.content or None,
-                        tool_calls=[{
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": tc["function"],
-                        } for tc in response.tool_calls],
-                        reasoning_content=response.reasoning_content,
-                    ))
+                    messages.append(
+                        LLMMessage(
+                            role="assistant",
+                            content=response.content or None,
+                            tool_calls=[
+                                {
+                                    "id": tc["id"],
+                                    "type": "function",
+                                    "function": tc["function"],
+                                }
+                                for tc in response.tool_calls
+                            ],
+                            reasoning_content=response.reasoning_content,
+                        )
+                    )
 
                     for tc in response.tool_calls:
                         fn = tc["function"]
@@ -129,11 +147,13 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                         except Exception:
                             args = {}
                         tool_result = await execute_tool(fn["name"], args, agent_id, agent.creator_id)
-                        messages.append(LLMMessage(
-                            role="tool",
-                            tool_call_id=tc["id"],
-                            content=str(tool_result),
-                        ))
+                        messages.append(
+                            LLMMessage(
+                                role="tool",
+                                tool_call_id=tc["id"],
+                                content=str(tool_result),
+                            )
+                        )
                 else:
                     reply = response.content or ""
                     break
@@ -144,8 +164,10 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
 
             # Log activity
             from app.services.activity_logger import log_activity
+
             await log_activity(
-                agent_id, "schedule_run",
+                agent_id,
+                "schedule_run",
                 f"定时任务执行: {instruction[:60]}",
                 detail={"schedule_id": str(schedule_id), "instruction": instruction, "reply": reply[:500]},
             )
@@ -187,14 +209,17 @@ async def _tick():
 
                 await write_audit_log(
                     "schedule_fire",
-                    {"schedule_id": str(sched.id), "name": sched.name, "instruction": sched.instruction[:100], "next_run": str(next_run)},
+                    {
+                        "schedule_id": str(sched.id),
+                        "name": sched.name,
+                        "instruction": sched.instruction[:100],
+                        "next_run": str(next_run),
+                    },
                     agent_id=sched.agent_id,
                 )
 
                 # Fire execution in background (don't block ticker)
-                asyncio.create_task(
-                    _execute_schedule(sched.id, sched.agent_id, sched.instruction)
-                )
+                asyncio.create_task(_execute_schedule(sched.id, sched.agent_id, sched.instruction))
                 logger.info(f"Triggered schedule '{sched.name}' (next: {next_run})")
 
     except Exception as e:

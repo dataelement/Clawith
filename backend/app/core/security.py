@@ -1,9 +1,12 @@
 """Security utilities: JWT, password hashing, and authentication dependencies."""
 
+import base64
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
+from Crypto.Cipher import AES
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -31,9 +34,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(user_id: str, role: str, expires_delta: timedelta | None = None) -> str:
     """Create a JWT access token."""
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode = {
         "sub": user_id,
         "role": role,
@@ -91,6 +92,7 @@ def require_role(*allowed_roles: str):
         @router.post("/", dependencies=[Depends(require_role("org_admin", "platform_admin"))])
         async def my_endpoint(...):
     """
+
     async def _check(current_user=Depends(get_current_user)):
         if current_user.role not in allowed_roles:
             raise HTTPException(
@@ -98,5 +100,34 @@ def require_role(*allowed_roles: str):
                 detail=f"需要以下角色之一: {', '.join(allowed_roles)}",
             )
         return current_user
+
     return _check
 
+
+def encrypt_symmetric(plaintext: str) -> str:
+    """Encrypt a string using AES-GCM and the application secret key."""
+    if not plaintext:
+        return plaintext
+    key = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
+    cipher = AES.new(key, AES.MODE_GCM)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode("utf-8"))
+    payload = cipher.nonce + tag + ciphertext
+    return base64.b64encode(payload).decode("utf-8")
+
+
+def decrypt_symmetric(encrypted_payload: str) -> str:
+    """Decrypt a string using AES-GCM and the application secret key."""
+    if not encrypted_payload:
+        return encrypted_payload
+    try:
+        key = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
+        payload = base64.b64decode(encrypted_payload)
+        # AES.MODE_GCM default nonce length is 16 bytes
+        nonce = payload[:16]
+        tag = payload[16:32]
+        ciphertext = payload[32:]
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt_and_verify(ciphertext, tag).decode("utf-8")
+    except Exception as e:
+        # Fallback for old unencrypted data
+        return encrypted_payload

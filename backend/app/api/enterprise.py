@@ -1,5 +1,6 @@
 """Enterprise management API routes: LLM pool, enterprise info, approvals, audit logs."""
 
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -7,15 +8,21 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_admin, get_current_user, require_role
+from app.core.security import encrypt_symmetric, get_current_admin, get_current_user, require_role
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.audit import ApprovalRequest, AuditLog, EnterpriseInfo
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.schemas.schemas import (
-    ApprovalAction, ApprovalRequestOut, AuditLogOut, EnterpriseInfoOut,
-    EnterpriseInfoUpdate, LLMModelCreate, LLMModelOut, LLMModelUpdate
+    ApprovalAction,
+    ApprovalRequestOut,
+    AuditLogOut,
+    EnterpriseInfoOut,
+    EnterpriseInfoUpdate,
+    LLMModelCreate,
+    LLMModelOut,
+    LLMModelUpdate,
 )
 from app.services.autonomy_service import autonomy_service
 from app.services.enterprise_sync import enterprise_sync_service
@@ -25,6 +32,7 @@ router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 
 
 # ─── LLM Model Pool ────────────────────────────────────
+
 
 @router.get("/llm-providers")
 async def list_llm_providers(
@@ -58,16 +66,20 @@ async def add_llm_model(
 ):
     """Add a new LLM model to the tenant's pool (admin)."""
     tid = tenant_id or (str(current_user.tenant_id) if current_user.tenant_id else None)
+    mapped_headers = None
+    if data.headers:
+        mapped_headers = encrypt_symmetric(json.dumps(data.headers))
     model = LLMModel(
         provider=data.provider,
         model=data.model,
-        api_key_encrypted=data.api_key,  # TODO: encrypt
+        api_key_encrypted=encrypt_symmetric(data.api_key),
         base_url=data.base_url,
         label=data.label,
         max_tokens_per_day=data.max_tokens_per_day,
         enabled=data.enabled,
         supports_vision=data.supports_vision,
         tenant_id=uuid.UUID(tid) if tid else None,
+        headers_encrypted=mapped_headers,
     )
     db.add(model)
     await db.flush()
@@ -89,10 +101,9 @@ async def remove_llm_model(
 
     # Check if any agents reference this model
     from sqlalchemy import or_, update
+
     ref_result = await db.execute(
-        select(Agent.name).where(
-            or_(Agent.primary_model_id == model_id, Agent.fallback_model_id == model_id)
-        )
+        select(Agent.name).where(or_(Agent.primary_model_id == model_id, Agent.fallback_model_id == model_id))
     )
     agent_names = [row[0] for row in ref_result.all()]
 
@@ -107,12 +118,8 @@ async def remove_llm_model(
 
     # Nullify FK references in agents before deleting
     if agent_names:
-        await db.execute(
-            update(Agent).where(Agent.primary_model_id == model_id).values(primary_model_id=None)
-        )
-        await db.execute(
-            update(Agent).where(Agent.fallback_model_id == model_id).values(fallback_model_id=None)
-        )
+        await db.execute(update(Agent).where(Agent.primary_model_id == model_id).values(primary_model_id=None))
+        await db.execute(update(Agent).where(Agent.fallback_model_id == model_id).values(fallback_model_id=None))
     await db.delete(model)
     await db.commit()
 
@@ -137,16 +144,18 @@ async def update_llm_model(
             model.model = data.model
         if data.label is not None:
             model.label = data.label
-        if hasattr(data, 'base_url') and data.base_url is not None:
+        if hasattr(data, "base_url") and data.base_url is not None:
             model.base_url = data.base_url
         if data.api_key and data.api_key.strip():  # Only update API key if provided (not empty)
-            model.api_key_encrypted = data.api_key.strip()
+            model.api_key_encrypted = encrypt_symmetric(data.api_key.strip())
         if data.max_tokens_per_day is not None:
             model.max_tokens_per_day = data.max_tokens_per_day
         if data.enabled is not None:
             model.enabled = data.enabled
-        if hasattr(data, 'supports_vision') and data.supports_vision is not None:
+        if hasattr(data, "supports_vision") and data.supports_vision is not None:
             model.supports_vision = data.supports_vision
+        if hasattr(data, "headers") and data.headers is not None:
+            model.headers_encrypted = encrypt_symmetric(json.dumps(data.headers))
 
         await db.commit()
         await db.refresh(model)
@@ -157,6 +166,7 @@ async def update_llm_model(
 
 
 # ─── Enterprise Info ────────────────────────────────────
+
 
 @router.get("/info", response_model=list[EnterpriseInfoOut])
 async def list_enterprise_info(
@@ -186,6 +196,7 @@ async def update_enterprise_info(
 
 # ─── Approvals ──────────────────────────────────────────
 
+
 @router.get("/approvals", response_model=list[ApprovalRequestOut])
 async def list_approvals(
     tenant_id: str | None = None,
@@ -202,9 +213,7 @@ async def list_approvals(
         query = query.where(ApprovalRequest.agent_id.in_(tenant_agent_ids))
     # Non-admins further restricted to their own agents
     if current_user.role != "platform_admin":
-        query = query.where(ApprovalRequest.agent_id.in_(
-            select(Agent.id).where(Agent.creator_id == current_user.id)
-        ))
+        query = query.where(ApprovalRequest.agent_id.in_(select(Agent.id).where(Agent.creator_id == current_user.id)))
     if status_filter:
         query = query.where(ApprovalRequest.status == status_filter)
     query = query.order_by(ApprovalRequest.created_at.desc())
@@ -236,15 +245,14 @@ async def resolve_approval(
 ):
     """Approve or reject a pending approval request."""
     try:
-        approval = await autonomy_service.resolve_approval(
-            db, approval_id, current_user, data.action
-        )
+        approval = await autonomy_service.resolve_approval(db, approval_id, current_user, data.action)
         return ApprovalRequestOut.model_validate(approval)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 # ─── Audit Logs ─────────────────────────────────────────
+
 
 @router.get("/audit-logs", response_model=list[AuditLogOut])
 async def list_audit_logs(
@@ -269,6 +277,7 @@ async def list_audit_logs(
 
 # ─── Dashboard Stats ────────────────────────────────────
 
+
 @router.get("/stats")
 async def get_enterprise_stats(
     tenant_id: str | None = None,
@@ -279,15 +288,11 @@ async def get_enterprise_stats(
     # Determine which tenant to filter by
     tid = tenant_id or str(current_user.tenant_id)
 
-    total_agents = await db.execute(
-        select(func.count(Agent.id)).where(Agent.tenant_id == tid)
-    )
+    total_agents = await db.execute(select(func.count(Agent.id)).where(Agent.tenant_id == tid))
     running_agents = await db.execute(
         select(func.count(Agent.id)).where(Agent.tenant_id == tid, Agent.status == "running")
     )
-    total_users = await db.execute(
-        select(func.count(User.id)).where(User.tenant_id == tid, User.is_active == True)
-    )
+    total_users = await db.execute(select(func.count(User.id)).where(User.tenant_id == tid, User.is_active == True))
     pending_approvals = await db.execute(
         select(func.count(ApprovalRequest.id)).where(ApprovalRequest.status == "pending")
     )
@@ -373,9 +378,8 @@ async def update_tenant_quotas(
     if data.min_heartbeat_interval_minutes is not None:
         tenant.min_heartbeat_interval_minutes = data.min_heartbeat_interval_minutes
         from app.services.quota_guard import enforce_heartbeat_floor
-        adjusted_count = await enforce_heartbeat_floor(
-            tenant.id, floor=data.min_heartbeat_interval_minutes, db=db
-        )
+
+        adjusted_count = await enforce_heartbeat_floor(tenant.id, floor=data.min_heartbeat_interval_minutes, db=db)
 
     # Handle trigger limit fields
     if data.default_max_triggers is not None:
@@ -406,9 +410,7 @@ async def get_notification_bar_public(
     db: AsyncSession = Depends(get_db),
 ):
     """Public (no auth) endpoint to read the notification bar config."""
-    result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == "notification_bar")
-    )
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == "notification_bar"))
     setting = result.scalar_one_or_none()
     if not setting or not setting.value:
         return {"enabled": False, "text": ""}
@@ -429,7 +431,11 @@ async def get_system_setting(
     setting = result.scalar_one_or_none()
     if not setting:
         return {"key": key, "value": {}}
-    return {"key": setting.key, "value": setting.value, "updated_at": setting.updated_at.isoformat() if setting.updated_at else None}
+    return {
+        "key": setting.key,
+        "value": setting.value,
+        "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
+    }
 
 
 @router.put("/system-settings/{key}")
@@ -519,6 +525,7 @@ async def trigger_org_sync(
 ):
     """Manually trigger org structure sync from Feishu."""
     from app.services.org_sync_service import org_sync_service
+
     result = await org_sync_service.full_sync()
     return result
 
@@ -529,8 +536,8 @@ from app.models.invitation_code import InvitationCode
 
 
 class InvitationCodeCreate(BaseModel):
-    count: int = 1       # how many codes to generate
-    max_uses: int = 1    # max registrations per code
+    count: int = 1  # how many codes to generate
+    max_uses: int = 1  # max registrations per code
 
 
 def _require_tenant_admin(current_user: User) -> None:
@@ -554,7 +561,7 @@ async def create_invitation_codes(
 
     codes_created = []
     for _ in range(min(data.count, 100)):  # cap at 100 per batch
-        code_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        code_str = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
         code = InvitationCode(
             code=code_str,
             tenant_id=current_user.tenant_id,
@@ -592,9 +599,7 @@ async def list_invitation_codes(
     total = total_result.scalar() or 0
 
     offset = (max(page, 1) - 1) * page_size
-    result = await db.execute(
-        stmt.order_by(InvitationCode.created_at.desc()).offset(offset).limit(page_size)
-    )
+    result = await db.execute(stmt.order_by(InvitationCode.created_at.desc()).offset(offset).limit(page_size))
     codes = result.scalars().all()
     return {
         "items": [
@@ -612,7 +617,6 @@ async def list_invitation_codes(
         "page": page,
         "page_size": page_size,
     }
-
 
 
 @router.get("/invitation-codes/export")
@@ -637,13 +641,15 @@ async def export_invitation_codes_csv(
     writer = csv.writer(output)
     writer.writerow(["Code", "Max Uses", "Used Count", "Active", "Created At"])
     for c in codes:
-        writer.writerow([
-            c.code,
-            c.max_uses,
-            c.used_count,
-            "Yes" if c.is_active else "No",
-            c.created_at.strftime("%Y-%m-%d %H:%M:%S") if c.created_at else "",
-        ])
+        writer.writerow(
+            [
+                c.code,
+                c.max_uses,
+                c.used_count,
+                "Yes" if c.is_active else "No",
+                c.created_at.strftime("%Y-%m-%d %H:%M:%S") if c.created_at else "",
+            ]
+        )
 
     output.seek(0)
     return StreamingResponse(
@@ -662,6 +668,7 @@ async def deactivate_invitation_code(
     """Deactivate an invitation code (must belong to current user's company)."""
     _require_tenant_admin(current_user)
     import uuid as _uuid
+
     result = await db.execute(
         select(InvitationCode).where(
             InvitationCode.id == _uuid.UUID(code_id),
