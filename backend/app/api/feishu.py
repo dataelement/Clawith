@@ -184,20 +184,28 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
     print(f"[Feishu] Event processing for {agent_id}: event_type={body.get('header', {}).get('event_type', 'N/A')}")
 
     # Deduplicate — Feishu retries on slow responses
+    # Only mark as processed AFTER successful handling so retries work on crash
     event_id = body.get("header", {}).get("event_id", "")
     if event_id in _processed_events:
         return {"code": 0, "msg": "already processed"}
+
+    # Get channel config — filter by feishu since an agent can have multiple channels
+    result = await db.execute(
+        select(ChannelConfig).where(
+            ChannelConfig.agent_id == agent_id,
+            ChannelConfig.channel_type == "feishu",
+        )
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        return {"code": 1, "msg": "Channel not found"}
+
+    # Mark event as processed after config is loaded successfully
     if event_id:
         _processed_events.add(event_id)
         # Keep set bounded
         if len(_processed_events) > 1000:
             _processed_events.clear()
-
-    # Get channel config
-    result = await db.execute(select(ChannelConfig).where(ChannelConfig.agent_id == agent_id))
-    config = result.scalar_one_or_none()
-    if not config:
-        return {"code": 1, "msg": "Channel not found"}
 
     # Handle events
     event = body.get("event", {})
