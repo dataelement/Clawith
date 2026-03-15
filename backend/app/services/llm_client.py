@@ -838,7 +838,10 @@ PROVIDER_URLS: dict[str, str | None] = {
 # Providers that support tool_choice
 TOOL_CHOICE_PROVIDERS = {"openai", "qwen", "deepseek", "minimax", "openrouter", "custom"}
 
-# Max tokens by provider
+# Safe default for unknown providers (many APIs cap at 4096–8192; avoid 400)
+DEFAULT_MAX_TOKENS = 8192
+
+# Max tokens by provider (only list those that allow more than DEFAULT_MAX_TOKENS)
 MAX_TOKENS_BY_PROVIDER: dict[str, int] = {
     "qwen": 8192,
     "anthropic": 4096,
@@ -876,7 +879,7 @@ def get_max_tokens(provider: str, model: str | None = None) -> int:
         for prefix, limit in MAX_TOKENS_BY_MODEL.items():
             if model.lower().startswith(prefix):
                 return limit
-    return MAX_TOKENS_BY_PROVIDER.get(provider, 16384)
+    return MAX_TOKENS_BY_PROVIDER.get(provider, DEFAULT_MAX_TOKENS)
 
 
 def create_llm_client(
