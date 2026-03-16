@@ -88,8 +88,7 @@ services:
       - ./certbot-entrypoint.sh:/scripts/certbot-entrypoint.sh:ro
     depends_on:
       - frontend
-    profiles:
-      - ssl
+    # Certbot reads DOMAIN / LETSENCRYPT_EMAIL from .env; if they are empty it exits quickly without error.
 
 volumes:
   pgdata:
