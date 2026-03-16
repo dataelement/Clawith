@@ -52,6 +52,11 @@ else
     echo -e "  ${GREEN}✓${NC} .env already exists"
 fi
 
+if [ ! -f "$ROOT/ss-nodes.json" ]; then
+    echo '[]' > "$ROOT/ss-nodes.json"
+    echo -e "  ${GREEN}✓${NC} Created default ss-nodes.json (proxy nodes config)"
+fi
+
 # ── 2. PostgreSQL setup ──────────────────────────
 echo ""
 echo -e "${YELLOW}[2/6]${NC} Setting up PostgreSQL..."
