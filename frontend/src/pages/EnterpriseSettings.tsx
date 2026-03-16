@@ -958,11 +958,20 @@ export default function EnterpriseSettings() {
                                                     >✕</button>
                                                 </div>
                                             ))}
-                                            <button
-                                                className="btn btn-secondary"
-                                                onClick={() => setModelForm({ ...modelForm, headers: [...modelForm.headers, { key: '', value: '' }] })}
-                                                style={{ alignSelf: 'flex-start', fontSize: '12px', padding: '4px 10px' }}
-                                            >+ Add Header</button>
+                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                <button
+                                                    className="btn btn-secondary"
+                                                    onClick={() => setModelForm({ ...modelForm, headers: [...modelForm.headers, { key: '', value: '' }] })}
+                                                    style={{ fontSize: '12px', padding: '4px 10px' }}
+                                                >+ Add Header</button>
+                                                {modelForm.headers.length > 0 && (
+                                                    <button
+                                                        className="btn btn-ghost"
+                                                        onClick={() => setModelForm({ ...modelForm, headers: [] })}
+                                                        style={{ fontSize: '12px', padding: '4px 10px', color: 'var(--error)' }}
+                                                    >Clear All</button>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -1012,7 +1021,7 @@ export default function EnterpriseSettings() {
                                                 api_key: '', 
                                                 supports_vision: m.supports_vision || false,
                                                 max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '',
-                                                headers: m.headers ? Object.entries(m.headers).map(([key, value]) => ({ key, value })) : []
+                                                headers: m.headers ? Object.entries(m.headers).map(([key, value]) => ({ key, value: value as string })) : []
                                             });
                                             setShowAddModel(true);
                                         }} style={{ fontSize: '12px' }}>✏️ Edit</button>

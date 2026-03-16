@@ -2,11 +2,12 @@
 
 import base64
 import hashlib
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from Crypto.Cipher import AES
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -109,10 +110,9 @@ def encrypt_symmetric(plaintext: str) -> str:
     if not plaintext:
         return plaintext
     key = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
-    cipher = AES.new(key, AES.MODE_GCM)
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode("utf-8"))
-    payload = cipher.nonce + tag + ciphertext
-    return base64.b64encode(payload).decode("utf-8")
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return base64.b64encode(nonce + ciphertext).decode("utf-8")
 
 
 def decrypt_symmetric(encrypted_payload: str) -> str:
@@ -122,12 +122,8 @@ def decrypt_symmetric(encrypted_payload: str) -> str:
     try:
         key = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
         payload = base64.b64decode(encrypted_payload)
-        # AES.MODE_GCM default nonce length is 16 bytes
-        nonce = payload[:16]
-        tag = payload[16:32]
-        ciphertext = payload[32:]
-        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-        return cipher.decrypt_and_verify(ciphertext, tag).decode("utf-8")
-    except Exception as e:
-        # Fallback for old unencrypted data
+        nonce, ciphertext = payload[:12], payload[12:]
+        return AESGCM(key).decrypt(nonce, ciphertext, None).decode("utf-8")
+    except Exception:
+        # Fallback for legacy unencrypted values
         return encrypted_payload

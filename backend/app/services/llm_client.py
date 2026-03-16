@@ -139,6 +139,12 @@ ThinkingCallback = Callable[[str], Coroutine[Any, Any, None]]
 # Base Client Interface
 # ============================================================================
 
+# Headers that must not be overridden by user-supplied custom headers,
+# as they carry authentication and protocol-critical values.
+_PROTECTED_HEADER_KEYS: frozenset[str] = frozenset(
+    {"authorization", "x-api-key", "content-type", "anthropic-version"}
+)
+
 
 class LLMClient(ABC):
     """Abstract base class for LLM clients."""
@@ -223,7 +229,8 @@ class OpenAICompatibleClient(LLMClient):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
-        headers.update(self.custom_headers)
+        safe_custom = {k: v for k, v in self.custom_headers.items() if k.lower() not in _PROTECTED_HEADER_KEYS}
+        headers.update(safe_custom)
         return headers
 
     def _normalize_base_url(self) -> str:
@@ -1329,7 +1336,8 @@ class AnthropicClient(LLMClient):
             "x-api-key": self.api_key,
             "anthropic-version": self.API_VERSION,
         }
-        headers.update(self.custom_headers)
+        safe_custom = {k: v for k, v in self.custom_headers.items() if k.lower() not in _PROTECTED_HEADER_KEYS}
+        headers.update(safe_custom)
         return headers
 
     def _build_payload(

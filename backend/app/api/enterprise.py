@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import encrypt_symmetric, get_current_admin, get_current_user, require_role
+from app.core.security import decrypt_symmetric, encrypt_symmetric, get_current_admin, get_current_user, require_role
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.audit import ApprovalRequest, AuditLog, EnterpriseInfo
@@ -29,6 +29,17 @@ from app.services.enterprise_sync import enterprise_sync_service
 from app.services.llm_utils import get_provider_manifest
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
+
+
+def _serialize_llm_model(m: LLMModel) -> LLMModelOut:
+    """Serialize an LLMModel ORM object to LLMModelOut, decrypting headers."""
+    out = LLMModelOut.model_validate(m)
+    if m.headers_encrypted:
+        try:
+            out.headers = json.loads(decrypt_symmetric(m.headers_encrypted))
+        except Exception:
+            out.headers = None
+    return out
 
 
 # ─── LLM Model Pool ────────────────────────────────────
@@ -54,7 +65,7 @@ async def list_llm_models(
     if tid:
         query = query.where(LLMModel.tenant_id == uuid.UUID(tid))
     result = await db.execute(query)
-    return [LLMModelOut.model_validate(m) for m in result.scalars().all()]
+    return [_serialize_llm_model(m) for m in result.scalars().all()]
 
 
 @router.post("/llm-models", response_model=LLMModelOut, status_code=status.HTTP_201_CREATED)
@@ -83,7 +94,7 @@ async def add_llm_model(
     )
     db.add(model)
     await db.flush()
-    return LLMModelOut.model_validate(model)
+    return _serialize_llm_model(model)
 
 
 @router.delete("/llm-models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -159,7 +170,7 @@ async def update_llm_model(
 
         await db.commit()
         await db.refresh(model)
-        return LLMModelOut.model_validate(model)
+        return _serialize_llm_model(model)
     except SQLAlchemyError as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail="Failed to update model")
