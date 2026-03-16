@@ -1,9 +1,13 @@
 """Security utilities: JWT, password hashing, and authentication dependencies."""
 
+import base64
+import hashlib
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -31,9 +35,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(user_id: str, role: str, expires_delta: timedelta | None = None) -> str:
     """Create a JWT access token."""
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode = {
         "sub": user_id,
         "role": role,
@@ -91,6 +93,7 @@ def require_role(*allowed_roles: str):
         @router.post("/", dependencies=[Depends(require_role("org_admin", "platform_admin"))])
         async def my_endpoint(...):
     """
+
     async def _check(current_user=Depends(get_current_user)):
         if current_user.role not in allowed_roles:
             raise HTTPException(
@@ -98,5 +101,29 @@ def require_role(*allowed_roles: str):
                 detail=f"需要以下角色之一: {', '.join(allowed_roles)}",
             )
         return current_user
+
     return _check
 
+
+def encrypt_symmetric(plaintext: str) -> str:
+    """Encrypt a string using AES-GCM and the application secret key."""
+    if not plaintext:
+        return plaintext
+    key = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return base64.b64encode(nonce + ciphertext).decode("utf-8")
+
+
+def decrypt_symmetric(encrypted_payload: str) -> str:
+    """Decrypt a string using AES-GCM and the application secret key."""
+    if not encrypted_payload:
+        return encrypted_payload
+    try:
+        key = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
+        payload = base64.b64decode(encrypted_payload)
+        nonce, ciphertext = payload[:12], payload[12:]
+        return AESGCM(key).decrypt(nonce, ciphertext, None).decode("utf-8")
+    except Exception:
+        # Fallback for legacy unencrypted values
+        return encrypted_payload

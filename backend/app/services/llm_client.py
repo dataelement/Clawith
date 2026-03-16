@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Data Models
 # ============================================================================
 
+
 @dataclass
 class LLMMessage:
     """Unified message format."""
@@ -51,35 +52,31 @@ class LLMMessage:
         """Convert to Anthropic format (returns None for system messages)."""
         if self.role == "system":
             return None
-            
+
         role = self.role
-        
+
         # Tool response (from user to assistant)
         if role == "tool":
             return {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": self.tool_call_id,
-                        "content": self.content or ""
-                    }
-                ]
+                "content": [{"type": "tool_result", "tool_use_id": self.tool_call_id, "content": self.content or ""}],
             }
-            
+
         content_blocks = []
-        
+
         # Add reasoning/thinking content if present
         if self.role == "assistant" and self.reasoning_content:
-            content_blocks.append({
-                "type": "thinking",
-                "thinking": self.reasoning_content,
-                "signature": self.reasoning_signature or "synthetic_signature" 
-            })
+            content_blocks.append(
+                {
+                    "type": "thinking",
+                    "thinking": self.reasoning_content,
+                    "signature": self.reasoning_signature or "synthetic_signature",
+                }
+            )
 
         if self.content:
             content_blocks.append({"type": "text", "text": self.content})
-            
+
         # Tool requests (from assistant to user)
         if self.tool_calls:
             for tc in self.tool_calls:
@@ -90,14 +87,11 @@ class LLMMessage:
                         args = json.loads(args)
                     except json.JSONDecodeError:
                         args = {}
-                
-                content_blocks.append({
-                    "type": "tool_use",
-                    "id": tc.get("id", ""),
-                    "name": function_call.get("name", ""),
-                    "input": args
-                })
-                
+
+                content_blocks.append(
+                    {"type": "tool_use", "id": tc.get("id", ""), "name": function_call.get("name", ""), "input": args}
+                )
+
         # Handle the structure
         if len(content_blocks) == 1 and content_blocks[0]["type"] == "text":
             content = content_blocks[0]["text"]
@@ -145,6 +139,13 @@ ThinkingCallback = Callable[[str], Coroutine[Any, Any, None]]
 # Base Client Interface
 # ============================================================================
 
+# Headers that must not be overridden by user-supplied custom headers,
+# as they carry authentication and protocol-critical values.
+_PROTECTED_HEADER_KEYS: frozenset[str] = frozenset(
+    {"authorization", "x-api-key", "content-type", "anthropic-version"}
+)
+
+
 class LLMClient(ABC):
     """Abstract base class for LLM clients."""
 
@@ -154,11 +155,13 @@ class LLMClient(ABC):
         base_url: str | None = None,
         model: str | None = None,
         timeout: float = 120.0,
+        headers: dict[str, str] | None = None,
     ):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
         self.timeout = timeout
+        self.custom_headers = headers or {}
 
     @abstractmethod
     async def complete(
@@ -196,6 +199,7 @@ class LLMClient(ABC):
 # OpenAI-Compatible Client
 # ============================================================================
 
+
 class OpenAICompatibleClient(LLMClient):
     """Client for OpenAI-compatible APIs (OpenAI, DeepSeek, Qwen, etc.)."""
 
@@ -208,8 +212,9 @@ class OpenAICompatibleClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        headers: dict[str, str] | None = None,
     ):
-        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
+        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout, headers)
         self.supports_tool_choice = supports_tool_choice
         self._client: httpx.AsyncClient | None = None
 
@@ -220,10 +225,13 @@ class OpenAICompatibleClient(LLMClient):
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
+        safe_custom = {k: v for k, v in self.custom_headers.items() if k.lower() not in _PROTECTED_HEADER_KEYS}
+        headers.update(safe_custom)
+        return headers
 
     def _normalize_base_url(self) -> str:
         """Normalize base URL by stripping trailing /chat/completions."""
@@ -321,9 +329,7 @@ class OpenAICompatibleClient(LLMClient):
         # Regular content with think tag filtering
         if delta.get("content"):
             text = delta["content"]
-            chunk.content, in_think, tag_buffer = self._filter_think_tags(
-                text, in_think, tag_buffer
-            )
+            chunk.content, in_think, tag_buffer = self._filter_think_tags(text, in_think, tag_buffer)
 
         # Tool calls
         if delta.get("tool_calls"):
@@ -333,9 +339,7 @@ class OpenAICompatibleClient(LLMClient):
 
         return chunk, in_think, tag_buffer
 
-    def _filter_think_tags(
-        self, text: str, in_think: bool, tag_buffer: str
-    ) -> tuple[str, bool, str]:
+    def _filter_think_tags(self, text: str, in_think: bool, tag_buffer: str) -> tuple[str, bool, str]:
         """Filter out <think>...</think> tags from content.
 
         Returns (filtered_content, new_in_think, new_tag_buffer).
@@ -449,9 +453,7 @@ class OpenAICompatibleClient(LLMClient):
                         raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
                     async for line in resp.aiter_lines():
-                        chunk, in_think, tag_buffer = self._parse_stream_line(
-                            line, in_think, tag_buffer
-                        )
+                        chunk, in_think, tag_buffer = self._parse_stream_line(line, in_think, tag_buffer)
 
                         if chunk.is_finished:
                             break
@@ -1301,9 +1303,10 @@ class GeminiClient(LLMClient):
 # Anthropic Native Client
 # ============================================================================
 
+
 class AnthropicClient(LLMClient):
     """Client for Anthropic's native Messages API.
-    
+
     Supports Claude 3.x and Claude 3.7+ with extended thinking.
     """
 
@@ -1316,8 +1319,9 @@ class AnthropicClient(LLMClient):
         base_url: str | None = None,
         model: str | None = None,
         timeout: float = 120.0,
+        headers: dict[str, str] | None = None,
     ):
-        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
+        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout, headers)
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -1327,11 +1331,14 @@ class AnthropicClient(LLMClient):
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
             "anthropic-version": self.API_VERSION,
         }
+        safe_custom = {k: v for k, v in self.custom_headers.items() if k.lower() not in _PROTECTED_HEADER_KEYS}
+        headers.update(safe_custom)
+        return headers
 
     def _build_payload(
         self,
@@ -1379,11 +1386,13 @@ class AnthropicClient(LLMClient):
             for tool in tools:
                 if tool.get("type") == "function":
                     func = tool["function"]
-                    anthropic_tools.append({
-                        "name": func["name"],
-                        "description": func.get("description", ""),
-                        "input_schema": func.get("parameters", {"type": "object"}),
-                    })
+                    anthropic_tools.append(
+                        {
+                            "name": func["name"],
+                            "description": func.get("description", ""),
+                            "input_schema": func.get("parameters", {"type": "object"}),
+                        }
+                    )
             payload["tools"] = anthropic_tools
 
         payload.update(kwargs)
@@ -1416,7 +1425,7 @@ class AnthropicClient(LLMClient):
         full_reasoning = ""
         full_signature = None
         tool_calls = []
-        
+
         for block in data.get("content", []):
             if block.get("type") == "text":
                 full_content += block.get("text", "")
@@ -1424,14 +1433,16 @@ class AnthropicClient(LLMClient):
                 full_reasoning += block.get("thinking", "")
                 full_signature = block.get("signature")
             elif block.get("type") == "tool_use":
-                tool_calls.append({
-                    "id": block.get("id"),
-                    "type": "function",
-                    "function": {
-                        "name": block.get("name"),
-                        "arguments": json.dumps(block.get("input", {}), ensure_ascii=False)
+                tool_calls.append(
+                    {
+                        "id": block.get("id"),
+                        "type": "function",
+                        "function": {
+                            "name": block.get("name"),
+                            "arguments": json.dumps(block.get("input", {}), ensure_ascii=False),
+                        },
                     }
-                })
+                )
 
         usage = None
         if "usage" in data:
@@ -1474,7 +1485,7 @@ class AnthropicClient(LLMClient):
         final_model = self.model
 
         client = await self._get_client()
-        
+
         try:
             async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
                 if resp.status_code >= 400:
@@ -1484,22 +1495,22 @@ class AnthropicClient(LLMClient):
                     raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
                 current_event = None
-                
+
                 async for line in resp.aiter_lines():
                     if not line.strip():
                         continue
-                        
+
                     if line.startswith("event:"):
-                        current_event = line[len("event:"):].strip()
+                        current_event = line[len("event:") :].strip()
                         continue
-                        
+
                     if not line.startswith("data:"):
                         continue
-                        
-                    data_str = line[len("data:"):].strip()
+
+                    data_str = line[len("data:") :].strip()
                     if data_str == "[DONE]":
                         break
-                        
+
                     try:
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
@@ -1512,43 +1523,45 @@ class AnthropicClient(LLMClient):
                             final_model = msg["model"]
                         if msg.get("usage"):
                             final_usage = msg["usage"]
-                            
+
                     elif current_event == "content_block_start":
                         block = data.get("content_block", {})
                         idx = data.get("index", 0)
                         if block.get("type") == "tool_use":
                             tool_call_index_map[idx] = len(tool_calls_data)
-                            tool_calls_data.append({
-                                "id": block.get("id"),
-                                "type": "function",
-                                "function": {"name": block.get("name"), "arguments": ""}
-                            })
-                            
+                            tool_calls_data.append(
+                                {
+                                    "id": block.get("id"),
+                                    "type": "function",
+                                    "function": {"name": block.get("name"), "arguments": ""},
+                                }
+                            )
+
                     elif current_event == "content_block_delta":
                         idx = data.get("index", 0)
                         delta = data.get("delta", {})
                         delta_type = delta.get("type")
-                        
+
                         if delta_type == "text_delta":
                             text = delta.get("text", "")
                             full_content += text
                             if on_chunk:
                                 await on_chunk(text)
-                                
+
                         elif delta_type == "thinking_delta":
                             thought = delta.get("thinking", "")
                             full_reasoning += thought
                             if on_thinking:
                                 await on_thinking(thought)
-                        
+
                         elif delta_type == "signature_delta":
                             full_signature = delta.get("signature")
-                                
+
                         elif delta_type == "input_json_delta":
                             if idx in tool_call_index_map:
                                 tc_idx = tool_call_index_map[idx]
                                 tool_calls_data[tc_idx]["function"]["arguments"] += delta.get("partial_json", "")
-                                
+
                     elif current_event == "message_delta":
                         delta = data.get("delta", {})
                         if delta.get("stop_reason"):
@@ -1556,10 +1569,12 @@ class AnthropicClient(LLMClient):
                         if data.get("usage"):
                             # message_delta usage is cumulative
                             final_usage = data["usage"]
-                            
+
                     elif current_event == "error":
                         error_info = data.get("error", {})
-                        raise LLMError(f"Anthropic stream error ({error_info.get('type')}): {error_info.get('message')}")
+                        raise LLMError(
+                            f"Anthropic stream error ({error_info.get('type')}): {error_info.get('message')}"
+                        )
 
                     elif current_event == "message_stop":
                         break
@@ -1751,6 +1766,7 @@ MAX_TOKENS_BY_MODEL: dict[str, int] = {
 
 class LLMError(Exception):
     """Base exception for LLM client errors."""
+
     pass
 
 
@@ -1799,6 +1815,7 @@ def create_llm_client(
     model: str,
     base_url: str | None = None,
     timeout: float = 120.0,
+    headers: dict[str, str] | None = None,
 ) -> LLMClient:
     """Create an LLM client for the given provider.
 
@@ -1828,6 +1845,7 @@ def create_llm_client(
             base_url=final_base_url,
             model=model,
             timeout=timeout,
+            headers=headers,
         )
     elif spec and spec.protocol == "openai_responses":
         return OpenAIResponsesClient(
@@ -1853,6 +1871,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=supports_tool_choice,
+            headers=headers,
         )
     else:
         # Default to OpenAI-compatible for unknown providers
@@ -1862,12 +1881,14 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=True,
+            headers=headers,
         )
 
 
 # ============================================================================
 # High-level Convenience Functions
 # ============================================================================
+
 
 async def chat_complete(
     provider: str,
@@ -1879,12 +1900,13 @@ async def chat_complete(
     temperature: float = 0.7,
     max_tokens: int | None = None,
     timeout: float = 120.0,
+    headers: dict[str, str] | None = None,
 ) -> dict:
     """High-level function for non-streaming chat completion.
 
     Returns response in OpenAI-compatible format for backward compatibility.
     """
-    client = create_llm_client(provider, api_key, model, base_url, timeout)
+    client = create_llm_client(provider, api_key, model, base_url, timeout, headers)
 
     try:
         llm_messages = [LLMMessage(**m) for m in messages]
@@ -1896,14 +1918,16 @@ async def chat_complete(
         )
 
         return {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": response.content,
-                    "tool_calls": response.tool_calls or None,
-                },
-                "finish_reason": response.finish_reason or "stop",
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": response.content,
+                        "tool_calls": response.tool_calls or None,
+                    },
+                    "finish_reason": response.finish_reason or "stop",
+                }
+            ],
             "model": response.model or model,
             "usage": response.usage or {},
         }
@@ -1923,12 +1947,13 @@ async def chat_stream(
     timeout: float = 120.0,
     on_chunk: ChunkCallback | None = None,
     on_thinking: ThinkingCallback | None = None,
+    headers: dict[str, str] | None = None,
 ) -> dict:
     """High-level function for streaming chat completion.
 
     Returns aggregated response in OpenAI-compatible format.
     """
-    client = create_llm_client(provider, api_key, model, base_url, timeout)
+    client = create_llm_client(provider, api_key, model, base_url, timeout, headers)
 
     try:
         llm_messages = [LLMMessage(**m) for m in messages]
@@ -1942,14 +1967,16 @@ async def chat_stream(
         )
 
         return {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": response.content,
-                    "tool_calls": response.tool_calls or None,
-                },
-                "finish_reason": response.finish_reason or "stop",
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": response.content,
+                        "tool_calls": response.tool_calls or None,
+                    },
+                    "finish_reason": response.finish_reason or "stop",
+                }
+            ],
             "model": response.model or model,
             "usage": response.usage or {},
         }

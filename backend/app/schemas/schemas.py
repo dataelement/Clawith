@@ -8,6 +8,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 # ─── Auth ───────────────────────────────────────────────
 
+
 class UserRegister(BaseModel):
     username: str = Field(min_length=3, max_length=100)
     email: EmailStr
@@ -54,6 +55,7 @@ class UserUpdate(BaseModel):
 
 
 # ─── Agent ──────────────────────────────────────────────
+
 
 class AgentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
@@ -148,6 +150,7 @@ class AgentUpdate(BaseModel):
 
 class AgentStatusOut(BaseModel):
     """Agent status from state.json."""
+
     agent_id: uuid.UUID
     name: str
     status: str
@@ -158,6 +161,7 @@ class AgentStatusOut(BaseModel):
 
 
 # ─── Task ───────────────────────────────────────────────
+
 
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=500)
@@ -218,6 +222,7 @@ class TaskLogOut(BaseModel):
 
 # ─── Department ─────────────────────────────────────────
 
+
 class DepartmentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     parent_id: uuid.UUID | None = None
@@ -242,6 +247,7 @@ class DepartmentTree(DepartmentOut):
 
 # ─── LLM ────────────────────────────────────────────────
 
+
 class LLMModelCreate(BaseModel):
     provider: str
     model: str
@@ -252,6 +258,8 @@ class LLMModelCreate(BaseModel):
     enabled: bool = True
     supports_vision: bool = False
     max_output_tokens: int | None = None
+    headers: dict | None = None
+
 
 class LLMModelUpdate(BaseModel):
     provider: str | None = None
@@ -263,6 +271,7 @@ class LLMModelUpdate(BaseModel):
     enabled: bool | None = None
     supports_vision: bool | None = None
     max_output_tokens: int | None = None
+    headers: dict | None = None
 
 
 class LLMModelOut(BaseModel):
@@ -275,12 +284,14 @@ class LLMModelOut(BaseModel):
     enabled: bool
     supports_vision: bool = False
     max_output_tokens: int | None = None
+    headers: dict | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
 # ─── Channel Config ─────────────────────────────────────
+
 
 class ChannelConfigCreate(BaseModel):
     channel_type: str = "feishu"
@@ -309,6 +320,7 @@ class ChannelConfigOut(BaseModel):
 
 # ─── Approval ───────────────────────────────────────────
 
+
 class ApprovalRequestOut(BaseModel):
     id: uuid.UUID
     agent_id: uuid.UUID
@@ -329,6 +341,7 @@ class ApprovalAction(BaseModel):
 
 # ─── Enterprise Info ────────────────────────────────────
 
+
 class EnterpriseInfoUpdate(BaseModel):
     content: dict
     visible_roles: list[str] = []
@@ -346,6 +359,7 @@ class EnterpriseInfoOut(BaseModel):
 
 
 # ─── Chat ───────────────────────────────────────────────
+
 
 class ChatMessageOut(BaseModel):
     id: uuid.UUID
@@ -365,6 +379,7 @@ class ChatSend(BaseModel):
 
 # ─── Audit Log ──────────────────────────────────────────
 
+
 class AuditLogOut(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID | None = None
@@ -379,6 +394,7 @@ class AuditLogOut(BaseModel):
 
 # ─── Generic ────────────────────────────────────────────
 
+
 class PaginatedResponse(BaseModel):
     items: list
     total: int
@@ -392,6 +408,7 @@ class HealthResponse(BaseModel):
 
 
 # ─── Gateway (OpenClaw) ─────────────────────────────────
+
 
 class GatewayHistoryItem(BaseModel):
     role: str  # "user" or "assistant"
@@ -419,7 +436,6 @@ class GatewayMessageOut(BaseModel):
     history: list[GatewayHistoryItem] = []
 
 
-
 class GatewayPollResponse(BaseModel):
     messages: list[GatewayMessageOut] = []
     relationships: list[GatewayRelationshipItem] = []
@@ -434,4 +450,3 @@ class GatewaySendMessageRequest(BaseModel):
     target: str  # Name of target person or agent
     content: str = Field(min_length=1)
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
-

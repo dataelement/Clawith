@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,7 +16,9 @@ class LLMModel(Base):
     __tablename__ = "llm_models"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True, index=True)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True, index=True
+    )
     provider: Mapped[str] = mapped_column(String(50), nullable=False)  # anthropic, openai, deepseek, etc.
     model: Mapped[str] = mapped_column(String(100), nullable=False)  # claude-opus-4-6, gpt-4o, etc.
     api_key_encrypted: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -25,7 +27,10 @@ class LLMModel(Base):
     max_tokens_per_day: Mapped[int | None] = mapped_column(Integer)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     supports_vision: Mapped[bool] = mapped_column(Boolean, default=False)
-    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Per-model output token limit override
+    max_output_tokens: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )  # Per-model output token limit override
+    headers_encrypted: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

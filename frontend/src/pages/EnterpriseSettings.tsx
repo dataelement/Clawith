@@ -26,7 +26,7 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 interface LLMModel {
     id: string; provider: string; model: string; label: string;
-    base_url?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; created_at: string;
+    base_url?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; headers?: Record<string, string>; created_at: string;
 }
 
 interface LLMProviderSpec {
@@ -783,7 +783,7 @@ export default function EnterpriseSettings() {
     });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string });
+    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, headers: [] as { key: string; value: string }[] });
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
@@ -877,7 +877,7 @@ export default function EnterpriseSettings() {
                 {activeTab === 'llm' && (
                     <div>
                         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
-                            <button className="btn btn-primary" onClick={() => { setEditingModelId(null); setModelForm({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' }); setShowAddModel(true); }}>+ {t('enterprise.llm.addModel')}</button>
+                            <button className="btn btn-primary" onClick={() => { setEditingModelId(null); setModelForm({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '', headers: [] }); setShowAddModel(true); }}>+ {t('enterprise.llm.addModel')}</button>
                         </div>
 
                         {showAddModel && (
@@ -923,16 +923,71 @@ export default function EnterpriseSettings() {
                                         <input className="form-input" type="number" placeholder="Auto (provider default)" value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Override the default output token limit. Leave empty to use provider default (4096).</div>
                                     </div>
+                                    <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                                        <label className="form-label" style={{ marginBottom: '8px' }}>Custom Headers</label>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                            {modelForm.headers.map((h, i) => (
+                                                <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                                    <input
+                                                        className="form-input"
+                                                        placeholder="Header name (e.g. X-Custom-Auth)"
+                                                        value={h.key}
+                                                        onChange={e => {
+                                                            const next = [...modelForm.headers];
+                                                            next[i] = { ...next[i], key: e.target.value };
+                                                            setModelForm({ ...modelForm, headers: next });
+                                                        }}
+                                                        style={{ flex: '0 0 40%' }}
+                                                    />
+                                                    <input
+                                                        className="form-input"
+                                                        type="password"
+                                                        placeholder={editingModelId ? '•••••••• (leave blank to keep)' : 'Value'}
+                                                        value={h.value}
+                                                        onChange={e => {
+                                                            const next = [...modelForm.headers];
+                                                            next[i] = { ...next[i], value: e.target.value };
+                                                            setModelForm({ ...modelForm, headers: next });
+                                                        }}
+                                                        style={{ flex: 1 }}
+                                                    />
+                                                    <button
+                                                        className="btn btn-ghost"
+                                                        onClick={() => setModelForm({ ...modelForm, headers: modelForm.headers.filter((_, j) => j !== i) })}
+                                                        style={{ color: 'var(--error)', flexShrink: 0, padding: '4px 8px' }}
+                                                    >✕</button>
+                                                </div>
+                                            ))}
+                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                <button
+                                                    className="btn btn-secondary"
+                                                    onClick={() => setModelForm({ ...modelForm, headers: [...modelForm.headers, { key: '', value: '' }] })}
+                                                    style={{ fontSize: '12px', padding: '4px 10px' }}
+                                                >+ Add Header</button>
+                                                {modelForm.headers.length > 0 && (
+                                                    <button
+                                                        className="btn btn-ghost"
+                                                        onClick={() => setModelForm({ ...modelForm, headers: [] })}
+                                                        style={{ fontSize: '12px', padding: '4px 10px', color: 'var(--error)' }}
+                                                    >Clear All</button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
                                     <button className="btn btn-secondary" onClick={() => { setShowAddModel(false); setEditingModelId(null); }}>{t('common.cancel')}</button>
                                     <button className="btn btn-primary" onClick={() => {
+                                        // Only include headers if user has filled in at least one key+value row
+                                        const filledRows = modelForm.headers.filter(h => h.key.trim() && h.value.trim());
+                                        const headersObj = filledRows.length > 0
+                                            ? Object.fromEntries(filledRows.map(h => [h.key.trim(), h.value.trim()]))
+                                            : undefined;
+                                        const { headers: _drop, ...rest } = modelForm;
                                         if (editingModelId) {
-                                            const data = { ...modelForm, max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null };
-                                            updateModel.mutate({ id: editingModelId, data });
+                                            updateModel.mutate({ id: editingModelId, data: { ...rest, max_output_tokens: rest.max_output_tokens ? Number(rest.max_output_tokens) : null, headers: headersObj } });
                                         } else {
-                                            const data = { ...modelForm, max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null };
-                                            addModel.mutate(data);
+                                            addModel.mutate({ ...rest, max_output_tokens: rest.max_output_tokens ? Number(rest.max_output_tokens) : null, headers: headersObj });
                                         }
                                     }} disabled={!modelForm.model || (!editingModelId && !modelForm.api_key)}>
                                         {t('common.save')}
@@ -958,7 +1013,16 @@ export default function EnterpriseSettings() {
                                         {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>👁 Vision</span>}
                                         <button className="btn btn-ghost" onClick={() => {
                                             setEditingModelId(m.id);
-                                            setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '' });
+                                            setModelForm({ 
+                                                provider: m.provider, 
+                                                model: m.model, 
+                                                label: m.label, 
+                                                base_url: m.base_url || '', 
+                                                api_key: '', 
+                                                supports_vision: m.supports_vision || false,
+                                                max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '',
+                                                headers: m.headers ? Object.entries(m.headers).map(([key, value]) => ({ key, value: value as string })) : []
+                                            });
                                             setShowAddModel(true);
                                         }} style={{ fontSize: '12px' }}>✏️ Edit</button>
                                         <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>

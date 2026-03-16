@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 def _parse_schedule(remind_schedule: str) -> dict | None:
     """Parse remind_schedule — supports JSON format or legacy simple presets."""
     import json
+
     if not remind_schedule:
         return None
     try:
@@ -48,7 +49,7 @@ def _parse_schedule(remind_schedule: str) -> dict | None:
 
 def _is_reminder_due(remind_schedule: str, last_reminded_at: datetime | None, now_utc: datetime) -> bool:
     """Check if a reminder is due based on the schedule config.
-    
+
     All time calculations are anchored to now_utc (provided by tick loop).
     Default behavior is to use UTC for hour/minute checks unless a timezone is specified.
     """
@@ -119,6 +120,7 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
         return None
 
     from sqlalchemy import select as _select
+
     model_result = await db.execute(_select(LLMModel).where(LLMModel.id == model_id))
     model = model_result.scalar_one_or_none()
     if not model:
@@ -128,21 +130,31 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
     if not base_url:
         return None
 
-    system_prompt = await build_agent_context(
-        target_agent.id, target_agent.name, target_agent.role_description or ""
-    )
+    system_prompt = await build_agent_context(target_agent.id, target_agent.name, target_agent.role_description or "")
 
     messages = [
         LLMMessage(role="system", content=system_prompt),
         LLMMessage(role="user", content=message),
     ]
 
+    from app.core.security import decrypt_symmetric
+
+    headers_dict = None
+    if getattr(model, "headers_encrypted", None):
+        try:
+            import json as _hdr_json
+
+            headers_dict = _hdr_json.loads(decrypt_symmetric(model.headers_encrypted))
+        except Exception:
+            pass
+
     client = create_llm_client(
         provider=model.provider,
-        api_key=model.api_key_encrypted,
+        api_key=decrypt_symmetric(model.api_key_encrypted),
         model=model.model,
         base_url=base_url,
         timeout=60.0,
+        headers=headers_dict,
     )
     try:
         response = await client.complete(
@@ -178,10 +190,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
             return
 
         days_since = (datetime.now(timezone.utc) - task.created_at).days
-        reminder_msg = (
-            f"📋 督办提醒 — 来自 {agent_name}\n\n"
-            f"事项：{task.title}\n"
-        )
+        reminder_msg = f"📋 督办提醒 — 来自 {agent_name}\n\n事项：{task.title}\n"
         if task.description:
             reminder_msg += f"说明：{task.description}\n"
         reminder_msg += f"创建于：{days_since} 天前\n"
@@ -194,9 +203,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
             send_method = ""
 
             # 1. Try to find target as an Agent
-            agent_result = await db.execute(
-                select(Agent).where(Agent.name == target_name)
-            )
+            agent_result = await db.execute(select(Agent).where(Agent.name == target_name))
             target_agent = agent_result.scalar_one_or_none()
 
             if target_agent:
@@ -248,12 +255,16 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 owner_id = src_agent2.creator_id if src_agent2 else task.agent_id
 
                 # Save reminder message
-                db.add(ChatMessage(
-                    agent_id=session_agent_id, user_id=owner_id,
-                    role="user", content=reminder_msg,
-                    conversation_id=session_id,
-                    participant_id=src_part.id if src_part else None,
-                ))
+                db.add(
+                    ChatMessage(
+                        agent_id=session_agent_id,
+                        user_id=owner_id,
+                        role="user",
+                        content=reminder_msg,
+                        conversation_id=session_id,
+                        participant_id=src_part.id if src_part else None,
+                    )
+                )
                 await db.flush()
                 chat_session.last_message_at = datetime.now(timezone.utc)
                 sent = True
@@ -263,12 +274,16 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 try:
                     reply = await _get_agent_reply(target_agent, reminder_msg, db)
                     if reply:
-                        db.add(ChatMessage(
-                            agent_id=session_agent_id, user_id=owner_id,
-                            role="assistant", content=reply,
-                            conversation_id=session_id,
-                            participant_id=tgt_part.id if tgt_part else None,
-                        ))
+                        db.add(
+                            ChatMessage(
+                                agent_id=session_agent_id,
+                                user_id=owner_id,
+                                role="assistant",
+                                content=reply,
+                                conversation_id=session_id,
+                                participant_id=tgt_part.id if tgt_part else None,
+                            )
+                        )
                         send_method = f"agent消息+回复({reply[:40]})"
                         logger.info(f"📋 Target agent {target_agent.name} replied: {reply[:80]}")
                 except Exception as e:
@@ -299,15 +314,20 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                     if config and (target_member.email or target_member.phone):
                         try:
                             resolved = await feishu_service.resolve_open_id(
-                                config.app_id, config.app_secret,
-                                email=target_member.email, mobile=target_member.phone,
+                                config.app_id,
+                                config.app_secret,
+                                email=target_member.email,
+                                mobile=target_member.phone,
                             )
                             if resolved:
                                 content = _json.dumps({"text": reminder_msg}, ensure_ascii=False)
                                 resp = await feishu_service.send_message(
-                                    config.app_id, config.app_secret,
-                                    receive_id=resolved, msg_type="text",
-                                    content=content, receive_id_type="open_id",
+                                    config.app_id,
+                                    config.app_secret,
+                                    receive_id=resolved,
+                                    msg_type="text",
+                                    content=content,
+                                    receive_id_type="open_id",
                                 )
                                 if resp.get("code") == 0:
                                     sent = True
@@ -352,7 +372,9 @@ async def _supervision_tick():
         async with async_session() as db:
             # Find active supervision tasks
             result = await db.execute(
-                select(Task, Agent.name).join(Agent, Agent.id == Task.agent_id).where(
+                select(Task, Agent.name)
+                .join(Agent, Agent.id == Task.agent_id)
+                .where(
                     Task.type == "supervision",
                     Task.status.in_(["pending", "doing"]),
                     Task.remind_schedule.isnot(None),
@@ -367,16 +389,16 @@ async def _supervision_tick():
                 try:
                     # Get last reminder log for this task
                     log_result = await db.execute(
-                        select(TaskLog)
-                        .where(TaskLog.task_id == task.id)
-                        .order_by(TaskLog.created_at.desc())
-                        .limit(1)
+                        select(TaskLog).where(TaskLog.task_id == task.id).order_by(TaskLog.created_at.desc()).limit(1)
                     )
                     last_log = log_result.scalar_one_or_none()
                     last_reminded = last_log.created_at if last_log else None
 
                     if _is_reminder_due(task.remind_schedule, last_reminded, now):
-                        print(f"[supervision] FIRING reminder for '{task.title}' -> {task.supervision_target_name}", flush=True)
+                        print(
+                            f"[supervision] FIRING reminder for '{task.title}' -> {task.supervision_target_name}",
+                            flush=True,
+                        )
                         await write_audit_log(
                             "supervision_fire",
                             {"task_id": str(task.id), "title": task.title, "target": task.supervision_target_name},
