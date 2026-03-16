@@ -1807,9 +1807,9 @@ function AgentDetailInner() {
                                         </div>
                                         <div className="card" style={{ position: 'relative' }}>
                                             <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                                {i18n.language?.startsWith('zh') ? '24h 活动' : '24h Actions'}
+                                                {t('agent.status.24hActions')}
                                                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
-                                                <span className="metric-tooltip">{i18n.language?.startsWith('zh') ? '过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等' : 'Total recorded operations in the past 24 hours, including chats, tool calls, task executions, etc.'}</span>
+                                                <span className="metric-tooltip">{t('agent.status.24hActionsTooltip')}</span>
                                             </div>
                                             <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
                                         </div>
@@ -1820,12 +1820,12 @@ function AgentDetailInner() {
                                 {(agent as any)?.agent_type === 'openclaw' && (
                                     <div className="card">
                                         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>
-                                            {i18n.language?.startsWith('zh') ? '最近连接' : 'Last Seen'}
+                                            {t('agent.openclaw.lastSeen')}
                                         </div>
                                         <div style={{ fontSize: '16px', fontWeight: 500 }}>
                                             {(agent as any).openclaw_last_seen
                                                 ? new Date((agent as any).openclaw_last_seen).toLocaleString()
-                                                : (i18n.language?.startsWith('zh') ? '尚未连接' : 'Not connected')}
+                                                : t('agent.openclaw.notConnected')}
                                         </div>
                                     </div>
                                 )}
@@ -1841,17 +1841,17 @@ function AgentDetailInner() {
                                             <span title={agent.role_description || ''} style={{ textAlign: 'right', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as any }}>{agent.role_description || '—'}</span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>Created</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('common.createdBy', 'Created')}</span>
                                             <span>{agent.created_at ? formatDate(agent.created_at) : '—'}</span>
                                         </div>
                                         {(agent as any).creator_username && (
                                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.fields.createdBy', 'Created by')}</span>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.status.createdBy', 'Created by')}</span>
                                                 <span style={{ color: 'var(--text-secondary)' }}>@{(agent as any).creator_username}</span>
                                             </div>
                                         )}
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>Last Active</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.status.lastActive', 'Last Active')}</span>
                                             <span>{agent.last_active_at ? formatDate(agent.last_active_at) : '—'}</span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
@@ -1881,11 +1881,11 @@ function AgentDetailInner() {
                                 ) : (
                                 <div className="card">
                                     <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>
-                                        {i18n.language?.startsWith('zh') ? 'OpenClaw 连接' : 'OpenClaw Connection'}
+                                        {t('agent.openclaw.connection')}
                                     </h3>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{i18n.language?.startsWith('zh') ? '类型' : 'Type'}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.type')}</span>
                                             <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                 <span style={{
                                                     fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
@@ -1895,15 +1895,15 @@ function AgentDetailInner() {
                                             </span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{i18n.language?.startsWith('zh') ? '最近连接' : 'Last Seen'}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.lastSeen')}</span>
                                             <span>{(agent as any).openclaw_last_seen
                                                 ? new Date((agent as any).openclaw_last_seen).toLocaleString()
-                                                : (i18n.language?.startsWith('zh') ? '尚未连接' : 'Never')}
+                                                : t('agent.openclaw.neverConnected')}
                                             </span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{i18n.language?.startsWith('zh') ? '模型' : 'Model'}</span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>{i18n.language?.startsWith('zh') ? '由 OpenClaw 实例管理' : 'Managed by OpenClaw'}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.model')}</span>
+                                            <span style={{ color: 'var(--text-secondary)' }}>{t('agent.openclaw.managedBy')}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -2248,7 +2248,7 @@ function AgentDetailInner() {
                                         className="btn btn-ghost"
                                         style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
                                     >
-                                        {i18n.language?.startsWith('zh') ? `显示更多 ${hiddenActiveCount} 项...` : `Show ${hiddenActiveCount} more...`}
+                                        {t('agent.aware.showMore', { count: hiddenActiveCount })}
                                     </button>
                                 )}
                                 {showAllFocus && activeFocusItems.length > SECTION_PAGE_SIZE && (
@@ -2257,7 +2257,7 @@ function AgentDetailInner() {
                                         className="btn btn-ghost"
                                         style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
                                     >
-                                        {i18n.language?.startsWith('zh') ? '收起' : 'Show less'}
+                                        {t('agent.aware.showLess')}
                                     </button>
                                 )}
 
@@ -2275,8 +2275,8 @@ function AgentDetailInner() {
                                             }}
                                         >
                                             {showCompletedFocus
-                                                ? (i18n.language?.startsWith('zh') ? '隐藏已完成' : 'Hide completed')
-                                                : (i18n.language?.startsWith('zh') ? `显示 ${completedFocusItems.length} 项已完成` : `Show ${completedFocusItems.length} completed`)
+                                                ? t('agent.aware.hideCompleted')
+                                                : t('agent.aware.showCompleted', { count: completedFocusItems.length })
                                             }
                                         </button>
                                         {showCompletedFocus && completedFocusItems.map(renderFocusItem)}
@@ -2354,8 +2354,8 @@ function AgentDetailInner() {
                                             style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
                                         >
                                             {showAllTriggers
-                                                ? (i18n.language?.startsWith('zh') ? '收起' : 'Show less')
-                                                : (i18n.language?.startsWith('zh') ? `显示更多 ${standaloneTriggers.length - SECTION_PAGE_SIZE} 项...` : `Show ${standaloneTriggers.length - SECTION_PAGE_SIZE} more...`)
+                                                ? t('agent.aware.showLess')
+                                                : t('agent.aware.showMore', { count: standaloneTriggers.length - SECTION_PAGE_SIZE })
                                             }
                                         </button>
                                     )}
@@ -2584,8 +2584,8 @@ function AgentDetailInner() {
                                                 style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
                                             >
                                                 {showAllReflections
-                                                    ? (i18n.language?.startsWith('zh') ? '收起' : 'Show less')
-                                                    : (i18n.language?.startsWith('zh') ? `显示更多 ${hiddenCount} 条...` : `Show ${hiddenCount} more...`)
+                                                    ? t('agent.aware.showLess')
+                                                    : t('agent.aware.showMore', { count: hiddenCount })
                                                 }
                                             </button>
                                         )}
@@ -3350,7 +3350,6 @@ function AgentDetailInner() {
                 {
                     activeTab === 'approvals' && (() => {
                         const ApprovalsTab = () => {
-                            const isChinese = i18n.language?.startsWith('zh');
                             const { data: approvals = [], refetch: refetchApprovals } = useQuery({
                                 queryKey: ['agent-approvals', id],
                                 queryFn: () => fetchAuth<any[]>(`/agents/${id}/approvals`),
@@ -3384,7 +3383,7 @@ function AgentDetailInner() {
                                     {pending.length > 0 && (
                                         <>
                                             <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--warning)' }}>
-                                                {isChinese ? `${pending.length} 个待审批` : `${pending.length} Pending`}
+                                                {t('agent.settings.approvals.pendingCount', { count: pending.length })}
                                             </h4>
                                             {pending.map((a: any) => (
                                                 <div key={a.id} style={{
@@ -3411,7 +3410,7 @@ function AgentDetailInner() {
                                                             onClick={() => resolveMut.mutate({ approvalId: a.id, action: 'approve' })}
                                                             disabled={resolveMut.isPending}
                                                         >
-                                                            {isChinese ? '批准' : 'Approve'}
+                                                            {t('agent.settings.approvals.approve')}
                                                         </button>
                                                         <button
                                                             className="btn btn-danger"
@@ -3419,7 +3418,7 @@ function AgentDetailInner() {
                                                             onClick={() => resolveMut.mutate({ approvalId: a.id, action: 'reject' })}
                                                             disabled={resolveMut.isPending}
                                                         >
-                                                            {isChinese ? '拒绝' : 'Reject'}
+                                                            {t('agent.settings.approvals.reject')}
                                                         </button>
                                                     </div>
                                                 </div>
@@ -3429,11 +3428,11 @@ function AgentDetailInner() {
                                     )}
                                     {/* History */}
                                     <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                                        {isChinese ? '审批历史' : 'History'}
+                                        {t('agent.settings.approvals.history')}
                                     </h4>
                                     {resolved.length === 0 && pending.length === 0 && (
                                         <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                                            {isChinese ? '暂无审批记录' : 'No approval records'}
+                                            {t('agent.settings.approvals.noRecords')}
                                         </div>
                                     )}
                                     {resolved.map((a: any) => (
@@ -3495,17 +3494,16 @@ function AgentDetailInner() {
                                 // Check if any values were clamped by company policy
                                 const clamped = result?._clamped_fields;
                                 if (clamped && clamped.length > 0) {
-                                    const isCh = i18n.language?.startsWith('zh');
-                                    const fieldNames: Record<string, string> = isCh
-                                        ? { min_poll_interval_min: 'Poll 最短间隔', webhook_rate_limit: 'Webhook 频率限制', heartbeat_interval_minutes: '心跳间隔' }
-                                        : { min_poll_interval_min: 'Min Poll Interval', webhook_rate_limit: 'Webhook Rate Limit', heartbeat_interval_minutes: 'Heartbeat Interval' };
+                                    const fieldNames: Record<string, string> = {
+                                        min_poll_interval_min: t('agent.settings.fieldNames.min_poll_interval_min'),
+                                        webhook_rate_limit: t('agent.settings.fieldNames.webhook_rate_limit'),
+                                        heartbeat_interval_minutes: t('agent.settings.fieldNames.heartbeat_interval_minutes')
+                                    };
                                     const msgs = clamped.map((c: any) => {
                                         const name = fieldNames[c.field] || c.field;
-                                        return isCh
-                                            ? `${name}: ${c.requested} -> ${c.applied} (公司策略限制)`
-                                            : `${name}: ${c.requested} -> ${c.applied} (company policy)`;
+                                        return `${name}: ${c.requested} -> ${c.applied} (${t('agent.settings.fieldNames.companyPolicy')})`;
                                     });
-                                    setSettingsError((isCh ? 'Some values were adjusted:\n' : 'Some values were adjusted:\n') + msgs.join('\n'));
+                                    setSettingsError(t('agent.settings.settingsAdjusted') + '\n' + msgs.join('\n'));
                                     setTimeout(() => setSettingsError(''), 5000);
                                 }
 
@@ -3651,19 +3649,16 @@ function AgentDetailInner() {
 
                                 {/* Trigger Limits — native agents only */}
                                 {(agent as any)?.agent_type !== 'openclaw' && (() => {
-                                    const isChinese = i18n.language?.startsWith('zh');
                                     return (
                                         <div className="card" style={{ marginBottom: '12px' }}>
-                                            <h4 style={{ marginBottom: '4px' }}>{isChinese ? '触发器限制' : 'Trigger Limits'}</h4>
+                                            <h4 style={{ marginBottom: '4px' }}>{t('agent.settings.triggerLimits.title')}</h4>
                                             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                                                {isChinese
-                                                    ? '控制该 Agent 可以创建的触发器数量和行为限制'
-                                                    : 'Limit how many triggers this agent can create and their behavior'}
+                                                {t('agent.settings.triggerLimits.description')}
                                             </p>
                                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
                                                 <div>
                                                     <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
-                                                        {isChinese ? '最大触发器数' : 'Max Triggers'}
+                                                        {t('agent.settings.triggerLimits.maxTriggers')}
                                                     </label>
                                                     <input
                                                         className="input"
@@ -3675,12 +3670,12 @@ function AgentDetailInner() {
                                                         style={{ width: '100%' }}
                                                     />
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                                                        {isChinese ? 'Agent 最多可同时拥有的触发器数量' : 'Max active triggers the agent can have'}
+                                                        {t('agent.settings.triggerLimits.maxTriggersDesc')}
                                                     </div>
                                                 </div>
                                                 <div>
                                                     <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
-                                                        {isChinese ? 'Poll 最短间隔 (分钟)' : 'Min Poll Interval (min)'}
+                                                        {t('agent.settings.triggerLimits.minPollInterval')}
                                                     </label>
                                                     <input
                                                         className="input"
@@ -3692,12 +3687,12 @@ function AgentDetailInner() {
                                                         style={{ width: '100%' }}
                                                     />
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                                                        {isChinese ? '定时轮询外部接口的最短间隔' : 'Minimum interval for polling external URLs'}
+                                                        {t('agent.settings.triggerLimits.minPollIntervalDesc')}
                                                     </div>
                                                 </div>
                                                 <div>
                                                     <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
-                                                        {isChinese ? 'Webhook 频率限制 (次/分钟)' : 'Webhook Rate Limit (/min)'}
+                                                        {t('agent.settings.triggerLimits.webhookRateLimit')}
                                                     </label>
                                                     <input
                                                         className="input"
@@ -3709,7 +3704,7 @@ function AgentDetailInner() {
                                                         style={{ width: '100%' }}
                                                     />
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                                                        {isChinese ? '外部系统每分钟最多可调用的 Webhook 次数' : 'Max webhook calls per minute from external services'}
+                                                        {t('agent.settings.triggerLimits.webhookRateLimitDesc')}
                                                     </div>
                                                 </div>
                                             </div>
@@ -3719,7 +3714,6 @@ function AgentDetailInner() {
 
                                 {/* Welcome Message */}
                                 {(() => {
-                                    const isChinese = i18n.language?.startsWith('zh');
                                     const saveWm = async () => {
                                         try {
                                             await agentApi.update(id!, { welcome_message: wmDraft } as any);
@@ -3731,13 +3725,11 @@ function AgentDetailInner() {
                                     return (
                                         <div className="card" style={{ marginBottom: '12px' }}>
                                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                                <h4 style={{ margin: 0 }}>{isChinese ? '欢迎语' : 'Welcome Message'}</h4>
-                                                {wmSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>✓ {isChinese ? '已保存' : 'Saved'}</span>}
+                                                <h4 style={{ margin: 0 }}>{t('agent.settings.welcomeMessage.title')}</h4>
+                                                {wmSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>✓ {t('agent.settings.welcomeMessage.saved')}</span>}
                                             </div>
                                             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                                                {isChinese
-                                                    ? '当用户在网页端发起新对话时，Agent 会自动发送的欢迎语。支持 Markdown 语法。留空则不发送。'
-                                                    : 'Greeting message sent automatically when a user starts a new web conversation. Supports Markdown. Leave empty to disable.'}
+                                                {t('agent.settings.welcomeMessage.description')}
                                             </p>
                                             <textarea
                                                 className="input"
@@ -3745,7 +3737,7 @@ function AgentDetailInner() {
                                                 value={wmDraft}
                                                 onChange={e => setWmDraft(e.target.value)}
                                                 onBlur={saveWm}
-                                                placeholder={isChinese ? '例如：你好！我是你的 AI 助手，有什么可以帮你的吗？' : "e.g. Hello! I'm your AI assistant. How can I help you?"}
+                                                placeholder={t('agent.settings.welcomeMessage.placeholder')}
                                                 style={{
                                                     width: '100%', minHeight: '80px', resize: 'vertical',
                                                     fontFamily: 'inherit', fontSize: '13px',

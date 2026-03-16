@@ -102,6 +102,16 @@
       "creating": "Creating",
       "error": "Error"
     },
+    "status": {
+      "24hActions": "24h Actions",
+      "24hActionsTooltip": "Total recorded operations in the past 24 hours, including chats, tool calls, task executions, etc.",
+      "llmCallsToday": "LLM Calls Today",
+      "maxLlmCalls": "Max",
+      "totalToken": "Total Token",
+      "pending": "Pending",
+      "createdBy": "Created by",
+      "lastActive": "Last Active"
+    },
     "tabs": {
       "status": "Status",
       "tasks": "Tasks",
@@ -192,7 +202,20 @@
       "taskHistory": "Task History",
       "taskHistoryEmpty": "No archived tasks yet.",
       "inProgress": "In progress",
-      "completed": "Completed"
+      "completed": "Completed",
+      "showMore": "Show {{count}} more...",
+      "showLess": "Show less",
+      "hideCompleted": "Hide completed",
+      "showCompleted": "Show {{count}} completed"
+    },
+    "openclaw": {
+      "connection": "OpenClaw Connection",
+      "type": "Type",
+      "lastSeen": "Last Seen",
+      "notConnected": "Not connected",
+      "neverConnected": "Never connected",
+      "model": "Model",
+      "managedBy": "Managed by OpenClaw"
     },
     "soul": {
       "title": "Soul.md — Personality Definition",
@@ -272,8 +295,18 @@
       "currentUsage": "Current Usage",
       "today": "Today",
       "month": "This Month",
+      "maxToolRounds": "Max Tool Rounds",
+      "maxToolRoundsLabel": "Max tool calls per message",
+      "maxToolRoundsDesc": "Maximum number of tool call rounds (search, write, etc.) per agent message. Default: 50",
       "saveSettings": "Save Settings",
       "saved": "Saved",
+      "settingsAdjusted": "Some values were adjusted:",
+      "fieldNames": {
+        "min_poll_interval_min": "Min Poll Interval",
+        "webhook_rate_limit": "Webhook Rate Limit",
+        "heartbeat_interval_minutes": "Heartbeat Interval",
+        "companyPolicy": "company policy"
+      },
       "autonomy": {
         "title": "Autonomy Policy",
         "description": "Configure the autonomy level for each agent action",
@@ -327,6 +360,29 @@
         "days": "{{count}}d",
         "customDeadline": "Custom deadline",
         "saving": "Saving..."
+      },
+      "approvals": {
+        "pendingCount": "{{count}} Pending",
+        "approve": "Approve",
+        "reject": "Reject",
+        "history": "History",
+        "noRecords": "No approval records"
+      },
+      "triggerLimits": {
+        "title": "Trigger Limits",
+        "description": "Limit how many triggers this agent can create and their behavior",
+        "maxTriggers": "Max Triggers",
+        "maxTriggersDesc": "Maximum number of active triggers the agent can have",
+        "minPollInterval": "Min Poll Interval (min)",
+        "minPollIntervalDesc": "Minimum interval for polling external URLs",
+        "webhookRateLimit": "Webhook Rate Limit (/min)",
+        "webhookRateLimitDesc": "Maximum webhook calls per minute from external services"
+      },
+      "welcomeMessage": {
+        "title": "Welcome Message",
+        "description": "Greeting message sent automatically when a user starts a new web conversation. Supports Markdown. Leave empty to disable.",
+        "saved": "Saved",
+        "placeholder": "e.g. Hello! I'm your AI assistant. How can I help you?"
       }
     },
     "tools": {
@@ -518,13 +574,24 @@
       "publicUrl": "Public URL (PUBLIC_BASE_URL)",
       "publicUrlPlaceholder": "e.g. https://xxx.cpolar.top",
       "maxRounds": "Agent Max Conversation Rounds",
+      "maxRoundsDesc": "Maximum conversation rounds for a single collaboration between two agents. Controls how many message exchanges agents can have when collaborating.",
       "maxRoundsPlaceholder": "Default 20",
       "save": "Save",
       "saved": "Saved",
       "themeColor": "Theme Color"
     },
+    "companyName": {
+      "title": "Company Name",
+      "placeholder": "Enter company name"
+    },
+    "companyIntro": {
+      "title": "Company Introduction",
+      "description": "Describe your company's mission, products, and culture. This information will be included as context in every agent conversation.",
+      "hint": "This content will appear in the system prompt for every agent"
+    },
     "kb": {
       "title": "Company Knowledge Base",
+      "description": "Shared files accessible to all agents via enterprise_info/ directory.",
       "rootDir": "Root",
       "uploadFile": "Upload File",
       "newFolder": "New Folder",

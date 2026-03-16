@@ -83,6 +83,16 @@
       "error": "错误",
       "creating": "创建中"
     },
+    "status": {
+      "24hActions": "24h 活动",
+      "24hActionsTooltip": "过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等",
+      "llmCallsToday": "今日 LLM 调用",
+      "maxLlmCalls": "上限",
+      "totalToken": "累计 Token",
+      "pending": "待审批",
+      "createdBy": "创建者",
+      "lastActive": "最后活跃"
+    },
     "noActivity": "暂无活动记录",
     "noLimit": "无限制",
     "justNow": "刚刚",
@@ -192,7 +202,20 @@
       "taskHistory": "任务历史",
       "taskHistoryEmpty": "暂无归档任务。",
       "inProgress": "进行中",
-      "completed": "已完成"
+      "completed": "已完成",
+      "showMore": "显示更多 {{count}} 项...",
+      "showLess": "收起",
+      "hideCompleted": "隐藏已完成",
+      "showCompleted": "显示 {{count}} 项已完成"
+    },
+    "openclaw": {
+      "connection": "OpenClaw 连接",
+      "type": "类型",
+      "lastSeen": "最近连接",
+      "notConnected": "尚未连接",
+      "neverConnected": "从未连接",
+      "model": "模型",
+      "managedBy": "由 OpenClaw 实例管理"
     },
     "soul": {
       "title": "Soul.md — 人格定义",
@@ -231,6 +254,7 @@
       "rootDir": "根目录",
       "uploadFile": "上传文件",
       "newFolder": "新建文件夹",
+      "newFile": "新建文件",
       "newFolderName": "文件夹名称",
       "dragOrClick": "拖拽文件到此处或点击上传",
       "noFiles": "暂无文件",
@@ -276,6 +300,13 @@
       "maxToolRoundsDesc": "智能体每条消息可执行的工具调用轮次数（搜索、写入等）。默认值：50",
       "saveSettings": "保存设置",
       "saved": "已保存",
+      "settingsAdjusted": "部分值已被调整：",
+      "fieldNames": {
+        "min_poll_interval_min": "Poll 最短间隔",
+        "webhook_rate_limit": "Webhook 频率限制",
+        "heartbeat_interval_minutes": "心跳间隔",
+        "companyPolicy": "公司策略限制"
+      },
       "autonomy": {
         "title": "自主性边界配置",
         "description": "配置数字员工执行各项操作时的自主性级别",
@@ -329,6 +360,29 @@
         "days": "{{count}}天",
         "customDeadline": "自定义截止时间",
         "saving": "保存中..."
+      },
+      "approvals": {
+        "pendingCount": "{{count}} 个待审批",
+        "approve": "批准",
+        "reject": "拒绝",
+        "history": "审批历史",
+        "noRecords": "暂无审批记录"
+      },
+      "triggerLimits": {
+        "title": "触发器限制",
+        "description": "控制该 Agent 可以创建的触发器数量和行为限制",
+        "maxTriggers": "最大触发器数",
+        "maxTriggersDesc": "Agent 最多可同时拥有的触发器数量",
+        "minPollInterval": "Poll 最短间隔 (分钟)",
+        "minPollIntervalDesc": "定时轮询外部接口的最短间隔",
+        "webhookRateLimit": "Webhook 频率限制 (次/分钟)",
+        "webhookRateLimitDesc": "外部系统每分钟最多可调用的 Webhook 次数"
+      },
+      "welcomeMessage": {
+        "title": "欢迎语",
+        "description": "当用户在网页端发起新对话时，Agent 会自动发送的欢迎语。支持 Markdown 语法。留空则不发送。",
+        "saved": "已保存",
+        "placeholder": "例如：你好！我是你的 AI 助手，有什么可以帮你的吗？"
       }
     },
     "tools": {
