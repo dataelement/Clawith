@@ -59,7 +59,9 @@ services:
         max-size: "10m"
         max-file: "3"
   frontend:
-    build: ./frontend
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     ports:
       - "${FRONTEND_PORT:-3008}:3000"
     environment:
