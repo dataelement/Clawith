@@ -9,7 +9,7 @@ Revises: 20260313_column_modify
 from alembic import op
 
 revision = "add_llm_model_headers"
-down_revision = "20260313_column_modify"
+down_revision = "multi_tenant_registration"
 branch_labels = None
 depends_on = None
 
