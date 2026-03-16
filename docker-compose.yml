@@ -62,7 +62,6 @@ services:
     build: ./frontend
     ports:
       - "${FRONTEND_PORT:-3008}:3000"
-      - "80:80"
       - "443:443"
     environment:
       VITE_API_URL: http://localhost:8000
