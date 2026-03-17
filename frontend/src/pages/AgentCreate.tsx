@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { agentApi, enterpriseApi, skillApi } from '../services/api';
+import ChannelConfig from '../components/ChannelConfig';
 
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
 const OPENCLAW_STEPS = ['basicInfo', 'permissions'] as const;
@@ -30,19 +31,9 @@ export default function AgentCreate() {
         template_id: '' as string,
         max_tokens_per_day: '',
         max_tokens_per_month: '',
-        feishu_app_id: '',
-        feishu_app_secret: '',
-        feishu_encrypt_key: '',
-        slack_bot_token: '',
-        slack_signing_secret: '',
-        discord_application_id: '',
-        discord_bot_token: '',
-        discord_public_key: '',
         skill_ids: [] as string[],
     });
-    const [feishuOpen, setFeishuOpen] = useState(false);
-    const [slackOpen, setSlackOpen] = useState(false);
-    const [discordOpen, setDiscordOpen] = useState(false);
+    const [channelValues, setChannelValues] = useState<Record<string, string>>({});
 
     // Fetch LLM models for step 1
     const { data: models = [] } = useQuery({
@@ -583,7 +574,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                             })}
                             {globalSkills.length === 0 && (
                                 <div style={{ padding: '16px', background: 'var(--bg-elevated)', borderRadius: '8px', fontSize: '13px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-                                    No skills available. Add skills in Enterprise Settings.
+                                    No skills available. Add skills in Company Settings.
                                 </div>
                             )}
                         </div>
@@ -655,203 +646,9 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                             {t('wizard.step5.description', 'Connect messaging platforms to enable your agent to communicate through different channels.')}
                         </p>
 
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                            {/* Slack — expandable */}
-                            <div style={{ border: '1px solid var(--border-default)', borderRadius: '8px', overflow: 'hidden' }}>
-                                <div
-                                    onClick={() => setSlackOpen(!slackOpen)}
-                                    style={{
-                                        display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',
-                                        cursor: 'pointer', background: slackOpen ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
-                                        borderBottom: slackOpen ? '1px solid var(--border-default)' : 'none',
-                                    }}
-                                >
-                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M6.194 14.644a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm-2.194 0H0v-2.194a2.194 2.194 0 014.388 0v2.194zm16.612 0a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm0-2.194a2.194 2.194 0 010-4.388 2.194 2.194 0 010 4.388zm0 0v2.194h2.194A2.194 2.194 0 0024 12.45a2.194 2.194 0 00-2.194-2.194h-1.194zm-16.612 0a2.194 2.194 0 010-4.388 2.194 2.194 0 010 4.388zm0 0v2.194H2A2.194 2.194 0 010 12.45a2.194 2.194 0 012.194-2.194h1.806z" fill="#611F69" opacity=".4" /><path d="M9.388 4.388a2.194 2.194 0 110-4.388 2.194 2.194 0 010 4.388zm0 2.194v-2.194H7.194A2.194 2.194 0 005 6.582a2.194 2.194 0 002.194 2.194h2.194zm0 12.612a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm0-2.194v2.194H7.194A2.194 2.194 0 005 17.418a2.194 2.194 0 002.194 2.194h.194zm4.224-12.612a2.194 2.194 0 110-4.388 2.194 2.194 0 010 4.388zm2.194 0H13.612V2.194a2.194 2.194 0 014.388 0v2.194zm-2.194 14.806a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm-2.194 0h2.194v2.194a2.194 2.194 0 01-4.388 0v-2.194z" fill="#611F69" /></svg>
-                                    <div style={{ flex: 1 }}>
-                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>Slack</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Slack Bot</div>
-                                    </div>
-                                    {form.slack_bot_token && <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'rgba(16,185,129,0.15)', color: 'rgb(16,185,129)', fontWeight: 500 }}>Configured</span>}
-                                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: slackOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
-                                </div>
-                                {slackOpen && (
-                                    <div style={{ padding: '16px' }}>
-                                        <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                            <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                            </summary>
-                                            <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                <li>{t('channelGuide.slack.step1')}</li>
-                                                <li>{t('channelGuide.slack.step2')}</li>
-                                                <li>{t('channelGuide.slack.step3')}</li>
-                                                <li>{t('channelGuide.slack.step4')}</li>
-                                                <li>{t('channelGuide.slack.step5')}</li>
-                                                <li>{t('channelGuide.slack.step6')}</li>
-                                                <li>{t('channelGuide.slack.step7')}</li>
-                                                <li>{t('channelGuide.slack.step8')}</li>
-                                            </ol>
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.slack.note')}</div>
-                                        </details>
-                                        <div className="form-group">
-                                            <label className="form-label">Bot Token</label>
-                                            <input className="form-input" value={form.slack_bot_token}
-                                                onChange={(e) => setForm({ ...form, slack_bot_token: e.target.value })}
-                                                placeholder="xoxb-..." />
-                                        </div>
-                                        <div className="form-group">
-                                            <label className="form-label">Signing Secret</label>
-                                            <input className="form-input" type="password" value={form.slack_signing_secret}
-                                                onChange={(e) => setForm({ ...form, slack_signing_secret: e.target.value })} />
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
+                        <ChannelConfig mode="create" values={channelValues} onChange={setChannelValues} />
 
-                            {/* Discord — expandable */}
-                            <div style={{ border: '1px solid var(--border-default)', borderRadius: '8px', overflow: 'hidden' }}>
-                                <div
-                                    onClick={() => setDiscordOpen(!discordOpen)}
-                                    style={{
-                                        display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',
-                                        cursor: 'pointer', background: discordOpen ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
-                                        borderBottom: discordOpen ? '1px solid var(--border-default)' : 'none',
-                                    }}
-                                >
-                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="#5865F2"><path d="M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028 14.09 14.09 0 001.226-1.994.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" /></svg>
-                                    <div style={{ flex: 1 }}>
-                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>Discord</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Slash Commands (/ask)</div>
-                                    </div>
-                                    {form.discord_bot_token && <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'rgba(16,185,129,0.15)', color: 'rgb(16,185,129)', fontWeight: 500 }}>Configured</span>}
-                                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: discordOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
-                                </div>
-                                {discordOpen && (
-                                    <div style={{ padding: '16px' }}>
-                                        <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                            <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                            </summary>
-                                            <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                <li>{t('channelGuide.discord.step1')}</li>
-                                                <li>{t('channelGuide.discord.step2')}</li>
-                                                <li>{t('channelGuide.discord.step3')}</li>
-                                                <li>{t('channelGuide.discord.step4')}</li>
-                                                <li>{t('channelGuide.discord.step5')}</li>
-                                                <li>{t('channelGuide.discord.step6')}</li>
-                                                <li>{t('channelGuide.discord.step7')}</li>
-                                            </ol>
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.discord.note')}</div>
-                                        </details>
-                                        <div className="form-group">
-                                            <label className="form-label">Application ID</label>
-                                            <input className="form-input" value={form.discord_application_id}
-                                                onChange={(e) => setForm({ ...form, discord_application_id: e.target.value })}
-                                                placeholder="1234567890" />
-                                        </div>
-                                        <div className="form-group">
-                                            <label className="form-label">Bot Token</label>
-                                            <input className="form-input" type="password" value={form.discord_bot_token}
-                                                onChange={(e) => setForm({ ...form, discord_bot_token: e.target.value })} />
-                                        </div>
-                                        <div className="form-group">
-                                            <label className="form-label">Public Key</label>
-                                            <input className="form-input" value={form.discord_public_key}
-                                                onChange={(e) => setForm({ ...form, discord_public_key: e.target.value })} />
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Feishu — expandable */}
-                            <div style={{ border: '1px solid var(--border-default)', borderRadius: '8px', overflow: 'hidden' }}>
-                                <div
-                                    onClick={() => setFeishuOpen(!feishuOpen)}
-                                    style={{
-                                        display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',
-                                        cursor: 'pointer', background: feishuOpen ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
-                                        borderBottom: feishuOpen ? '1px solid var(--border-default)' : 'none',
-                                    }}
-                                >
-                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M3.64 7.2c.83 2.33 2.52 4.36 4.76 5.53L19.2 3.2c-.32-.09-.67-.11-1.03-.04L3.64 7.2z" fill="#00D6B9"/><path d="M8.4 12.73c.68.35 1.41.6 2.16.73l10.2-7.52c-.26-.56-.72-1.02-1.36-1.24L8.4 12.73z" fill="#3370FF"/><path d="M10.56 13.46c1.18.19 2.39.09 3.5-.3l6.86-5.06-.12-.14L10.56 13.46z" fill="#3370FF"/><path d="M14.06 13.16a8.1 8.1 0 002.62-1.67l4.24-3.13-.12-.42L14.06 13.16z" fill="#3370FF"/><path d="M16.68 11.49a8 8 0 001.7-2.15l2.54-1.87-.12-.53-4.12 4.55z" fill="#3370FF"/><path d="M3.64 7.2l-.24.7c-.94 2.82-.37 5.6 1.36 7.7L16.68 3.96 3.64 7.2z" fill="#00D6B9"/><path d="M4.76 15.6a8.02 8.02 0 003.64 3.94V12.73l-3.64 2.87z" fill="#3370FF"/><path d="M8.4 19.54c.68.35 1.41.56 2.16.64v-6.72l-2.16 6.08z" fill="#3370FF"/></svg>
-                                    <div style={{ flex: 1 }}>
-                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('wizard.step5.feishu', 'Feishu / Lark')}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('wizard.step5.feishuDesc', 'Connect via Feishu Open Platform bot')}</div>
-                                    </div>
-                                    {form.feishu_app_id && <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'rgba(16,185,129,0.15)', color: 'rgb(16,185,129)', fontWeight: 500 }}>Configured</span>}
-                                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: feishuOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
-                                </div>
-                                {feishuOpen && (
-                                    <div style={{ padding: '16px' }}>
-                                        <div style={{ background: 'var(--bg-elevated)', borderRadius: '8px', padding: '12px', marginBottom: '14px', fontSize: '12px', lineHeight: '1.8' }}>
-                                            <strong>{t('wizard.step5.configSteps')}</strong>
-                                            <ol style={{ paddingLeft: '16px', margin: '6px 0 0' }}>
-                                                <li>{t('wizard.step5.step1Feishu')} <a href="https://open.feishu.cn" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)' }}>{t('wizard.step5.feishuPlatform')}</a></li>
-                                                <li>{t('wizard.step5.step2Feishu')}</li>
-                                                <li>{t('wizard.step5.step3Feishu')}</li>
-                                                <li>{t('wizard.step5.step4Feishu')}</li>
-                                            </ol>
-                                        </div>
-                                        <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                            <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                            </summary>
-                                            <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                <li>{t('channelGuide.feishu.step1')}</li>
-                                                <li>{t('channelGuide.feishu.step2')}</li>
-                                                <li>{t('channelGuide.feishu.step3')}</li>
-                                                <li>{t('channelGuide.feishu.step4')}</li>
-                                                <li>{t('channelGuide.feishu.step5')}</li>
-                                                <li>{t('channelGuide.feishu.step6')}</li>
-                                                <li>{t('channelGuide.feishu.step7')}</li>
-                                                <li>{t('channelGuide.feishu.step8')}</li>
-                                            </ol>
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.feishu.note')}</div>
-                                        </details>
-                                        <div className="form-group">
-                                            <label className="form-label">App ID</label>
-                                            <input className="form-input" value={form.feishu_app_id}
-                                                onChange={(e) => setForm({ ...form, feishu_app_id: e.target.value })}
-                                                placeholder="cli_xxxxxxxxxxxxxxxx" />
-                                        </div>
-                                        <div className="form-group">
-                                            <label className="form-label">App Secret</label>
-                                            <input className="form-input" type="password" value={form.feishu_app_secret}
-                                                onChange={(e) => setForm({ ...form, feishu_app_secret: e.target.value })}
-                                                placeholder="xxxxxxxxxxxxxxxxxxxxxxxx" />
-                                        </div>
-                                        <div className="form-group">
-                                            <label className="form-label">{t('wizard.step5.encryptKeyOptional')}</label>
-                                            <input className="form-input" value={form.feishu_encrypt_key}
-                                                onChange={(e) => setForm({ ...form, feishu_encrypt_key: e.target.value })}
-                                                placeholder={t('wizard.step5.encryptKeyPlaceholder')} />
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Other channels — configurable in Settings after creation */}
-                            {[
-                                { icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect width="24" height="24" rx="4" fill="#7B83EB"/><path d="M14.5 7a2 2 0 100-4 2 2 0 000 4zm-5 2a2.5 2.5 0 100-5 2.5 2.5 0 000 5zm5.5 1.5c0-.3.2-.5.5-.5h3a2 2 0 012 2v3.5a1 1 0 01-2 0V12h-3a.5.5 0 01-.5-.5zM4 11.5A1.5 1.5 0 015.5 10h5A1.5 1.5 0 0112 11.5V17a3 3 0 01-6 0v-1H5.5A1.5 1.5 0 014 14.5v-3z" fill="white"/></svg>, name: t('common.channels.teams', 'Microsoft Teams'), desc: 'Teams Bot' },
-                                { icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#07C160"/><path d="M7.5 9.5a1 1 0 110-2 1 1 0 010 2zm4 0a1 1 0 110-2 1 1 0 010 2zm4 0a1 1 0 110-2 1 1 0 010 2zM6 13h5l2 3h-3l-1 2-1-2H6v-3z" fill="white"/></svg>, name: t('common.channels.wecom', 'WeCom'), desc: 'WebSocket / Webhook' },
-                                { icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect width="24" height="24" rx="4" fill="#007FFF"/><path d="M8.5 6.5l7.5 1.3-3.5 3.7 3.5 3.7L8.5 16.5v-10z" fill="white"/></svg>, name: t('common.channels.dingtalk', 'DingTalk'), desc: 'Stream Mode' },
-                                { icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#0052CC"/><path d="M7 13l3-6 2 4 2-4 3 6H7z" fill="white"/></svg>, name: 'Atlassian', desc: 'Jira / Confluence / Compass (Rovo MCP)' },
-                            ].map((ch) => (
-                                <div key={typeof ch.name === 'string' ? ch.name : ch.desc} style={{
-                                    display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',
-                                    background: 'var(--bg-elevated)', border: '1px solid var(--border-default)',
-                                    borderRadius: '8px', opacity: 0.7,
-                                }}>
-                                    {ch.icon}
-                                    <div style={{ flex: 1 }}>
-                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{ch.name}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{ch.desc}</div>
-                                    </div>
-                                    <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'var(--bg-secondary)', color: 'var(--text-tertiary)', fontWeight: 500 }}>Configure in Settings</span>
-                                </div>
-                            ))}
-                        </div>
-
-                        {!form.feishu_app_id && !form.slack_bot_token && !form.discord_bot_token && (
+                        {Object.keys(channelValues).length === 0 && (
                             <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center', marginTop: '12px' }}>
                                 {t('wizard.step5.skipHint')}
                             </div>

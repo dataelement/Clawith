@@ -7,6 +7,7 @@ import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import UserManagement from './UserManagement';
+import InvitationCodes from './InvitationCodes';
 
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -27,6 +28,27 @@ interface LLMModel {
     id: string; provider: string; model: string; label: string;
     base_url?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; created_at: string;
 }
+
+interface LLMProviderSpec {
+    provider: string;
+    display_name: string;
+    protocol: string;
+    default_base_url?: string | null;
+    supports_tool_choice: boolean;
+    default_max_tokens: number;
+}
+
+const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
+    { provider: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic', default_base_url: 'https://api.anthropic.com', supports_tool_choice: false, default_max_tokens: 4096 },
+    { provider: 'openai', display_name: 'OpenAI', protocol: 'openai_compatible', default_base_url: 'https://api.openai.com/v1', supports_tool_choice: true, default_max_tokens: 16384 },
+    { provider: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_compatible', default_base_url: 'https://api.deepseek.com/v1', supports_tool_choice: true, default_max_tokens: 8192 },
+    { provider: 'minimax', display_name: 'MiniMax', protocol: 'openai_compatible', default_base_url: 'https://api.minimaxi.com/v1', supports_tool_choice: true, default_max_tokens: 16384 },
+    { provider: 'qwen', display_name: 'Qwen (DashScope)', protocol: 'openai_compatible', default_base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', supports_tool_choice: true, default_max_tokens: 8192 },
+    { provider: 'zhipu', display_name: 'Zhipu', protocol: 'openai_compatible', default_base_url: 'https://open.bigmodel.cn/api/paas/v4', supports_tool_choice: true, default_max_tokens: 4096 },
+    { provider: 'gemini', display_name: 'Gemini', protocol: 'gemini', default_base_url: 'https://generativelanguage.googleapis.com/v1beta', supports_tool_choice: true, default_max_tokens: 8192 },
+    { provider: 'openrouter', display_name: 'OpenRouter', protocol: 'openai_compatible', default_base_url: 'https://openrouter.ai/api/v1', supports_tool_choice: true, default_max_tokens: 4096 },
+    { provider: 'custom', display_name: 'Custom', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 4096 },
+];
 
 
 
@@ -358,119 +380,7 @@ function SkillsTab() {
     );
 }
 
-// ─── Notification Bar Config ───────────────────────
-function NotificationBarConfig() {
-    const { t } = useTranslation();
-    const [enabled, setEnabled] = useState(false);
-    const [text, setText] = useState('');
-    const [saving, setSaving] = useState(false);
-    const [saved, setSaved] = useState(false);
 
-    useEffect(() => {
-        fetchJson<any>('/enterprise/system-settings/notification_bar')
-            .then(d => {
-                if (d?.value) {
-                    setEnabled(!!d.value.enabled);
-                    setText(d.value.text || '');
-                }
-            })
-            .catch(() => { });
-    }, []);
-
-    const handleSave = async () => {
-        setSaving(true);
-        try {
-            await fetchJson('/enterprise/system-settings/notification_bar', {
-                method: 'PUT',
-                body: JSON.stringify({ value: { enabled, text } }),
-            });
-            setSaved(true);
-            setTimeout(() => setSaved(false), 2000);
-        } catch (e) { }
-        setSaving(false);
-    };
-
-    return (
-        <div style={{ marginBottom: '24px' }}>
-            <h3 style={{ marginBottom: '8px' }}>{t('enterprise.notificationBar.title', 'Notification Bar')}</h3>
-            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                {t('enterprise.notificationBar.description', 'Display a notification bar at the top of the page, visible to all users.')}
-            </p>
-            <div className="card" style={{ padding: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}>
-                        <input
-                            type="checkbox"
-                            checked={enabled}
-                            onChange={e => setEnabled(e.target.checked)}
-                            style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-                        />
-                        {t('enterprise.notificationBar.enabled', 'Enable notification bar')}
-                    </label>
-                </div>
-                <div style={{ marginBottom: '12px' }}>
-                    <label className="form-label">{t('enterprise.notificationBar.text', 'Notification text')}</label>
-                    <input
-                        className="form-input"
-                        value={text}
-                        onChange={e => setText(e.target.value)}
-                        placeholder={t('enterprise.notificationBar.textPlaceholder', 'e.g. 🎉 v2.1 released with new features!')}
-                        style={{ fontSize: '13px' }}
-                    />
-                </div>
-                {/* Live preview — both themes */}
-                {enabled && text && (() => {
-                    // Read current accent color or default per theme
-                    const savedAccent = getSavedAccentColor();
-                    const darkAccent = savedAccent || '#e1e1e8';
-                    const lightAccent = savedAccent || '#3a3a42';
-                    // Compute text color via luminance
-                    const hexLum = (hex: string) => {
-                        const h = hex.replace('#', '');
-                        const r = parseInt(h.substring(0, 2), 16) / 255;
-                        const g = parseInt(h.substring(2, 4), 16) / 255;
-                        const b = parseInt(h.substring(4, 6), 16) / 255;
-                        return 0.299 * r + 0.587 * g + 0.114 * b;
-                    };
-                    const darkText = '#ffffff';
-                    const lightText = '#ffffff';
-                    const barStyle = (bg: string, fg: string) => ({
-                        height: '32px', borderRadius: '6px', display: 'flex', alignItems: 'center',
-                        justifyContent: 'center', fontSize: '12px', fontWeight: 500, background: bg, color: fg,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    });
-                    return (
-                        <div style={{ marginBottom: '12px' }}>
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>
-                                {t('enterprise.notificationBar.preview', 'Preview')}:
-                            </div>
-                            <div style={{ display: 'flex', gap: '8px' }}>
-                                <div style={{ flex: 1 }}>
-                                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '3px' }}>🌙 Dark</div>
-                                    <div style={barStyle(darkAccent, darkText)}>
-                                        <span style={{ maxWidth: 'calc(100% - 20px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{text}</span>
-                                    </div>
-                                </div>
-                                <div style={{ flex: 1 }}>
-                                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '3px' }}>☀️ Light</div>
-                                    <div style={barStyle(lightAccent, lightText)}>
-                                        <span style={{ maxWidth: 'calc(100% - 20px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{text}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    );
-                })()}
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-                        {saving ? t('common.loading') : t('common.save', 'Save')}
-                    </button>
-                    {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
-                </div>
-            </div>
-        </div>
-    );
-}
 
 
 // ─── Company Name Editor ───────────────────────────
@@ -604,7 +514,7 @@ function CompanyTimezoneEditor() {
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
     const qc = useQueryClient();
-    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users'>('info');
+    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users' | 'invites'>('info');
 
     // Track selected tenant as state so page refreshes on company switch
     const [selectedTenantId, setSelectedTenantId] = useState(localStorage.getItem('current_tenant_id') || '');
@@ -646,17 +556,28 @@ export default function EnterpriseSettings() {
     const [companyIntroSaving, setCompanyIntroSaving] = useState(false);
     const [companyIntroSaved, setCompanyIntroSaved] = useState(false);
 
-    // Load Company Intro
+    // Company intro key: always per-tenant scoped
+    const companyIntroKey = selectedTenantId ? `company_intro_${selectedTenantId}` : 'company_intro';
+
+    // Load Company Intro (tenant-scoped only, no fallback to global)
     useEffect(() => {
-        fetchJson<any>('/enterprise/system-settings/company_intro')
-            .then(d => { if (d?.value?.content) setCompanyIntro(d.value.content); })
+        setCompanyIntro('');
+        if (!selectedTenantId) return;
+        const tenantKey = `company_intro_${selectedTenantId}`;
+        fetchJson<any>(`/enterprise/system-settings/${tenantKey}`)
+            .then(d => {
+                if (d?.value?.content) {
+                    setCompanyIntro(d.value.content);
+                }
+                // No fallback — each company starts empty with placeholder watermark
+            })
             .catch(() => { });
-    }, []);
+    }, [selectedTenantId]);
 
     const saveCompanyIntro = async () => {
         setCompanyIntroSaving(true);
         try {
-            await fetchJson('/enterprise/system-settings/company_intro', {
+            await fetchJson(`/enterprise/system-settings/${companyIntroKey}`, {
                 method: 'PUT', body: JSON.stringify({ value: { content: companyIntro } }),
             });
             setCompanyIntroSaved(true);
@@ -751,6 +672,12 @@ export default function EnterpriseSettings() {
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
     const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string });
+    const { data: providerSpecs = [] } = useQuery({
+        queryKey: ['llm-provider-specs'],
+        queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
+        enabled: activeTab === 'llm',
+    });
+    const providerOptions = providerSpecs.length > 0 ? providerSpecs : FALLBACK_LLM_PROVIDERS;
     const addModel = useMutation({
         mutationFn: (data: any) => fetchJson(`/enterprise/llm-models${selectedTenantId ? `?tenant_id=${selectedTenantId}` : ''}`, { method: 'POST', body: JSON.stringify(data) }),
         onSuccess: () => { qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] }); setShowAddModel(false); setEditingModelId(null); },
@@ -827,9 +754,9 @@ export default function EnterpriseSettings() {
                 </div>
 
                 <div className="tabs">
-                    {(['info', 'llm', 'tools', 'skills', 'quotas', 'users', 'org', 'approvals', 'audit'] as const).map(tab => (
+                    {(['info', 'llm', 'tools', 'skills', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit'] as const).map(tab => (
                         <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
-                            {tab === 'quotas' ? t('enterprise.tabs.quotas', 'Quotas') : tab === 'users' ? t('enterprise.tabs.users', 'Users') : t(`enterprise.tabs.${tab}`)}
+                            {tab === 'quotas' ? t('enterprise.tabs.quotas', 'Quotas') : tab === 'users' ? t('enterprise.tabs.users', 'Users') : tab === 'invites' ? t('enterprise.tabs.invites', 'Invitations') : t(`enterprise.tabs.${tab}`)}
                         </div>
                     ))}
                 </div>
@@ -838,7 +765,18 @@ export default function EnterpriseSettings() {
                 {activeTab === 'llm' && (
                     <div>
                         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
-                            <button className="btn btn-primary" onClick={() => { setEditingModelId(null); setModelForm({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' }); setShowAddModel(true); }}>+ {t('enterprise.llm.addModel')}</button>
+                            <button className="btn btn-primary" onClick={() => {
+                                setEditingModelId(null);
+                                const defaultSpec = providerOptions[0];
+                                setModelForm({
+                                    provider: defaultSpec?.provider || 'anthropic',
+                                    model: '', api_key: '',
+                                    base_url: defaultSpec?.default_base_url || '',
+                                    label: '', supports_vision: false,
+                                    max_output_tokens: defaultSpec ? String(defaultSpec.default_max_tokens) : '4096',
+                                });
+                                setShowAddModel(true);
+                            }}>+ {t('enterprise.llm.addModel')}</button>
                         </div>
 
                         {showAddModel && (
@@ -847,15 +785,28 @@ export default function EnterpriseSettings() {
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                                     <div className="form-group">
                                         <label className="form-label">Provider</label>
-                                        <select className="form-input" value={modelForm.provider} onChange={e => setModelForm({ ...modelForm, provider: e.target.value })}>
-                                            <option value="anthropic">Anthropic</option>
-                                            <option value="openai">OpenAI</option>
-                                            <option value="deepseek">DeepSeek</option>
-                                            <option value="minimax">MiniMax</option>
-                                            <option value="qwen">Qwen (DashScope)</option>
-                                            <option value="zhipu">Zhipu</option>
-                                            <option value="openrouter">OpenRouter</option>
-                                            <option value="custom">Custom</option>
+                                        <select className="form-input" value={modelForm.provider} onChange={e => {
+                                            const newProvider = e.target.value;
+                                            const spec = providerOptions.find(p => p.provider === newProvider);
+                                            const updates: any = { provider: newProvider };
+                                            // Auto-fill base_url when adding new model (not editing)
+                                            if (!editingModelId && spec?.default_base_url) {
+                                                updates.base_url = spec.default_base_url;
+                                            } else if (!editingModelId) {
+                                                updates.base_url = '';
+                                            }
+                                            // Auto-fill max_output_tokens with provider default
+                                            if (!editingModelId && spec) {
+                                                updates.max_output_tokens = String(spec.default_max_tokens);
+                                            }
+                                            setModelForm(f => ({ ...f, ...updates }));
+                                        }}>
+                                            {providerOptions.map((p) => (
+                                                <option key={p.provider} value={p.provider}>{p.display_name}</option>
+                                            ))}
+                                            {!providerOptions.some((p) => p.provider === modelForm.provider) && (
+                                                <option value={modelForm.provider}>{modelForm.provider}</option>
+                                            )}
                                         </select>
                                     </div>
                                     <div className="form-group">
@@ -883,8 +834,8 @@ export default function EnterpriseSettings() {
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">Max Output Tokens</label>
-                                        <input className="form-input" type="number" placeholder="Auto (provider default)" value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Override the default output token limit. Leave empty to use provider default (4096).</div>
+                                        <input className="form-input" type="number" placeholder={`Provider default`} value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Override the default output token limit. Auto-filled from provider; adjust as needed.</div>
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
@@ -1023,8 +974,6 @@ export default function EnterpriseSettings() {
                 {/* ── Company Management ── */}
                 {activeTab === 'info' && (
                     <div>
-                        {/* ── Notification Bar Config ── */}
-                        <NotificationBarConfig />
 
                         {/* ── 0. Company Name ── */}
                         <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyName.title', 'Company Name')}</h3>
@@ -1043,7 +992,7 @@ export default function EnterpriseSettings() {
                                 className="form-input"
                                 value={companyIntro}
                                 onChange={e => setCompanyIntro(e.target.value)}
-                                placeholder={`# Company Name\n\n## About Us\nDescribe your company here...\n\n## Products & Services\n- Product A\n- Product B\n\n## Culture & Values\n- Value 1\n- Value 2`}
+                                placeholder={`# Company Name\nClawith\n\n# About\nOpenClaw\uD83E\uDD9E For Teams\nOpen Source \u00B7 Multi-OpenClaw Collaboration\n\nOpenClaw empowers individuals.\nClawith scales it to frontier organizations.`}
                                 style={{
                                     minHeight: '200px', resize: 'vertical',
                                     fontFamily: 'var(--font-mono)', fontSize: '13px',
@@ -1498,6 +1447,9 @@ export default function EnterpriseSettings() {
 
                 {/* ── Skills Tab ── */}
                 {activeTab === 'skills' && <SkillsTab />}
+
+                {/* ── Invitation Codes Tab ── */}
+                {activeTab === 'invites' && <InvitationCodes />}
             </div>
 
             {

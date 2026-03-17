@@ -322,20 +322,39 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
     except Exception:
         pass
 
-    # --- Company Intro (from system settings) ---
+    # --- Company Intro (per-tenant, with global fallback) ---
     try:
         from app.database import async_session
         from app.models.system_settings import SystemSetting
+        from app.models.agent import Agent as _AgentModel
         from sqlalchemy import select as sa_select
         async with async_session() as db:
-            result = await db.execute(
-                sa_select(SystemSetting).where(SystemSetting.key == "company_intro")
-            )
-            setting = result.scalar_one_or_none()
-            if setting and setting.value and setting.value.get("content"):
-                company_intro = setting.value["content"].strip()
-                if company_intro:
-                    parts.append(f"\n## Company Information\n{company_intro}")
+            # Resolve agent's tenant_id
+            _ag_r = await db.execute(sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id))
+            _agent_tenant_id = _ag_r.scalar_one_or_none()
+
+            company_intro = ""
+            # Try tenant-scoped key first
+            if _agent_tenant_id:
+                tenant_key = f"company_intro_{_agent_tenant_id}"
+                result = await db.execute(
+                    sa_select(SystemSetting).where(SystemSetting.key == tenant_key)
+                )
+                setting = result.scalar_one_or_none()
+                if setting and setting.value and setting.value.get("content"):
+                    company_intro = setting.value["content"].strip()
+
+            # Fallback to global key
+            if not company_intro:
+                result = await db.execute(
+                    sa_select(SystemSetting).where(SystemSetting.key == "company_intro")
+                )
+                setting = result.scalar_one_or_none()
+                if setting and setting.value and setting.value.get("content"):
+                    company_intro = setting.value["content"].strip()
+
+            if company_intro:
+                parts.append(f"\n## Company Information\n{company_intro}")
     except Exception:
         pass  # Don't break agent if DB is unavailable
 

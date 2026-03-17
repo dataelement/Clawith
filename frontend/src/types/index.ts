@@ -75,4 +75,5 @@ export interface TokenResponse {
     access_token: string;
     token_type: string;
     user: User;
+    needs_company_setup?: boolean;
 }

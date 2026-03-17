@@ -30,12 +30,24 @@ def _default_agent_data_dir() -> str:
     return str(Path.home() / ".clawith" / "data" / "agents")
 
 
+def _read_version() -> str:
+    """Read version from local VERSION file, fallback to root."""
+    for candidate in [Path(__file__).resolve().parent.parent / "VERSION",
+                      Path(__file__).resolve().parent.parent.parent / "VERSION",
+                      Path("/app/VERSION"), Path("/VERSION")]:
+        try:
+            return candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+    return "0.0.0"
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # App
     APP_NAME: str = "Clawith"
-    APP_VERSION: str = "0.1.0"
+    APP_VERSION: str = _read_version()
     DEBUG: bool = False
     SECRET_KEY: str = "change-me-in-production"
     API_PREFIX: str = "/api"

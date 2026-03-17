@@ -118,7 +118,7 @@ export function uploadFileWithProgress(
 
 // ─── Auth ─────────────────────────────────────────────
 export const authApi = {
-    register: (data: { username: string; email: string; password: string; display_name: string; tenant_id?: string }) =>
+    register: (data: { username: string; email: string; password: string; display_name: string }) =>
         request<TokenResponse>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
 
     login: (data: { username: string; password: string }) =>
@@ -132,8 +132,31 @@ export const authApi = {
 
 // ─── Tenants ──────────────────────────────────────────
 export const tenantApi = {
-    listPublic: () =>
-        request<{ id: string; name: string; slug: string }[]>('/tenants/public/list'),
+    selfCreate: (data: { name: string }) =>
+        request<any>('/tenants/self-create', { method: 'POST', body: JSON.stringify(data) }),
+
+    join: (invitationCode: string) =>
+        request<any>('/tenants/join', { method: 'POST', body: JSON.stringify({ invitation_code: invitationCode }) }),
+
+    registrationConfig: () =>
+        request<{ allow_self_create_company: boolean }>('/tenants/registration-config'),
+};
+
+export const adminApi = {
+    listCompanies: () =>
+        request<any[]>('/admin/companies'),
+
+    createCompany: (data: { name: string }) =>
+        request<any>('/admin/companies', { method: 'POST', body: JSON.stringify(data) }),
+
+    toggleCompany: (id: string) =>
+        request<any>(`/admin/companies/${id}/toggle`, { method: 'PUT' }),
+
+    getPlatformSettings: () =>
+        request<any>('/admin/platform-settings'),
+
+    updatePlatformSettings: (data: any) =>
+        request<any>('/admin/platform-settings', { method: 'PUT', body: JSON.stringify(data) }),
 };
 
 // ─── Agents ───────────────────────────────────────────
@@ -346,7 +369,7 @@ export const skillApi = {
     },
 };
 
-// ─── Triggers (Pulse Engine) ──────────────────────────
+// ─── Triggers (Aware Engine) ──────────────────────────
 export const triggerApi = {
     list: (agentId: string) =>
         request<any[]>(`/agents/${agentId}/triggers`),

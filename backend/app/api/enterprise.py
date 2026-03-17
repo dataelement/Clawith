@@ -19,11 +19,20 @@ from app.schemas.schemas import (
 )
 from app.services.autonomy_service import autonomy_service
 from app.services.enterprise_sync import enterprise_sync_service
+from app.services.llm_utils import get_provider_manifest
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 
 
 # ─── LLM Model Pool ────────────────────────────────────
+
+@router.get("/llm-providers")
+async def list_llm_providers(
+    current_user: User = Depends(get_current_user),
+):
+    """List supported LLM providers and capabilities from registry."""
+    return get_provider_manifest()
+
 
 @router.get("/llm-models", response_model=list[LLMModelOut])
 async def list_llm_models(
@@ -524,20 +533,34 @@ class InvitationCodeCreate(BaseModel):
     max_uses: int = 1    # max registrations per code
 
 
+def _require_tenant_admin(current_user: User) -> None:
+    """Check that the user is org_admin or platform_admin with a tenant."""
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Requires admin privileges")
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No company assigned")
+
+
 @router.post("/invitation-codes")
 async def create_invitation_codes(
     data: InvitationCodeCreate,
-    current_user: User = Depends(get_current_admin),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Batch-create invitation codes."""
+    """Batch-create invitation codes for the current user's company."""
+    _require_tenant_admin(current_user)
     import random
     import string
 
     codes_created = []
     for _ in range(min(data.count, 100)):  # cap at 100 per batch
         code_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        code = InvitationCode(code=code_str, max_uses=data.max_uses, created_by=current_user.id)
+        code = InvitationCode(
+            code=code_str,
+            tenant_id=current_user.tenant_id,
+            max_uses=data.max_uses,
+            created_by=current_user.id,
+        )
         db.add(code)
         codes_created.append(code_str)
 
@@ -550,14 +573,16 @@ async def list_invitation_codes(
     page: int = 1,
     page_size: int = 20,
     search: str = "",
-    current_user: User = Depends(get_current_admin),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List invitation codes with pagination and search."""
+    """List invitation codes for the current user's company."""
+    _require_tenant_admin(current_user)
     from sqlalchemy import func as sqla_func
 
-    stmt = select(InvitationCode)
-    count_stmt = select(sqla_func.count()).select_from(InvitationCode)
+    base_filter = InvitationCode.tenant_id == current_user.tenant_id
+    stmt = select(InvitationCode).where(base_filter)
+    count_stmt = select(sqla_func.count()).select_from(InvitationCode).where(base_filter)
 
     if search:
         stmt = stmt.where(InvitationCode.code.ilike(f"%{search}%"))
@@ -592,16 +617,19 @@ async def list_invitation_codes(
 
 @router.get("/invitation-codes/export")
 async def export_invitation_codes_csv(
-    current_user: User = Depends(get_current_admin),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Export all invitation codes as CSV, ordered by created_at."""
+    """Export invitation codes for the current user's company as CSV."""
+    _require_tenant_admin(current_user)
     import csv
     import io
     from fastapi.responses import StreamingResponse
 
     result = await db.execute(
-        select(InvitationCode).order_by(InvitationCode.created_at.asc())
+        select(InvitationCode)
+        .where(InvitationCode.tenant_id == current_user.tenant_id)
+        .order_by(InvitationCode.created_at.asc())
     )
     codes = result.scalars().all()
 
@@ -628,12 +656,18 @@ async def export_invitation_codes_csv(
 @router.delete("/invitation-codes/{code_id}")
 async def deactivate_invitation_code(
     code_id: str,
-    current_user: User = Depends(get_current_admin),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deactivate an invitation code."""
+    """Deactivate an invitation code (must belong to current user's company)."""
+    _require_tenant_admin(current_user)
     import uuid as _uuid
-    result = await db.execute(select(InvitationCode).where(InvitationCode.id == _uuid.UUID(code_id)))
+    result = await db.execute(
+        select(InvitationCode).where(
+            InvitationCode.id == _uuid.UUID(code_id),
+            InvitationCode.tenant_id == current_user.tenant_id,
+        )
+    )
     code = result.scalar_one_or_none()
     if not code:
         raise HTTPException(status_code=404, detail="Code not found")

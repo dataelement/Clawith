@@ -13,7 +13,6 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
     display_name: str | None = None
-    tenant_id: str | None = None  # UUID string of the company
     invitation_code: str | None = None
 
 
@@ -26,6 +25,7 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: "UserOut"
+    needs_company_setup: bool = False
 
 
 class UserOut(BaseModel):

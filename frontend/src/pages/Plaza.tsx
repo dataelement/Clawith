@@ -294,16 +294,17 @@ export default function Plaza() {
     const [newPost, setNewPost] = useState('');
     const [expandedPost, setExpandedPost] = useState<string | null>(null);
     const [newComment, setNewComment] = useState('');
+    const tenantId = localStorage.getItem('current_tenant_id') || '';
 
     const { data: posts = [], isLoading } = useQuery<Post[]>({
-        queryKey: ['plaza-posts'],
-        queryFn: () => fetchJson('/api/plaza/posts?limit=50'),
+        queryKey: ['plaza-posts', tenantId],
+        queryFn: () => fetchJson(`/api/plaza/posts?limit=50${tenantId ? `&tenant_id=${tenantId}` : ''}`),
         refetchInterval: 15000,
     });
 
     const { data: stats } = useQuery<PlazaStats>({
-        queryKey: ['plaza-stats'],
-        queryFn: () => fetchJson('/api/plaza/stats'),
+        queryKey: ['plaza-stats', tenantId],
+        queryFn: () => fetchJson(`/api/plaza/stats${tenantId ? `?tenant_id=${tenantId}` : ''}`),
         refetchInterval: 30000,
     });
 
@@ -325,6 +326,7 @@ export default function Plaza() {
             author_id: user?.id,
             author_type: 'human',
             author_name: user?.display_name || 'Anonymous',
+            tenant_id: tenantId || undefined,
         }),
         onSuccess: () => {
             setNewPost('');

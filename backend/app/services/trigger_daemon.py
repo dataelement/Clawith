@@ -362,7 +362,7 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
 async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTrigger]):
     """Invoke an agent with context from one or more fired triggers.
 
-    Creates a Pulse Session (内心独白) and calls the LLM.
+    Creates a Reflection Session and calls the LLM.
     """
     from app.api.websocket import call_llm
     from app.services.agent_context import build_agent_context
@@ -416,7 +416,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 + "\n==========================="
             )
 
-            # Create Pulse Session (内心独白)
+            # Create Reflection Session
             title = f"🤖 内心独白：{', '.join(trigger_names)}"
             # Find agent's participant
             result = await db.execute(
@@ -463,7 +463,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
         async def on_chunk(text):
             collected_content.append(text)
 
-        # Persist tool calls into Pulse Session for Reflections visibility
+        # Persist tool calls into Reflection Session for Reflections visibility
         async def on_tool_call(data):
             try:
                 async with async_session() as _tc_db:
@@ -501,7 +501,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             on_tool_call=on_tool_call,
         )
 
-        # Save assistant reply to Pulse session
+        # Save assistant reply to Reflection session
         async with async_session() as db:
             result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)

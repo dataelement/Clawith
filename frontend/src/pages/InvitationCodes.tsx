@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 
 export default function InvitationCodes() {
     const { t } = useTranslation();
-    const [enabled, setEnabled] = useState(false);
     const [codes, setCodes] = useState<any[]>([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
@@ -17,12 +16,6 @@ export default function InvitationCodes() {
     const token = localStorage.getItem('token');
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
-
-    const loadSetting = async () => {
-        const res = await fetch('/api/enterprise/system-settings/invitation_code_enabled', { headers });
-        const data = await res.json();
-        setEnabled(data.value?.enabled || false);
-    };
 
     const loadCodes = useCallback(async (p?: number, q?: string) => {
         const currentPage = p ?? page;
@@ -38,7 +31,6 @@ export default function InvitationCodes() {
         setTotal(data.total || 0);
     }, [page, search]);
 
-    useEffect(() => { loadSetting(); }, []);
     useEffect(() => { loadCodes(page, search); }, [page, search]);
 
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -46,14 +38,6 @@ export default function InvitationCodes() {
     const handleSearch = (value: string) => {
         setSearch(value);
         setPage(1);
-    };
-
-    const toggleEnabled = async () => {
-        const newVal = !enabled;
-        await fetch('/api/enterprise/system-settings/invitation_code_enabled', {
-            method: 'PUT', headers, body: JSON.stringify({ value: { enabled: newVal } }),
-        });
-        setEnabled(newVal);
     };
 
     const createBatch = async () => {
@@ -77,7 +61,6 @@ export default function InvitationCodes() {
     const exportCsv = () => {
         const token = localStorage.getItem('token');
         const a = document.createElement('a');
-        // Use fetch to include auth header, then trigger download
         fetch('/api/enterprise/invitation-codes/export', {
             headers: token ? { Authorization: `Bearer ${token}` } : {},
         })
@@ -106,42 +89,6 @@ export default function InvitationCodes() {
             <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '24px' }}>
                 {t('enterprise.invites.pageDesc', 'Manage invitation codes for platform registration.')}
             </p>
-
-            {/* Toggle — very visible */}
-            <div className="card" style={{
-                padding: '16px', marginBottom: '16px', display: 'flex',
-                justifyContent: 'space-between', alignItems: 'center',
-                border: enabled ? '2px solid #22c55e' : undefined,
-                background: enabled ? 'rgba(34,197,94,0.06)' : undefined,
-            }}>
-                <div>
-                    <div style={{ fontWeight: 600, fontSize: '14px' }}>
-                        {t('enterprise.invites.enableLabel', 'Require Invitation Code for Registration')}
-                    </div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                        {t('enterprise.invites.enableDesc', 'When enabled, new users must provide a valid invitation code to register.')}
-                    </div>
-                </div>
-                <div
-                    onClick={toggleEnabled}
-                    style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '8px',
-                        padding: '6px 16px', borderRadius: '20px', cursor: 'pointer',
-                        fontSize: '13px', fontWeight: 700, userSelect: 'none',
-                        transition: 'all 0.2s',
-                        background: enabled ? '#22c55e' : 'var(--bg-tertiary)',
-                        color: enabled ? '#fff' : 'var(--text-tertiary)',
-                        border: `2px solid ${enabled ? '#22c55e' : 'var(--border-subtle)'}`,
-                        flexShrink: 0,
-                    }}
-                >
-                    <div style={{
-                        width: '8px', height: '8px', borderRadius: '50%',
-                        background: enabled ? '#fff' : 'var(--text-tertiary)',
-                    }} />
-                    {enabled ? 'ON' : 'OFF'}
-                </div>
-            </div>
 
             {/* Batch Create */}
             <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
@@ -274,3 +221,4 @@ export default function InvitationCodes() {
         </div>
     );
 }
+

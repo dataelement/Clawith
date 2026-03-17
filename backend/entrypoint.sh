@@ -101,5 +101,9 @@ echo "[entrypoint] Step 2: Running alembic migrations..."
 # Run all migrations to ensure database schema is up to date
 alembic upgrade head
 
+echo "[entrypoint] Step 2.5: Running data migrations..."
+# Safely migrate old AgentSchedules to the new AgentTriggers system
+python -m app.scripts.migrate_schedules_to_triggers
+
 echo "[entrypoint] Step 3: Starting uvicorn..."
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

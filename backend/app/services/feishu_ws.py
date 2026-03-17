@@ -7,14 +7,27 @@ import threading
 from typing import Any, Dict
 import uuid
 
-import lark_oapi as lark
-import lark_oapi.ws as ws
+try:
+    import lark_oapi as lark
+    import lark_oapi.ws as ws
+    _HAS_LARK = True
+except ImportError:
+    lark = None  # type: ignore
+    ws = None    # type: ignore
+    _HAS_LARK = False
 
 from app.database import async_session
 from app.models.channel_config import ChannelConfig
 from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
+
+if not _HAS_LARK:
+    logger.warning(
+        "[Feishu WS] lark-oapi package not installed. "
+        "Feishu WebSocket features will be disabled. "
+        "Install with: pip install lark-oapi"
+    )
 
 
 class FeishuWSManager:
@@ -147,6 +160,9 @@ class FeishuWSManager:
         stop_existing: bool = True,
     ):
         """Spawns a WebSocket client fully asynchronously inside FastAPI's loop."""
+        if not _HAS_LARK:
+            logger.warning("[Feishu WS] lark-oapi not installed, cannot start client")
+            return
         if not app_id or not app_secret:
             logger.warning(f"[Feishu WS] Missing app_id or app_secret for {agent_id}, skipping")
             return
@@ -214,6 +230,9 @@ class FeishuWSManager:
 
     async def start_all(self):
         """Start WS clients for all configured Feishu agents."""
+        if not _HAS_LARK:
+            logger.info("[Feishu WS] lark-oapi not installed, skipping Feishu WS initialization")
+            return
         logger.info("[Feishu WS] Initializing all active Feishu channels...")
         async with async_session() as db:
             result = await db.execute(

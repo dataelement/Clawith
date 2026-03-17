@@ -241,6 +241,35 @@ async def rename_session(
     return {"id": str(session.id), "title": session.title}
 
 
+@router.delete("/{agent_id}/sessions/{session_id}", status_code=204)
+async def delete_session(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a chat session and its messages. Owner, admin, or creator only."""
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent = agent_result.scalar_one_or_none()
+
+    if str(session.user_id) != str(current_user.id) and not _is_admin_or_creator(current_user, agent):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Delete associated messages first
+    from sqlalchemy import delete as sql_delete
+    await db.execute(sql_delete(ChatMessage).where(ChatMessage.conversation_id == str(session_id)))
+    await db.delete(session)
+    await db.commit()
+    return None
+
+
 @router.get("/{agent_id}/sessions/{session_id}/messages")
 async def get_session_messages(
     agent_id: uuid.UUID,

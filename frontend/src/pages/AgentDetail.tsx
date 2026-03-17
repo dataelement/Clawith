@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import ConfirmModal from '../components/ConfirmModal';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import FileBrowser from '../components/FileBrowser';
+import ChannelConfig from '../components/ChannelConfig';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
@@ -26,7 +27,7 @@ const getCategoryLabels = (t: any): Record<string, string> => ({
     task: t('agent.toolCategories.task'),
     communication: t('agent.toolCategories.communication'),
     search: t('agent.toolCategories.search'),
-    pulse: t('agent.toolCategories.pulse', 'Pulse & Triggers'),
+    aware: t('agent.toolCategories.aware', 'Aware & Triggers'),
     social: t('agent.toolCategories.social', 'Social'),
     code: t('agent.toolCategories.code', 'Code & Execution'),
     discovery: t('agent.toolCategories.discovery', 'Discovery'),
@@ -714,9 +715,9 @@ function AgentDetailInner() {
         enabled: !!id && activeTab === 'aware',
     });
 
-    // ── Aware tab data: pulse sessions (trigger monologues) ──
-    const { data: pulseSessions = [] } = useQuery({
-        queryKey: ['pulse-sessions', id],
+    // ── Aware tab data: reflection sessions (trigger monologues) ──
+    const { data: reflectionSessions = [] } = useQuery({
+        queryKey: ['reflection-sessions', id],
         queryFn: async () => {
             const tkn = localStorage.getItem('token');
             const res = await fetch(`/api/agents/${id}/sessions?scope=all`, { headers: { Authorization: `Bearer ${tkn}` } });
@@ -832,6 +833,27 @@ function AgentDetailInner() {
         }
     };
 
+    const deleteSession = async (sessionId: string) => {
+        if (!confirm(t('chat.deleteConfirm', 'Delete this session and all its messages? This cannot be undone.'))) return;
+        const tkn = localStorage.getItem('token');
+        try {
+            await fetch(`/api/agents/${id}/sessions/${sessionId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tkn}` } });
+            // If deleted the active session, clear it
+            if (activeSession?.id === sessionId) {
+                setActiveSession(null);
+                setChatMessages([]);
+                setHistoryMsgs([]);
+            }
+            // Refresh session lists
+            const r1 = await fetch(`/api/agents/${id}/sessions?scope=mine`, { headers: { Authorization: `Bearer ${tkn}` } });
+            if (r1.ok) setSessions(await r1.json());
+            const r2 = await fetch(`/api/agents/${id}/sessions?scope=all`, { headers: { Authorization: `Bearer ${tkn}` } });
+            if (r2.ok) setAllSessions(await r2.json());
+        } catch (e: any) {
+            alert(e.message || 'Delete failed');
+        }
+    };
+
     const selectSession = async (sess: any) => {
         setChatMessages([]);
         setHistoryMsgs([]);
@@ -905,7 +927,7 @@ function AgentDetailInner() {
     const [isStreaming, setIsStreaming] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(-1);
     const uploadAbortRef = useRef<(() => void) | null>(null);
-    const [attachedFile, setAttachedFile] = useState<{ name: string; text: string; path?: string; imageUrl?: string } | null>(null);
+    const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string }[]>([]);
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -1177,87 +1199,136 @@ function AgentDetailInner() {
 
     const sendChatMsg = () => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-        if (!chatInput.trim() && !attachedFile) return;
+        if (!chatInput.trim() && attachedFiles.length === 0) return;
+        
         let userMsg = chatInput.trim();
         let contentForLLM = userMsg;
-        if (attachedFile) {
-            if (attachedFile.imageUrl && supportsVision) {
-                // Vision model — embed image data for direct analysis
-                const imageMarker = `[image_data:${attachedFile.imageUrl}]`;
-                contentForLLM = userMsg ? `${imageMarker}\n${userMsg}` : `${imageMarker}\n请分析这张图片`;
-                userMsg = userMsg || `[图片] ${attachedFile.name}`;
-            } else if (attachedFile.imageUrl) {
-                // Non-vision model — just reference the file path
-                const wsPath = attachedFile.path || '';
-                contentForLLM = userMsg
-                    ? `[图片文件已上传: ${attachedFile.name}，保存在 ${wsPath}]\n\n${userMsg}`
-                    : `[图片文件已上传: ${attachedFile.name}，保存在 ${wsPath}]\n请描述或处理这个图片文件。你可以使用 read_document 工具读取它。`;
-                userMsg = userMsg || `[图片] ${attachedFile.name}`;
+        let displayFiles = '';
+
+        if (attachedFiles.length > 0) {
+            let filesPrompt = '';
+            let filesDisplay = '';
+            
+            attachedFiles.forEach(file => {
+                filesDisplay += `[📎 ${file.name}] `;
+                if (file.imageUrl && supportsVision) {
+                    filesPrompt += `[image_data:${file.imageUrl}]\n`;
+                } else if (file.imageUrl) {
+                    filesPrompt += `[图片文件已上传: ${file.name}，保存在 ${file.path || ''}]\n`;
+                } else {
+                    const wsPath = file.path || '';
+                    const codePath = wsPath.replace(/^workspace\//, '');
+                    const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)\n` : '';
+                    filesPrompt += `[File: ${file.name}]${fileLoc}\n${file.text}\n\n`;
+                }
+            });
+
+            if (supportsVision && attachedFiles.some(f => f.imageUrl)) {
+                contentForLLM = userMsg ? `${filesPrompt}\n${userMsg}` : `${filesPrompt}\n请分析这些文件`;
             } else {
-                const wsPath = attachedFile.path || '';
-                const codePath = wsPath.replace(/^workspace\//, '');
-                const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)` : '';
-                const fc = `[File: ${attachedFile.name}]${fileLoc}\n\n${attachedFile.text}`;
-                contentForLLM = userMsg ? `${fc}\n\nQuestion: ${userMsg}` : `Please analyze this file:\n\n${fc}`;
-                userMsg = userMsg || `⌆ ${attachedFile.name}`;
+                contentForLLM = userMsg ? `${filesPrompt}\nQuestion: ${userMsg}` : `Please analyze these files:\n\n${filesPrompt}`;
             }
+            
+            displayFiles = filesDisplay.trim();
+            userMsg = userMsg ? `${displayFiles}\n${userMsg}` : displayFiles;
         }
 
         setIsWaiting(true);
         setIsStreaming(false);
-        setChatMessages(prev => [...prev, { role: 'user', content: userMsg, fileName: attachedFile?.name, imageUrl: attachedFile?.imageUrl, timestamp: new Date().toISOString() }]);
-        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '' }));
-        setChatInput(''); setAttachedFile(null);
+        setChatMessages(prev => [...prev, { 
+            role: 'user', 
+            content: userMsg, 
+            fileName: attachedFiles.map(f => f.name).join(', '), 
+            imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined, 
+            timestamp: new Date().toISOString() 
+        }]);
+        wsRef.current.send(JSON.stringify({ 
+            content: contentForLLM, 
+            display_content: userMsg, 
+            file_name: attachedFiles.map(f => f.name).join(', ') 
+        }));
+        
+        setChatInput(''); 
+        setAttachedFiles([]);
     };
 
     const handleChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0]; if (!file) return;
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        const allowedFiles = files.slice(0, 10 - attachedFiles.length);
+        if (!allowedFiles.length) {
+            alert('Limit of 10 attached files reached.');
+            return;
+        }
+        
         setUploading(true); setUploadProgress(0);
         try {
-            const { promise, abort } = uploadFileWithProgress(
-                `/chat/upload`,
-                file,
-                (pct) => setUploadProgress(pct),
-                id ? { agent_id: id } : undefined,
-            );
-            uploadAbortRef.current = abort;
-            const data = await promise;
-            setAttachedFile({ name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined });
+            const uploadPromises = allowedFiles.map(file => {
+                const { promise } = uploadFileWithProgress(
+                    `/chat/upload`,
+                    file,
+                    () => {}, // Avoid updating progress per file to prevent flickering, could implement total progress
+                    id ? { agent_id: id } : undefined,
+                );
+                return promise;
+            });
+            const results = await Promise.all(uploadPromises);
+            const newAttached = results.map(data => ({
+                name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
+            }));
+            setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
         } catch (err: any) {
             if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
-        } finally { setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; if (fileInputRef.current) fileInputRef.current.value = ''; }
+        } finally { 
+            setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; 
+            if (fileInputRef.current) fileInputRef.current.value = ''; 
+        }
     };
 
     // Clipboard paste handler — auto-upload pasted images
     const handlePaste = async (e: React.ClipboardEvent) => {
         const items = e.clipboardData?.items;
         if (!items) return;
+        
+        const filesToUpload: File[] = [];
         for (let i = 0; i < items.length; i++) {
             if (items[i].type.startsWith('image/')) {
-                e.preventDefault();
                 const blob = items[i].getAsFile();
-                if (!blob) return;
-                // Generate a filename from timestamp
-                const ext = blob.type.split('/')[1] || 'png';
-                const fileName = `paste-${Date.now()}.${ext}`;
-                const file = new File([blob], fileName, { type: blob.type });
-                setUploading(true); setUploadProgress(0);
-                try {
-                    const { promise, abort } = uploadFileWithProgress(
-                        `/chat/upload`,
-                        file,
-                        (pct) => setUploadProgress(pct),
-                        id ? { agent_id: id } : undefined,
-                    );
-                    uploadAbortRef.current = abort;
-                    const data = await promise;
-                    setAttachedFile({ name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined });
-                } catch (err: any) {
-                    if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
-                } finally { setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; }
-                return; // Only handle the first image
+                if (blob) {
+                    const ext = blob.type.split('/')[1] || 'png';
+                    const fileName = `paste-${Date.now()}-${i}.${ext}`;
+                    filesToUpload.push(new File([blob], fileName, { type: blob.type }));
+                }
             }
         }
+        
+        if (!filesToUpload.length) return;
+        e.preventDefault();
+        const allowedFiles = filesToUpload.slice(0, 10 - attachedFiles.length);
+        if (!allowedFiles.length) {
+            alert('Limit of 10 attached files reached.');
+            return;
+        }
+
+        setUploading(true); setUploadProgress(0);
+        try {
+            const uploadPromises = allowedFiles.map(file => {
+                const { promise } = uploadFileWithProgress(
+                    `/chat/upload`,
+                    file,
+                    () => {},
+                    id ? { agent_id: id } : undefined,
+                );
+                return promise;
+            });
+            const results = await Promise.all(uploadPromises);
+            const newAttached = results.map(data => ({
+                name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
+            }));
+            setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
+        } catch (err: any) {
+            if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
+        } finally { setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; }
     };
 
     // Expandable activity log
@@ -1375,169 +1446,6 @@ function AgentDetailInner() {
         },
     });
 
-    // ─── Channel config — Feishu ────────────────────────
-    const [channelForm, setChannelForm] = useState({ app_id: '', app_secret: '', encrypt_key: '', connection_mode: 'webhook' });
-    const [feishuEditing, setFeishuEditing] = useState(false);
-
-    const saveChannel = useMutation({
-        mutationFn: () => channelApi.create(id!, {
-            channel_type: 'feishu', app_id: channelForm.app_id,
-            app_secret: channelForm.app_secret, encrypt_key: channelForm.encrypt_key || undefined,
-            extra_config: { connection_mode: channelForm.connection_mode }
-        }),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['channel', id] }),
-    });
-
-    // ─── Channel config — Slack ──────────────────────────
-    const [slackForm, setSlackForm] = useState({ bot_token: '', signing_secret: '' });
-    const [slackEditing, setSlackEditing] = useState(false);
-    const { data: slackConfig } = useQuery({
-        queryKey: ['slack-channel', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/slack-channel`).catch(() => null),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const { data: slackWebhookData } = useQuery({
-        queryKey: ['slack-webhook-url', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/slack-channel/webhook-url`),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const saveSlack = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/slack-channel`, { method: 'POST', body: JSON.stringify(slackForm) }),
-        onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['slack-channel', id] }); setSlackForm({ bot_token: '', signing_secret: '' }); },
-    });
-    const deleteSlack = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/slack-channel`, { method: 'DELETE' }),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['slack-channel', id] }),
-    });
-
-    // ─── Channel config — Discord ────────────────────────
-    const [discordForm, setDiscordForm] = useState({ application_id: '', bot_token: '', public_key: '' });
-    const [discordEditing, setDiscordEditing] = useState(false);
-
-    // ─── Channel config — Microsoft Teams ────────────────────────
-    const [teamsForm, setTeamsForm] = useState({ app_id: '', app_secret: '', tenant_id: '' });
-    const [teamsEditing, setTeamsEditing] = useState(false);
-    const { data: teamsConfig } = useQuery({
-        queryKey: ['teams-channel', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/teams-channel`).catch(() => null),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const { data: teamsWebhookData } = useQuery({
-        queryKey: ['teams-webhook-url', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/teams-channel/webhook-url`).catch(() => null),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const saveTeams = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/teams-channel`, { method: 'POST', body: JSON.stringify(teamsForm) }),
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['teams-channel', id] });
-            queryClient.invalidateQueries({ queryKey: ['teams-webhook-url', id] });
-            setTeamsForm({ app_id: '', app_secret: '', tenant_id: '' });
-        },
-    });
-    const deleteTeams = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/teams-channel`, { method: 'DELETE' }),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['teams-channel', id] }),
-    });
-
-    // Collapsible state for channel settings sections
-    const [slackOpen, setSlackOpen] = useState(false);
-    const [discordOpen, setDiscordOpen] = useState(false);
-    const [teamsOpen, setTeamsOpen] = useState(false);
-    const [feishuOpen, setFeishuOpen] = useState(false);
-    const [atlassianOpen, setAtlassianOpen] = useState(false);
-    const [dingtalkOpen, setDingtalkOpen] = useState(false);
-    const [wecomOpen, setWecomOpen] = useState(false);
-
-    // ─── Channel config — DingTalk ───────────────────────
-    const [dingtalkForm, setDingtalkForm] = useState({ app_key: '', app_secret: '' });
-    const [dingtalkEditing, setDingtalkEditing] = useState(false);
-    const { data: dingtalkConfig } = useQuery({
-        queryKey: ['dingtalk-channel', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/dingtalk-channel`).catch(() => null),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const saveDingtalk = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/dingtalk-channel`, { method: 'POST', body: JSON.stringify(dingtalkForm) }),
-        onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['dingtalk-channel', id] }); setDingtalkForm({ app_key: '', app_secret: '' }); },
-    });
-    const deleteDingtalk = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/dingtalk-channel`, { method: 'DELETE' }),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dingtalk-channel', id] }),
-    });
-
-    // ─── Channel config — WeCom ──────────────────────────
-    const [wecomForm, setWecomForm] = useState({ connection_mode: 'websocket' as 'websocket' | 'webhook', bot_id: '', bot_secret: '', corp_id: '', wecom_agent_id: '', secret: '', token: '', encoding_aes_key: '' });
-    const [wecomEditing, setWecomEditing] = useState(false);
-    const { data: wecomConfig } = useQuery({
-        queryKey: ['wecom-channel', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/wecom-channel`).catch(() => null),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const { data: wecomWebhookData } = useQuery({
-        queryKey: ['wecom-webhook-url', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/wecom-channel/webhook-url`),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const saveWecom = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/wecom-channel`, { method: 'POST', body: JSON.stringify(wecomForm) }),
-        onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['wecom-channel', id] }); setWecomForm({ connection_mode: 'websocket', bot_id: '', bot_secret: '', corp_id: '', wecom_agent_id: '', secret: '', token: '', encoding_aes_key: '' }); },
-    });
-    const deleteWecom = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/wecom-channel`, { method: 'DELETE' }),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['wecom-channel', id] }),
-    });
-    // Shared password-field visibility map: key = field id, value = shown/hidden
-    const [showPwds, setShowPwds] = useState<Record<string, boolean>>({});
-    const togglePwd = (fieldId: string) => setShowPwds(p => ({ ...p, [fieldId]: !p[fieldId] }));
-    const { data: discordConfig } = useQuery({
-        queryKey: ['discord-channel', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/discord-channel`).catch(() => null),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const { data: discordWebhookData } = useQuery({
-        queryKey: ['discord-webhook-url', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/discord-channel/webhook-url`),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const saveDiscord = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/discord-channel`, { method: 'POST', body: JSON.stringify(discordForm) }),
-        onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['discord-channel', id] }); setDiscordForm({ application_id: '', bot_token: '', public_key: '' }); },
-    });
-    const deleteDiscord = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/discord-channel`, { method: 'DELETE' }),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['discord-channel', id] }),
-    });
-
-    // ─── Channel config — Atlassian ──────────────────────
-    const [atlassianForm, setAtlassianForm] = useState({ api_key: '', cloud_id: '' });
-    const [atlassianEditing, setAtlassianEditing] = useState(false);
-    const [atlassianTestResult, setAtlassianTestResult] = useState<{ ok: boolean; message?: string; tool_count?: number; error?: string } | null>(null);
-    const [atlassianTesting, setAtlassianTesting] = useState(false);
-    const { data: atlassianConfig } = useQuery({
-        queryKey: ['atlassian-channel', id],
-        queryFn: () => fetchAuth<any>(`/agents/${id}/atlassian-channel`).catch(() => null),
-        enabled: !!id && activeTab === 'settings',
-    });
-    const saveAtlassian = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/atlassian-channel`, { method: 'POST', body: JSON.stringify(atlassianForm) }),
-        onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['atlassian-channel', id] }); setAtlassianForm({ api_key: '', cloud_id: '' }); setAtlassianEditing(false); setAtlassianTestResult(null); },
-    });
-    const deleteAtlassian = useMutation({
-        mutationFn: () => fetchAuth(`/agents/${id}/atlassian-channel`, { method: 'DELETE' }),
-        onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['atlassian-channel', id] }); setAtlassianTestResult(null); },
-    });
-    const testAtlassian = async () => {
-        setAtlassianTesting(true);
-        setAtlassianTestResult(null);
-        try {
-            const res = await fetchAuth<any>(`/agents/${id}/atlassian-channel/test`, { method: 'POST' });
-            setAtlassianTestResult(res);
-        } catch (e: any) {
-            setAtlassianTestResult({ ok: false, error: String(e) });
-        }
-        setAtlassianTesting(false);
-    };
 
     const CopyBtn = ({ url }: { url: string }) => (
         <button title="Copy" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
@@ -2371,9 +2279,9 @@ function AgentDetailInner() {
                             )}
 
                             {/* ── Reflections Card ── */}
-                            {pulseSessions.length > 0 && (() => {
-                                const visibleSessions = showAllReflections ? pulseSessions : pulseSessions.slice(0, SECTION_PAGE_SIZE);
-                                const hiddenCount = pulseSessions.length - visibleSessions.length;
+                            {reflectionSessions.length > 0 && (() => {
+                                const visibleSessions = showAllReflections ? reflectionSessions : reflectionSessions.slice(0, SECTION_PAGE_SIZE);
+                                const hiddenCount = reflectionSessions.length - visibleSessions.length;
                                 return (
                                     <div className="card" style={{ padding: '16px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
@@ -2382,7 +2290,7 @@ function AgentDetailInner() {
                                                 <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.reflectionsDesc')}</span>
                                             </div>
                                             <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                                {pulseSessions.length} session{pulseSessions.length > 1 ? 's' : ''}
+                                                {reflectionSessions.length} session{reflectionSessions.length > 1 ? 's' : ''}
                                             </span>
                                         </div>
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -2577,7 +2485,7 @@ function AgentDetailInner() {
                                                 );
                                             })}
                                         </div>
-                                        {pulseSessions.length > SECTION_PAGE_SIZE && (
+                                        {reflectionSessions.length > SECTION_PAGE_SIZE && (
                                             <button
                                                 onClick={(e) => { const collapse = showAllReflections; setShowAllReflections(!showAllReflections); if (collapse) e.currentTarget.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
                                                 className="btn btn-ghost"
@@ -2840,9 +2748,10 @@ function AgentDetailInner() {
                                             const chLabel = channelLabel[s.source_channel];
                                             return (
                                                 <div key={s.id} onClick={() => selectSession(s)}
-                                                    style={{ padding: '8px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', marginBottom: '1px' }}
-                                                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; }}
-                                                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
+                                                    className="session-item"
+                                                    style={{ padding: '8px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', marginBottom: '1px', position: 'relative' }}
+                                                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0.5'; }}
+                                                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0'; }}>
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
                                                         <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.title}</div>
                                                         {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
@@ -2854,6 +2763,11 @@ function AgentDetailInner() {
                                                             : new Date(s.created_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
                                                         {s.message_count > 0 && <span style={{ marginLeft: 'auto' }}>{s.message_count}</span>}
                                                     </div>
+                                                    <button className="del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                                                        style={{ position: 'absolute', top: '4px', right: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', opacity: 0, fontSize: '14px', color: 'var(--text-tertiary)', lineHeight: 1, transition: 'opacity 0.15s' }}
+                                                        onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--status-error)'; }}
+                                                        onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
+                                                        title={t('chat.deleteSession', 'Delete session')}>×</button>
                                                 </div>
                                             );
                                         })
@@ -2880,9 +2794,10 @@ function AgentDetailInner() {
                                                     const isActive = activeSession?.id === s.id;
                                                     return (
                                                         <div key={s.id} onClick={() => selectSession(s)}
-                                                            style={{ padding: '6px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent' }}
-                                                            onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; }}
-                                                            onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
+                                                            className="session-item"
+                                                            style={{ padding: '6px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', position: 'relative' }}
+                                                            onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0.5'; }}
+                                                            onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0'; }}>
                                                             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '1px' }}>
                                                                 <div style={{ fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1 }}>{s.title}</div>
                                                                 {({
@@ -2907,6 +2822,11 @@ function AgentDetailInner() {
                                                                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.username || ''}</span>
                                                                 <span style={{ flexShrink: 0 }}>{s.last_message_at ? new Date(s.last_message_at).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}{s.message_count > 0 ? ` · ${s.message_count}` : ''}</span>
                                                             </div>
+                                                            <button className="del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                                                                style={{ position: 'absolute', top: '4px', right: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', opacity: 0, fontSize: '14px', color: 'var(--text-tertiary)', lineHeight: 1, transition: 'opacity 0.15s' }}
+                                                                onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--status-error)'; }}
+                                                                onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
+                                                                title={t('chat.deleteSession', 'Delete session')}>×</button>
                                                         </div>
                                                     );
                                                 })}
@@ -3169,20 +3089,24 @@ function AgentDetailInner() {
                                                 Connecting...
                                             </div>
                                         ) : null}
-                                        {attachedFile && (
-                                            <div style={{ padding: '6px 16px', background: 'var(--bg-elevated)', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
-                                                {attachedFile.imageUrl ? (
-                                                    <img src={attachedFile.imageUrl} alt={attachedFile.name} style={{ width: '40px', height: '40px', borderRadius: '6px', objectFit: 'cover', border: '1px solid var(--border-subtle)' }} />
-                                                ) : (
-                                                    <span>📎</span>
-                                                )}
-                                                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{attachedFile.name}</span>
-                                                <button onClick={() => setAttachedFile(null)} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '14px', padding: '2px 4px' }}>✕</button>
+                                        {attachedFiles.length > 0 && (
+                                            <div style={{ padding: '6px 16px', background: 'var(--bg-elevated)', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                                {attachedFiles.map((file, idx) => (
+                                                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', background: 'var(--bg-secondary)', padding: '4px 6px', borderRadius: '4px', border: '1px solid var(--border-subtle)', maxWidth: '200px' }}>
+                                                        {file.imageUrl ? (
+                                                            <img src={file.imageUrl} alt={file.name} style={{ width: '20px', height: '20px', borderRadius: '4px', objectFit: 'cover' }} />
+                                                        ) : (
+                                                            <span>📎</span>
+                                                        )}
+                                                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+                                                        <button onClick={() => setAttachedFiles(prev => prev.filter((_, i) => i !== idx))} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '14px', padding: '0 2px' }} title="Remove file">✕</button>
+                                                    </div>
+                                                ))}
                                             </div>
                                         )}
                                         <div style={{ display: 'flex', gap: '8px', padding: '6px 12px', borderTop: '1px solid var(--border-subtle)' }}>
-                                            <input type="file" ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
-                                            <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={!wsConnected || uploading || isWaiting || isStreaming} style={{ padding: '6px 10px', fontSize: '14px', minWidth: 'auto', ...( (!wsConnected || uploading || isWaiting || isStreaming) ? { cursor: 'not-allowed', opacity: 0.4 } : {}) }}>{uploading ? '⏳' : '⦹'}</button>
+                                            <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
+                                            <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={!wsConnected || uploading || isWaiting || isStreaming || attachedFiles.length >= 10} style={{ padding: '6px 10px', fontSize: '14px', minWidth: 'auto', ...( (!wsConnected || uploading || isWaiting || isStreaming) ? { cursor: 'not-allowed', opacity: 0.4 } : {}) }}>{uploading ? '⏳' : '⦹'}</button>
                                             {uploading && uploadProgress >= 0 && (
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '0 0 140px' }}>
                                                     {uploadProgress <= 100 ? (
@@ -3206,14 +3130,14 @@ function AgentDetailInner() {
                                             <input ref={chatInputRef} className="chat-input" value={chatInput} onChange={e => setChatInput(e.target.value)}
                                                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMsg(); } }}
                                                 onPaste={handlePaste}
-                                                placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : attachedFile ? t('agent.chat.askAboutFile', { name: attachedFile.name }) : t('chat.placeholder')}
+                                                placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : attachedFiles.length > 0 ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` }) : t('chat.placeholder')}
                                                 disabled={!wsConnected || isWaiting || isStreaming} style={{ flex: 1 }} autoFocus />
                                             {(isStreaming || isWaiting) ? (
                                                 <button className="btn btn-stop-generation" onClick={() => { if (wsRef.current?.readyState === WebSocket.OPEN) { wsRef.current.send(JSON.stringify({ type: 'abort' })); setIsStreaming(false); setIsWaiting(false); } }} style={{ padding: '6px 16px' }} title={t('chat.stop', 'Stop')}>
                                                     <span className="stop-icon" />
                                                 </button>
                                             ) : (
-                                                <button className="btn btn-primary" onClick={sendChatMsg} disabled={!wsConnected || (!chatInput.trim() && !attachedFile)} style={{ padding: '6px 16px' }}>{t('chat.send')}</button>
+                                                <button className="btn btn-primary" onClick={sendChatMsg} disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)} style={{ padding: '6px 16px' }}>{t('chat.send')}</button>
                                             )}
                                         </div>
                                     </>
@@ -4102,846 +4026,9 @@ function AgentDetailInner() {
                                     </div>
                                 </div>
 
-                                {/* Channel Config — multi-channel */}
-                                <div className="card" style={{ marginBottom: '12px' }}>
-                                    <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.channel.title')}</h4>
-                                    <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>{t('agent.settings.channel.title')}</p>
-                                    <div style={{
-                                        padding: '10px 14px', borderRadius: '8px', marginBottom: '16px',
-                                        background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)',
-                                        fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.6',
-                                    }}>
-                                        💡 {t('agent.settings.channel.syncHint', 'Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders.')}
-                                    </div>
-
-                                    {/* Slack */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
-                                        <div onClick={() => setSlackOpen(!slackOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M6.194 14.644a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm-2.194 0H0v-2.194a2.194 2.194 0 014.388 0v2.194zm16.612 0a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm0-2.194a2.194 2.194 0 010-4.388 2.194 2.194 0 010 4.388zm0 0v2.194h2.194A2.194 2.194 0 0024 12.45a2.194 2.194 0 00-2.194-2.194h-1.194zm-16.612 0a2.194 2.194 0 010-4.388 2.194 2.194 0 010 4.388zm0 0v2.194H2A2.194 2.194 0 010 12.45a2.194 2.194 0 012.194-2.194h1.806z" fill="#611F69" opacity=".4" /><path d="M9.388 4.388a2.194 2.194 0 110-4.388 2.194 2.194 0 010 4.388zm0 2.194v-2.194H7.194A2.194 2.194 0 005 6.582a2.194 2.194 0 002.194 2.194h2.194zm0 12.612a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm0-2.194v2.194H7.194A2.194 2.194 0 005 17.418a2.194 2.194 0 002.194 2.194h.194zm4.224-12.612a2.194 2.194 0 110-4.388 2.194 2.194 0 010 4.388zm2.194 0H13.612V2.194a2.194 2.194 0 014.388 0v2.194zm-2.194 14.806a2.194 2.194 0 110 4.388 2.194 2.194 0 010-4.388zm-2.194 0h2.194v2.194a2.194 2.194 0 01-4.388 0v-2.194z" fill="#611F69" /></svg>
-                                                <div>
-                                                    <div style={{ fontWeight: 600, fontSize: '14px' }}>Slack</div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Slack Bot</div>
-                                                </div>
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                {slackConfig && <span className={`badge ${slackConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{slackConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
-                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: slackOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
-                                            </div>
-                                        </div>
-                                        {slackOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-                                            {!canManage ? (
-                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                                    Only the creator or admin can configure communication channels.
-                                                </div>
-                                            ) : slackConfig?.is_configured && !slackEditing ? (
-                                                <div>
-                                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
-                                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>Webhook URL (Event Subscriptions URL)</div>
-                                                        <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
-                                                            <span style={{ color: 'var(--accent-primary)' }}>{slackWebhookData?.webhook_url || `${window.location.origin}/api/channel/slack/${id}/webhook`}</span>
-                                                            <CopyBtn url={slackWebhookData?.webhook_url || `${window.location.origin}/api/channel/slack/${id}/webhook`} />
-                                                        </div>
-                                                    </div>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            <li>{t('channelGuide.slack.step1')}</li>
-                                                            <li>{t('channelGuide.slack.step2')}</li>
-                                                            <li>{t('channelGuide.slack.step3')}</li>
-                                                            <li>{t('channelGuide.slack.step4')}</li>
-                                                            <li>{t('channelGuide.slack.step5')}</li>
-                                                            <li>{t('channelGuide.slack.step6')}</li>
-                                                            <li>{t('channelGuide.slack.step7')}</li>
-                                                            <li>{t('channelGuide.slack.step8')}</li>
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.slack.note')}</div>
-                                                    </details>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => { setSlackForm({ bot_token: slackConfig?.app_secret || '', signing_secret: slackConfig?.encrypt_key || '' }); setSlackEditing(true); }}>Edit</button>
-                                                        <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => deleteSlack.mutate()}>Disconnect</button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            <li>{t('channelGuide.slack.step1')}</li>
-                                                            <li>{t('channelGuide.slack.step2')}</li>
-                                                            <li>{t('channelGuide.slack.step3')}</li>
-                                                            <li>{t('channelGuide.slack.step4')}</li>
-                                                            <li>{t('channelGuide.slack.step5')}</li>
-                                                            <li>{t('channelGuide.slack.step6')}</li>
-                                                            <li>{t('channelGuide.slack.step7')}</li>
-                                                            <li>{t('channelGuide.slack.step8')}</li>
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.slack.note')}</div>
-                                                    </details>
-                                                    <div>
-                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Bot Token *</label>
-                                                        <div style={{ position: 'relative' }}>
-                                                            <input className="input" type={showPwds['slack_token'] ? 'text' : 'password'} value={slackForm.bot_token} onChange={e => setSlackForm({ ...slackForm, bot_token: e.target.value })} placeholder="xoxb-..." style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
-                                                            <button type="button" onClick={() => togglePwd('slack_token')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['slack_token'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Signing Secret *</label>
-                                                        <div style={{ position: 'relative' }}>
-                                                            <input className="input" type={showPwds['slack_secret'] ? 'text' : 'password'} value={slackForm.signing_secret} onChange={e => setSlackForm({ ...slackForm, signing_secret: e.target.value })} style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
-                                                            <button type="button" onClick={() => togglePwd('slack_secret')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['slack_secret'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
-                                                        </div>
-                                                    </div>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button className="btn btn-primary" style={{ fontSize: '12px', alignSelf: 'flex-start' }} onClick={() => { saveSlack.mutate(); setSlackEditing(false); }} disabled={!slackForm.bot_token || !slackForm.signing_secret || saveSlack.isPending}>
-                                                            {saveSlack.isPending ? t('common.loading') : (slackEditing ? 'Save Changes' : t('agent.settings.channel.saveChannel'))}
-                                                        </button>
-                                                        {slackEditing && <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setSlackEditing(false)}>Cancel</button>}
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>)}
-                                    </div>
-
-                                    {/* Discord */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
-                                        <div onClick={() => setDiscordOpen(!discordOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="#5865F2"><path d="M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028 14.09 14.09 0 001.226-1.994.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" /></svg>
-                                                <div>
-                                                    <div style={{ fontWeight: 600, fontSize: '14px' }}>Discord</div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Slash Commands (/ask)</div>
-                                                </div>
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                {discordConfig && <span className={`badge ${discordConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{discordConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
-                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: discordOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
-                                            </div>
-                                        </div>
-                                        {discordOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-                                            {!canManage ? (
-                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                                    Only the creator or admin can configure communication channels.
-                                                </div>
-                                            ) : discordConfig?.is_configured && !discordEditing ? (
-                                                <div>
-                                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
-                                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>Interactions Endpoint URL</div>
-                                                        <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
-                                                            <span style={{ color: 'var(--accent-primary)' }}>{discordWebhookData?.webhook_url || `${window.location.origin}/api/channel/discord/${id}/webhook`}</span>
-                                                            <CopyBtn url={discordWebhookData?.webhook_url || `${window.location.origin}/api/channel/discord/${id}/webhook`} />
-                                                        </div>
-                                                    </div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>Use <code>/ask message:&lt;your question&gt;</code> to talk to this agent</div>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            <li>{t('channelGuide.discord.step1')}</li>
-                                                            <li>{t('channelGuide.discord.step2')}</li>
-                                                            <li>{t('channelGuide.discord.step3')}</li>
-                                                            <li>{t('channelGuide.discord.step4')}</li>
-                                                            <li>{t('channelGuide.discord.step5')}</li>
-                                                            <li>{t('channelGuide.discord.step6')}</li>
-                                                            <li>{t('channelGuide.discord.step7')}</li>
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.discord.note')}</div>
-                                                    </details>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => { setDiscordForm({ application_id: discordConfig?.app_id || '', bot_token: discordConfig?.app_secret || '', public_key: discordConfig?.encrypt_key || '' }); setDiscordEditing(true); }}>Edit</button>
-                                                        <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => deleteDiscord.mutate()}>Disconnect</button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            <li>{t('channelGuide.discord.step1')}</li>
-                                                            <li>{t('channelGuide.discord.step2')}</li>
-                                                            <li>{t('channelGuide.discord.step3')}</li>
-                                                            <li>{t('channelGuide.discord.step4')}</li>
-                                                            <li>{t('channelGuide.discord.step5')}</li>
-                                                            <li>{t('channelGuide.discord.step6')}</li>
-                                                            <li>{t('channelGuide.discord.step7')}</li>
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.discord.note')}</div>
-                                                    </details>
-                                                    <div>
-                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Application ID *</label>
-                                                        <input className="input" value={discordForm.application_id} onChange={e => setDiscordForm({ ...discordForm, application_id: e.target.value })} placeholder="1234567890" style={{ fontSize: '12px' }} />
-                                                    </div>
-                                                    <div>
-                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Bot Token *</label>
-                                                        <div style={{ position: 'relative' }}>
-                                                            <input className="input" type={showPwds['disc_token'] ? 'text' : 'password'} value={discordForm.bot_token} onChange={e => setDiscordForm({ ...discordForm, bot_token: e.target.value })} style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
-                                                            <button type="button" onClick={() => togglePwd('disc_token')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['disc_token'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Public Key *</label>
-                                                        <input className="input" value={discordForm.public_key} onChange={e => setDiscordForm({ ...discordForm, public_key: e.target.value })} style={{ fontSize: '12px' }} />
-                                                    </div>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button className="btn btn-primary" style={{ fontSize: '12px', alignSelf: 'flex-start' }} onClick={() => { saveDiscord.mutate(); setDiscordEditing(false); }} disabled={!discordForm.application_id || !discordForm.bot_token || !discordForm.public_key || saveDiscord.isPending}>
-                                                            {saveDiscord.isPending ? t('common.loading') : (discordEditing ? 'Save Changes' : t('agent.settings.channel.saveChannel'))}
-                                                        </button>
-                                                        {discordEditing && <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setDiscordEditing(false)}>Cancel</button>}
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>)}
-                                    </div>
-
-
-                                    {/* Microsoft Teams */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
-                                        <div onClick={() => setTeamsOpen(!teamsOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                {/* Microsoft Teams icon (larger, similar visual weight to Discord/Slack) */}
-                                                <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
-                                                    {/* Main Teams tile */}
-                                                    <rect x="3" y="4" width="13" height="13" rx="3" fill="#6264A7" />
-                                                    {/* T letter */}
-                                                    <path
-                                                        d="M7.2 9h5.6c.3 0 .5.2.5.5v1.3c0 .3-.2.5-.5.5H11v5c0 .3-.2.5-.5.5H9.3c-.3 0-.5-.2-.5-.5v-5H7.2c-.3 0-.5-.2-.5-.5V9.5c0-.3.2-.5.5-.5Z"
-                                                        fill="#FFFFFF"
-                                                    />
-                                                    {/* Right-side presence shapes */}
-                                                    <circle cx="18.5" cy="7.5" r="2.3" fill="#7B83EB" />
-                                                    <rect x="16.2" y="10.5" width="5" height="6.2" rx="2" fill="#7B83EB" />
-                                                </svg>
-                                                <div>
-                                                    <div style={{ fontWeight: 600, fontSize: '14px' }}>Microsoft Teams</div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Teams Bot</div>
-                                                </div>
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                {teamsConfig && <span className={`badge ${teamsConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{teamsConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
-                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: teamsOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
-                                            </div>
-                                        </div>
-                                        {teamsOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-                                            {!canManage ? (
-                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                                    Only the creator or admin can configure communication channels.
-                                                </div>
-                                            ) : teamsConfig?.is_configured && !teamsEditing ? (
-                                                <div>
-                                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
-                                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>Messaging Endpoint URL</div>
-                                                        <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
-                                                            <span style={{ color: 'var(--accent-primary)' }}>{teamsWebhookData?.webhook_url || `${window.location.origin}/api/channel/teams/${id}/webhook`}</span>
-                                                            <CopyBtn url={teamsWebhookData?.webhook_url || `${window.location.origin}/api/channel/teams/${id}/webhook`} />
-                                                        </div>
-                                                    </div>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            <li>{t('channelGuide.teams.step1')}</li>
-                                                            <li>{t('channelGuide.teams.step2')}</li>
-                                                            <li>{t('channelGuide.teams.step3')}</li>
-                                                            <li>{t('channelGuide.teams.step4')}</li>
-                                                            <li>{t('channelGuide.teams.step5')}</li>
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.teams.note')}</div>
-                                                    </details>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => { setTeamsForm({ app_id: teamsConfig?.app_id || '', app_secret: teamsConfig?.app_secret || '', tenant_id: teamsConfig?.extra_config?.tenant_id || '' }); setTeamsEditing(true); }}>Edit</button>
-                                                        <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => deleteTeams.mutate()}>Disconnect</button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            <li>{t('channelGuide.teams.step1')}</li>
-                                                            <li>{t('channelGuide.teams.step2')}</li>
-                                                            <li>{t('channelGuide.teams.step3')}</li>
-                                                            <li>{t('channelGuide.teams.step4')}</li>
-                                                            <li>{t('channelGuide.teams.step5')}</li>
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.teams.note')}</div>
-                                                    </details>
-                                                    <div>
-                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App ID (Client ID) *</label>
-                                                        <input className="input" value={teamsForm.app_id} onChange={e => setTeamsForm({ ...teamsForm, app_id: e.target.value })} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style={{ fontSize: '12px' }} />
-                                                    </div>
-                                                    <div>
-                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App Secret (Client Secret) *</label>
-                                                        <div style={{ position: 'relative' }}>
-                                                            <input className="input" type={showPwds['teams_secret'] ? 'text' : 'password'} value={teamsForm.app_secret} onChange={e => setTeamsForm({ ...teamsForm, app_secret: e.target.value })} style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
-                                                            <button type="button" onClick={() => togglePwd('teams_secret')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['teams_secret'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>{t('channelGuide.teams.tenantId')} <span style={{ color: 'var(--text-tertiary)', fontWeight: 'normal' }}>(Optional)</span></label>
-                                                        <input className="input" value={teamsForm.tenant_id} onChange={e => setTeamsForm({ ...teamsForm, tenant_id: e.target.value })} placeholder={t('channelGuide.teams.tenantIdPlaceholder')} style={{ fontSize: '12px' }} />
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('channelGuide.teams.tenantIdHint')}</div>
-                                                    </div>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button className="btn btn-primary" style={{ fontSize: '12px', alignSelf: 'flex-start' }} onClick={() => { saveTeams.mutate(); setTeamsEditing(false); }} disabled={(!teamsForm.app_id || !teamsForm.app_secret) || saveTeams.isPending}>
-                                                            {saveTeams.isPending ? t('common.loading') : (teamsEditing ? 'Save Changes' : t('agent.settings.channel.saveChannel'))}
-                                                        </button>
-                                                        {teamsEditing && <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setTeamsEditing(false)}>Cancel</button>}
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>)}
-                                    </div>
-
-                                    {/* Feishu */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
-                                        <div onClick={() => setFeishuOpen(!feishuOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M3.64 7.2c.83 2.33 2.52 4.36 4.76 5.53L19.2 3.2c-.32-.09-.67-.11-1.03-.04L3.64 7.2z" fill="#00D6B9"/><path d="M8.4 12.73c.68.35 1.41.6 2.16.73l10.2-7.52c-.26-.56-.72-1.02-1.36-1.24L8.4 12.73z" fill="#3370FF"/><path d="M10.56 13.46c1.18.19 2.39.09 3.5-.3l6.86-5.06-.12-.14L10.56 13.46z" fill="#3370FF"/><path d="M14.06 13.16a8.1 8.1 0 002.62-1.67l4.24-3.13-.12-.42L14.06 13.16z" fill="#3370FF"/><path d="M16.68 11.49a8 8 0 001.7-2.15l2.54-1.87-.12-.53-4.12 4.55z" fill="#3370FF"/><path d="M3.64 7.2l-.24.7c-.94 2.82-.37 5.6 1.36 7.7L16.68 3.96 3.64 7.2z" fill="#00D6B9"/><path d="M4.76 15.6a8.02 8.02 0 003.64 3.94V12.73l-3.64 2.87z" fill="#3370FF"/><path d="M8.4 19.54c.68.35 1.41.56 2.16.64v-6.72l-2.16 6.08z" fill="#3370FF"/></svg>
-                                                <div>
-                                                    <div style={{ fontWeight: 600, fontSize: '14px' }}>{t('agent.settings.channel.feishu')}</div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{channelConfig?.extra_config?.connection_mode === 'websocket' ? 'WebSocket Mode' : 'Feishu / Lark'}</div>
-                                                </div>
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                {channelConfig && (
-                                                    <span className={`badge ${channelConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>
-                                                        {channelConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}
-                                                    </span>
-                                                )}
-                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: feishuOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
-                                            </div>
-                                        </div>
-                                        {feishuOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-
-                                            {!canManage ? (
-                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                                    Only the creator or admin can configure communication channels.
-                                                </div>
-                                            ) : channelConfig && !feishuEditing ? (
-                                                <div>
-                                                                                                        {channelConfig.extra_config?.connection_mode === 'websocket' ? (
-                                                        <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                                                                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#00D6B9', display: 'inline-block' }}></span>
-                                                                <span style={{ color: 'var(--text-secondary)' }}>Connected via WebSocket (No callback URL needed)</span>
-                                                            </div>
-                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>App ID: <code>{channelConfig.app_id}</code></div>
-                                                        </div>
-                                                    ) : (
-                                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
-                                                            <div style={{ marginBottom: '4px' }}>Mode: <strong>Webhook</strong></div>
-                                                            <div>App ID: <code>{channelConfig.app_id}</code></div>
-                                                        </div>
-                                                    )}
-                                                    {channelConfig.extra_config?.connection_mode !== 'websocket' && (
-                                                        <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
-                                                            <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>Webhook URL</div>
-                                                            <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
-                                                                <span style={{ color: 'var(--accent-primary)' }}>
-                                                                    {webhookData?.webhook_url || `${window.location.origin}/api/channel/feishu/${id}/webhook`}
-                                                                </span>
-                                                                <button
-                                                                    title="Copy"
-                                                                    style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
-                                                                    onClick={(e) => {
-                                                                        const url = webhookData?.webhook_url || `${window.location.origin}/api/channel/feishu/${id}/webhook`;
-                                                                        navigator.clipboard.writeText(url).then(() => {
-                                                                            const btn = e.currentTarget as HTMLButtonElement;
-                                                                            const origHtml = btn.innerHTML;
-                                                                            btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="13 2 5 10 2 7"/></svg>';
-                                                                            btn.style.color = 'rgb(16,185,129)';
-                                                                            setTimeout(() => { btn.innerHTML = origHtml; btn.style.color = ''; }, 1500);
-                                                                        });
-                                                                    }}
-                                                                >
-                                                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                                                                        <rect x="4" y="4" width="9" height="11" rx="1.5" />
-                                                                        <path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" />
-                                                                    </svg>
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            {channelConfig?.extra_config?.connection_mode === 'websocket' ? (<>
-                                                            <li>{t('channelGuide.feishu.ws_step1')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step2')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step3')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step4')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step5')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step6')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step7')}</li>
-                                                            </>) : (<>
-                                                            <li>{t('channelGuide.feishu.step1')}</li>
-                                                            <li>{t('channelGuide.feishu.step2')}</li>
-                                                            <li>{t('channelGuide.feishu.step3')}</li>
-                                                            <li>{t('channelGuide.feishu.step4')}</li>
-                                                            <li>{t('channelGuide.feishu.step5')}</li>
-                                                            <li>{t('channelGuide.feishu.step6')}</li>
-                                                            <li>{t('channelGuide.feishu.step7')}</li>
-                                                            <li>{t('channelGuide.feishu.step8')}</li>
-                                                            </>)}
-                                                        </ol>
-                                                        <div style={{ margin: '8px 0', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
-                                                                <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t('channelGuide.feishuPermJson')}</span>
-                                                                <button type="button" style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }} onClick={(e) => { const btn = e.currentTarget as HTMLButtonElement; const json = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource"],"user":[]}}'; navigator.clipboard.writeText(json).then(() => { const o = btn.textContent; btn.textContent = t('channelGuide.feishuPermCopied'); btn.style.color = 'rgb(16,185,129)'; setTimeout(() => { btn.textContent = o; btn.style.color = ''; }, 1500); }); }}>{t('channelGuide.feishuPermCopy')}</button>
-                                                            </div>
-                                                            <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all' }}>{`{
-  "scopes": {
-    "tenant": [
-      "contact:contact.base:readonly",
-      "contact:user.base:readonly",
-      "contact:user.id:readonly",
-      "im:chat",
-      "im:message",
-      "im:message.group_at_msg:readonly",
-      "im:message.p2p_msg:readonly",
-      "im:message:send_as_bot",
-      "im:resource"
-    ],
-    "user": []
-  }
-}`}</pre>
-                                                        </div>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.feishu.note')}</div>
-                                                    </details>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => { setChannelForm({ app_id: channelConfig.app_id || '', app_secret: channelConfig.app_secret || '', encrypt_key: channelConfig.encrypt_key || '', connection_mode: channelConfig.extra_config?.connection_mode || 'webhook' }); setFeishuEditing(true); }}>Edit</button>
-                                                        <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={async () => { await channelApi.delete(id!); queryClient.invalidateQueries({ queryKey: ['channel', id] }); }}>Disconnect</button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div>
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '8px' }}>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '8px' }}>Connection Mode</label>
-                                                            <div style={{ display: 'flex', gap: '16px', marginBottom: '8px' }}>
-                                                                <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-                                                                    <input type="radio" name="connection_mode" value="websocket" checked={channelForm.connection_mode === 'websocket'} onChange={() => setChannelForm({ ...channelForm, connection_mode: 'websocket' })} />
-                                                                    WebSocket (Recommended)
-                                                                </label>
-                                                                <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-                                                                    <input type="radio" name="connection_mode" value="webhook" checked={channelForm.connection_mode === 'webhook'} onChange={() => setChannelForm({ ...channelForm, connection_mode: 'webhook' })} />
-                                                                    Webhook
-                                                                </label>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            {channelForm.connection_mode === 'websocket' ? (<>
-                                                            <li>{t('channelGuide.feishu.ws_step1')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step2')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step3')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step4')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step5')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step6')}</li>
-                                                            <li>{t('channelGuide.feishu.ws_step7')}</li>
-                                                            </>) : (<>
-                                                            <li>{t('channelGuide.feishu.step1')}</li>
-                                                            <li>{t('channelGuide.feishu.step2')}</li>
-                                                            <li>{t('channelGuide.feishu.step3')}</li>
-                                                            <li>{t('channelGuide.feishu.step4')}</li>
-                                                            <li>{t('channelGuide.feishu.step5')}</li>
-                                                            <li>{t('channelGuide.feishu.step6')}</li>
-                                                            <li>{t('channelGuide.feishu.step7')}</li>
-                                                            <li>{t('channelGuide.feishu.step8')}</li>
-                                                            </>)}
-                                                        </ol>
-                                                        <div style={{ margin: '8px 0', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
-                                                                <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t('channelGuide.feishuPermJson')}</span>
-                                                                <button type="button" style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }} onClick={(e) => { const btn = e.currentTarget as HTMLButtonElement; const json = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource"],"user":[]}}'; navigator.clipboard.writeText(json).then(() => { const o = btn.textContent; btn.textContent = t('channelGuide.feishuPermCopied'); btn.style.color = 'rgb(16,185,129)'; setTimeout(() => { btn.textContent = o; btn.style.color = ''; }, 1500); }); }}>{t('channelGuide.feishuPermCopy')}</button>
-                                                            </div>
-                                                            <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all' }}>{`{
-  "scopes": {
-    "tenant": [
-      "contact:contact.base:readonly",
-      "contact:user.base:readonly",
-      "contact:user.id:readonly",
-      "im:chat",
-      "im:message",
-      "im:message.group_at_msg:readonly",
-      "im:message.p2p_msg:readonly",
-      "im:message:send_as_bot",
-      "im:resource"
-    ],
-    "user": []
-  }
-}`}</pre>
-                                                        </div>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>💡 {t('channelGuide.feishu.note')}</div>
-                                                    </details>
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App ID *</label>
-                                                            <input className="input" value={channelForm.app_id} onChange={e => setChannelForm({ ...channelForm, app_id: e.target.value })} placeholder="cli_xxxxxxxxxxxxxxxx" style={{ fontSize: '12px' }} />
-                                                        </div>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App Secret *</label>
-                                                            <div style={{ position: 'relative' }}>
-                                                                <input className="input" type={showPwds['feishu_secret'] ? 'text' : 'password'} value={channelForm.app_secret} onChange={e => setChannelForm({ ...channelForm, app_secret: e.target.value })} style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
-                                                                <button type="button" onClick={() => togglePwd('feishu_secret')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['feishu_secret'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
-                                                            </div>
-                                                        </div>
-                                                        {channelForm.connection_mode === 'webhook' && (
-                                                            <div>
-                                                                <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Encrypt Key</label>
-                                                                <div style={{ position: 'relative' }}>
-                                                                    <input className="input" type={showPwds['feishu_encrypt'] ? 'text' : 'password'} value={channelForm.encrypt_key} onChange={e => setChannelForm({ ...channelForm, encrypt_key: e.target.value })} style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
-                                                                    <button type="button" onClick={() => togglePwd('feishu_encrypt')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['feishu_encrypt'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
-                                                                </div>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                                                        <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={() => { saveChannel.mutate(); setFeishuEditing(false); }} disabled={!channelForm.app_id || !channelForm.app_secret || saveChannel.isPending}>
-                                                            {saveChannel.isPending ? t('common.loading') : (feishuEditing ? 'Save Changes' : t('agent.settings.channel.saveChannel'))}
-                                                        </button>
-                                                        {feishuEditing && <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setFeishuEditing(false)}>Cancel</button>}
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>)}
-                                    </div>
-
-                                    {/* WeCom */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
-                                        <div onClick={() => setWecomOpen(!wecomOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#07C160"/><path d="M7.5 9.5a1 1 0 110-2 1 1 0 010 2zm4 0a1 1 0 110-2 1 1 0 010 2zm4 0a1 1 0 110-2 1 1 0 010 2zM6 13h5l2 3h-3l-1 2-1-2H6v-3z" fill="white"/></svg>
-                                                <div>
-                                                    <div style={{ fontWeight: 600, fontSize: '14px' }}>{t('common.channels.wecom')}</div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{wecomConfig?.extra_config?.connection_mode === 'websocket' ? 'WebSocket Mode' : 'Webhook'}</div>
-                                                </div>
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                {wecomConfig && <span className={`badge ${wecomConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{wecomConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
-                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: wecomOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>&#9660;</span>
-                                            </div>
-                                        </div>
-                                        {wecomOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-                                            {!canManage ? (
-                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                                    Only the creator or admin can configure communication channels.
-                                                </div>
-                                            ) : wecomConfig?.is_configured && !wecomEditing ? (
-                                                <div>
-                                                    {wecomConfig?.extra_config?.connection_mode === 'websocket' ? (
-                                                        <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#07C160', display: 'inline-block' }}></span>
-                                                                <span style={{ color: 'var(--text-secondary)' }}>Connected via WebSocket (No callback URL needed)</span>
-                                                            </div>
-                                                        </div>
-                                                    ) : (
-                                                        <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
-                                                            <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>Webhook URL</div>
-                                                            <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
-                                                                <span style={{ color: 'var(--accent-primary)' }}>{wecomWebhookData?.webhook_url || `${window.location.origin}/api/channel/wecom/${id}/webhook`}</span>
-                                                                <CopyBtn url={wecomWebhookData?.webhook_url || `${window.location.origin}/api/channel/wecom/${id}/webhook`} />
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>&#9654;</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            {wecomConfig?.extra_config?.connection_mode === 'websocket' ? (<>
-                                                            <li>{t('channelGuide.wecom.ws_step1')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step2')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step3')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step4')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step5')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step6')}</li>
-                                                            </>) : (<>
-                                                            <li>{t('channelGuide.wecom.step1')}</li>
-                                                            <li>{t('channelGuide.wecom.step2')}</li>
-                                                            <li>{t('channelGuide.wecom.step3')}</li>
-                                                            <li>{t('channelGuide.wecom.step4')}</li>
-                                                            <li>{t('channelGuide.wecom.step5')}</li>
-                                                            <li>{t('channelGuide.wecom.step6')}</li>
-                                                            </>)}
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>{wecomConfig?.extra_config?.connection_mode === 'websocket' ? t('channelGuide.wecom.ws_note') : t('channelGuide.wecom.note')}</div>
-                                                    </details>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => { setWecomForm({ connection_mode: wecomConfig?.extra_config?.connection_mode === 'websocket' ? 'websocket' : 'webhook', bot_id: wecomConfig?.extra_config?.bot_id || '', bot_secret: wecomConfig?.extra_config?.bot_secret || '', corp_id: wecomConfig?.app_id || '', wecom_agent_id: wecomConfig?.extra_config?.wecom_agent_id || '', secret: wecomConfig?.app_secret || '', token: wecomConfig?.verification_token || '', encoding_aes_key: wecomConfig?.encrypt_key || '' }); setWecomEditing(true); }}>Edit</button>
-                                                        <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => deleteWecom.mutate()}>Disconnect</button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div>
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '8px' }}>Connection Mode</label>
-                                                            <div style={{ display: 'flex', gap: '16px', marginBottom: '8px' }}>
-                                                                <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-                                                                    <input type="radio" name="wecom_connection_mode" value="websocket" checked={wecomForm.connection_mode === 'websocket'} onChange={() => setWecomForm(f => ({ ...f, connection_mode: 'websocket' }))} />
-                                                                    WebSocket (Recommended)
-                                                                </label>
-                                                                <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-                                                                    <input type="radio" name="wecom_connection_mode" value="webhook" checked={wecomForm.connection_mode === 'webhook'} onChange={() => setWecomForm(f => ({ ...f, connection_mode: 'webhook' }))} />
-                                                                    Webhook
-                                                                </label>
-                                                            </div>
-                                                        </div>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>&#9654;</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            {wecomForm.connection_mode === 'websocket' ? (<>
-                                                            <li>{t('channelGuide.wecom.ws_step1')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step2')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step3')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step4')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step5')}</li>
-                                                            <li>{t('channelGuide.wecom.ws_step6')}</li>
-                                                            </>) : (<>
-                                                            <li>{t('channelGuide.wecom.step1')}</li>
-                                                            <li>{t('channelGuide.wecom.step2')}</li>
-                                                            <li>{t('channelGuide.wecom.step3')}</li>
-                                                            <li>{t('channelGuide.wecom.step4')}</li>
-                                                            <li>{t('channelGuide.wecom.step5')}</li>
-                                                            <li>{t('channelGuide.wecom.step6')}</li>
-                                                            </>)}
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>{wecomForm.connection_mode === 'websocket' ? t('channelGuide.wecom.ws_note') : t('channelGuide.wecom.note')}</div>
-                                                    </details>
-                                                        {wecomForm.connection_mode === 'websocket' ? (<>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Bot ID *</label>
-                                                            <input className="input" placeholder="aibXXXXXXXXXXXX" value={wecomForm.bot_id} onChange={e => setWecomForm(f => ({ ...f, bot_id: e.target.value }))} style={{ fontSize: '12px' }} />
-                                                        </div>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Bot Secret *</label>
-                                                            <div style={{ position: 'relative' }}>
-                                                                <input className="input" type={showPwds['wc_bot_secret'] ? 'text' : 'password'} value={wecomForm.bot_secret} onChange={e => setWecomForm(f => ({ ...f, bot_secret: e.target.value }))} style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
-                                                                <button type="button" onClick={() => togglePwd('wc_bot_secret')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['wc_bot_secret'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
-                                                            </div>
-                                                        </div>
-                                                        </>) : (<>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>CorpID *</label>
-                                                            <input className="input" placeholder="CorpID" value={wecomForm.corp_id} onChange={e => setWecomForm(f => ({ ...f, corp_id: e.target.value }))} style={{ fontSize: '12px' }} />
-                                                        </div>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>AgentID *</label>
-                                                            <input className="input" placeholder="AgentID" value={wecomForm.wecom_agent_id} onChange={e => setWecomForm(f => ({ ...f, wecom_agent_id: e.target.value }))} style={{ fontSize: '12px' }} />
-                                                        </div>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Secret *</label>
-                                                            <div style={{ position: 'relative' }}>
-                                                                <input className="input" type={showPwds['wc_secret'] ? 'text' : 'password'} value={wecomForm.secret} onChange={e => setWecomForm(f => ({ ...f, secret: e.target.value }))} style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
-                                                                <button type="button" onClick={() => togglePwd('wc_secret')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['wc_secret'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
-                                                            </div>
-                                                        </div>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Token *</label>
-                                                            <input className="input" placeholder="Token" value={wecomForm.token} onChange={e => setWecomForm(f => ({ ...f, token: e.target.value }))} style={{ fontSize: '12px' }} />
-                                                        </div>
-                                                        <div>
-                                                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>EncodingAESKey *</label>
-                                                            <input className="input" placeholder="EncodingAESKey" value={wecomForm.encoding_aes_key} onChange={e => setWecomForm(f => ({ ...f, encoding_aes_key: e.target.value }))} style={{ fontSize: '12px' }} />
-                                                        </div>
-                                                        </>)}
-                                                    </div>
-                                                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                                                        <button className="btn btn-primary" style={{ fontSize: '12px', alignSelf: 'flex-start' }} onClick={() => { saveWecom.mutate(); setWecomEditing(false); }} disabled={(wecomForm.connection_mode === 'websocket' ? (!wecomForm.bot_id || !wecomForm.bot_secret) : (!wecomForm.corp_id || !wecomForm.secret || !wecomForm.token || !wecomForm.encoding_aes_key)) || saveWecom.isPending}>
-                                                            {saveWecom.isPending ? t('common.loading') : (wecomEditing ? 'Save Changes' : t('agent.settings.channel.saveChannel'))}
-                                                        </button>
-                                                        {wecomEditing && <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setWecomEditing(false)}>Cancel</button>}
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>)}
-                                    </div>
-
-                                    {/* DingTalk */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
-                                        <div onClick={() => setDingtalkOpen(!dingtalkOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#0089FF"/><path d="M16.7 10.3c-.2-.7-1.1-1.2-1.7-.8l-2.5 1.8c-.3.2-.1.7.3.6l1.2-.2s-2 2.5-4.3 3.5c0 0 1.3.4 2.8-.1 1.5-.5 3.1-1.8 3.1-1.8l-.3 1.1c-.1.3.2.5.4.3l2-2c.5-.5.3-1.3-.1-1.7l-1-.7z" fill="white"/></svg>
-                                                <div>
-                                                    <div style={{ fontWeight: 600, fontSize: '14px' }}>{t('common.channels.dingtalk')}</div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Stream Mode</div>
-                                                </div>
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                {dingtalkConfig && <span className={`badge ${dingtalkConfig.is_configured ? 'badge-success' : 'badge-warning'}`}>{dingtalkConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
-                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: dingtalkOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>&#9660;</span>
-                                            </div>
-                                        </div>
-                                        {dingtalkOpen && (<div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-                                            {!canManage ? (
-                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                                    Only the creator or admin can configure communication channels.
-                                                </div>
-                                            ) : dingtalkConfig?.is_configured && !dingtalkEditing ? (
-                                                <div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px', padding: '8px 10px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                                        Stream mode active. No webhook URL needed.
-                                                    </div>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>&#9654;</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            <li>{t('channelGuide.dingtalk.step1')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step2')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step3')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step4')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step5')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step6')}</li>
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>{t('channelGuide.dingtalk.note')}</div>
-                                                    </details>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => { setDingtalkForm({ app_key: dingtalkConfig?.app_id || '', app_secret: dingtalkConfig?.app_secret || '' }); setDingtalkEditing(true); }}>Edit</button>
-                                                        <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => deleteDingtalk.mutate()}>Disconnect</button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div>
-                                                    <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                        <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <span style={{ fontSize: '10px' }}>&#9654;</span> {t('channelGuide.setupGuide')}
-                                                        </summary>
-                                                        <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                            <li>{t('channelGuide.dingtalk.step1')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step2')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step3')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step4')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step5')}</li>
-                                                            <li>{t('channelGuide.dingtalk.step6')}</li>
-                                                        </ol>
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>{t('channelGuide.dingtalk.note')}</div>
-                                                    </details>
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-                                                        <input className="input" placeholder="AppKey" type={showPwds['dt_key'] ? 'text' : 'password'} value={dingtalkForm.app_key} onChange={e => setDingtalkForm(f => ({ ...f, app_key: e.target.value }))} style={{ fontSize: '12px' }} />
-                                                        <input className="input" placeholder="AppSecret" type={showPwds['dt_secret'] ? 'text' : 'password'} value={dingtalkForm.app_secret} onChange={e => setDingtalkForm(f => ({ ...f, app_secret: e.target.value }))} style={{ fontSize: '12px' }} />
-                                                    </div>
-                                                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                                                        <button className="btn btn-primary" style={{ fontSize: '12px', alignSelf: 'flex-start' }} onClick={() => { saveDingtalk.mutate(); setDingtalkEditing(false); }} disabled={!dingtalkForm.app_key || !dingtalkForm.app_secret || saveDingtalk.isPending}>
-                                                            {saveDingtalk.isPending ? t('common.loading') : (dingtalkEditing ? 'Save Changes' : t('agent.settings.channel.saveChannel'))}
-                                                        </button>
-                                                        {dingtalkEditing && <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setDingtalkEditing(false)}>Cancel</button>}
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>)}
-                                    </div>
-
-                                    {/* Atlassian */}
-                                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', marginBottom: '12px', overflow: 'hidden' }}>
-                                        <div onClick={() => setAtlassianOpen(!atlassianOpen)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                    <path d="M11.53 1.1a.59.59 0 00-.96.06L5.81 9.08a.59.59 0 00.52.87h3.89l-2.7 4.73a.59.59 0 00.52.87h7.42a.59.59 0 00.52-.87l-5.24-9.17 1.09-1.91a.59.59 0 000-.59L11.53 1.1z" fill="#0052CC" />
-                                                    <path d="M12.47 22.9a.59.59 0 00.96-.06l4.76-7.92a.59.59 0 00-.52-.87h-3.89l2.7-4.73a.59.59 0 00-.52-.87H8.54a.59.59 0 00-.52.87l5.24 9.17-1.09 1.91a.59.59 0 000 .59l.3.51z" fill="#2684FF" />
-                                                </svg>
-                                                <div>
-                                                    <div style={{ fontWeight: 600, fontSize: '14px' }}>Atlassian</div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Jira · Confluence · Compass (Rovo MCP)</div>
-                                                </div>
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                                {atlassianConfig && <span className={`badge ${atlassianConfig.is_configured ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '10px' }}>{atlassianConfig.is_configured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
-                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: atlassianOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
-                                            </div>
-                                        </div>
-
-                                        {atlassianOpen && (
-                                            <div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-                                                <div style={{ paddingTop: '16px' }}>
-                                                    {!canManage ? (
-                                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                                            Only the creator or admin can configure integrations.
-                                                        </div>
-                                                    ) : atlassianConfig?.is_configured && !atlassianEditing ? (
-                                                        <div>
-                                                            <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                                                <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>Status</div>
-                                                                <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>✅ API Key configured — Jira / Confluence / Compass tools available</div>
-                                                                {atlassianConfig.cloud_id && <div style={{ color: 'var(--text-tertiary)', marginTop: '4px', fontSize: '11px' }}>Cloud ID: <code>{atlassianConfig.cloud_id}</code></div>}
-                                                            </div>
-                                                            {atlassianTestResult && (
-                                                                <div style={{ padding: '8px 12px', borderRadius: '6px', fontSize: '12px', marginBottom: '10px', background: atlassianTestResult.ok ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${atlassianTestResult.ok ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`, color: atlassianTestResult.ok ? 'rgb(5,150,105)' : 'rgb(220,38,38)' }}>
-                                                                    {atlassianTestResult.ok
-                                                                        ? `✅ ${atlassianTestResult.message || `Connected — ${atlassianTestResult.tool_count} tools available`}`
-                                                                        : `❌ ${atlassianTestResult.error}`}
-                                                                </div>
-                                                            )}
-                                                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                                                                <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAtlassian} disabled={atlassianTesting}>
-                                                                    {atlassianTesting ? 'Testing...' : '🔌 Test Connection'}
-                                                                </button>
-                                                                <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => { setAtlassianForm({ api_key: '', cloud_id: atlassianConfig?.cloud_id || '' }); setAtlassianEditing(true); }}>Edit</button>
-                                                                <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => deleteAtlassian.mutate()}>Disconnect</button>
-                                                            </div>
-                                                        </div>
-                                                    ) : (
-                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                                            <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                                <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                                    <span style={{ fontSize: '10px' }}>▶</span> {t('channelGuide.setupGuide')}
-                                                                </summary>
-                                                                <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
-                                                                    <li>Go to <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-primary)' }}>id.atlassian.com → Security → API tokens</a></li>
-                                                                    <li>Create a new API token and copy it</li>
-                                                                    <li>Paste the token below (service account key starts with <code>ATSTT</code>, or base64-encode <code>email:token</code> and prefix with <code>Basic </code>)</li>
-                                                                    <li>(Optional) Enter your Cloud ID for multi-site setups</li>
-                                                                    <li>Click Connect to enable Jira, Confluence, and Compass tools via Rovo MCP</li>
-                                                                </ol>
-                                                            </details>
-                                                            <div>
-                                                                <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>API Key *</label>
-                                                                <div style={{ position: 'relative' }}>
-                                                                    <input className="input" type={showPwds['atl_key'] ? 'text' : 'password'} value={atlassianForm.api_key} onChange={e => setAtlassianForm({ ...atlassianForm, api_key: e.target.value })} placeholder="ATSTT3x... (service account) or Basic base64(email:token)" style={{ fontSize: '12px', paddingRight: '36px', width: '100%' }} />
-                                                                    <button type="button" onClick={() => togglePwd('atl_key')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>{showPwds['atl_key'] ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>}</button>
-                                                                </div>
-                                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                                                                    Service account key starts with <code>ATSTT</code>. Personal API token: base64-encode <code>email:token</code> and prefix with <code>Basic </code>
-                                                                </div>
-                                                            </div>
-                                                            <div>
-                                                                <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>Cloud ID <span style={{ fontWeight: 400, color: 'var(--text-tertiary)' }}>(optional)</span></label>
-                                                                <input className="input" value={atlassianForm.cloud_id} onChange={e => setAtlassianForm({ ...atlassianForm, cloud_id: e.target.value })} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style={{ fontSize: '12px' }} />
-                                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Required for multi-site setups. Find it at <code>your-site.atlassian.net/_edge/tenant_info</code></div>
-                                                            </div>
-                                                            <div style={{ display: 'flex', gap: '8px' }}>
-                                                                <button className="btn btn-primary" style={{ fontSize: '12px', alignSelf: 'flex-start' }} onClick={() => saveAtlassian.mutate()} disabled={!atlassianForm.api_key || saveAtlassian.isPending}>
-                                                                    {saveAtlassian.isPending ? 'Connecting...' : (atlassianEditing ? 'Save Changes' : 'Connect Atlassian')}
-                                                                </button>
-                                                                {atlassianEditing && <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => { setAtlassianEditing(false); setAtlassianForm({ api_key: '', cloud_id: '' }); }}>Cancel</button>}
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-
+                                {/* Channel Config */}
+                                <div style={{ marginBottom: "12px" }}>
+                                    <ChannelConfig mode="edit" agentId={id!} />
                                 </div>
 
                                 {/* Danger Zone */}

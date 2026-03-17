@@ -9,7 +9,7 @@
     "myCreated": "Created by me",
     "companyShared": "Company shared",
     "newAgent": "New Digital Employee",
-    "enterprise": "Enterprise Settings",
+    "enterprise": "Company Settings",
     "language": "Language",
     "plaza": "Plaza"
   },
@@ -367,7 +367,7 @@
       "custom": "Custom",
       "primaryModel": "Primary Model",
       "noModels": "No available models. Please add LLM models in",
-      "enterpriseSettings": "Enterprise Settings",
+      "enterpriseSettings": "Company Settings",
       "addModels": "first",
       "dailyTokenLimit": "Daily Token Limit",
       "monthlyTokenLimit": "Monthly Token Limit",
@@ -438,7 +438,9 @@
   },
   "chat": {
     "placeholder": "Type a message...",
-    "send": "Send"
+    "send": "Send",
+    "deleteSession": "Delete session",
+    "deleteConfirm": "Delete this session and all its messages? This cannot be undone."
   },
   "messages": {
     "title": "Messages",
@@ -449,7 +451,7 @@
     "hoursAgo": "{{count}} hours ago"
   },
   "enterprise": {
-    "title": "Enterprise Settings",
+    "title": "Company Settings",
     "tabs": {
       "llm": "Model Pool",
       "tools": "Tools",
@@ -633,9 +635,10 @@
       "ws_step2": "Left sidebar → Add App Capabilities → click Add next to Bot",
       "ws_step3": "Left sidebar → Credentials & Basic Info → copy App ID and App Secret",
       "ws_step4": "Select Long Connection (WebSocket) mode above → paste App ID and App Secret → click Save Config",
-      "ws_step5": "Left sidebar → Permissions & Scopes → click Bulk Import/Export Permissions → paste the permission JSON below → confirm import",
-      "ws_step6": "Left sidebar → App Release → Create Version → Release for Review → approve it in the admin console",
-      "ws_step7": "After publishing, invite the bot to a Feishu group or add it as a direct contact to start chatting",
+      "ws_step5": "Left sidebar → Events & Callbacks → Event Configuration → edit Subscription Method → select 'Use Long Connection to receive events' → click Add Event → search and add im.message.receive_v1 (Receive Messages v2.0) → approve required permissions → Save",
+      "ws_step6": "Left sidebar → Permissions & Scopes → click Bulk Import/Export Permissions → paste the permission JSON below → confirm import",
+      "ws_step7": "Left sidebar → App Release → Create Version → Release for Review → approve it in the admin console",
+      "ws_step8": "After publishing, invite the bot to a Feishu group or add it as a direct contact to start chatting",
       "ws_note": "WebSocket mode requires no public IP or callback URL. The connection is managed automatically."
     },
     "teams": {

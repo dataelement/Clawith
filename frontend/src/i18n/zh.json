@@ -9,7 +9,8 @@
     "myCreated": "我创建的",
     "companyShared": "公司共用",
     "newAgent": "新建数字员工",
-    "enterprise": "企业设置",
+    "enterprise": "公司设置",
+    "adminCompanies": "公司管理",
     "language": "语言",
     "plaza": "广场"
   },
@@ -36,7 +37,12 @@
     "invitationHint": "由于 Token 消耗较大，本平台需要邀请码注册。推荐大家自行部署并配置最前沿的模型，体验最佳效果。",
     "usernamePlaceholder": "请输入用户名",
     "passwordPlaceholder": "请输入密码",
-    "emailPlaceholder": "your@email.com"
+    "emailPlaceholder": "your@email.com",
+    "companyDisabled": "你的公司已被停用，请联系平台管理员。",
+    "invalidCredentials": "用户名或密码错误。",
+    "accountDisabled": "你的账号已被停用。",
+    "serverStarting": "服务正在启动或遇到问题，请稍后重试。",
+    "serverUnreachable": "无法连接服务器，请检查服务是否正在运行。"
   },
   "roles": {
     "platformAdmin": "超级管理员",
@@ -440,7 +446,9 @@
   },
   "chat": {
     "placeholder": "输入消息...",
-    "send": "发送"
+    "send": "发送",
+    "deleteSession": "删除会话",
+    "deleteConfirm": "确定删除这个会话及其所有消息？此操作无法撤销。"
   },
   "messages": {
     "title": "消息中心",
@@ -451,7 +459,7 @@
     "hoursAgo": "{{count}} 小时前"
   },
   "enterprise": {
-    "title": "企业设置",
+    "title": "公司设置",
     "tabs": {
       "llm": "模型池",
       "tools": "工具",
@@ -463,7 +471,8 @@
       "approvals": "审批",
       "skills": "技能管理",
       "quotas": "配额",
-      "users": "用户"
+      "users": "用户",
+      "invites": "邀请码"
     },
     "stats": {
       "users": "{{count}} 用户",
@@ -573,7 +582,9 @@
     }
   },
   "common": {
+    "create": "创建",
     "save": "保存",
+    "noPermission": "你没有权限访问此页面。",
     "cancel": "取消",
     "confirm": "确认",
     "delete": "删除",
@@ -597,6 +608,54 @@
       "dingtalk": "钉钉",
       "wecom": "企业微信"
     }
+  },
+  "admin": {
+    "title": "公司管理",
+    "desc": "管理所有公司，创建新公司，配置平台级设置。",
+    "createCompany": "创建公司",
+    "platformSettings": "平台设置",
+    "allowSelfCreate": "允许用户自行创建公司",
+    "allowSelfCreateDesc": "关闭后，仅平台管理员可以创建公司。",
+    "inviteCodeRequired": "注册需要邀请码",
+    "inviteCodeRequiredDesc": "开启后，新用户必须提供有效的邀请码才能注册。",
+    "companyNamePlaceholder": "公司名称",
+    "companyCreated": "公司创建成功",
+    "companyCreatedDesc": "已成功创建。",
+    "adminInviteCode": "管理员邀请码（仅限一次使用，首位使用者成为公司管理员）：",
+    "inviteCodeLabel": "管理员邀请码",
+    "inviteCodeHowTo": "如何使用此邀请码：",
+    "inviteCodeExplain": "将此邀请码发送给负责管理该公司的人员。他们需要在平台上注册一个新账号，然后输入此邀请码加入公司。首位使用此邀请码的用户将自动成为该公司的管理员。此邀请码仅限一次使用。",
+    "copyCode": "复制邀请码",
+    "copied": "已复制",
+    "cannotDisableDefault": "无法停用默认公司 -- 平台管理员将无法登录",
+    "company": "公司",
+    "users": "用户数",
+    "agents": "数字员工",
+    "tokens": "Token 用量",
+    "status": "状态",
+    "active": "正常",
+    "disabled": "已停用",
+    "disable": "停用",
+    "enable": "启用",
+    "confirmDisable": "停用此公司？所有用户和数字员工将被暂停。",
+    "createdAt": "创建时间",
+    "showing": "{{start}}-{{end}} / {{total}}",
+    "prev": "上一页",
+    "next": "下一页"
+  },
+  "companySetup": {
+    "title": "设置你的公司",
+    "subtitle": "加入已有公司或创建一个新公司",
+    "joinTitle": "加入公司",
+    "joinDesc": "输入邀请码加入已有公司",
+    "codePlaceholder": "输入邀请码",
+    "join": "加入",
+    "or": "或",
+    "createTitle": "创建公司",
+    "createDesc": "创建你自己的公司并开始使用",
+    "namePlaceholder": "公司名称",
+    "create": "创建",
+    "hint": "你可以随时从企业设置中邀请成员加入。"
   },
   "openclaw": {
     "created": "OpenClaw Agent 已创建",
@@ -646,9 +705,10 @@
       "ws_step2": "左侧菜单 → 添加应用能力 → 找到「机器人」→ 点击添加",
       "ws_step3": "左侧菜单 → 凭证与基础信息 → 复制 App ID 和 App Secret",
       "ws_step4": "在上方选择「长连接 (WebSocket)」模式 → 填入 App ID 和 App Secret → 点击保存配置",
-      "ws_step5": "左侧菜单 → 权限管理 → 点击「批量导入/导出权限」→ 粘贴下方权限 JSON → 确认导入",
-      "ws_step6": "左侧菜单 → 版本管理与发布 → 创建版本 → 提交审核发布 → 在管理后台自行审批",
-      "ws_step7": "发布后，将机器人拉入飞书群或添加为好友即可开始对话",
+      "ws_step5": "左侧菜单 → 事件与回调 → 事件配置 → 编辑「订阅方式」→ 选择「使用长连接接收事件」→ 点击「添加事件」→ 搜索并添加 im.message.receive_v1（接收消息 v2.0）→ 申请开通相关权限 → 保存",
+      "ws_step6": "左侧菜单 → 权限管理 → 点击「批量导入/导出权限」→ 粘贴下方权限 JSON → 确认导入",
+      "ws_step7": "左侧菜单 → 版本管理与发布 → 创建版本 → 提交审核发布 → 在管理后台自行审批",
+      "ws_step8": "发布后，将机器人拉入飞书群或添加为好友即可开始对话",
       "ws_note": "WebSocket 长连接模式无需公网 IP 或回调地址，连接由系统自动管理。"
     },
     "teams": {

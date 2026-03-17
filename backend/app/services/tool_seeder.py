@@ -95,12 +95,12 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
-    # --- Pulse trigger management tools ---
+    # --- Aware trigger management tools ---
     {
         "name": "set_trigger",
         "display_name": "Set Trigger",
         "description": "Set a new trigger to wake yourself up at a specific time or condition. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or human user replies).",
-        "category": "pulse",
+        "category": "aware",
         "icon": "⚡",
         "is_default": True,
         "parameters_schema": {
@@ -121,7 +121,7 @@ BUILTIN_TOOLS = [
         "name": "update_trigger",
         "display_name": "Update Trigger",
         "description": "Update an existing trigger's configuration or reason.",
-        "category": "pulse",
+        "category": "aware",
         "icon": "🔄",
         "is_default": True,
         "parameters_schema": {
@@ -140,7 +140,7 @@ BUILTIN_TOOLS = [
         "name": "cancel_trigger",
         "display_name": "Cancel Trigger",
         "description": "Cancel (disable) a trigger by name. Use when a task is completed.",
-        "category": "pulse",
+        "category": "aware",
         "icon": "⏹️",
         "is_default": True,
         "parameters_schema": {
@@ -157,7 +157,7 @@ BUILTIN_TOOLS = [
         "name": "list_triggers",
         "display_name": "List Triggers",
         "description": "List all your active triggers with name, type, config, reason, fire count, and status.",
-        "category": "pulse",
+        "category": "aware",
         "icon": "📋",
         "is_default": True,
         "parameters_schema": {

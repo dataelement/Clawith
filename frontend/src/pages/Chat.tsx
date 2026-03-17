@@ -166,6 +166,9 @@ export default function Chat() {
                 if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(data.type)) {
                     setIsWaiting(false);
                 }
+                if (['error', 'quota_exceeded'].includes(data.type)) {
+                    setStreaming(false);
+                }
 
                 if (data.type === 'thinking') {
                     // Accumulate thinking content

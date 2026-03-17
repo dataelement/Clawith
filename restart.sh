@@ -1,6 +1,7 @@
 #!/bin/bash
 # Clawith — Restart Script
-# Usage: ./restart.sh
+# Usage: ./restart.sh [--source]
+#   --source  Force source (non-Docker) mode even if Docker is available
 
 set -e
 
@@ -23,6 +24,14 @@ BACKEND_PID="$PID_DIR/backend.pid"
 FRONTEND_PID="$PID_DIR/frontend.pid"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+
+# Parse arguments
+FORCE_SOURCE=false
+for arg in "$@"; do
+    case $arg in
+        --source) FORCE_SOURCE=true ;;
+    esac
+done
 
 # ═══════════════════════════════════════════════════════
 # 初始化目录
@@ -150,6 +159,10 @@ start_postgres() {
 start_backend() {
     echo -e "${YELLOW}🚀 Starting backend...${NC}"
     cd "$BACKEND_DIR"
+
+    # Auto-run data migrations (idempotent)
+    echo -e "${YELLOW}🔄 Running data migrations...${NC}"
+    .venv/bin/python -m app.scripts.migrate_schedules_to_triggers || true
     nohup env PYTHONUNBUFFERED=1 \
         PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}" \
         DATABASE_URL="$DATABASE_URL" \
@@ -210,8 +223,13 @@ print_info() {
 # Docker 模式
 # ═══════════════════════════════════════════════════════
 run_docker_mode() {
-    if command -v docker &>/dev/null && docker ps | grep -E 'clawith' >/dev/null; then
-        echo -e "${YELLOW}🐳 Detected existing Docker containers! Starting in Docker mode...${NC}"
+    if [ "$FORCE_SOURCE" = true ]; then
+        return 1
+    fi
+    # Only switch to Docker mode when there are RUNNING Clawith containers
+    if command -v docker &>/dev/null && docker ps --filter 'name=clawith' --filter 'status=running' -q 2>/dev/null | grep -q .; then
+        echo -e "${YELLOW}Detected running Docker containers. Starting in Docker mode...${NC}"
+        echo -e "  ${YELLOW}Tip: use --source to force source (non-Docker) mode.${NC}"
         DIR_NAME=$(basename "$(dirname "$ROOT")")
         [ -z "$DIR_NAME" ] && DIR_NAME="custom"
 

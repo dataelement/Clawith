@@ -28,7 +28,10 @@ async def get_registration_config(db: AsyncSession = Depends(get_db)):
 async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     """Register a new user account.
 
-    The first user to register becomes the platform admin automatically.
+    The first user to register becomes the platform admin automatically and is
+    assigned to the default company as org_admin. Subsequent users register
+    without a company — they must create or join one via /tenants/self-create
+    or /tenants/join.
     """
     # Check existing
     existing = await db.execute(
@@ -37,22 +40,21 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username or email already exists")
 
-    # Check if this is the first user (→ platform admin)
+    # Check if this is the first user (→ platform admin + default company org_admin)
     from sqlalchemy import func
     user_count = await db.execute(select(func.count()).select_from(User))
     is_first_user = user_count.scalar() == 0
 
-    # Resolve tenant — auto-create default if missing (lazy initialization)
-    from app.models.tenant import Tenant
+    # Note: invitation code validation has been moved to the company-join flow
+    # (POST /tenants/join). Registration itself is now open.
+
+    # Resolve tenant and role for first user only
     tenant_uuid = None
-    if data.tenant_id:
-        t_result = await db.execute(select(Tenant).where(Tenant.id == uuid.UUID(data.tenant_id)))
-        tenant = t_result.scalar_one_or_none()
-        if not tenant:
-            raise HTTPException(status_code=400, detail="Selected company does not exist")
-        tenant_uuid = tenant.id
-    else:
-        # Auto-assign to the default company; create it if startup seed failed
+    role = "member"
+    quota_defaults: dict = {}
+
+    if is_first_user:
+        from app.models.tenant import Tenant
         default = await db.execute(select(Tenant).where(Tenant.slug == "default"))
         tenant = default.scalar_one_or_none()
         if not tenant:
@@ -60,39 +62,22 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
             db.add(tenant)
             await db.flush()
         tenant_uuid = tenant.id
-
-    # ── Invitation code check ──
-    from app.models.system_settings import SystemSetting
-    inv_setting = await db.execute(select(SystemSetting).where(SystemSetting.key == "invitation_code_enabled"))
-    inv_s = inv_setting.scalar_one_or_none()
-    invitation_required = inv_s.value.get("enabled", False) if inv_s else False
-
-    invitation_code_obj = None
-    if invitation_required:
-        if not data.invitation_code:
-            raise HTTPException(status_code=400, detail="Invitation code is required")
-        from app.models.invitation_code import InvitationCode
-        ic_result = await db.execute(
-            select(InvitationCode).where(InvitationCode.code == data.invitation_code, InvitationCode.is_active == True)
-        )
-        invitation_code_obj = ic_result.scalar_one_or_none()
-        if not invitation_code_obj:
-            raise HTTPException(status_code=400, detail="Invalid invitation code")
-        if invitation_code_obj.used_count >= invitation_code_obj.max_uses:
-            raise HTTPException(status_code=400, detail="Invitation code has reached its usage limit")
+        role = "platform_admin"
+        quota_defaults = {
+            "quota_message_limit": tenant.default_message_limit,
+            "quota_message_period": tenant.default_message_period,
+            "quota_max_agents": tenant.default_max_agents,
+            "quota_agent_ttl_hours": tenant.default_agent_ttl_hours,
+        }
 
     user = User(
         username=data.username,
         email=data.email,
         password_hash=hash_password(data.password),
         display_name=data.display_name or data.username,
-        role="platform_admin" if is_first_user else "member",
+        role=role,
         tenant_id=tenant_uuid,
-        # Inherit quota defaults from tenant
-        quota_message_limit=tenant.default_message_limit if tenant else 50,
-        quota_message_period=tenant.default_message_period if tenant else "permanent",
-        quota_max_agents=tenant.default_max_agents if tenant else 2,
-        quota_agent_ttl_hours=tenant.default_agent_ttl_hours if tenant else 48,
+        **quota_defaults,
     )
     db.add(user)
     await db.flush()
@@ -105,10 +90,6 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     ))
     await db.flush()
 
-    # Increment invitation code usage
-    if invitation_code_obj:
-        invitation_code_obj.used_count += 1
-
     # Seed default agents after first user (platform admin) registration
     if is_first_user:
         await db.commit()  # commit user first so seeder can find the admin
@@ -119,8 +100,13 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
             import logging
             logging.getLogger(__name__).warning(f"Failed to seed default agents: {e}")
 
+    needs_setup = tenant_uuid is None
     token = create_access_token(str(user.id), user.role)
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    return TokenResponse(
+        access_token=token,
+        user=UserOut.model_validate(user),
+        needs_company_setup=needs_setup,
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -135,8 +121,24 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
 
+    # Check if user's company is disabled
+    if user.tenant_id:
+        from app.models.tenant import Tenant
+        t_result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+        tenant = t_result.scalar_one_or_none()
+        if tenant and not tenant.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your company has been disabled. Please contact the platform administrator.",
+            )
+
+    needs_setup = user.tenant_id is None
     token = create_access_token(str(user.id), user.role)
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    return TokenResponse(
+        access_token=token,
+        user=UserOut.model_validate(user),
+        needs_company_setup=needs_setup,
+    )
 
 
 @router.get("/me", response_model=UserOut)

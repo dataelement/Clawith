@@ -58,11 +58,10 @@ async def list_users(
     # Platform admins can view any tenant; org_admins only their own
     tid = tenant_id if tenant_id and current_user.role == "platform_admin" else str(current_user.tenant_id)
 
-    # Include platform_admin users in every tenant's list (they belong to all companies)
-    from sqlalchemy import or_
+    # Filter users by tenant — platform_admins only shown in their own tenant
     result = await db.execute(
         select(User).where(
-            or_(User.tenant_id == tid, User.role == "platform_admin")
+            User.tenant_id == tid
         ).order_by(User.created_at.asc())
     )
     users = result.scalars().all()

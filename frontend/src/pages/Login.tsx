@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
-import { authApi, tenantApi } from '../services/api';
+import { authApi } from '../services/api';
 
 export default function Login() {
     const { t, i18n } = useTranslation();
@@ -11,36 +11,12 @@ export default function Login() {
     const [isRegister, setIsRegister] = useState(false);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
-    const [tenants, setTenants] = useState<{ id: string; name: string; slug: string }[]>([]);
-    const [invitationRequired, setInvitationRequired] = useState(false);
 
     const [form, setForm] = useState({
         username: '',
         password: '',
         email: '',
-        tenant_id: '',
-        invitation_code: '',
     });
-
-    // Check if invitation code is required
-    useEffect(() => {
-        fetch('/api/auth/registration-config')
-            .then(r => r.json())
-            .then(d => setInvitationRequired(d.invitation_code_required))
-            .catch(() => { });
-    }, []);
-
-    // Load available companies when switching to register mode
-    useEffect(() => {
-        if (isRegister && tenants.length === 0) {
-            tenantApi.listPublic().then((data: any) => {
-                setTenants(data);
-                if (data.length > 0 && !form.tenant_id) {
-                    setForm(f => ({ ...f, tenant_id: data[0].id }));
-                }
-            }).catch(() => { });
-        }
-    }, [isRegister]);
 
     // Login page always uses dark theme (hero panel is dark)
     useEffect(() => {
@@ -61,22 +37,36 @@ export default function Login() {
             if (isRegister) {
                 res = await authApi.register({
                     ...form,
-                    display_name: form.username, // auto-set display_name to username
+                    display_name: form.username,
                 });
             } else {
                 res = await authApi.login({ username: form.username, password: form.password });
             }
             setAuth(res.user, res.access_token);
-            navigate('/');
-        } catch (err: any) {
-            // Friendlier messages for infrastructure / network errors
-            const msg = err.message || '';
-            if (!msg || msg === 'Failed to fetch' || msg.includes('NetworkError') || msg.includes('ERR_CONNECTION')) {
-                setError('Unable to reach server. Please check if the service is running and try again.');
-            } else if (msg.includes('500') || msg.includes('Internal Server Error')) {
-                setError('Service is starting up or experiencing issues. Please try again in a few seconds.');
+            // Redirect to company setup if user has no company assigned
+            if (res.needs_company_setup) {
+                navigate('/setup-company');
             } else {
-                setError(msg || t('common.error'));
+                navigate('/');
+            }
+        } catch (err: any) {
+            const msg = err.message || '';
+            // Server-returned error messages (e.g. disabled company, invalid credentials)
+            if (msg && msg !== 'Failed to fetch' && !msg.includes('NetworkError') && !msg.includes('ERR_CONNECTION')) {
+                // Translate known error messages
+                if (msg.includes('company has been disabled')) {
+                    setError(t('auth.companyDisabled', 'Your company has been disabled. Please contact the platform administrator.'));
+                } else if (msg.includes('Invalid credentials')) {
+                    setError(t('auth.invalidCredentials', 'Invalid username or password.'));
+                } else if (msg.includes('Account is disabled')) {
+                    setError(t('auth.accountDisabled', 'Your account has been disabled.'));
+                } else if (msg.includes('500') || msg.includes('Internal Server Error')) {
+                    setError(t('auth.serverStarting', 'Service is starting up or experiencing issues. Please try again in a few seconds.'));
+                } else {
+                    setError(msg);
+                }
+            } else {
+                setError(t('auth.serverUnreachable', 'Unable to reach server. Please check if the service is running and try again.'));
             }
         } finally {
             setLoading(false);
@@ -171,50 +161,16 @@ export default function Login() {
                         </div>
 
                         {isRegister && (
-                            <>
-                                <div className="login-field">
-                                    <label>{t('auth.email')}</label>
-                                    <input
-                                        type="email"
-                                        value={form.email}
-                                        onChange={(e) => setForm({ ...form, email: e.target.value })}
-                                        required
-                                        placeholder={t('auth.emailPlaceholder')}
-                                    />
-                                </div>
-                                {/* Only show company selector if there are tenants to choose from */}
-                                {tenants.length > 0 && (
-                                <div className="login-field">
-                                    <label>{t('auth.selectCompany')}</label>
-                                    <select
-                                        value={form.tenant_id}
-                                        onChange={(e) => setForm({ ...form, tenant_id: e.target.value })}
-                                    >
-                                        <option value="">{t('auth.selectCompanyPlaceholder')}</option>
-                                        {tenants.map((tenant) => (
-                                            <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                                )}
-                                {invitationRequired && (
-                                    <div className="login-field">
-                                        <label>{t('auth.invitationCode')}</label>
-                                        <input
-                                            value={form.invitation_code}
-                                            onChange={(e) => setForm({ ...form, invitation_code: e.target.value })}
-                                            required
-                                            placeholder={t('auth.invitationCodePlaceholder')}
-                                        />
-                                        <p style={{
-                                            fontSize: '11px', color: 'var(--text-tertiary)',
-                                            marginTop: '6px', lineHeight: '1.5',
-                                        }}>
-                                            {t('auth.invitationHint')}
-                                        </p>
-                                    </div>
-                                )}
-                            </>
+                            <div className="login-field">
+                                <label>{t('auth.email')}</label>
+                                <input
+                                    type="email"
+                                    value={form.email}
+                                    onChange={(e) => setForm({ ...form, email: e.target.value })}
+                                    required
+                                    placeholder={t('auth.emailPlaceholder')}
+                                />
+                            </div>
                         )}
 
                         <div className="login-field">

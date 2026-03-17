@@ -11,12 +11,17 @@ for convenient access.
 # Re-export all client classes and functions from llm_client.py
 from app.services.llm_client import (
     AnthropicClient,
+    GeminiClient,
     LLMClient,
     LLMError,
     LLMMessage,
     LLMResponse,
     LLMStreamChunk,
     OpenAICompatibleClient,
+    OpenAIResponsesClient,
+    PROVIDER_ALIASES,
+    PROVIDER_REGISTRY,
+    ProviderSpec,
     PROVIDER_URLS,
     TOOL_CHOICE_PROVIDERS,
     MAX_TOKENS_BY_PROVIDER as _MAX_TOKENS_BY_PROVIDER,
@@ -25,7 +30,10 @@ from app.services.llm_client import (
     chat_stream,
     create_llm_client,
     get_max_tokens,
+    get_provider_manifest,
     get_provider_base_url,
+    get_provider_spec,
+    normalize_provider,
 )
 
 # Keep ANTHROPIC_API_PROVIDERS for backward compatibility
@@ -60,6 +68,8 @@ __all__ = [
     # New client classes
     "LLMClient",
     "OpenAICompatibleClient",
+    "OpenAIResponsesClient",
+    "GeminiClient",
     "AnthropicClient",
     "LLMMessage",
     "LLMResponse",
@@ -70,8 +80,14 @@ __all__ = [
     "chat_complete",
     "chat_stream",
     # Constants
+    "ProviderSpec",
+    "PROVIDER_ALIASES",
+    "PROVIDER_REGISTRY",
     "PROVIDER_URLS",
     "ANTHROPIC_API_PROVIDERS",
     "TOOL_CHOICE_PROVIDERS",
+    # Registry helpers
+    "normalize_provider",
+    "get_provider_spec",
+    "get_provider_manifest",
 ]
-

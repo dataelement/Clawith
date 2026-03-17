@@ -26,6 +26,27 @@ get_server_ip() {
     echo "$ip"
 }
 
+# --- Check Python version (>= 3.12 required) ---
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if command -v "$PYTHON_BIN" &>/dev/null; then
+    PY_VER=$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
+    PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
+    if [ "$PY_MAJOR" -lt 3 ] || ([ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 12 ]); then
+        echo -e "${RED}Python $PY_VER detected, but Clawith requires Python >= 3.12.${NC}"
+        echo ""
+        echo "  Please install Python 3.12+:"
+        echo "    Ubuntu:     sudo apt install python3.12 python3.12-venv"
+        echo "    CentOS:     sudo dnf install python3.12"
+        echo "    macOS:      brew install python@3.12"
+        echo "    Conda:      conda create -n clawith python=3.12"
+        echo ""
+        echo "  Or set PYTHON_BIN to point to a valid python3.12+ binary:"
+        echo "    PYTHON_BIN=/path/to/python3.12 bash setup.sh"
+        exit 1
+    fi
+fi
+
 # --- Optional package mirror overrides ---
 PIP_INSTALL_ARGS=()
 if [ -n "${CLAWITH_PIP_INDEX_URL:-}" ]; then
@@ -345,7 +366,7 @@ cd "$ROOT/backend"
 
 if [ ! -d ".venv" ]; then
     echo "  Creating Python virtual environment..."
-    python3 -m venv .venv
+    $PYTHON_BIN -m venv .venv
     echo -e "  ${GREEN}✓${NC} Virtual environment created"
 fi
 
@@ -370,10 +391,18 @@ echo -e "${YELLOW}[4/6]${NC} Setting up frontend..."
 cd "$ROOT/frontend"
 
 if [ ! -d "node_modules" ]; then
-    echo "  Installing npm packages..."
-    npm install --silent $NPM_MIRROR 2>&1 | tail -1
+    if ! command -v npm &>/dev/null; then
+        echo -e "  ${YELLOW}⚠${NC}  npm not found. Skipping frontend dependency install."
+        echo -e "  ${YELLOW}⚠${NC}  Install Node.js 20+ to enable frontend dev server."
+        echo -e "  ${YELLOW}⚠${NC}  You can still use pre-built dist/ or Docker for frontend."
+    else
+        echo "  Installing npm packages..."
+        npm install --silent $NPM_MIRROR 2>&1 | tail -1
+        echo -e "  ${GREEN}✓${NC} Frontend dependencies installed"
+    fi
+else
+    echo -e "  ${GREEN}✓${NC} Frontend dependencies already installed"
 fi
-echo -e "  ${GREEN}✓${NC} Frontend dependencies installed"
 
 # ── 5. Database setup ────────────────────────────
 echo ""
@@ -402,6 +431,10 @@ else
     echo "       DATABASE_URL=postgresql+asyncpg://clawith:clawith@localhost:5432/clawith?ssl=disable"
     echo "    3. Create the database first:"
     echo "       createdb clawith"
+    echo "    4. If you see 'Ident authentication failed', configure pg_hba.conf:"
+    echo "       Add this line BEFORE other host rules:"
+    echo "       host  all  clawith  127.0.0.1/32  md5"
+    echo "       Then reload: sudo systemctl reload postgresql"
     echo ""
     echo "  After fixing, re-run: bash setup.sh"
     exit 1

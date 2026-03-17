@@ -1,11 +1,17 @@
-"""Tenant (Company) management API — platform_admin only."""
+"""Tenant (Company) management API.
 
+Public endpoints for self-service company creation and joining.
+Admin endpoints for platform-level company management.
+"""
+
+import re
+import secrets
 import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user, require_role
@@ -16,11 +22,10 @@ from app.models.user import User
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
 
+# ─── Schemas ────────────────────────────────────────────
+
 class TenantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    slug: str = Field(min_length=2, max_length=50, pattern=r"^[a-z0-9_-]+$")
-    im_provider: str = "web_only"
-
 
 class TenantOut(BaseModel):
     id: uuid.UUID
@@ -41,6 +46,150 @@ class TenantUpdate(BaseModel):
     is_active: bool | None = None
 
 
+# ─── Helpers ────────────────────────────────────────────
+
+def _slugify(name: str) -> str:
+    """Generate a URL-friendly slug from a company name."""
+    # Replace CJK and non-alphanumeric chars with hyphens
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower().strip())
+    slug = slug.strip("-")[:40]
+    if not slug:
+        slug = "company"
+    # Add short random suffix for uniqueness
+    slug = f"{slug}-{secrets.token_hex(3)}"
+    return slug
+
+
+# ─── Self-Service: Create Company ───────────────────────
+
+@router.post("/self-create", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
+async def self_create_company(
+    data: TenantCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new company (self-service). The creator becomes org_admin."""
+    # Must not already belong to a company
+    if current_user.tenant_id is not None:
+        raise HTTPException(status_code=400, detail="You already belong to a company")
+
+    # Check if self-creation is allowed
+    from app.models.system_settings import SystemSetting
+    setting = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "allow_self_create_company")
+    )
+    s = setting.scalar_one_or_none()
+    allowed = s.value.get("enabled", True) if s else True
+    if not allowed and current_user.role != "platform_admin":
+        raise HTTPException(status_code=403, detail="Company self-creation is currently disabled")
+
+    slug = _slugify(data.name)
+    tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
+    db.add(tenant)
+    await db.flush()
+
+    # Assign creator as org_admin
+    current_user.tenant_id = tenant.id
+    current_user.role = "org_admin" if current_user.role == "member" else current_user.role
+    # Inherit quota defaults from new tenant
+    current_user.quota_message_limit = tenant.default_message_limit
+    current_user.quota_message_period = tenant.default_message_period
+    current_user.quota_max_agents = tenant.default_max_agents
+    current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
+    await db.flush()
+
+    return TenantOut.model_validate(tenant)
+
+
+# ─── Self-Service: Join Company via Invite Code ─────────
+
+class JoinRequest(BaseModel):
+    invitation_code: str = Field(min_length=1, max_length=32)
+
+
+class JoinResponse(BaseModel):
+    tenant: TenantOut
+    role: str
+
+
+@router.post("/join", response_model=JoinResponse)
+async def join_company(
+    data: JoinRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Join an existing company using an invitation code."""
+    if current_user.tenant_id is not None:
+        raise HTTPException(status_code=400, detail="You already belong to a company")
+
+    from app.models.invitation_code import InvitationCode
+    ic_result = await db.execute(
+        select(InvitationCode).where(
+            InvitationCode.code == data.invitation_code,
+            InvitationCode.is_active == True,
+            InvitationCode.tenant_id.is_not(None),
+        )
+    )
+    code_obj = ic_result.scalar_one_or_none()
+    if not code_obj:
+        raise HTTPException(status_code=400, detail="Invalid invitation code")
+    if code_obj.used_count >= code_obj.max_uses:
+        raise HTTPException(status_code=400, detail="Invitation code has reached its usage limit")
+
+    # Find the company
+    t_result = await db.execute(select(Tenant).where(Tenant.id == code_obj.tenant_id))
+    tenant = t_result.scalar_one_or_none()
+    if not tenant or not tenant.is_active:
+        raise HTTPException(status_code=400, detail="Company not found or is disabled")
+
+    # Check if this company has an org_admin already
+    admin_check = await db.execute(
+        select(sqla_func.count()).select_from(User).where(
+            User.tenant_id == tenant.id,
+            User.role.in_(["org_admin", "platform_admin"]),
+        )
+    )
+    has_admin = admin_check.scalar() > 0
+
+    # First joiner of an empty company becomes org_admin
+    assigned_role = "member" if has_admin else "org_admin"
+
+    # Assign user to company
+    current_user.tenant_id = tenant.id
+    if current_user.role == "member":
+        current_user.role = assigned_role
+    # Inherit quota defaults from tenant
+    current_user.quota_message_limit = tenant.default_message_limit
+    current_user.quota_message_period = tenant.default_message_period
+    current_user.quota_max_agents = tenant.default_max_agents
+    current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
+
+    # Increment invitation code usage
+    code_obj.used_count += 1
+    await db.flush()
+
+    return JoinResponse(
+        tenant=TenantOut.model_validate(tenant),
+        role=current_user.role,
+    )
+
+
+# ─── Registration Config ───────────────────────────────
+
+@router.get("/registration-config")
+async def get_registration_config(db: AsyncSession = Depends(get_db)):
+    """Public — returns whether self-creation of companies is allowed."""
+    from app.models.system_settings import SystemSetting
+    result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "allow_self_create_company")
+    )
+    s = result.scalar_one_or_none()
+    allowed = s.value.get("enabled", True) if s else True
+    return {"allow_self_create_company": allowed}
+
+
+# ─── Authenticated: List / Get ──────────────────────────
+
 @router.get("/", response_model=list[TenantOut])
 async def list_tenants(
     current_user: User = Depends(require_role("platform_admin")),
@@ -51,31 +200,17 @@ async def list_tenants(
     return [TenantOut.model_validate(t) for t in result.scalars().all()]
 
 
-@router.post("/", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
-async def create_tenant(
-    data: TenantCreate,
-    current_user: User = Depends(require_role("platform_admin")),
-    db: AsyncSession = Depends(get_db),
-):
-    """Create a new tenant/company (platform_admin only)."""
-    # Check slug uniqueness
-    existing = await db.execute(select(Tenant).where(Tenant.slug == data.slug))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Slug '{data.slug}' already exists")
-
-    tenant = Tenant(name=data.name, slug=data.slug, im_provider=data.im_provider)
-    db.add(tenant)
-    await db.flush()
-    return TenantOut.model_validate(tenant)
-
-
 @router.get("/{tenant_id}", response_model=TenantOut)
 async def get_tenant(
     tenant_id: uuid.UUID,
-    current_user: User = Depends(require_role("platform_admin")),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get tenant details."""
+    """Get tenant details. Platform admins can view any; org_admins only their own."""
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if current_user.role == "org_admin" and str(current_user.tenant_id) != str(tenant_id):
+        raise HTTPException(status_code=403, detail="Access denied")
     result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
@@ -129,74 +264,3 @@ async def assign_user_to_tenant(
     user.role = role
     await db.flush()
     return {"status": "ok", "user_id": str(user_id), "tenant_id": str(tenant_id), "role": role}
-
-
-@router.delete("/{tenant_id}")
-async def delete_tenant(
-    tenant_id: uuid.UUID,
-    current_user: User = Depends(require_role("platform_admin")),
-    db: AsyncSession = Depends(get_db),
-):
-    """Delete a tenant and all its associated data (platform_admin only)."""
-    from app.models.agent import Agent
-    from app.models.audit import AuditLog, ApprovalRequest
-    from app.models.llm import LLMModel
-    from app.models.tool import Tool
-    from app.models.skill import Skill
-    from sqlalchemy import delete as sql_delete
-
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-
-    # Prevent deleting the last tenant
-    count_r = await db.execute(select(Tenant.id))
-    if len(count_r.all()) <= 1:
-        raise HTTPException(status_code=400, detail="Cannot delete the last tenant")
-
-    # Find a fallback tenant for reassigning users
-    fallback_r = await db.execute(
-        select(Tenant).where(Tenant.id != tenant_id).order_by(Tenant.created_at.asc()).limit(1)
-    )
-    fallback_tenant = fallback_r.scalar_one()
-
-    # Delete agents belonging to this tenant
-    agent_ids_q = select(Agent.id).where(Agent.tenant_id == tenant_id)
-    # Delete approval requests for these agents
-    await db.execute(sql_delete(ApprovalRequest).where(ApprovalRequest.agent_id.in_(agent_ids_q)))
-    # Delete audit logs for these agents
-    await db.execute(sql_delete(AuditLog).where(AuditLog.agent_id.in_(agent_ids_q)))
-    # Delete agents
-    await db.execute(sql_delete(Agent).where(Agent.tenant_id == tenant_id))
-
-    # Delete tenant-specific resources
-    await db.execute(sql_delete(LLMModel).where(LLMModel.tenant_id == tenant_id))
-    await db.execute(sql_delete(Tool).where(Tool.tenant_id == tenant_id))
-    await db.execute(sql_delete(Skill).where(Skill.tenant_id == tenant_id))
-
-    # Reassign users from this tenant to fallback
-    affected_users_r = await db.execute(select(User).where(User.tenant_id == tenant_id))
-    for u in affected_users_r.scalars().all():
-        u.tenant_id = fallback_tenant.id
-
-    # Delete the tenant itself
-    await db.delete(tenant)
-    await db.flush()
-    return {"ok": True, "fallback_tenant_id": str(fallback_tenant.id)}
-
-
-class TenantSimple(BaseModel):
-    id: uuid.UUID
-    name: str
-    slug: str
-    model_config = {"from_attributes": True}
-
-
-@router.get("/public/list", response_model=list[TenantSimple])
-async def list_tenants_public(db: AsyncSession = Depends(get_db)):
-    """List active tenants for registration page (no auth required)."""
-    result = await db.execute(
-        select(Tenant).where(Tenant.is_active == True).order_by(Tenant.name)
-    )
-    return [TenantSimple.model_validate(t) for t in result.scalars().all()]

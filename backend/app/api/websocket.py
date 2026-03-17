@@ -226,7 +226,7 @@ async def call_llm(
 
     # Tool-calling loop (configurable per agent, default 50)
     for round_i in range(_max_tool_rounds):
-        # ── Dynamic tool-call limit warning (Pulse engine) ──
+        # ── Dynamic tool-call limit warning (Aware engine) ──
         # Don't tell the agent about limits at the start — only warn when approaching.
         # This prevents models from rushing to complete tasks prematurely.
         _warn_threshold_80 = int(_max_tool_rounds * 0.8)
@@ -258,10 +258,21 @@ async def call_llm(
             )
         except LLMError as e:
             # Record accumulated tokens before returning error
+            print(
+                f"[LLM] LLMError provider={getattr(model, 'provider', '?')} "
+                f"model={getattr(model, 'model', '?')} round={round_i + 1}: {e}",
+                flush=True,
+            )
             if agent_id and _accumulated_tokens > 0:
                 await record_token_usage(agent_id, _accumulated_tokens)
             return f"[LLM Error] {e}"
         except Exception as e:
+            print(
+                f"[LLM] Unexpected error provider={getattr(model, 'provider', '?')} "
+                f"model={getattr(model, 'model', '?')} round={round_i + 1}: "
+                f"{type(e).__name__}: {str(e)[:300]}",
+                flush=True,
+            )
             if agent_id and _accumulated_tokens > 0:
                 await record_token_usage(agent_id, _accumulated_tokens)
             return f"[LLM call error] {type(e).__name__}: {str(e)[:200]}"
@@ -865,4 +876,3 @@ async def websocket_chat(
             await websocket.close(code=1011)
         except Exception:
             pass
-
