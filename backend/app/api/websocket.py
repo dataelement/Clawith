@@ -602,6 +602,9 @@ async def websocket_chat(
                 content, re.IGNORECASE
             )
 
+            # Track thinking content for storage (initialize before condition)
+            thinking_content = []
+
             # Call LLM with streaming
             if llm_model:
                 try:
@@ -636,10 +639,7 @@ async def websocket_chat(
                                     await _tc_db.commit()
                             except Exception as _tc_err:
                                 print(f"[WS] Failed to save tool_call: {_tc_err}")
-                    
-                    # Track thinking content for storage
-                    thinking_content = []
-                    
+
                     async def thinking_to_ws(text: str):
                         """Send thinking chunks to client for collapsible display."""
                         thinking_content.append(text)
