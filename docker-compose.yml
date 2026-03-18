@@ -30,7 +30,7 @@ services:
         CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
         CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
     restart: unless-stopped
-    command: ["/bin/bash", "/app/entrypoint.sh"]
+    command: ["/bin/bash", "-c", "alembic stamp head 2>/dev/null || true; exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     environment:
       DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
       REDIS_URL: redis://redis:6379/0
