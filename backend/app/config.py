@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
+    # Public domain (optional). When set, used for HTTPS redirect and building public base URL.
+    # Example: app.example.com (no scheme)
+    DOMAIN: str = ""
+
     # Jina AI (Reader + Search APIs)
     JINA_API_KEY: str = ""
 
@@ -89,6 +93,17 @@ class Settings(BaseSettings):
         "case_sensitive": True,
         "extra": "ignore",
     }
+
+    @property
+    def public_base_url(self) -> str:
+        """Public base URL for callbacks and links. Prefer env PUBLIC_BASE_URL; else https://DOMAIN when DOMAIN is set."""
+        import os
+        base = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+        if base:
+            return base
+        if self.DOMAIN:
+            return f"https://{self.DOMAIN.strip().rstrip('/')}"
+        return ""
 
 
 @lru_cache

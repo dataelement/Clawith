@@ -127,8 +127,9 @@ async def get_channel_config(
 async def get_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     """Get the webhook URL for this agent's Feishu bot."""
     import os
+    from app.config import get_settings
     from app.models.system_settings import SystemSetting
-    # Priority: system_settings > env var > request.base_url
+    # Priority: system_settings > env PUBLIC_BASE_URL > config public_base_url (DOMAIN) > request.base_url
     public_base = ""
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == "platform"))
     setting = result.scalar_one_or_none()
@@ -136,6 +137,8 @@ async def get_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSessio
         public_base = setting.value["public_base_url"].rstrip("/")
     if not public_base:
         public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    if not public_base:
+        public_base = get_settings().public_base_url
     if not public_base:
         public_base = str(request.base_url).rstrip("/")
     return {"webhook_url": f"{public_base}/api/channel/feishu/{agent_id}/webhook"}

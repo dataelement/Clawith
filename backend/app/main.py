@@ -2,14 +2,33 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import RedirectResponse
 
 from app.config import get_settings
 from app.core.events import close_redis
 from app.schemas.schemas import HealthResponse
 
 settings = get_settings()
+
+
+class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
+    """When DOMAIN is set, redirect HTTP to HTTPS (using X-Forwarded-Proto when behind a proxy)."""
+
+    async def dispatch(self, request: Request, call_next):
+        if not settings.DOMAIN:
+            return await call_next(request)
+        proto = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+        if proto and proto.lower() == "https":
+            return await call_next(request)
+        url = request.url
+        base = f"https://{settings.DOMAIN.strip().rstrip('/')}"
+        path = url.path or "/"
+        if url.query:
+            path = f"{path}?{url.query}"
+        return RedirectResponse(url=f"{base}{path}", status_code=301)
 
 
 async def _start_ss_local() -> None:
@@ -208,6 +227,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# HTTPS redirect when DOMAIN is set (runs first: redirect HTTP -> https://DOMAIN)
+app.add_middleware(HTTPSRedirectMiddleware)
 
 # Register API routes
 from app.api.auth import router as auth_router

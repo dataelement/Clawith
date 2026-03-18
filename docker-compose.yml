@@ -62,17 +62,38 @@ services:
     build: ./frontend
     ports:
       - "${FRONTEND_PORT:-3008}:3000"
+      - "443:443"
     environment:
       VITE_API_URL: http://localhost:8000
+      DOMAIN: ${DOMAIN:-}
+      ENABLE_SSL: ${ENABLE_SSL:-false}
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
     depends_on:
       - backend
+
+  certbot:
+    image: certbot/certbot:latest
+    entrypoint: ["/bin/sh", "/scripts/certbot-entrypoint.sh"]
+    environment:
+      DOMAIN: ${DOMAIN:-}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
+      - ./certbot-entrypoint.sh:/scripts/certbot-entrypoint.sh:ro
+    depends_on:
+      - frontend
+    # Certbot reads DOMAIN / LETSENCRYPT_EMAIL from .env; if they are empty it exits quickly without error.
 
 volumes:
   pgdata:
   redisdata:
+  certbot_www:
+  certbot_conf:
 
 
 networks:
