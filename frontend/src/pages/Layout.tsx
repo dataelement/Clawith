@@ -251,7 +251,11 @@ export default function Layout() {
     const createCompany = async () => {
         if (!newCompanyName.trim()) return;
         const token = localStorage.getItem('token');
-        const slug = newCompanyName.toLowerCase().replace(/[\s]+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 50);
+        let slug = newCompanyName.toLowerCase().replace(/[\s]+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 50);
+        // Fallback for non-Latin names (e.g., Chinese): use timestamp-based slug
+        if (slug.length < 2) {
+            slug = 'company-' + Date.now().toString(36);
+        }
         await fetch('/api/tenants/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
