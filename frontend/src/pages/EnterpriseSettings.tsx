@@ -1841,27 +1841,64 @@ export default function EnterpriseSettings() {
                                                                     <span style={{ fontWeight: 500, fontSize: '13px' }}>{tool.name}</span>
                                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{tool.description?.slice(0, 80)}</div>
                                                                 </div>
-                                                                <button className="btn btn-primary" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={async () => {
-                                                                    await fetchJson('/tools', {
-                                                                        method: 'POST', body: JSON.stringify({
-                                                                            name: `mcp_${tool.name}`,
-                                                                            display_name: tool.name,
-                                                                            description: tool.description || '',
-                                                                            type: 'mcp',
-                                                                            category: 'custom',
-                                                                            icon: '·',
-                                                                            mcp_server_url: mcpForm.server_url,
-                                                                            mcp_server_name: mcpForm.server_name || mcpForm.server_url,
-                                                                            mcp_tool_name: tool.name,
-                                                                            parameters_schema: tool.inputSchema || {},
-                                                                            is_default: false,
-                                                                        })
-                                                                    });
-                                                                    loadAllTools();
-                                                                    setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '' }); setMcpRawInput('');
-                                                                }}>{t('enterprise.tools.importAll')}</button>
+                                                                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={async () => {
+                                                                    try {
+                                                                        await fetchJson('/tools', {
+                                                                            method: 'POST', body: JSON.stringify({
+                                                                                name: `mcp_${tool.name}`,
+                                                                                display_name: tool.name,
+                                                                                description: tool.description || '',
+                                                                                type: 'mcp',
+                                                                                category: 'custom',
+                                                                                icon: '·',
+                                                                                mcp_server_url: mcpForm.server_url,
+                                                                                mcp_server_name: mcpForm.server_name || mcpForm.server_url,
+                                                                                mcp_tool_name: tool.name,
+                                                                                parameters_schema: tool.inputSchema || {},
+                                                                                is_default: false,
+                                                                            })
+                                                                        });
+                                                                        loadAllTools();
+                                                                    } catch (e: any) {
+                                                                        alert(`${t('enterprise.tools.importFailed') || 'Import failed'}: ${e.message}`);
+                                                                    }
+                                                                }}>{t('enterprise.tools.import') || 'Import'}</button>
                                                             </div>
                                                         ))}
+                                                        <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'flex-end' }}>
+                                                            <button className="btn btn-primary" style={{ padding: '6px 14px', fontSize: '12px' }} onClick={async () => {
+                                                                const tools = mcpTestResult.tools || [];
+                                                                let successCount = 0;
+                                                                const errors: string[] = [];
+                                                                for (const tool of tools) {
+                                                                    try {
+                                                                        await fetchJson('/tools', {
+                                                                            method: 'POST', body: JSON.stringify({
+                                                                                name: `mcp_${tool.name}`,
+                                                                                display_name: tool.name,
+                                                                                description: tool.description || '',
+                                                                                type: 'mcp',
+                                                                                category: 'custom',
+                                                                                icon: '·',
+                                                                                mcp_server_url: mcpForm.server_url,
+                                                                                mcp_server_name: mcpForm.server_name || mcpForm.server_url,
+                                                                                mcp_tool_name: tool.name,
+                                                                                parameters_schema: tool.inputSchema || {},
+                                                                                is_default: false,
+                                                                            })
+                                                                        });
+                                                                        successCount++;
+                                                                    } catch (e: any) {
+                                                                        errors.push(`${tool.name}: ${e.message}`);
+                                                                    }
+                                                                }
+                                                                loadAllTools();
+                                                                setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '' }); setMcpRawInput('');
+                                                                if (errors.length > 0) {
+                                                                    alert(`Imported ${successCount}/${tools.length} tools.\nFailed:\n${errors.join('\n')}`);
+                                                                }
+                                                            }}>{t('enterprise.tools.importAll')}</button>
+                                                        </div>
                                                     </div>
                                                 ) : (
                                                     <div style={{ color: 'var(--danger)' }}>{t('enterprise.tools.connectionFailed')}: {mcpTestResult.error}</div>
