@@ -1718,6 +1718,13 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="http://localhost:30000/v1",
         default_max_tokens=4096,
     ),
+    "novita": ProviderSpec(
+        provider="novita",
+        display_name="Novita AI",
+        protocol="openai_compatible",
+        default_base_url="https://api.novita.ai/openai",
+        default_max_tokens=8192,
+    ),
     "custom": ProviderSpec(
         provider="custom",
         display_name="Custom",

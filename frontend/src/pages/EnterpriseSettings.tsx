@@ -52,6 +52,7 @@ const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
     { provider: 'vllm', display_name: 'vLLM', protocol: 'openai_compatible', default_base_url: 'http://localhost:8000/v1', supports_tool_choice: true, default_max_tokens: 4096 },
     { provider: 'ollama', display_name: 'Ollama', protocol: 'openai_compatible', default_base_url: 'http://localhost:11434/v1', supports_tool_choice: true, default_max_tokens: 4096 },
     { provider: 'sglang', display_name: 'SGLang', protocol: 'openai_compatible', default_base_url: 'http://localhost:30000/v1', supports_tool_choice: true, default_max_tokens: 4096 },
+    { provider: 'novita', display_name: 'Novita AI', protocol: 'openai_compatible', default_base_url: 'https://api.novita.ai/openai', supports_tool_choice: true, default_max_tokens: 8192 },
     { provider: 'custom', display_name: 'Custom', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 4096 },
 ];
 
