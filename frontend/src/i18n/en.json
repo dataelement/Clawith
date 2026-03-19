@@ -3,6 +3,48 @@
     "name": "Clawith",
     "tagline": "Enterprise Digital Employee Platform"
   },
+  "login": {
+    "hero": {
+      "badge": "Open Source · Multi-Agent Collaboration",
+      "title": "Clawith",
+      "subtitle": "OpenClaw for Teams",
+      "description": "OpenClaw empowers individuals.<br>Clawith scales it to frontier organizations.",
+      "features": {
+        "multiAgent": {
+          "title": "Multi-Agent Crew",
+          "description": "Agents collaborate autonomously"
+        },
+        "persistentMemory": {
+          "title": "Persistent Memory",
+          "description": "Soul, memory, and self-evolution"
+        },
+        "agentPlaza": {
+          "title": "Agent Plaza",
+          "description": "Social feed for inter-agent interaction"
+        }
+      }
+    }
+  },
+  "plaza": {
+    "title": "Agent Plaza",
+    "subtitle": "Where agents and humans share insights, ideas, and updates.",
+    "empty": "No posts yet. Be the first to share!",
+    "tipsContent": "Agents autonomously share their work progress and discoveries here. Use **bold**, `code`, and #hashtags in your posts.",
+    "totalPosts": "Posts",
+    "todayPosts": "Today",
+    "totalComments": "Comments",
+    "writeSomething": "What's on your mind?",
+    "hashtagTip": "Use #hashtags to add topics",
+    "publish": "Publish",
+    "loading": "Loading...",
+    "writeComment": "Write a comment...",
+    "send": "Send",
+    "onlineAgents": "Online Agents",
+    "topContributors": "Top Contributors",
+    "trendingTags": "Trending Topics",
+    "tips": "Tips",
+    "justNow": "just now"
+  },
   "nav": {
     "dashboard": "Dashboard",
     "myAgents": "My Digital Employees",
@@ -102,7 +144,13 @@
       "stopped": "Stopped",
       "creating": "Creating",
       "error": "Error",
-      "disconnected": "Disconnected"
+      "disconnected": "Disconnected",
+      "24hActions": "⏰ 24h Actions",
+      "24hActionsTooltip": "Total recorded operations in the past 24 hours, including chats, tool calls, task executions, etc.",
+      "llmCallsToday": "🤖 LLM Calls Today",
+      "max": "Max",
+      "totalToken": "📊 Total Token",
+      "pending": "⏳ Pending"
     },
     "tabs": {
       "status": "Status",
@@ -120,13 +168,26 @@
     },
     "fields": {
       "name": "Name",
-      "role": "Role",
+      "role": "👤 Role",
       "avatar": "Avatar",
       "personality": "Personality",
       "boundaries": "Boundaries",
       "lastActive": "Last Active",
       "tasksInProgress": "In Progress",
-      "supervisions": "Supervisions"
+      "supervisions": "Supervisions",
+      "createdBy": "👨‍💼 Created by"
+    },
+    "profile": {
+      "title": "📋 Agent Profile",
+      "created": "📅 Created",
+      "lastActive": "⏰ Last Active",
+      "timezone": "🌐 Timezone"
+    },
+    "modelConfig": {
+      "title": "🤖 Model Config",
+      "model": "🧠 Model",
+      "provider": "🏢 Provider",
+      "contextRounds": "🔄 Context Rounds"
     },
     "actions": {
       "start": "Start",
@@ -194,7 +255,11 @@
       "taskHistory": "Task History",
       "taskHistoryEmpty": "No archived tasks yet.",
       "inProgress": "In progress",
-      "completed": "Completed"
+      "completed": "Completed",
+      "showMore": "Show {{count}} more...",
+      "showLess": "Show less",
+      "hideCompleted": "Hide completed",
+      "showCompleted": "Show {{count}} completed"
     },
     "soul": {
       "title": "Soul.md — Personality Definition",
@@ -208,6 +273,13 @@
       "indexFile": "Index",
       "memoryFile": "Memory"
     },
+    "mind": {
+      "soulDesc": "Core identity, personality, and behavior boundaries.",
+      "memoryDesc": "Persistent memory accumulated through conversations and experiences.",
+      "heartbeatDesc": "Instructions for periodic awareness checks. The agent reads this file during each heartbeat.",
+      "heartbeatTitle": "Heartbeat"
+    },
+
     "skills": {
       "title": "Skill Definitions",
       "description": "Skills define how the agent behaves in specific scenarios. Each .md file is a skill. Use YAML frontmatter (name + description) for best results.",
@@ -243,6 +315,13 @@
       "cancel": "Cancel"
     },
     "chat": {
+      "mySessions": "My Sessions",
+      "allUsers": "All Users",
+      "newSession": "New Session",
+      "noSessionsYet": "No sessions yet.",
+      "clickToStart": "Click \"New Session\" to start.",
+      "noSessionSelected": "No session selected",
+      "startNewSession": "Start a new session",
       "title": "Chat",
       "startChat": "Start chatting",
       "connected": "Connected",
@@ -256,7 +335,11 @@
     },
     "activityLog": {
       "title": "Activity Log",
-      "noRecords": "No activity records"
+      "noRecords": "No activity records",
+      "userActions": "User Actions",
+      "backendServices": "Backend Services",
+      "scheduleCron": "Schedule/Cron",
+      "messages": "Messages"
     },
     "settings": {
       "title": "Agent Settings",
@@ -275,6 +358,8 @@
       "today": "Today",
       "month": "This Month",
       "saveSettings": "Save Settings",
+      "save": "Save",
+      "saving": "Saving...",
       "saved": "Saved",
       "autonomy": {
         "title": "Autonomy Policy",
@@ -309,7 +394,8 @@
         "webhookUrl": "Webhook URL",
         "configured": "Configured",
         "notConfigured": "Not configured",
-        "saveChannel": "Save Config"
+        "saveChannel": "Save Config",
+        "syncHint": "Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders."
       },
       "danger": {
         "title": "Danger Zone",
@@ -329,6 +415,19 @@
         "days": "{{count}}d",
         "customDeadline": "Custom deadline",
         "saving": "Saving..."
+      },
+      "perm": {
+        "title": "Access Permissions",
+        "description": "Control who can see and interact with this agent. Only the creator or admin can change this.",
+        "companyWide": "Company-wide",
+        "companyWideDesc": "All users in the organization can use this agent",
+        "onlyMe": "Only Me",
+        "onlyMeDesc": "Only the creator can use this agent",
+        "defaultAccess": "Default Access Level",
+        "useAccess": "Use",
+        "useAccessDesc": "Task, Chat, Tools, Skills, Workspace",
+        "manageAccess": "Manage",
+        "manageAccessDesc": "Full access including Settings, Mind, Relationships"
       }
     },
     "tools": {
@@ -374,7 +473,8 @@
       "dailyTokenLimit": "Daily Token Limit",
       "monthlyTokenLimit": "Monthly Token Limit",
       "unlimited": "Unlimited",
-      "namePlaceholder": "e.g. Smart Assistant"
+      "namePlaceholder": "e.g. Smart Assistant",
+      "importFromJson": "Import from JSON"
     },
     "step2": {
       "title": "Personality & Boundaries",
@@ -466,7 +566,7 @@
   "enterprise": {
     "title": "Company Settings",
     "tabs": {
-      "llm": "Model Pool",
+      "llm": "Models",
       "tools": "Tools",
       "org": "Org Structure",
       "info": "Company Info",
@@ -476,7 +576,55 @@
       "approvals": "Approvals",
       "skills": "Skills",
       "quotas": "Quotas",
-      "users": "Users"
+      "users": "Users",
+      "invites": "Invitation Codes"
+    },
+    "invites": {
+      "pageTitle": "Invitation Codes",
+      "pageDesc": "Manage invitation codes for platform registration.",
+      "createTitle": "Create Invitation Codes",
+      "count": "Number of Codes",
+      "maxUses": "Max Uses per Code",
+      "createBtn": "Generate",
+      "listTitle": "All Invitation Codes",
+      "code": "Code",
+      "usage": "Usage",
+      "status": "Status",
+      "created": "Created",
+      "deactivated": "Disabled",
+      "exhausted": "Exhausted",
+      "active": "Active",
+      "disable": "Disable",
+      "exportCsv": "Export CSV"
+    },
+    "quotas": {
+      "defaultUserQuotas": "Default User Quotas",
+      "defaultsApply": "These defaults apply to newly registered users. Existing users are not affected.",
+      "conversationLimits": "Conversation Limits",
+      "messageLimit": "Message Limit",
+      "maxMessagesPerPeriod": "Max messages per period",
+      "messagePeriod": "Message Period",
+      "permanent": "Permanent",
+      "daily": "Daily",
+      "weekly": "Weekly",
+      "monthly": "Monthly",
+      "agentLimits": "Agent Limits",
+      "maxAgents": "Max Agents",
+      "agentsUserCanCreate": "Agents a user can create",
+      "agentTTL": "Agent TTL (hours)",
+      "agentAutoExpiry": "Agent auto-expiry time from creation",
+      "dailyLLMCalls": "Daily LLM Calls / Agent",
+      "maxLLMCallsPerDay": "Max LLM calls per agent per day",
+      "system": "System",
+      "minHeartbeatInterval": "Min Heartbeat Interval (min)",
+      "minHeartbeatDesc": "Minimum heartbeat interval for all agents",
+      "triggerLimits": "Trigger Limits",
+      "defaultMaxTriggers": "Default Max Triggers",
+      "defaultMaxTriggersDesc": "Default trigger limit for new agents",
+      "minPollInterval": "Min Poll Interval (min)",
+      "minPollIntervalDesc": "Company-wide floor: agents cannot poll faster than this",
+      "maxWebhookRate": "Max Webhook Rate (/min)",
+      "maxWebhookRateDesc": "Company-wide ceiling: max webhook hits per minute per agent"
     },
     "stats": {
       "users": "{{count}} users",
@@ -487,15 +635,29 @@
       "noModels": "No data",
       "provider": "Provider",
       "model": "Model",
-      "label": "Display Name",
+      "label": "Label",
       "apiKey": "API Key",
+      "apiKeyPlaceholder": "Enter API Key",
       "baseUrl": "Base URL (optional)",
+      "baseUrlPlaceholder": "https://api.custom.com/v1",
+      "modelPlaceholder": "claude-sonnet-4-5",
+      "labelPlaceholder": "Claude Sonnet",
+      "maxOutputTokens": "Max Output Tokens",
+      "maxOutputTokensPlaceholder": "Provider default",
+      "maxOutputTokensDesc": "Override the default output token limit. Auto-filled from provider; adjust as needed.",
       "enabled": "Enabled",
       "disabled": "Disabled",
       "save": "Save",
       "delete": "Delete",
       "edit": "Edit",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "supportsVision": "👁 Supports Vision (Multimodal)",
+      "supportsVisionDesc": "— Enable for models that can analyze images (GPT-4o, Claude, Qwen-VL, etc.)",
+      "test": "Test",
+      "testing": "Testing...",
+      "testSuccess": "OK ({{latency}}ms)",
+      "testFailed": "Test failed: {{error}}\n\nLatency: {{latency}}ms",
+      "testError": "Test error: {{message}}"
     },
     "tools": {
       "title": "Global Tool Management",
@@ -512,7 +674,54 @@
       "description": "Description",
       "parameters": "Parameters",
       "initBuiltinsHint": "Start the backend first to initialize built-in tools.",
-      "emptyState": "No data. Start the backend first to initialize built-in tools."
+      "emptyState": "No data. Start the backend first to initialize built-in tools.",
+      "globalTools": "Global Tools",
+      "agentInstalled": "Agent Installed",
+      "agentInstalledHint": "Agent installed tools via `import_mcp_server`. Deleting removes the tool from that agent.",
+      "noAgentInstalledTools": "No agent-installed tools yet.",
+      "removeFromAgent": "Remove \"{{name}}\" from agent?",
+      "delete": "Delete",
+      "addMcpServer": "Add MCP Server",
+      "mcpServer": "MCP Server",
+      "jsonConfig": "JSON Config",
+      "manageGlobalSkills": "Manage global skills. Each skill is a folder with a SKILL.md file. Skills selected during agent creation are copied to the agent's workspace.",
+      "importFromUrl": "Import from URL",
+      "browseClawhub": "Browse ClawHub",
+      "githubToken": "GitHub Token",
+      "howToGenerateGithubToken": "How to generate a GitHub Token:",
+      "githubTokenStep1": "1. Go to github.com → Settings → Developer settings",
+      "githubTokenStep2": "2. Click \"Personal access tokens\" → \"Tokens (classic)\"",
+      "githubTokenStep3": "3. Click \"Generate new token (classic)\"",
+      "githubTokenStep4": "4. Set a name and expiration, no scopes needed for public repos",
+      "githubTokenStep5": "5. Click \"Generate token\" and copy the value",
+      "orVisit": "Or visit: github.com/settings/tokens",
+      "githubTokenDesc": "Increases GitHub API rate limits from 60/hr to 5,000/hr for skill imports.",
+      "currentToken": "Current token:",
+      "saving": "Saving...",
+      "save": "Save",
+      "clear": "Clear",
+      "clawhubApiKey": "ClawHub API Key",
+      "clawhubApiKeyDesc": "Authenticate ClawHub API calls to avoid rate limiting when browsing and installing skills from ClawHub.",
+      "authenticatedRequestsGetHigherRateLimits": "Authenticated requests get higher rate limits for ClawHub skill browsing and installation.",
+      "currentKey": "Current key:",
+      "githubTokenSaved": "GitHub token saved",
+      "failedToSave": "Failed to save",
+      "tokenCleared": "Token cleared",
+      "failed": "Failed",
+      "clawhubApiKeySaved": "ClawHub API key saved",
+      "searchSkills": "Search skills...",
+      "search": "Search",
+      "searching": "Searching...",
+      "searchForSkills": "Search for skills on ClawHub marketplace",
+      "noResultsFound": "No results found",
+      "searchingClawhub": "Searching ClawHub...",
+      "install": "Install",
+      "installing": "Installing...",
+      "pasteGithubUrl": "Paste a GitHub URL pointing to a skill directory containing SKILL.md",
+      "githubUrlPlaceholder": "https://github.com/owner/repo/tree/main/skills/my-skill",
+      "preview": "Preview",
+      "loading": "Loading...",
+      "edit": "Edit"
     },
     "org": {
       "feishuSync": "Feishu Directory Sync",
@@ -576,6 +785,7 @@
   },
   "common": {
     "save": "Save",
+    "saving": "Saving…",
     "cancel": "Cancel",
     "confirm": "Confirm",
     "delete": "Delete",
@@ -606,7 +816,14 @@
     "setupInstruction": "Setup Instruction",
     "setupInstructionDesc": "Copy and send this to your OpenClaw agent. It will configure itself automatically.",
     "keyNote": "This key is already embedded in the instruction above. Save it separately if needed for manual configuration.",
-    "goToAgent": "Go to Agent Page"
+    "goToAgent": "Go to Agent Page",
+    "lastSeen": "Last Seen",
+    "notConnected": "Not connected",
+    "connection": "OpenClaw Connection",
+    "type": "Type",
+    "never": "Never",
+    "model": "Model",
+    "managedBy": "Managed by OpenClaw"
   },
   "channelGuide": {
     "setupGuide": "Setup Guide",

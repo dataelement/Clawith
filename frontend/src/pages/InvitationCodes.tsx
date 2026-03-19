@@ -133,7 +133,7 @@ export default function InvitationCodes() {
                         />
                         <button className="btn btn-secondary" onClick={exportCsv}
                             style={{ height: '30px', padding: '0 12px', fontSize: '11px', whiteSpace: 'nowrap' }}>
-                            Export CSV
+                            {t('enterprise.invites.exportCsv')}
                         </button>
                     </div>
                 </div>

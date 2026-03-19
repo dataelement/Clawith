@@ -467,7 +467,7 @@ function SkillsTab() {
                 <div>
                     <h3>{t('enterprise.tabs.skills', 'Skill Registry')}</h3>
                     <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                        Manage global skills. Each skill is a folder with a SKILL.md file. Skills selected during agent creation are copied to the agent's workspace.
+                        {t('enterprise.tools.manageGlobalSkills')}
                     </p>
                 </div>
                 <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
@@ -495,14 +495,14 @@ function SkillsTab() {
                         style={{ fontSize: '13px' }}
                         onClick={() => { setShowUrlModal(true); setUrlInput(''); setUrlPreview(null); }}
                     >
-                        Import from URL
+                        {t('enterprise.tools.importFromUrl')}
                     </button>
                     <button
                         className="btn btn-primary"
                         style={{ fontSize: '13px' }}
                         onClick={() => { setShowClawhubModal(true); setSearchQuery(''); setSearchResults([]); setHasSearched(false); }}
                     >
-                        Browse ClawHub
+                        {t('enterprise.tools.browseClawhub')}
                     </button>
                 </div>
             </div>
@@ -515,28 +515,28 @@ function SkillsTab() {
                     background: 'var(--bg-secondary, rgba(255,255,255,0.02))',
                 }}>
                     <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        GitHub Token
+                        {t('enterprise.tools.githubToken')}
                         <span className="metric-tooltip-trigger" style={{ display: 'inline-flex', alignItems: 'center', cursor: 'help', color: 'var(--text-tertiary)' }}>
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
                             <span className="metric-tooltip" style={{ width: '300px', bottom: 'auto', top: 'calc(100% + 6px)', left: '-8px', fontWeight: 400 }}>
-                                <div style={{ marginBottom: '6px', fontWeight: 500 }}>How to generate a GitHub Token:</div>
-                                1. Go to github.com &rarr; Settings &rarr; Developer settings<br/>
-                                2. Click "Personal access tokens" &rarr; "Tokens (classic)"<br/>
-                                3. Click "Generate new token (classic)"<br/>
-                                4. Set a name and expiration, no scopes needed for public repos<br/>
-                                5. Click "Generate token" and copy the value<br/>
+                                <div style={{ marginBottom: '6px', fontWeight: 500 }}>{t('enterprise.tools.howToGenerateGithubToken')}</div>
+                                {t('enterprise.tools.githubTokenStep1')}<br/>
+                                {t('enterprise.tools.githubTokenStep2')}<br/>
+                                {t('enterprise.tools.githubTokenStep3')}<br/>
+                                {t('enterprise.tools.githubTokenStep4')}<br/>
+                                {t('enterprise.tools.githubTokenStep5')}<br/>
                                 <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                    Or visit: github.com/settings/tokens
+                                    {t('enterprise.tools.orVisit')}
                                 </div>
                             </span>
                         </span>
                     </div>
                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                        Increases GitHub API rate limits from 60/hr to 5,000/hr for skill imports.
+                        {t('enterprise.tools.githubTokenDesc')}
                     </p>
                     {tokenStatus?.configured && (
                         <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                            Current token: <code style={{ padding: '2px 6px', borderRadius: '4px', background: 'var(--bg-tertiary)', fontSize: '11px' }}>{tokenStatus.masked}</code>
+                            {t('enterprise.tools.currentToken')} <code style={{ padding: '2px 6px', borderRadius: '4px', background: 'var(--bg-tertiary)', fontSize: '11px' }}>{tokenStatus.masked}</code>
                             <span style={{ marginLeft: '8px', color: 'var(--text-tertiary)' }}>({tokenStatus.source})</span>
                         </div>
                     )}
@@ -565,14 +565,14 @@ function SkillsTab() {
                                     const status = await skillApi.settings.getToken();
                                     setTokenStatus(status);
                                     setTokenInput('');
-                                    showToast('GitHub token saved');
+                                    showToast(t('enterprise.tools.githubTokenSaved'));
                                 } catch (e: any) {
-                                    showToast(e.message || 'Failed to save', 'error');
+                                    showToast(e.message || t('enterprise.tools.failedToSave'), 'error');
                                 }
                                 setSavingToken(false);
                             }}
                         >
-                            {savingToken ? 'Saving...' : 'Save'}
+                            {savingToken ? t('enterprise.tools.saving') : t('enterprise.tools.save')}
                         </button>
                         {tokenStatus?.configured && tokenStatus.source === 'tenant' && (
                             <button
@@ -583,13 +583,13 @@ function SkillsTab() {
                                         await skillApi.settings.setToken('');
                                         const status = await skillApi.settings.getToken();
                                         setTokenStatus(status);
-                                        showToast('Token cleared');
+                                        showToast(t('enterprise.tools.tokenCleared'));
                                     } catch (e: any) {
-                                        showToast(e.message || 'Failed', 'error');
+                                        showToast(e.message || t('enterprise.tools.failed'), 'error');
                                     }
                                 }}
                             >
-                                Clear
+                                {t('enterprise.tools.clear')}
                             </button>
                         )}
                     </div>
@@ -597,20 +597,20 @@ function SkillsTab() {
                     {/* ClawHub API Key */}
                     <div style={{ marginTop: '16px' }}>
                         <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            ClawHub API Key
+                            {t('enterprise.tools.clawhubApiKey')}
                             <span className="metric-tooltip-trigger" style={{ display: 'inline-flex', alignItems: 'center', cursor: 'help', color: 'var(--text-tertiary)' }}>
                                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
                                 <span className="metric-tooltip" style={{ width: '280px', bottom: 'auto', top: 'calc(100% + 6px)', left: '-8px', fontWeight: 400 }}>
-                                    Authenticate ClawHub API calls to avoid rate limiting when browsing and installing skills from ClawHub.
+                                    {t('enterprise.tools.clawhubApiKeyDesc')}
                                 </span>
                             </span>
                         </div>
                         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                            Authenticated requests get higher rate limits for ClawHub skill browsing and installation.
+                            {t('enterprise.tools.authenticatedRequestsGetHigherRateLimits')}
                         </p>
                         {tokenStatus?.clawhub_configured && (
                             <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                                Current key: <code style={{ padding: '2px 6px', borderRadius: '4px', background: 'var(--bg-tertiary)', fontSize: '11px' }}>{tokenStatus.clawhub_masked}</code>
+                                {t('enterprise.tools.currentKey')} <code style={{ padding: '2px 6px', borderRadius: '4px', background: 'var(--bg-tertiary)', fontSize: '11px' }}>{tokenStatus.clawhub_masked}</code>
                             </div>
                         )}
                         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -637,14 +637,14 @@ function SkillsTab() {
                                         const status = await skillApi.settings.getToken();
                                         setTokenStatus(status);
                                         setClawhubKeyInput('');
-                                        showToast('ClawHub API key saved');
+                                        showToast(t('enterprise.tools.clawhubApiKeySaved'));
                                     } catch (e: any) {
-                                        showToast(e.message || 'Failed to save', 'error');
+                                        showToast(e.message || t('enterprise.tools.failedToSave'), 'error');
                                     }
                                     setSavingClawhubKey(false);
                                 }}
                             >
-                                {savingClawhubKey ? 'Saving...' : 'Save'}
+                                {savingClawhubKey ? t('enterprise.tools.saving') : t('enterprise.tools.save')}
                             </button>
                             {tokenStatus?.clawhub_configured && (
                                 <button
@@ -655,13 +655,13 @@ function SkillsTab() {
                                             await skillApi.settings.setClawhubKey('');
                                             const status = await skillApi.settings.getToken();
                                             setTokenStatus(status);
-                                            showToast('ClawHub key cleared');
+                                            showToast(t('enterprise.tools.tokenCleared'));
                                         } catch (e: any) {
-                                            showToast(e.message || 'Failed', 'error');
+                                            showToast(e.message || t('enterprise.tools.failed'), 'error');
                                         }
                                     }}
                                 >
-                                    Clear
+                                    {t('enterprise.tools.clear')}
                                 </button>
                             )}
                         </div>
@@ -704,13 +704,13 @@ function SkillsTab() {
                         {/* Header */}
                         <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                <h3 style={{ margin: 0, fontSize: '16px' }}>Browse ClawHub</h3>
+                                <h3 style={{ margin: 0, fontSize: '16px' }}>{t('enterprise.tools.browseClawhub')}</h3>
                                 <button className="btn btn-ghost" onClick={() => setShowClawhubModal(false)} style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>x</button>
                             </div>
                             <div style={{ display: 'flex', gap: '8px' }}>
                                 <input
                                     className="input"
-                                    placeholder="Search skills..."
+                                    placeholder={t('enterprise.tools.searchSkills')}
                                     value={searchQuery}
                                     onChange={e => setSearchQuery(e.target.value)}
                                     onKeyDown={e => e.key === 'Enter' && handleSearch()}
@@ -718,7 +718,7 @@ function SkillsTab() {
                                     style={{ flex: 1, fontSize: '13px' }}
                                 />
                                 <button className="btn btn-primary" onClick={handleSearch} disabled={searching} style={{ fontSize: '13px' }}>
-                                    {searching ? 'Searching...' : 'Search'}
+                                    {searching ? t('enterprise.tools.searching') : t('enterprise.tools.search')}
                                 </button>
                             </div>
                         </div>
@@ -726,12 +726,12 @@ function SkillsTab() {
                         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 24px' }}>
                             {searchResults.length === 0 && !searching && (
                                 <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                                    {hasSearched ? 'No results found' : 'Search for skills on ClawHub marketplace'}
+                                    {hasSearched ? t('enterprise.tools.noResultsFound') : t('enterprise.tools.searchForSkills')}
                                 </div>
                             )}
                             {searching && (
                                 <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                                    Searching ClawHub...
+                                    {t('enterprise.tools.searchingClawhub')}
                                 </div>
                             )}
                             {searchResults.map((r: any) => (
@@ -754,7 +754,7 @@ function SkillsTab() {
                                         disabled={installing === r.slug}
                                         onClick={() => handleInstall(r.slug)}
                                     >
-                                        {installing === r.slug ? 'Installing...' : 'Install'}
+                                        {installing === r.slug ? t('enterprise.tools.installing') : t('enterprise.tools.install')}
                                     </button>
                                 </div>
                             ))}
@@ -775,16 +775,16 @@ function SkillsTab() {
                     }} onClick={e => e.stopPropagation()}>
                         <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                <h3 style={{ margin: 0, fontSize: '16px' }}>Import from URL</h3>
+                                <h3 style={{ margin: 0, fontSize: '16px' }}>{t('enterprise.tools.importFromUrl')}</h3>
                                 <button className="btn btn-ghost" onClick={() => setShowUrlModal(false)} style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>x</button>
                             </div>
                             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', margin: '0 0 12px' }}>
-                                Paste a GitHub URL pointing to a skill directory containing SKILL.md
+                                {t('enterprise.tools.pasteGithubUrl')}
                             </p>
                             <div style={{ display: 'flex', gap: '8px' }}>
                                 <input
                                     className="input"
-                                    placeholder="https://github.com/owner/repo/tree/main/skills/my-skill"
+                                    placeholder={t('enterprise.tools.githubUrlPlaceholder')}
                                     value={urlInput}
                                     onChange={e => { setUrlInput(e.target.value); setUrlPreview(null); }}
                                     autoFocus
@@ -792,7 +792,7 @@ function SkillsTab() {
                                     onKeyDown={e => e.key === 'Enter' && handleUrlPreview()}
                                 />
                                 <button className="btn btn-secondary" onClick={handleUrlPreview} disabled={urlPreviewing || !urlInput.trim()} style={{ fontSize: '12px' }}>
-                                    {urlPreviewing ? 'Loading...' : 'Preview'}
+                                    {urlPreviewing ? t('enterprise.tools.loading') : t('enterprise.tools.preview')}
                                 </button>
                             </div>
                         </div>
@@ -1235,7 +1235,7 @@ export default function EnterpriseSettings() {
                                 <h3 style={{ marginBottom: '16px' }}>{t('enterprise.llm.addModel')}</h3>
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                                     <div className="form-group">
-                                        <label className="form-label">Provider</label>
+                                        <label className="form-label">{t('enterprise.llm.provider')}</label>
                                         <select className="form-input" value={modelForm.provider} onChange={e => {
                                             const newProvider = e.target.value;
                                             const spec = providerOptions.find(p => p.provider === newProvider);
@@ -1256,32 +1256,32 @@ export default function EnterpriseSettings() {
                                         </select>
                                     </div>
                                     <div className="form-group">
-                                        <label className="form-label">Model</label>
-                                        <input className="form-input" placeholder="claude-sonnet-4-5" value={modelForm.model} onChange={e => setModelForm({ ...modelForm, model: e.target.value })} />
+                                        <label className="form-label">{t('enterprise.llm.model')}</label>
+                                        <input className="form-input" placeholder={t('enterprise.llm.modelPlaceholder')} value={modelForm.model} onChange={e => setModelForm({ ...modelForm, model: e.target.value })} />
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.label')}</label>
-                                        <input className="form-input" placeholder="Claude Sonnet" value={modelForm.label} onChange={e => setModelForm({ ...modelForm, label: e.target.value })} />
+                                        <input className="form-input" placeholder={t('enterprise.llm.labelPlaceholder')} value={modelForm.label} onChange={e => setModelForm({ ...modelForm, label: e.target.value })} />
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.baseUrl')}</label>
-                                        <input className="form-input" placeholder="https://api.custom.com/v1" value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
+                                        <input className="form-input" placeholder={t('enterprise.llm.baseUrlPlaceholder')} value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
                                     </div>
                                     <div className="form-group" style={{ gridColumn: 'span 2' }}>
-                                        <label className="form-label">API Key</label>
-                                        <input className="form-input" type="password" placeholder="Enter API Key" value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value })} />
+                                        <label className="form-label">{t('enterprise.llm.apiKey')}</label>
+                                        <input className="form-input" type="password" placeholder={t('enterprise.llm.apiKeyPlaceholder')} value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value })} />
                                     </div>
                                     <div className="form-group" style={{ gridColumn: 'span 2' }}>
                                         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
                                             <input type="checkbox" checked={modelForm.supports_vision} onChange={e => setModelForm({ ...modelForm, supports_vision: e.target.checked })} />
-                                            👁 Supports Vision (Multimodal)
-                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 400 }}>— Enable for models that can analyze images (GPT-4o, Claude, Qwen-VL, etc.)</span>
+                                            {t('enterprise.llm.supportsVision')}
+                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 400 }}>{t('enterprise.llm.supportsVisionDesc')}</span>
                                         </label>
                                     </div>
                                     <div className="form-group">
-                                        <label className="form-label">Max Output Tokens</label>
-                                        <input className="form-input" type="number" placeholder="Provider default" value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Override the default output token limit. Auto-filled from provider; adjust as needed.</div>
+                                        <label className="form-label">{t('enterprise.llm.maxOutputTokens')}</label>
+                                        <input className="form-input" type="number" placeholder={t('enterprise.llm.maxOutputTokensPlaceholder')} value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc')}</div>
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
@@ -1289,7 +1289,7 @@ export default function EnterpriseSettings() {
                                     <button className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '6px' }} disabled={!modelForm.model || !modelForm.api_key} onClick={async () => {
                                         const btn = document.activeElement as HTMLButtonElement;
                                         const origText = btn?.textContent || '';
-                                        if (btn) btn.textContent = 'Testing...';
+                                        if (btn) btn.textContent = t('enterprise.llm.testing');
                                         try {
                                             const token = localStorage.getItem('token');
                                             const testData: any = { provider: modelForm.provider, model: modelForm.model, base_url: modelForm.base_url || undefined };
@@ -1301,17 +1301,17 @@ export default function EnterpriseSettings() {
                                             });
                                             const result = await res.json();
                                             if (result.success) {
-                                                if (btn) { btn.textContent = `OK (${result.latency_ms}ms)`; btn.style.color = 'var(--success)'; }
+                                                if (btn) { btn.textContent = t('enterprise.llm.testSuccess', { latency: result.latency_ms }); btn.style.color = 'var(--success)'; }
                                                 setTimeout(() => { if (btn) { btn.textContent = origText; btn.style.color = ''; } }, 3000);
                                             } else {
-                                                alert(`Test failed: ${result.error || 'Unknown error'}\n\nLatency: ${result.latency_ms}ms`);
+                                                alert(t('enterprise.llm.testFailed', { error: result.error || 'Unknown error', latency: result.latency_ms }));
                                                 if (btn) btn.textContent = origText;
                                             }
                                         } catch (e: any) {
-                                            alert(`Test error: ${e.message}`);
+                                            alert(t('enterprise.llm.testError', { message: e.message }));
                                             if (btn) btn.textContent = origText;
                                         }
-                                    }}>Test</button>
+                                    }}>{t('enterprise.llm.test')}</button>
                                     <button className="btn btn-primary" onClick={() => {
                                         const data = { ...modelForm, max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null };
                                         addModel.mutate(data);
@@ -1331,7 +1331,7 @@ export default function EnterpriseSettings() {
                                             <h3 style={{ marginBottom: '16px' }}>Edit Model</h3>
                                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                                                 <div className="form-group">
-                                                    <label className="form-label">Provider</label>
+                                                    <label className="form-label">{t('enterprise.llm.provider')}</label>
                                                     <select className="form-input" value={modelForm.provider} onChange={e => {
                                                         const newProvider = e.target.value;
                                                         setModelForm(f => ({ ...f, provider: newProvider }));
@@ -1345,32 +1345,32 @@ export default function EnterpriseSettings() {
                                                     </select>
                                                 </div>
                                                 <div className="form-group">
-                                                    <label className="form-label">Model</label>
-                                                    <input className="form-input" placeholder="claude-sonnet-4-5" value={modelForm.model} onChange={e => setModelForm({ ...modelForm, model: e.target.value })} />
+                                                    <label className="form-label">{t('enterprise.llm.model')}</label>
+                                                    <input className="form-input" placeholder={t('enterprise.llm.modelPlaceholder')} value={modelForm.model} onChange={e => setModelForm({ ...modelForm, model: e.target.value })} />
                                                 </div>
                                                 <div className="form-group">
                                                     <label className="form-label">{t('enterprise.llm.label')}</label>
-                                                    <input className="form-input" placeholder="Claude Sonnet" value={modelForm.label} onChange={e => setModelForm({ ...modelForm, label: e.target.value })} />
+                                                    <input className="form-input" placeholder={t('enterprise.llm.labelPlaceholder')} value={modelForm.label} onChange={e => setModelForm({ ...modelForm, label: e.target.value })} />
                                                 </div>
                                                 <div className="form-group">
                                                     <label className="form-label">{t('enterprise.llm.baseUrl')}</label>
-                                                    <input className="form-input" placeholder="https://api.custom.com/v1" value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
+                                                    <input className="form-input" placeholder={t('enterprise.llm.baseUrlPlaceholder')} value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
                                                 </div>
                                                 <div className="form-group" style={{ gridColumn: 'span 2' }}>
-                                                    <label className="form-label">API Key</label>
+                                                    <label className="form-label">{t('enterprise.llm.apiKey')}</label>
                                                     <input className="form-input" type="password" placeholder="•••••••• (Leave blank to keep unchanged)" value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value })} />
                                                 </div>
                                                 <div className="form-group" style={{ gridColumn: 'span 2' }}>
                                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
                                                         <input type="checkbox" checked={modelForm.supports_vision} onChange={e => setModelForm({ ...modelForm, supports_vision: e.target.checked })} />
-                                                        👁 Supports Vision (Multimodal)
-                                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 400 }}>— Enable for models that can analyze images (GPT-4o, Claude, Qwen-VL, etc.)</span>
+                                                        {t('enterprise.llm.supportsVision')}
+                                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 400 }}>{t('enterprise.llm.supportsVisionDesc')}</span>
                                                     </label>
                                                 </div>
                                                 <div className="form-group">
-                                                    <label className="form-label">Max Output Tokens</label>
-                                                    <input className="form-input" type="number" placeholder="Provider default" value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Override the default output token limit. Auto-filled from provider; adjust as needed.</div>
+                                                    <label className="form-label">{t('enterprise.llm.maxOutputTokens')}</label>
+                                                    <input className="form-input" type="number" placeholder={t('enterprise.llm.maxOutputTokensPlaceholder')} value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc')}</div>
                                                 </div>
                                             </div>
                                             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
@@ -1378,7 +1378,7 @@ export default function EnterpriseSettings() {
                                                 <button className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '6px' }} disabled={!modelForm.model} onClick={async () => {
                                                     const btn = document.activeElement as HTMLButtonElement;
                                                     const origText = btn?.textContent || '';
-                                                    if (btn) btn.textContent = 'Testing...';
+                                                    if (btn) btn.textContent = t('enterprise.llm.testing');
                                                     try {
                                                         const token = localStorage.getItem('token');
                                                         const testData: any = { provider: modelForm.provider, model: modelForm.model, base_url: modelForm.base_url || undefined };
@@ -1391,17 +1391,17 @@ export default function EnterpriseSettings() {
                                                         });
                                                         const result = await res.json();
                                                         if (result.success) {
-                                                            if (btn) { btn.textContent = `OK (${result.latency_ms}ms)`; btn.style.color = 'var(--success)'; }
+                                                            if (btn) { btn.textContent = t('enterprise.llm.testSuccess', { latency: result.latency_ms }); btn.style.color = 'var(--success)'; }
                                                             setTimeout(() => { if (btn) { btn.textContent = origText; btn.style.color = ''; } }, 3000);
                                                         } else {
-                                                            alert(`Test failed: ${result.error || 'Unknown error'}\n\nLatency: ${result.latency_ms}ms`);
+                                                            alert(t('enterprise.llm.testFailed', { error: result.error || 'Unknown error', latency: result.latency_ms }));
                                                             if (btn) btn.textContent = origText;
                                                         }
                                                     } catch (e: any) {
-                                                        alert(`Test error: ${e.message}`);
+                                                        alert(t('enterprise.llm.testError', { message: e.message }));
                                                         if (btn) btn.textContent = origText;
                                                     }
-                                                }}>Test</button>
+                                                }}>{t('enterprise.llm.test')}</button>
                                                 <button className="btn btn-primary" onClick={() => {
                                                     const data = { ...modelForm, max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null };
                                                     updateModel.mutate({ id: editingModelId!, data });
@@ -1429,7 +1429,7 @@ export default function EnterpriseSettings() {
                                                     setEditingModelId(m.id);
                                                     setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '' });
                                                     setShowAddModel(true);
-                                                }} style={{ fontSize: '12px' }}>✏️ Edit</button>
+                                                }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
                                             </div>
                                         </div>
@@ -1621,68 +1621,68 @@ export default function EnterpriseSettings() {
                 {/* ── Quotas Tab ── */}
                 {activeTab === 'quotas' && (
                     <div>
-                        <h3 style={{ marginBottom: '4px' }}>Default User Quotas</h3>
+                        <h3 style={{ marginBottom: '4px' }}>{t('enterprise.quotas.defaultUserQuotas')}</h3>
                         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
-                            These defaults apply to newly registered users. Existing users are not affected.
+                            {t('enterprise.quotas.defaultsApply')}
                         </p>
                         <div className="card" style={{ padding: '16px' }}>
                             {/* ── Conversation Limits ── */}
-                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>Conversation Limits</div>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>{t('enterprise.quotas.conversationLimits')}</div>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
                                 <div className="form-group">
-                                    <label className="form-label">Message Limit</label>
+                                    <label className="form-label">{t('enterprise.quotas.messageLimit')}</label>
                                     <input className="form-input" type="number" min={0} value={quotaForm.default_message_limit}
                                         onChange={e => setQuotaForm({ ...quotaForm, default_message_limit: Number(e.target.value) })} />
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Max messages per period</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.quotas.maxMessagesPerPeriod')}</div>
                                 </div>
                                 <div className="form-group">
-                                    <label className="form-label">Message Period</label>
+                                    <label className="form-label">{t('enterprise.quotas.messagePeriod')}</label>
                                     <select className="form-input" value={quotaForm.default_message_period}
                                         onChange={e => setQuotaForm({ ...quotaForm, default_message_period: e.target.value })}>
-                                        <option value="permanent">Permanent</option>
-                                        <option value="daily">Daily</option>
-                                        <option value="weekly">Weekly</option>
-                                        <option value="monthly">Monthly</option>
+                                        <option value="permanent">{t('enterprise.quotas.permanent')}</option>
+                                        <option value="daily">{t('enterprise.quotas.daily')}</option>
+                                        <option value="weekly">{t('enterprise.quotas.weekly')}</option>
+                                        <option value="monthly">{t('enterprise.quotas.monthly')}</option>
                                     </select>
                                 </div>
                             </div>
 
                             {/* ── Agent Limits ── */}
-                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>Agent Limits</div>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>{t('enterprise.quotas.agentLimits')}</div>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '20px' }}>
                                 <div className="form-group">
-                                    <label className="form-label">Max Agents</label>
+                                    <label className="form-label">{t('enterprise.quotas.maxAgents')}</label>
                                     <input className="form-input" type="number" min={0} value={quotaForm.default_max_agents}
                                         onChange={e => setQuotaForm({ ...quotaForm, default_max_agents: Number(e.target.value) })} />
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Agents a user can create</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.quotas.agentsUserCanCreate')}</div>
                                 </div>
                                 <div className="form-group">
-                                    <label className="form-label">Agent TTL (hours)</label>
+                                    <label className="form-label">{t('enterprise.quotas.agentTTL')}</label>
                                     <input className="form-input" type="number" min={1} value={quotaForm.default_agent_ttl_hours}
                                         onChange={e => setQuotaForm({ ...quotaForm, default_agent_ttl_hours: Number(e.target.value) })} />
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Agent auto-expiry time from creation</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.quotas.agentAutoExpiry')}</div>
                                 </div>
                                 <div className="form-group">
-                                    <label className="form-label">Daily LLM Calls / Agent</label>
+                                    <label className="form-label">{t('enterprise.quotas.dailyLLMCalls')}</label>
                                     <input className="form-input" type="number" min={0} value={quotaForm.default_max_llm_calls_per_day}
                                         onChange={e => setQuotaForm({ ...quotaForm, default_max_llm_calls_per_day: Number(e.target.value) })} />
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Max LLM calls per agent per day</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.quotas.maxLLMCallsPerDay')}</div>
                                 </div>
                             </div>
 
                             {/* ── System Limits ── */}
-                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>System</div>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>{t('enterprise.quotas.system')}</div>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
                                 <div className="form-group">
-                                    <label className="form-label">Min Heartbeat Interval (min)</label>
+                                    <label className="form-label">{t('enterprise.quotas.minHeartbeatInterval')}</label>
                                     <input className="form-input" type="number" min={1} value={quotaForm.min_heartbeat_interval_minutes}
                                         onChange={e => setQuotaForm({ ...quotaForm, min_heartbeat_interval_minutes: Number(e.target.value) })} />
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Minimum heartbeat interval for all agents</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.quotas.minHeartbeatDesc')}</div>
                                 </div>
                             </div>
 
                             {/* ── Trigger Limits ── */}
-                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>Trigger Limits</div>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>{t('enterprise.quotas.triggerLimits')}</div>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '20px' }}>
                                 <div className="form-group">
                                     <label className="form-label">{t('enterprise.quotas.defaultMaxTriggers', 'Default Max Triggers')}</label>
@@ -1730,7 +1730,7 @@ export default function EnterpriseSettings() {
                     <div>
                         {/* Sub-tab pills */}
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px' }}>
-                            {([['global', 'Global Tools'], ['agent-installed', 'Agent-installed']] as const).map(([key, label]) => (
+                            {([['global', t('enterprise.tools.globalTools')], ['agent-installed', t('enterprise.tools.agentInstalled')]] as const).map(([key, label]) => (
                                 <button key={key} onClick={() => { setToolsView(key as any); if (key === 'agent-installed') loadAgentInstalledTools(); }} style={{
                                     padding: '4px 14px', borderRadius: '12px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', border: 'none',
                                     background: toolsView === key ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
@@ -1742,9 +1742,9 @@ export default function EnterpriseSettings() {
                         {/* Agent-Installed Tools */}
                         {toolsView === 'agent-installed' && (
                             <div>
-                                <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>Tools installed by agents via <code>import_mcp_server</code>. Deleting removes the tool from that agent.</p>
+                                <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>{t('enterprise.tools.agentInstalledHint')}</p>
                                 {agentInstalledTools.length === 0 ? (
-                                    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>No agent-installed tools yet.</div>
+                                    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('enterprise.tools.noAgentInstalledTools')}</div>
                                 ) : (
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                         {agentInstalledTools.map((row: any) => (
@@ -1760,14 +1760,14 @@ export default function EnterpriseSettings() {
                                                     </div>
                                                 </div>
                                                 <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={async () => {
-                                                    if (!confirm(`Remove "${row.tool_display_name}" from agent?`)) return;
+                                                    if (!confirm(t('enterprise.tools.removeFromAgent', { name: row.tool_display_name }))) return;
                                                     try {
                                                         await fetchJson(`/tools/agent-tool/${row.agent_tool_id}`, { method: 'DELETE' });
                                                     } catch {
                                                         // Already deleted (e.g. removed via Global Tools) — just refresh
                                                     }
                                                     loadAgentInstalledTools();
-                                                }}>🗑️ Delete</button>
+                                                }}>🗑️ {t('enterprise.tools.delete')}</button>
                                             </div>
                                         ))}
                                     </div>
@@ -1778,15 +1778,15 @@ export default function EnterpriseSettings() {
                         {toolsView === 'global' && <>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                                 <h3>{t('enterprise.tools.title')}</h3>
-                                <button className="btn btn-primary" onClick={() => setShowAddMCP(true)}>+ MCP Server</button>
+                                <button className="btn btn-primary" onClick={() => setShowAddMCP(true)}>+ {t('enterprise.tools.addMcpServer')}</button>
                             </div>
 
                             {showAddMCP && (
                                 <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-                                    <h4 style={{ marginBottom: '12px' }}>MCP Server</h4>
+                                    <h4 style={{ marginBottom: '12px' }}>{t('enterprise.tools.mcpServer')}</h4>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                         <div>
-                                            <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>JSON Config</label>
+                                            <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>{t('enterprise.tools.jsonConfig')}</label>
                                             <textarea className="form-input" value={mcpRawInput} onChange={e => {
                                                 const val = e.target.value;
                                                 setMcpRawInput(val);

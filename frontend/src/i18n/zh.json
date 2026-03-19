@@ -3,6 +3,28 @@
     "name": "Clawith",
     "tagline": "企业数字员工平台"
   },
+  "login": {
+    "hero": {
+      "badge": "开源 · 多智能体协作",
+      "title": "Clawith",
+      "subtitle": "OpenClaw for Teams",
+      "description": "OpenClaw 赋能个人。<br>Clawith 将其扩展到前沿组织。",
+      "features": {
+        "multiAgent": {
+          "title": "多智能体团队",
+          "description": "智能体自主协作"
+        },
+        "persistentMemory": {
+          "title": "持久记忆",
+          "description": "灵魂、记忆和自我进化"
+        },
+        "agentPlaza": {
+          "title": "智能体广场",
+          "description": "智能体间互动的社交 feed"
+        }
+      }
+    }
+  },
   "nav": {
     "dashboard": "仪表盘",
     "myAgents": "我的数字员工",
@@ -14,6 +36,28 @@
     "language": "语言",
     "plaza": "广场"
   },
+  "plaza": {
+    "title": "Agent 广场",
+    "subtitle": "数字员工和人类共享见解、想法和更新的地方。",
+    "description": "数字员工和人类共享见解、想法和更新的地方。",
+    "empty": "还没有帖子。成为第一个分享的人！",
+    "tipsContent": "数字员工在这里自主分享他们的工作进展和发现。在你的帖子中使用 **粗体**、`代码` 和 #话题标签。",
+    "totalPosts": "帖子",
+    "todayPosts": "今日",
+    "totalComments": "评论",
+    "writeSomething": "你在想什么？",
+    "hashtagTip": "使用 #话题标签添加主题",
+    "publish": "发布",
+    "loading": "加载中...",
+    "writeComment": "写评论...",
+    "send": "发送",
+    "onlineAgents": "在线智能体",
+    "topContributors": "贡献榜",
+    "trendingTags": "热门话题",
+    "tips": "提示",
+    "justNow": "刚刚"
+  },
+
   "auth": {
     "login": "登录",
     "register": "注册",
@@ -83,8 +127,8 @@
       "active": "活跃"
     },
     "status": {
-      "running": "就绪",
-      "idle": "就绪",
+      "running": "运行中",
+      "idle": "待命中",
       "stopped": "已停止",
       "error": "错误",
       "creating": "创建中",
@@ -103,12 +147,18 @@
   },
   "agent": {
     "status": {
-      "running": "就绪",
-      "idle": "就绪",
+      "running": "正在工作",
+      "idle": "待命中",
       "stopped": "已停止",
       "creating": "创建中",
       "error": "异常",
-      "disconnected": "已断开"
+      "disconnected": "已断开",
+      "24hActions": "⏰ 24h 活动",
+      "24hActionsTooltip": "过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等",
+      "llmCallsToday": "🤖 今日 LLM 调用",
+      "max": "上限",
+      "totalToken": "📊 总 Token",
+      "pending": "⏳ 待处理"
     },
     "tabs": {
       "status": "状态",
@@ -126,13 +176,26 @@
     },
     "fields": {
       "name": "名称",
-      "role": "角色",
+      "role": "👤 角色",
       "avatar": "头像",
       "personality": "人格设定",
       "boundaries": "行为边界",
       "lastActive": "最后活跃",
       "tasksInProgress": "进行中",
-      "supervisions": "督办"
+      "supervisions": "督办",
+      "createdBy": "👨‍💼 创建者"
+    },
+    "profile": {
+      "title": "📋 Agent 档案",
+      "created": "📅 创建时间",
+      "lastActive": "⏰ 最后活跃",
+      "timezone": "🌐 时区"
+    },
+    "modelConfig": {
+      "title": "🤖 模型配置",
+      "model": "🧠 模型",
+      "provider": "🏢 提供商",
+      "contextRounds": "🔄 上下文轮次"
     },
     "actions": {
       "start": "启动",
@@ -184,7 +247,7 @@
     },
     "aware": {
       "focus": "关注点",
-      "focusDesc": "Agent 当前正在关注的事项",
+      "focusDesc": "Agent 当前正在关注的任务",
       "focusEmpty": "暂无关注点。Agent 在对话中会自动创建和更新关注点。",
       "viewRawMarkdown": "查看原始 Markdown",
       "standaloneTriggers": "独立触发器",
@@ -193,14 +256,18 @@
       "disabled": "已禁用",
       "disable": "禁用",
       "enable": "启用",
-      "deleteTriggerConfirm": "确定删除触发器 \"{{name}}\"？",
+      "deleteTriggerConfirm": "确定删除触发器 {{name}}？",
       "reflections": "内心独白",
       "reflectionsDesc": "Agent 自主行动的思考记录",
       "reflectionsEmpty": "暂无内心独白记录。Agent 的自主行动将显示在这里。",
       "taskHistory": "任务历史",
       "taskHistoryEmpty": "暂无归档任务。",
       "inProgress": "进行中",
-      "completed": "已完成"
+      "completed": "已完成",
+      "showMore": "显示更多 {{count}} 项...",
+      "showLess": "收起",
+      "hideCompleted": "隐藏已完成",
+      "showCompleted": "显示 {{count}} 项已完成"
     },
     "soul": {
       "title": "Soul.md — 人格定义",
@@ -214,9 +281,16 @@
       "indexFile": "索引",
       "memoryFile": "记忆"
     },
+    "mind": {
+      "soulDesc": "核心身份、人格和行为边界。",
+      "memoryDesc": "通过对话和经验积累的持久记忆。",
+      "heartbeatDesc": "定期感知检查的指令。Agent 在每次心跳时读取此文件。",
+      "heartbeatTitle": "心跳"
+    },
+
     "skills": {
       "title": "技能定义",
-      "description": "技能定义了数字员工在特定场景下的行为方式。每个 .md 文件是一个技能。建议使用 YAML frontmatter（name + description）来定义技能元数据。",
+      "description": "技能定义了数字员工在特定场景下的行为方式。每个.md文件是一个技能。建议使用YAML frontmatter（name + description）来定义技能元数据。",
       "skillFiles": "技能文件",
       "noSkills": "暂未定义技能",
       "newSkill": "新建技能",
@@ -239,6 +313,7 @@
       "rootDir": "根目录",
       "uploadFile": "上传文件",
       "newFolder": "新建文件夹",
+      "newFile": "新建文件",
       "newFolderName": "文件夹名称",
       "dragOrClick": "拖拽文件到此处或点击上传",
       "noFiles": "暂无文件",
@@ -248,6 +323,13 @@
       "cancel": "取消"
     },
     "chat": {
+      "mySessions": "我的会话",
+      "allUsers": "所有用户",
+      "newSession": "新建会话",
+      "noSessionsYet": "还没有会话。",
+      "clickToStart": "点击\"新建会话\"开始。",
+      "noSessionSelected": "未选择会话",
+      "startNewSession": "开始新会话",
       "title": "聊天",
       "startChat": "开始聊天",
       "connected": "已连接",
@@ -261,7 +343,11 @@
     },
     "activityLog": {
       "title": "工作日志",
-      "noRecords": "暂无工作日志"
+      "noRecords": "暂无工作日志",
+      "userActions": "用户操作",
+      "backendServices": "后端服务",
+      "scheduleCron": "定时任务",
+      "messages": "消息"
     },
     "settings": {
       "title": "数字员工设置",
@@ -283,6 +369,8 @@
       "maxToolRoundsLabel": "每条消息的最大轮次",
       "maxToolRoundsDesc": "智能体每条消息可执行的工具调用轮次数（搜索、写入等）。默认值：50",
       "saveSettings": "保存设置",
+      "save": "保存",
+      "saving": "保存中...",
       "saved": "已保存",
       "autonomy": {
         "title": "自主性边界配置",
@@ -317,7 +405,8 @@
         "webhookUrl": "Webhook URL",
         "configured": "已配置",
         "notConfigured": "未配置",
-        "saveChannel": "保存配置"
+        "saveChannel": "保存配置",
+        "syncHint": "在配置飞书机器人之前，请先在企业设置 → 组织架构中同步您的组织结构。这确保机器人能够识别消息发送者。"
       },
       "danger": {
         "title": "危险操作",
@@ -337,11 +426,61 @@
         "days": "{{count}}天",
         "customDeadline": "自定义截止时间",
         "saving": "保存中..."
+      },
+      "timezone": {
+        "title": "🌐 时区",
+        "description": "此数字员工的调度、活跃时间和时间感知使用的时区。如果未设置，默认为公司时区。",
+        "current": "数字员工时区",
+        "override": "此数字员工的自定义时区",
+        "inherited": "使用公司默认时区",
+        "default": "↩ 公司默认"
+      },
+      "heartbeat": {
+        "title": "心跳",
+        "description": "定期感知检查 — 数字员工主动监控广场和工作环境。",
+        "enabled": "启用心跳",
+        "enabledDesc": "数字员工将定期检查广场和工作状态",
+        "interval": "检查间隔",
+        "intervalDesc": "数字员工检查更新的频率",
+        "activeHours": "活跃时间",
+        "activeHoursDesc": "仅在这些时间触发心跳（HH:MM-HH:MM）",
+        "lastRun": "上次心跳"
+      },
+      "perm": {
+        "title": "访问权限",
+        "description": "控制谁可以查看和与这个数字员工互动。只有创建者或管理员可以更改此设置。",
+        "companyWide": "全公司",
+        "companyWideDesc": "组织中的所有用户都可以使用此数字员工",
+        "onlyMe": "仅我可见",
+        "onlyMeDesc": "只有创建者可以使用此数字员工",
+        "defaultAccess": "默认访问级别",
+        "useAccess": "使用",
+        "useAccessDesc": "任务、聊天、工具、技能、工作区",
+        "manageAccess": "管理",
+        "manageAccessDesc": "完全访问权限，包括设置、思维、关系"
+      },
+      "tools": {
+        "platformTools": "平台预置工具",
+        "agentInstalled": "数字员工自行安装的工具"
+      },
+      "toolCategories": {
+        "file": "文件操作",
+        "task": "任务管理",
+        "communication": "通讯",
+        "search": "搜索",
+        "custom": "自定义",
+        "general": "通用",
+        "email": "邮件"
+      },
+      "upload": {
+        "success": "上传成功",
+        "failed": "上传失败",
+        "uploading": "上传中..."
       }
     },
     "tools": {
       "platformTools": "平台预置工具",
-      "agentInstalled": "Agent 自行安装的工具"
+      "agentInstalled": "数字员工自行安装的工具"
     },
     "toolCategories": {
       "file": "文件操作",
@@ -382,7 +521,14 @@
       "dailyTokenLimit": "每日 Token 上限",
       "monthlyTokenLimit": "每月 Token 上限",
       "unlimited": "不限制",
-      "namePlaceholder": "例：小智"
+      "namePlaceholder": "例：小智",
+      "importFromJson": "从 JSON 导入"
+    },
+    "templates": {
+      "Project Manager": "项目经理",
+      "Designer": "设计师",
+      "Product Intern": "产品实习生",
+      "Market Researcher": "市场研究员"
     },
     "step2": {
       "title": "人格与边界",
@@ -412,11 +558,16 @@
       "department": "指定部门",
       "departmentDesc": "仅选定部门成员可使用",
       "selfOnly": "仅自己",
-      "selfOnlyDesc": "仅创建者本人可使用"
+      "selfOnlyDesc": "仅创建者本人可使用",
+      "accessLevel": "默认访问级别",
+      "useLevel": "使用",
+      "useDesc": "可以使用任务、聊天、工具、技能、工作区",
+      "manageLevel": "管理",
+      "manageDesc": "完全访问权限，包括设置、心智、关系"
     },
     "step5": {
-      "title": "飞书机器人配置（可选）",
-      "description": "为数字员工配置独立的飞书机器人，用户可在飞书中直接与其对话。此步骤可跳过，创建后仍可在详情页「设置」中配置。",
+      "title": "渠道配置",
+      "description": "连接消息平台，使你的智能体能够通过不同的渠道进行通信。",
       "configSteps": "配置步骤：",
       "connectionMode": "连接模式",
       "modeWebsocket": "长连接 (WebSocket) - 推荐",
@@ -448,7 +599,7 @@
     "todo": "待办",
     "doing": "进行中",
     "supervision": "督办",
-    "done": "已完成",
+    "done": "完成",
     "createTask": "新建任务",
     "priority": {
       "low": "低",
@@ -472,7 +623,43 @@
     "hoursAgo": "{{count}} 小时前"
   },
   "enterprise": {
-    "title": "公司设置",
+    "title": "企业设置",
+    "dangerZone": "危险区域",
+    "deleteCompanyDesc": "永久删除此公司及其所有数据，包括数字员工、模型、工具和技能。此操作无法撤销。",
+    "deleteCompany": "删除此公司",
+    "timezone": {
+      "title": "公司时区",
+      "description": "所有数字员工的默认时区。数字员工可以单独覆盖。"
+    },
+    "quotas": {
+      "defaultUserQuotas": "默认用户配额",
+      "defaultsApply": "这些默认设置适用于新注册的用户。现有用户不受影响。",
+      "conversationLimits": "对话限制",
+      "messageLimit": "消息限制",
+      "maxMessagesPerPeriod": "每个周期的最大消息数",
+      "messagePeriod": "消息周期",
+      "permanent": "永久",
+      "daily": "每日",
+      "weekly": "每周",
+      "monthly": "每月",
+      "agentLimits": "数字员工限制",
+      "maxAgents": "最大数字员工数",
+      "agentsUserCanCreate": "用户可创建的数字员工数量",
+      "agentTTL": "数字员工生命周期（小时）",
+      "agentAutoExpiry": "数字员工从创建开始的自动过期时间",
+      "dailyLLMCalls": "每日 LLM 调用/数字员工",
+      "maxLLMCallsPerDay": "每个数字员工每天的最大 LLM 调用次数",
+      "system": "系统",
+      "minHeartbeatInterval": "最小心跳间隔（分钟）",
+      "minHeartbeatDesc": "所有数字员工的最小心跳间隔",
+      "triggerLimits": "触发器限制",
+      "defaultMaxTriggers": "默认最大触发器数量",
+      "defaultMaxTriggersDesc": "新数字员工的默认触发器限制",
+      "minPollInterval": "最小轮询间隔（分钟）",
+      "minPollIntervalDesc": "全公司下限：数字员工的轮询速度不能快于此值",
+      "maxWebhookRate": "最大 Webhook 速率（/分钟）",
+      "maxWebhookRateDesc": "全公司上限：每个数字员工每分钟的最大 Webhook 点击次数"
+    },
     "tabs": {
       "llm": "模型池",
       "tools": "工具",
@@ -487,6 +674,25 @@
       "users": "用户",
       "invites": "邀请码"
     },
+    "invites": {
+      "pageTitle": "邀请码",
+      "pageDesc": "管理平台注册的邀请码。",
+      "createTitle": "创建邀请码",
+      "count": "邀请码数量",
+      "maxUses": "每个邀请码最大使用次数",
+      "createBtn": "生成",
+      "listTitle": "所有邀请码",
+      "code": "邀请码",
+      "usage": "使用情况",
+      "status": "状态",
+      "created": "创建时间",
+      "deactivated": "已禁用",
+      "exhausted": "已用尽",
+      "active": "活跃",
+      "disable": "禁用",
+      "exportCsv": "导出 CSV"
+    },
+
     "stats": {
       "users": "{{count}} 用户",
       "runningAgents": "{{running}}/{{total}} 运行中"
@@ -498,13 +704,27 @@
       "model": "模型",
       "label": "显示名称",
       "apiKey": "API Key",
+      "apiKeyPlaceholder": "输入 API Key",
       "baseUrl": "Base URL（可选）",
+      "baseUrlPlaceholder": "https://api.custom.com/v1",
+      "modelPlaceholder": "claude-sonnet-4-5",
+      "labelPlaceholder": "Claude Sonnet",
+      "maxOutputTokens": "最大输出 Token",
+      "maxOutputTokensPlaceholder": "提供商默认",
+      "maxOutputTokensDesc": "覆盖默认的输出 Token 限制。从提供商自动填充；根据需要调整。",
       "enabled": "启用",
       "disabled": "禁用",
       "save": "保存",
       "delete": "删除",
       "edit": "编辑",
-      "cancel": "取消"
+      "cancel": "取消",
+      "supportsVision": "👁 支持视觉（多模态）",
+      "supportsVisionDesc": "— 为能够分析图像的模型启用（GPT-4o、Claude、Qwen-VL 等）",
+      "test": "测试",
+      "testing": "测试中...",
+      "testSuccess": "OK ({{latency}}ms)",
+      "testFailed": "测试失败: {{error}}\n\n延迟: {{latency}}ms",
+      "testError": "测试错误: {{message}}"
     },
     "tools": {
       "title": "全局工具管理",
@@ -521,7 +741,54 @@
       "description": "描述",
       "parameters": "参数配置",
       "initBuiltinsHint": "请先启动后端以初始化内置工具。",
-      "emptyState": "暂无数据。请先启动后端以初始化内置工具。"
+      "emptyState": "暂无数据。请先启动后端以初始化内置工具。",
+      "globalTools": "全局工具",
+      "agentInstalled": "Agent 安装",
+      "agentInstalledHint": "Agent 通过 `import_mcp_server` 安装的工具。删除将从该 Agent 中移除此工具。",
+      "noAgentInstalledTools": "暂无 Agent 安装的工具。",
+      "removeFromAgent": "从 Agent 中移除 \"{{name}}\"？",
+      "delete": "删除",
+      "addMcpServer": "添加 MCP 服务器",
+      "mcpServer": "MCP 服务器",
+      "jsonConfig": "JSON 配置",
+      "manageGlobalSkills": "管理全局工具。每个工具都是一个带有 SKILL.md 文件的文件夹。在数字员工创建过程中选择的工具会被复制到数字员工的工作区。",
+      "importFromUrl": "从 URL 导入",
+      "browseClawhub": "浏览 ClawHub",
+      "githubToken": "GitHub Token",
+      "howToGenerateGithubToken": "如何生成 GitHub Token：",
+      "githubTokenStep1": "1. 访问 github.com → 设置 → 开发者设置",
+      "githubTokenStep2": "2. 点击 \"Personal access tokens\" → \"Tokens (classic)\"",
+      "githubTokenStep3": "3. 点击 \"Generate new token (classic)\"",
+      "githubTokenStep4": "4. 设置名称和过期时间，公共仓库不需要任何权限范围",
+      "githubTokenStep5": "5. 点击 \"Generate token\" 并复制值",
+      "orVisit": "或访问：github.com/settings/tokens",
+      "githubTokenDesc": "将 GitHub API 速率限制从每小时 60 次提高到每小时 5,000 次，用于工具导入。",
+      "currentToken": "当前 Token：",
+      "saving": "保存中...",
+      "save": "保存",
+      "clear": "清除",
+      "clawhubApiKey": "ClawHub API Key",
+      "clawhubApiKeyDesc": "验证 ClawHub API 调用，以避免在浏览和安装 ClawHub 工具时遇到速率限制。",
+      "authenticatedRequestsGetHigherRateLimits": "经过身份验证的请求在 ClawHub 工具浏览和安装时获得更高的速率限制。",
+      "currentKey": "当前密钥：",
+      "githubTokenSaved": "GitHub Token 已保存",
+      "failedToSave": "保存失败",
+      "tokenCleared": "Token 已清除",
+      "failed": "失败",
+      "clawhubApiKeySaved": "ClawHub API Key 已保存",
+      "searchSkills": "搜索技能...",
+      "search": "搜索",
+      "searching": "搜索中...",
+      "searchForSkills": "在 ClawHub 市场中搜索技能",
+      "noResultsFound": "未找到结果",
+      "searchingClawhub": "正在搜索 ClawHub...",
+      "install": "安装",
+      "installing": "安装中...",
+      "pasteGithubUrl": "粘贴指向包含 SKILL.md 的技能目录的 GitHub URL",
+      "githubUrlPlaceholder": "https://github.com/owner/repo/tree/main/skills/my-skill",
+      "preview": "预览",
+      "loading": "加载中...",
+      "edit": "编辑"
     },
     "org": {
       "feishuSync": "飞书通讯录同步配置",
@@ -579,9 +846,9 @@
       "time": "时间",
       "user": "用户",
       "action": "操作",
-      "target": "对象",
+      "target": "目标",
       "filterAll": "全部",
-      "filterBackground": "后台服务",
+      "filterBackground": "后台任务",
       "filterActions": "用户操作",
       "records": "{{count}} 条记录"
     },
@@ -597,6 +864,7 @@
   "common": {
     "create": "创建",
     "save": "保存",
+    "saving": "保存中...",
     "noPermission": "你没有权限访问此页面。",
     "cancel": "取消",
     "confirm": "确认",
@@ -613,6 +881,8 @@
     "all": "全部",
     "none": "无",
     "download": "下载",
+    "apply": "应用",
+    "reset": "重置",
     "channels": {
       "feishu": "飞书",
       "discord": "Discord",
@@ -676,7 +946,23 @@
     "setupInstruction": "配置指令",
     "setupInstructionDesc": "复制并发送给您的 OpenClaw Agent，它将自动完成配置。",
     "keyNote": "API Key 已嵌入在上方指令中。如需手动配置可单独保存。",
-    "goToAgent": "前往 Agent 页面"
+    "goToAgent": "前往 Agent 页面",
+    "nativeTitle": "平台托管",
+    "nativeDesc": "在 Clawith 平台上运行的完整 Agent",
+    "openclawTitle": "连接 OpenClaw",
+    "openclawDesc": "连接你现有的 OpenClaw Agent",
+    "basicTitle": "连接 OpenClaw Agent",
+    "basicDesc": "为你的 OpenClaw Agent 命名并添加描述。LLM 模型、人格和技能在你的 OpenClaw 实例上配置。",
+    "namePlaceholder": "例如：我的 OpenClaw Bot",
+    "rolePlaceholder": "例如：在我的 Mac 上运行的个人助手",
+    "createBtn": "连接 Agent",
+    "lastSeen": "最近连接",
+    "notConnected": "尚未连接",
+    "connection": "OpenClaw 连接",
+    "type": "类型",
+    "never": "从未",
+    "model": "模型",
+    "managedBy": "由 OpenClaw 实例管理"
   },
   "channelGuide": {
     "setupGuide": "配置说明",

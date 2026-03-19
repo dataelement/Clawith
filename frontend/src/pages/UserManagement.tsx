@@ -257,7 +257,7 @@ export default function UserManagement() {
                                         style={{ padding: '4px 10px', fontSize: '11px' }}
                                         onClick={() => editingUserId === user.id ? setEditingUserId(null) : startEdit(user)}
                                     >
-                                        {editingUserId === user.id ? t('common.cancel') : '✏️ Edit'}
+                                        {editingUserId === user.id ? t('common.cancel') : `✏️ ${t('common.edit')}`}
                                     </button>
                                 </div>
                             </div>
