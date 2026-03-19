@@ -58,6 +58,10 @@ export default function UserManagement() {
     });
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState('');
+    const [resetUserId, setResetUserId] = useState<string | null>(null);
+    const [resetUsername, setResetUsername] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [resetting, setResetting] = useState(false);
 
     // Search, sort & pagination
     const [searchQuery, setSearchQuery] = useState('');
@@ -105,6 +109,25 @@ export default function UserManagement() {
             setTimeout(() => setToast(''), 3000);
         }
         setSaving(false);
+    };
+
+    const handleResetPassword = async () => {
+        if (!resetUserId || newPassword.length < 6) return;
+        setResetting(true);
+        try {
+            await fetchJson(`/users/${resetUserId}/reset-password`, {
+                method: 'POST',
+                body: JSON.stringify({ new_password: newPassword }),
+            });
+            setToast(isChinese ? '✅ 密码已重置' : '✅ Password reset successfully');
+            setTimeout(() => setToast(''), 2000);
+            setResetUserId(null);
+            setNewPassword('');
+        } catch (e: any) {
+            setToast(`❌ ${e.message}`);
+            setTimeout(() => setToast(''), 3000);
+        }
+        setResetting(false);
     };
 
     const periodLabel = (period: string) => {
@@ -251,13 +274,20 @@ export default function UserManagement() {
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> / {user.quota_max_agents}</span>
                                 </div>
                                 <div style={{ fontSize: '12px' }}>{user.quota_agent_ttl_hours}h</div>
-                                <div>
+                                <div style={{ display: 'flex', gap: '6px' }}>
                                     <button
                                         className="btn btn-secondary"
                                         style={{ padding: '4px 10px', fontSize: '11px' }}
                                         onClick={() => editingUserId === user.id ? setEditingUserId(null) : startEdit(user)}
                                     >
                                         {editingUserId === user.id ? t('common.cancel') : '✏️ Edit'}
+                                    </button>
+                                    <button
+                                        className="btn btn-secondary"
+                                        style={{ padding: '4px 10px', fontSize: '11px' }}
+                                        onClick={() => { setResetUserId(user.id); setResetUsername(user.display_name || user.username); setNewPassword(''); }}
+                                    >
+                                        🔑 {isChinese ? '重置密码' : 'Reset Password'}
                                     </button>
                                 </div>
                             </div>
@@ -368,6 +398,41 @@ export default function UserManagement() {
                             </button>
                         </div>
                     )}
+                </div>
+            )}
+
+            {/* Reset Password Modal */}
+            {resetUserId && (
+                <div style={{
+                    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+                }}>
+                    <div className="card" style={{ padding: '24px', width: '360px', background: 'var(--bg-primary)' }}>
+                        <h3 style={{ margin: '0 0 16px', fontSize: '16px' }}>
+                            🔑 {isChinese ? `重置 ${resetUsername} 的密码` : `Reset password for ${resetUsername}`}
+                        </h3>
+                        <input
+                            type="password"
+                            className="input"
+                            placeholder={isChinese ? '新密码（至少6位）' : 'New password (min 6 chars)'}
+                            value={newPassword}
+                            onChange={e => setNewPassword(e.target.value)}
+                            style={{ width: '100%', marginBottom: '16px' }}
+                            autoFocus
+                        />
+                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                            <button className="btn btn-secondary" onClick={() => { setResetUserId(null); setNewPassword(''); }}>
+                                {t('common.cancel')}
+                            </button>
+                            <button
+                                className="btn btn-primary"
+                                onClick={handleResetPassword}
+                                disabled={resetting || newPassword.length < 6}
+                            >
+                                {resetting ? '...' : (isChinese ? '确认重置' : 'Confirm')}
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>
