@@ -2810,7 +2810,10 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 create_llm_client,
                 LLMMessage,
             )
+            from app.services.llm_client import LLMError
             from app.services.agent_tools import get_agent_tools_for_llm, execute_tool
+            import asyncio
+            import httpx
             base_url = get_provider_base_url(target_model.provider, target_model.base_url)
             if not base_url:
                 return f"⚠️ {target.name}'s model has no API base URL configured"
@@ -2836,11 +2839,10 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 timeout=120.0,
             )
             try:
-                import asyncio
-                import httpx
                 for _round in range(max_tool_rounds):
-                    # Retry up to 3 times on transient LLM timeouts before aborting
-                    for _attempt in range(3):
+                    max_round_retries = 3
+                    response = None
+                    for attempt in range(1, max_round_retries + 1):
                         try:
                             response = await llm_client.complete(
                                 messages=full_msgs,
@@ -2849,10 +2851,46 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                                 max_tokens=4096,
                             )
                             break
-                        except httpx.ReadTimeout:
-                            if _attempt == 2:
+                        except Exception as llm_exc:
+                            err_text = str(llm_exc) or type(llm_exc).__name__
+                            is_retryable = isinstance(
+                                llm_exc,
+                                (
+                                    httpx.TimeoutException,
+                                    httpx.TransportError,
+                                ),
+                            )
+
+                            if isinstance(llm_exc, LLMError):
+                                lowered = err_text.lower()
+                                retryable_markers = (
+                                    "http 408",
+                                    "http 429",
+                                    "http 500",
+                                    "http 502",
+                                    "http 503",
+                                    "http 504",
+                                    "timeout",
+                                    "timed out",
+                                    "connection failed",
+                                    "temporarily unavailable",
+                                    "rate limit",
+                                )
+                                is_retryable = is_retryable or any(m in lowered for m in retryable_markers)
+
+                            if not is_retryable or attempt >= max_round_retries:
                                 raise
-                            await asyncio.sleep(2 ** _attempt)  # 1s, then 2s
+
+                            backoff_seconds = float(2 ** (attempt - 1))
+                            logger.warning(
+                                f"[A2A] LLM call failed for {target.name} (round={_round + 1}, "
+                                f"attempt={attempt}/{max_round_retries}): {err_text[:200]}. "
+                                f"Retrying in {backoff_seconds:.1f}s"
+                            )
+                            await asyncio.sleep(backoff_seconds)
+
+                    if response is None:
+                        raise RuntimeError("A2A LLM response is unexpectedly empty after retries")
 
                     # Track tokens from API response
                     real_tokens = extract_usage_tokens(response.usage)
@@ -2962,10 +3000,18 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             return f"💬 {target.name} replied:\n{target_reply}"
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        err_detail = str(e) or type(e).__name__
-        return f"❌ Message send error: {err_detail[:200]}"
+        logger.exception(
+            f"[A2A] send_message_to_agent failed: from={from_agent_id}, to={args.get('agent_name', '')}"
+        )
+        error_type = type(e).__name__
+        error_detail = (str(e) or "").strip()
+        if not error_detail:
+            timeout_types = {"ReadTimeout", "ConnectTimeout", "TimeoutException"}
+            if error_type in timeout_types:
+                error_detail = "LLM request timed out while waiting for target agent response"
+            else:
+                error_detail = "No detailed error message returned from upstream"
+        return f"❌ Message send error ({error_type}): {error_detail[:200]}"
 
 
 
