@@ -797,6 +797,7 @@ function AgentDetailInner() {
     const wsMapRef = useRef<Record<SessionRuntimeKey, WebSocket>>({});
     const reconnectTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setTimeout> | null>>({});
     const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
+    const sessionUiStateRef = useRef<Record<SessionRuntimeKey, { isWaiting: boolean; isStreaming: boolean }>>({});
     const activeSessionIdRef = useRef<string | null>(null);
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
@@ -818,6 +819,12 @@ function AgentDetailInner() {
         const ws = wsMapRef.current[key];
         if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
         delete wsMapRef.current[key];
+        delete sessionUiStateRef.current[key];
+    };
+
+    const setSessionUiState = (key: SessionRuntimeKey, next: Partial<{ isWaiting: boolean; isStreaming: boolean }>) => {
+        const prev = sessionUiStateRef.current[key] || { isWaiting: false, isStreaming: false };
+        sessionUiStateRef.current[key] = { ...prev, ...next };
     };
 
     const isWritableSession = (sess: any) => {
@@ -874,11 +881,13 @@ function AgentDetailInner() {
     const selectSession = async (sess: any) => {
         const targetAgentId = id;
         if (!targetAgentId) return;
+        const runtimeKey = buildSessionRuntimeKey(targetAgentId, String(sess.id));
+        const runtimeState = sessionUiStateRef.current[runtimeKey] || { isWaiting: false, isStreaming: false };
         activeSessionIdRef.current = sess.id;
         setChatMessages([]);
         setHistoryMsgs([]);
-        setIsStreaming(false);
-        setIsWaiting(false);
+        setIsStreaming(runtimeState.isStreaming);
+        setIsWaiting(runtimeState.isWaiting);
         setActiveSession(sess);
         setAgentExpired(false);
         syncActiveSocketState(sess, targetAgentId);
@@ -1163,6 +1172,7 @@ function AgentDetailInner() {
         };
         ws.onclose = (e) => {
             if (wsMapRef.current[key] === ws) delete wsMapRef.current[key];
+            setSessionUiState(key, { isWaiting: false, isStreaming: false });
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (isActiveRuntime) {
                 wsRef.current = null;
@@ -1185,6 +1195,14 @@ function AgentDetailInner() {
         ws.onmessage = (e) => {
             const d = JSON.parse(e.data);
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+            if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
+                const nextStreaming = ['thinking', 'chunk', 'tool_call'].includes(d.type);
+                const endStreaming = ['done', 'error', 'quota_exceeded'].includes(d.type);
+                setSessionUiState(key, {
+                    isWaiting: false,
+                    isStreaming: endStreaming ? false : nextStreaming,
+                });
+            }
             if (!isActiveRuntime) {
                 if (['done', 'error', 'quota_exceeded', 'trigger_notification'].includes(d.type)) {
                     fetchMySessions(true, agentId);
@@ -1384,6 +1402,7 @@ function AgentDetailInner() {
 
         setIsWaiting(true);
         setIsStreaming(false);
+        setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
         setChatMessages(prev => [...prev, { 
             role: 'user', 
             content: userMsg, 
@@ -3454,6 +3473,7 @@ function AgentDetailInner() {
                                                         activeSocket.send(JSON.stringify({ type: 'abort' }));
                                                         setIsStreaming(false);
                                                         setIsWaiting(false);
+                                                        setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
                                                     }
                                                 }} style={{ padding: '6px 16px' }} title={t('chat.stop', 'Stop')}>
                                                     <span className="stop-icon" />
