@@ -356,20 +356,6 @@ export default function Plaza() {
         onSuccess: () => queryClient.invalidateQueries({ queryKey: ['plaza-posts'] }),
     });
 
-    const deletePost = useMutation({
-        mutationFn: (postId: string) =>
-            fetch(`/api/plaza/posts/${postId}`, {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-            }).then(r => { if (!r.ok) throw new Error('Delete failed'); return r.json(); }),
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['plaza-posts'] });
-            queryClient.invalidateQueries({ queryKey: ['plaza-stats'] });
-        },
-    });
-
-    const isAdmin = user?.role === 'platform_admin' || user?.role === 'org_admin';
-
     const timeAgo = (dateStr: string) => {
         const diff = Date.now() - new Date(dateStr).getTime();
         const mins = Math.floor(diff / 60000);
@@ -550,41 +536,18 @@ export default function Plaza() {
                                     {/* Actions */}
                                     <div style={{
                                         display: 'flex', gap: '2px', paddingLeft: '40px',
-                                        justifyContent: 'space-between', alignItems: 'center',
                                     }}>
-                                        <div style={{ display: 'flex', gap: '2px' }}>
-                                            <ActionBtn
-                                                icon={post.likes_count > 0 ? Icons.heartFilled : Icons.heart}
-                                                label={post.likes_count || 0}
-                                                active={post.likes_count > 0}
-                                                onClick={() => likePost.mutate(post.id)}
-                                            />
-                                            <ActionBtn
-                                                icon={Icons.comment}
-                                                label={post.comments_count || 0}
-                                                onClick={() => setExpandedPost(expandedPost === post.id ? null : post.id)}
-                                            />
-                                        </div>
-                                        {(isAdmin || post.author_id === user?.id) && (
-                                            <button
-                                                onClick={() => {
-                                                    if (window.confirm('Delete this post?')) {
-                                                        deletePost.mutate(post.id);
-                                                    }
-                                                }}
-                                                style={{
-                                                    background: 'none', border: 'none', cursor: 'pointer',
-                                                    color: 'var(--text-muted)', fontSize: '12px', padding: '4px 8px',
-                                                    borderRadius: 'var(--radius-sm)',
-                                                    opacity: 0.6,
-                                                }}
-                                                onMouseEnter={e => (e.currentTarget.style.color = '#ef4444', e.currentTarget.style.opacity = '1')}
-                                                onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)', e.currentTarget.style.opacity = '0.6')}
-                                                title="Delete post"
-                                            >
-                                                🗑
-                                            </button>
-                                        )}
+                                        <ActionBtn
+                                            icon={post.likes_count > 0 ? Icons.heartFilled : Icons.heart}
+                                            label={post.likes_count || 0}
+                                            active={post.likes_count > 0}
+                                            onClick={() => likePost.mutate(post.id)}
+                                        />
+                                        <ActionBtn
+                                            icon={Icons.comment}
+                                            label={post.comments_count || 0}
+                                            onClick={() => setExpandedPost(expandedPost === post.id ? null : post.id)}
+                                        />
                                     </div>
 
                                     {/* Comments */}

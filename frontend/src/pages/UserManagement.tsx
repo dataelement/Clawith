@@ -58,6 +58,7 @@ export default function UserManagement() {
     });
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState('');
+    const [toastType, setToastType] = useState<'success' | 'error'>('success');
     const [resetUserId, setResetUserId] = useState<string | null>(null);
     const [resetUsername, setResetUsername] = useState('');
     const [newPassword, setNewPassword] = useState('');
@@ -100,12 +101,12 @@ export default function UserManagement() {
                 method: 'PATCH',
                 body: JSON.stringify(editForm),
             });
-            setToast(isChinese ? '✅ 配额已更新' : '✅ Quota updated');
+            setToast(isChinese ? '配额已更新' : 'Quota updated'); setToastType('success');
             setTimeout(() => setToast(''), 2000);
             setEditingUserId(null);
             loadUsers();
         } catch (e: any) {
-            setToast(`❌ ${e.message}`);
+            setToast(e.message); setToastType('error');
             setTimeout(() => setToast(''), 3000);
         }
         setSaving(false);
@@ -119,12 +120,12 @@ export default function UserManagement() {
                 method: 'POST',
                 body: JSON.stringify({ new_password: newPassword }),
             });
-            setToast(isChinese ? '✅ 密码已重置' : '✅ Password reset successfully');
+            setToast(isChinese ? '密码已重置' : 'Password reset successfully'); setToastType('success');
             setTimeout(() => setToast(''), 2000);
             setResetUserId(null);
             setNewPassword('');
         } catch (e: any) {
-            setToast(`❌ ${e.message}`);
+            setToast(e.message); setToastType('error');
             setTimeout(() => setToast(''), 3000);
         }
         setResetting(false);
@@ -175,7 +176,7 @@ export default function UserManagement() {
             {toast && (
                 <div style={{
                     position: 'fixed', top: '20px', right: '20px', padding: '10px 20px',
-                    borderRadius: '8px', background: toast.startsWith('✅') ? 'var(--success)' : 'var(--error)',
+                    borderRadius: '8px', background: toastType === 'success' ? 'var(--success)' : 'var(--error)',
                     color: '#fff', fontSize: '13px', zIndex: 9999, transition: 'all 0.3s',
                 }}>
                     {toast}
@@ -280,14 +281,14 @@ export default function UserManagement() {
                                         style={{ padding: '4px 10px', fontSize: '11px' }}
                                         onClick={() => editingUserId === user.id ? setEditingUserId(null) : startEdit(user)}
                                     >
-                                        {editingUserId === user.id ? t('common.cancel') : '✏️ Edit'}
+                                        {editingUserId === user.id ? t('common.cancel') : 'Edit'}
                                     </button>
                                     <button
                                         className="btn btn-secondary"
                                         style={{ padding: '4px 10px', fontSize: '11px' }}
                                         onClick={() => { setResetUserId(user.id); setResetUsername(user.display_name || user.username); setNewPassword(''); }}
                                     >
-                                        🔑 {isChinese ? '重置密码' : 'Reset Password'}
+                                        {isChinese ? '重置密码' : 'Reset Password'}
                                     </button>
                                 </div>
                             </div>
@@ -409,7 +410,7 @@ export default function UserManagement() {
                 }}>
                     <div className="card" style={{ padding: '24px', width: '360px', background: 'var(--bg-primary)' }}>
                         <h3 style={{ margin: '0 0 16px', fontSize: '16px' }}>
-                            🔑 {isChinese ? `重置 ${resetUsername} 的密码` : `Reset password for ${resetUsername}`}
+                            {isChinese ? `重置 ${resetUsername} 的密码` : `Reset password for ${resetUsername}`}
                         </h3>
                         <input
                             type="password"
