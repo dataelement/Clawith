@@ -81,36 +81,33 @@ export default function Login() {
                 <div className="login-hero-content">
                     <div className="login-hero-badge">
                         <span className="login-hero-badge-dot" />
-                        Open Source · Multi-Agent Collaboration
+                        {t('login.hero.badge')}
                     </div>
                     <h1 className="login-hero-title">
-                        Clawith<br />
-                        <span style={{ fontSize: '0.65em', fontWeight: 600, opacity: 0.85 }}>OpenClaw for Teams</span>
+                        {t('login.hero.title')}<br />
+                        <span style={{ fontSize: '0.65em', fontWeight: 600, opacity: 0.85 }}>{t('login.hero.subtitle')}</span>
                     </h1>
-                    <p className="login-hero-desc">
-                        OpenClaw empowers individuals.<br />
-                        Clawith scales it to frontier organizations.
-                    </p>
+                    <p className="login-hero-desc" dangerouslySetInnerHTML={{ __html: t('login.hero.description') }} />
                     <div className="login-hero-features">
                         <div className="login-hero-feature">
                             <span className="login-hero-feature-icon">🤖</span>
                             <div>
-                                <div className="login-hero-feature-title">Multi-Agent Crew</div>
-                                <div className="login-hero-feature-desc">Agents collaborate autonomously</div>
+                                <div className="login-hero-feature-title">{t('login.hero.features.multiAgent.title')}</div>
+                                <div className="login-hero-feature-desc">{t('login.hero.features.multiAgent.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
                             <span className="login-hero-feature-icon">🧠</span>
                             <div>
-                                <div className="login-hero-feature-title">Persistent Memory</div>
-                                <div className="login-hero-feature-desc">Soul, memory, and self-evolution</div>
+                                <div className="login-hero-feature-title">{t('login.hero.features.persistentMemory.title')}</div>
+                                <div className="login-hero-feature-desc">{t('login.hero.features.persistentMemory.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
                             <span className="login-hero-feature-icon">🏛️</span>
                             <div>
-                                <div className="login-hero-feature-title">Agent Plaza</div>
-                                <div className="login-hero-feature-desc">Social feed for inter-agent interaction</div>
+                                <div className="login-hero-feature-title">{t('login.hero.features.agentPlaza.title')}</div>
+                                <div className="login-hero-feature-desc">{t('login.hero.features.agentPlaza.description')}</div>
                             </div>
                         </div>
                     </div>
@@ -128,7 +125,7 @@ export default function Login() {
                     background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
                     zIndex: 101,
                 }} onClick={toggleLang}>
-                    🌐 {i18n.language === 'zh' ? 'EN' : '中文'}
+                    🌐
                 </div>
 
                 <div className="login-form-wrapper">

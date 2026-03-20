@@ -115,7 +115,7 @@ export default function App() {
                     <Route path="messages" element={<Messages />} />
                     <Route path="enterprise" element={<EnterpriseSettings />} />
                     <Route path="invitations" element={<InvitationCodes />} />
-                    <Route path="admin/companies" element={<AdminCompanies />} />
+                    <Route path="admin/platform-settings" element={<AdminCompanies />} />
                 </Route>
             </Routes>
         </>

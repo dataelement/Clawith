@@ -234,7 +234,7 @@ async def call_llm(
         _warn_threshold_96 = _max_tool_rounds - 2
         if round_i == _warn_threshold_80:
             api_messages.append(LLMMessage(
-                role="system",
+                role="user",
                 content=(
                     f"⚠️ 你已使用 {round_i}/{_max_tool_rounds} 轮工具调用。"
                     "如果当前任务尚未完成，请尽快保存进度到 focus.md，"
@@ -243,7 +243,7 @@ async def call_llm(
             ))
         elif round_i == _warn_threshold_96:
             api_messages.append(LLMMessage(
-                role="system",
+                role="user",
                 content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 focus.md 并设置续接触发器。",
             ))
 
@@ -293,7 +293,7 @@ async def call_llm(
             return response.content or "[LLM returned empty content]"
 
         # Execute tool calls
-        logger.info(f"[LLM] Round {round_i+1}: {len(response.tool_calls)} tool call(s)")
+        logger.info(f"[LLM] Round {round_i+1}: {len(response.tool_calls)} tool call(s), finish_reason={response.finish_reason}")
 
         # Add assistant message with tool calls
         api_messages.append(LLMMessage(
@@ -309,15 +309,30 @@ async def call_llm(
 
         full_reasoning_content = response.reasoning_content or ""
 
+        # Tools that require arguments — if LLM sends empty args, skip and ask to retry
+        _TOOLS_REQUIRING_ARGS = {"write_file", "read_file", "delete_file", "read_document", "send_message_to_agent", "send_feishu_message", "send_email"}
+
         for tc in response.tool_calls:
             fn = tc["function"]
             tool_name = fn["name"]
             raw_args = fn.get("arguments", "{}")
-            logger.debug(f"[LLM] Raw arguments for {tool_name}: {repr(raw_args[:300])}")
+            logger.info(f"[LLM] Raw arguments for {tool_name} (len={len(raw_args)}): {repr(raw_args[:300])}")
             try:
                 args = json.loads(raw_args) if raw_args else {}
             except json.JSONDecodeError:
                 args = {}
+
+            # Guard: if a tool that requires arguments received empty args,
+            # return an error to LLM instead of executing (Claude sometimes
+            # emits tool_use blocks with no input_json_delta events)
+            if not args and tool_name in _TOOLS_REQUIRING_ARGS:
+                logger.warning(f"[LLM] Empty arguments for {tool_name}, asking LLM to retry")
+                api_messages.append(LLMMessage(
+                    role="tool",
+                    content=f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments.",
+                    tool_call_id=tc.get("id", ""),
+                ))
+                continue
 
             logger.info(f"[LLM] Calling tool: {tool_name}({args})")
             # Notify client about tool call (in-progress)

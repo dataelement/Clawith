@@ -498,6 +498,9 @@ async def update_system_setting(
     db: AsyncSession = Depends(get_db),
 ):
     """Create or update a system setting."""
+    # Platform-level settings (e.g. PUBLIC_BASE_URL) require platform_admin
+    if key == "platform" and current_user.role != "platform_admin":
+        raise HTTPException(status_code=403, detail="Only platform admin can modify platform settings")
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
     setting = result.scalar_one_or_none()
     if setting:

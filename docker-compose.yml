@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: clawith
       POSTGRES_PASSWORD: clawith
@@ -15,6 +16,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     volumes:
       - redisdata:/data
     healthcheck:
@@ -42,9 +44,6 @@ services:
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       DOCKER_NETWORK: clawith_network
-      # GitHub personal access token — fallback for ClawHub/GitHub skill imports
-      # when no tenant-level token is configured. Raises API rate limit from 60 to 5,000/hr.
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       SS_CONFIG_FILE: /data/ss-nodes.json
     volumes:
       - ./backend:/app
@@ -63,6 +62,7 @@ services:
         max-file: "3"
   frontend:
     build: ./frontend
+    restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-3008}:3000"
     environment:

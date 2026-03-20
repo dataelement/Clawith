@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import logging
-import os
 import re
 
 import httpx
@@ -23,7 +22,7 @@ router = APIRouter(prefix="/skills", tags=["skills"])
 
 CLAWHUB_BASE = "https://clawhub.ai/api"
 GITHUB_API = "https://api.github.com"
-_GITHUB_TOKEN_ENV = os.environ.get("GITHUB_TOKEN", "")
+
 MAX_SKILL_SIZE = 512_000  # 500 KB total limit per skill
 
 
@@ -49,15 +48,13 @@ async def _get_tenant_setting(tenant_id: str | None, key: str) -> str:
 
 
 async def _get_github_token(tenant_id: str | None = None) -> str:
-    """Resolve GitHub token: tenant DB > env var > empty."""
-    db_val = await _get_tenant_setting(tenant_id, "github_token")
-    return db_val or _GITHUB_TOKEN_ENV
+    """Resolve GitHub token from tenant settings DB."""
+    return await _get_tenant_setting(tenant_id, "github_token")
 
 
 async def _get_clawhub_key(tenant_id: str | None = None) -> str:
-    """Resolve ClawHub API key: tenant DB > env var > empty."""
-    db_val = await _get_tenant_setting(tenant_id, "clawhub_key")
-    return db_val or os.environ.get("CLAWHUB_API_KEY", "")
+    """Resolve ClawHub API key from tenant settings DB."""
+    return await _get_tenant_setting(tenant_id, "clawhub_key")
 
 
 def _clawhub_headers(api_key: str) -> dict:
@@ -148,7 +145,7 @@ async def _fetch_github_directory(
     """Recursively fetch all files from a GitHub directory via API.
     Returns [{"path": relative_path, "content": text}].
     """
-    _token = token or _GITHUB_TOKEN_ENV
+    _token = token
     files: list[dict] = []
     total_size = 0
     max_depth = 3  # Prevent runaway recursion

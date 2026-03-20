@@ -270,10 +270,13 @@ class OpenAICompatibleClient(LLMClient):
         line: str,
         in_think: bool,
         tag_buffer: str,
-    ) -> tuple[LLMStreamChunk, bool, str]:
+        json_buffer: str = "",
+    ) -> tuple[LLMStreamChunk, bool, str, str]:
         """Parse a single SSE line from stream.
 
-        Returns (chunk, new_in_think, new_tag_buffer).
+        Returns (chunk, new_in_think, new_tag_buffer, new_json_buffer).
+        The json_buffer accumulates partial JSON from non-standard APIs that
+        split a single JSON object across multiple data: lines.
         """
         chunk = LLMStreamChunk()
 
@@ -283,17 +286,32 @@ class OpenAICompatibleClient(LLMClient):
         elif line.startswith("data:"):
             data_str = line[5:]
         else:
-            return chunk, in_think, tag_buffer
+            # Non-data lines (comments, event types, empty) — never buffer
+            return chunk, in_think, tag_buffer, json_buffer
 
         data_str = data_str.strip()
+        if not data_str:
+            return chunk, in_think, tag_buffer, json_buffer
+
         if data_str == "[DONE]":
             chunk.is_finished = True
-            return chunk, in_think, tag_buffer
+            return chunk, in_think, tag_buffer, ""
+
+        # Accumulate into json_buffer for split JSON handling
+        if json_buffer:
+            json_buffer += data_str
+        else:
+            json_buffer = data_str
 
         try:
-            data = json.loads(data_str)
+            data = json.loads(json_buffer)
+            json_buffer = ""  # Reset on successful parse
         except json.JSONDecodeError:
-            return chunk, in_think, tag_buffer
+            # Cap buffer at 64KB to prevent memory leaks
+            if len(json_buffer) > 65536:
+                logger.warning("[LLM] JSON buffer exceeded 64KB, discarding")
+                json_buffer = ""
+            return chunk, in_think, tag_buffer, json_buffer
 
         if "error" in data:
             raise LLMError(f"Stream error: {data['error']}")
@@ -304,7 +322,7 @@ class OpenAICompatibleClient(LLMClient):
 
         choices = data.get("choices", [])
         if not choices:
-            return chunk, in_think, tag_buffer
+            return chunk, in_think, tag_buffer, json_buffer
 
         choice = choices[0]
         delta = choice.get("delta", {})
@@ -329,7 +347,7 @@ class OpenAICompatibleClient(LLMClient):
                 chunk.tool_call = tc_delta
                 break  # Return one at a time
 
-        return chunk, in_think, tag_buffer
+        return chunk, in_think, tag_buffer, json_buffer
 
     def _filter_think_tags(
         self, text: str, in_think: bool, tag_buffer: str
@@ -433,6 +451,7 @@ class OpenAICompatibleClient(LLMClient):
 
         in_think = False
         tag_buffer = ""
+        json_buffer = ""  # Buffer for non-standard APIs with split JSON (inspired by PR #120)
 
         max_retries = 3
         client = await self._get_client()
@@ -447,8 +466,8 @@ class OpenAICompatibleClient(LLMClient):
                         raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
                     async for line in resp.aiter_lines():
-                        chunk, in_think, tag_buffer = self._parse_stream_line(
-                            line, in_think, tag_buffer
+                        chunk, in_think, tag_buffer, json_buffer = self._parse_stream_line(
+                            line, in_think, tag_buffer, json_buffer
                         )
 
                         if chunk.is_finished:
@@ -499,6 +518,7 @@ class OpenAICompatibleClient(LLMClient):
                     tool_calls_data = []
                     in_think = False
                     tag_buffer = ""
+                    json_buffer = ""
                 else:
                     raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
 

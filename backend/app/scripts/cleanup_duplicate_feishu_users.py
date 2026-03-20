@@ -149,30 +149,122 @@ async def main():
         await db.commit()
         logger.info(f"Backfilled user_id for {member_filled}/{len(members_to_fill)} org members")
 
+        # ── Step 2.5: Merge duplicate OrgMembers ──
+        logger.info("=== Step 2.5: Merge duplicate OrgMembers ===")
+        from app.models.org import AgentRelationship
+
+        r = await db.execute(
+            select(OrgMember.name, OrgMember.tenant_id, func.count(OrgMember.id).label("cnt"))
+            .where(OrgMember.name.isnot(None), OrgMember.name != "")
+            .group_by(OrgMember.name, OrgMember.tenant_id)
+            .having(func.count(OrgMember.id) > 1)
+        )
+        om_dup_groups = r.all()
+        om_merge_count = 0
+        logger.info(f"Found {len(om_dup_groups)} groups of duplicate OrgMembers")
+
+        for name, tid, cnt in om_dup_groups:
+            q = select(OrgMember).where(OrgMember.name == name)
+            if tid:
+                q = q.where(OrgMember.tenant_id == tid)
+            else:
+                q = q.where(OrgMember.tenant_id.is_(None))
+            q = q.order_by(OrgMember.synced_at.desc())  # Keep the most recently synced
+            r2 = await db.execute(q)
+            dups = r2.scalars().all()
+            if len(dups) <= 1:
+                continue
+
+            # Pick best: prefer has user_id > has open_id > most recent
+            def om_score(m):
+                s = 0
+                if m.feishu_user_id:
+                    s += 10
+                if m.feishu_open_id:
+                    s += 1
+                return s
+
+            dups_sorted = sorted(dups, key=lambda m: (-om_score(m), m.synced_at))
+            primary = dups_sorted[0]
+            to_merge = dups_sorted[1:]
+
+            logger.info(f"  Merging {cnt} OrgMembers named '{name}', keeping id={primary.id}")
+
+            for dup in to_merge:
+                # Migrate agent_relationships FK
+                await db.execute(
+                    update(AgentRelationship)
+                    .where(AgentRelationship.member_id == dup.id)
+                    .values(member_id=primary.id)
+                )
+                # Transfer missing identity fields
+                if dup.feishu_user_id and not primary.feishu_user_id:
+                    primary.feishu_user_id = dup.feishu_user_id
+                if dup.email and primary.email != dup.email and dup.email:
+                    if not primary.email:
+                        primary.email = dup.email
+                # Clear unique field before delete
+                dup.feishu_open_id = None
+                await db.flush()
+                await db.delete(dup)
+                om_merge_count += 1
+
+            try:
+                await db.commit()
+            except Exception as e:
+                logger.error(f"  Failed to commit OrgMember merge for '{name}': {e}")
+                await db.rollback()
+
+        logger.info(f"Merged {om_merge_count} duplicate OrgMembers")
+
         # ── Step 3: Merge duplicate users ──
         logger.info("=== Step 3: Merge duplicate users ===")
 
-        # Find users sharing the same feishu_user_id (indicating duplicates)
+        # Find duplicate display_names within the same tenant
+        # These are likely the same person created multiple times from different apps
+        from sqlalchemy import or_, and_, cast, String as SAString
         r = await db.execute(
-            select(User.feishu_user_id, func.count(User.id).label("cnt"))
-            .where(User.feishu_user_id.isnot(None), User.feishu_user_id != "")
-            .group_by(User.feishu_user_id)
+            select(User.display_name, User.tenant_id, func.count(User.id).label("cnt"))
+            .where(User.display_name.isnot(None), User.display_name != "")
+            .group_by(User.display_name, User.tenant_id)
             .having(func.count(User.id) > 1)
         )
         dup_groups = r.all()
         merge_count = 0
+        logger.info(f"Found {len(dup_groups)} groups of duplicate display_names")
 
-        for uid, cnt in dup_groups:
-            r2 = await db.execute(
-                select(User)
-                .where(User.feishu_user_id == uid)
-                .order_by(User.created_at.asc())
-            )
+        for name, tid, cnt in dup_groups:
+            q = select(User).where(User.display_name == name)
+            if tid:
+                q = q.where(User.tenant_id == tid)
+            else:
+                q = q.where(User.tenant_id.is_(None))
+            q = q.order_by(User.created_at.asc())
+            r2 = await db.execute(q)
             dups = r2.scalars().all()
-            primary = dups[0]  # Keep the oldest
-            logger.info(f"  Merging {cnt} users with user_id={uid}, keeping {primary.username}")
 
-            for dup in dups[1:]:
+            if len(dups) <= 1:
+                continue
+
+            # Pick the best record as primary:
+            # Priority: has real email > has feishu_user_id > has feishu_open_id > oldest
+            def score(u):
+                s = 0
+                if u.email and "@" in u.email and not u.email.endswith("@feishu.local"):
+                    s += 100  # Real email = likely registered user
+                if u.feishu_user_id:
+                    s += 10
+                if u.feishu_open_id:
+                    s += 1
+                return s
+
+            dups_sorted = sorted(dups, key=lambda u: (-score(u), u.created_at))
+            primary = dups_sorted[0]
+            to_merge = dups_sorted[1:]
+
+            logger.info(f"  Merging {cnt} users named '{name}', keeping {primary.username} (email={primary.email})")
+
+            for dup in to_merge:
                 # Migrate chat messages
                 await db.execute(
                     update(ChatMessage)
@@ -185,18 +277,33 @@ async def main():
                     .where(ChatSession.user_id == dup.id)
                     .values(user_id=primary.id)
                 )
-                # Transfer any missing fields to primary
+                # Transfer missing identity fields to primary
                 if dup.email and "@" in dup.email and not dup.email.endswith("@feishu.local"):
                     if not primary.email or primary.email.endswith("@feishu.local"):
                         primary.email = dup.email
+                if dup.feishu_user_id and not primary.feishu_user_id:
+                    primary.feishu_user_id = dup.feishu_user_id
                 if dup.feishu_open_id and not primary.feishu_open_id:
                     primary.feishu_open_id = dup.feishu_open_id
-                # Delete duplicate
+                if dup.feishu_union_id and not primary.feishu_union_id:
+                    primary.feishu_union_id = dup.feishu_union_id
+                # Clear unique fields on duplicate before delete to avoid constraint violations
+                dup.feishu_open_id = None
+                dup.email = f"deleted_{dup.id}@deleted.local"
+                dup.username = f"deleted_{dup.id}"
+                await db.flush()
+                # Now safe to delete
                 await db.delete(dup)
                 merge_count += 1
-                logger.info(f"    Merged {dup.username} into {primary.username}")
+                logger.info(f"    Merged {dup.display_name} ({dup.id}) into {primary.username}")
 
-        await db.commit()
+            # Commit after each group to isolate errors
+            try:
+                await db.commit()
+            except Exception as e:
+                logger.error(f"  Failed to commit merge for '{name}': {e}")
+                await db.rollback()
+
         logger.info(f"Merged {merge_count} duplicate users")
 
         # ── Step 4: Update conv_ids ──

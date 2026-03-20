@@ -1,6 +1,7 @@
 """Notification API — list, count, and mark-read for the current user."""
 
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func, update
@@ -13,12 +14,27 @@ from app.models.user import User
 
 router = APIRouter(tags=["notifications"])
 
+# Category → type mapping for filtering
+CATEGORY_TYPE_MAP: dict[str, list[str]] = {
+    "tool": ["autonomy_l2"],
+    "approval": ["approval_pending", "approval_resolved"],
+    "social": ["plaza_comment", "plaza_reply"],
+}
+
+
+def _apply_category_filter(query, category: Optional[str]):
+    """Apply category-based type filtering to a query."""
+    if category and category != "all" and category in CATEGORY_TYPE_MAP:
+        query = query.where(Notification.type.in_(CATEGORY_TYPE_MAP[category]))
+    return query
+
 
 @router.get("/notifications")
 async def list_notifications(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     unread_only: bool = Query(False),
+    category: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -26,6 +42,7 @@ async def list_notifications(
     query = select(Notification).where(Notification.user_id == current_user.id)
     if unread_only:
         query = query.where(Notification.is_read == False)  # noqa: E712
+    query = _apply_category_filter(query, category)
     query = query.order_by(Notification.created_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     notifications = result.scalars().all()
@@ -46,16 +63,17 @@ async def list_notifications(
 
 @router.get("/notifications/unread-count")
 async def get_unread_count(
+    category: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get the number of unread notifications for the current user."""
-    result = await db.execute(
-        select(func.count(Notification.id)).where(
-            Notification.user_id == current_user.id,
-            Notification.is_read == False,  # noqa: E712
-        )
+    query = select(func.count(Notification.id)).where(
+        Notification.user_id == current_user.id,
+        Notification.is_read == False,  # noqa: E712
     )
+    query = _apply_category_filter(query, category)
+    result = await db.execute(query)
     return {"unread_count": result.scalar() or 0}
 
 

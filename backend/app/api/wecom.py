@@ -233,6 +233,8 @@ async def delete_wecom_channel(
 # ─── Event Webhook ──────────────────────────────────────
 
 _processed_wecom_events: set[str] = set()
+_processed_kf_msgids: set[str] = set()
+
 
 
 @router.get("/channel/wecom/{agent_id}/webhook")
@@ -333,12 +335,15 @@ async def wecom_event_webhook(
     msg_type = msg_root.findtext("MsgType", "")
     from_user = msg_root.findtext("FromUserName", "")  # WeCom userid
     msg_id = msg_root.findtext("MsgId", "")
+    open_kfid = msg_root.findtext("OpenKfId", "")
+    token = msg_root.findtext("Token", "")
 
     # Dedup
-    if msg_id and msg_id in _processed_wecom_events:
+    dedup_key = msg_id if msg_id else token
+    if dedup_key and dedup_key in _processed_wecom_events:
         return Response(content="success", media_type="text/plain")
-    if msg_id:
-        _processed_wecom_events.add(msg_id)
+    if dedup_key:
+        _processed_wecom_events.add(dedup_key)
         if len(_processed_wecom_events) > 1000:
             _processed_wecom_events.clear()
 
@@ -355,11 +360,90 @@ async def wecom_event_webhook(
             _process_wecom_text(db, agent_id, config, from_user, user_text)
         )
 
+    elif msg_type == "event":
+        event = msg_root.findtext("Event", "")
+        if event == "kf_msg_or_event":
+            import asyncio
+            asyncio.create_task(
+                _process_wecom_kf_event(agent_id, config, token, open_kfid)
+            )
+        else:
+            logger.info(f"[WeCom] Received event: {event} (not handled)")
+
     elif msg_type in ("image", "file"):
         # TODO: Handle image/file messages in future
         logger.info(f"[WeCom] Received {msg_type} message (not yet handled)")
 
     return Response(content="success", media_type="text/plain")
+
+
+async def _process_wecom_kf_event(agent_id: uuid.UUID, config_obj: ChannelConfig, token: str, open_kfid: str = None):
+    """Sync WeCom Customer Service (KF) messages in background."""
+    import httpx
+    import time
+    from app.database import async_session
+    from sqlalchemy import select as _select
+    from app.models.channel_config import ChannelConfig as ChannelConfigModel
+    
+    try:
+        async with async_session() as session:
+            r = await session.execute(_select(ChannelConfigModel).where(ChannelConfigModel.agent_id == agent_id, ChannelConfigModel.channel_type == "wecom"))
+            config = r.scalar_one_or_none()
+            if not config:
+                return
+
+            async with httpx.AsyncClient(timeout=10) as client:
+                tok_resp = await client.get("https://qyapi.weixin.qq.com/cgi-bin/gettoken", params={"corpid": config.app_id, "corpsecret": config.app_secret})
+                token_data = tok_resp.json()
+                access_token = token_data.get("access_token")
+                if not access_token:
+                    return
+
+                current_cursor = token
+                has_more = 1
+                current_ts = int(time.time())
+
+                while has_more:
+                    payload = {"limit": 20}
+                    if open_kfid:
+                        payload["open_kfid"] = open_kfid
+
+                    if current_cursor.startswith("ENC"):
+                        payload["token"] = current_cursor
+                    else:
+                        payload["cursor"] = current_cursor
+                    
+                    logger.info(f"[WeCom KF] Calling sync_msg with payload: {payload}")
+                    sync_resp = await client.post(f"https://qyapi.weixin.qq.com/cgi-bin/kf/sync_msg?access_token={access_token}", json=payload)
+                    sync_data = sync_resp.json()
+                    if sync_data.get("errcode") != 0:
+                        logger.error(f"[WeCom KF] sync_msg error: {sync_data}")
+                        break
+                    
+                    has_more = sync_data.get("has_more", 0)
+                    current_cursor = sync_data.get("next_cursor", "")
+                    
+                    for msg in sync_data.get("msg_list", []):
+                        if msg.get("origin") == 3 and msg.get("msgtype") == "text":
+                            mid = msg.get("msgid")
+                            if mid in _processed_kf_msgids:
+                                continue
+                            if msg.get("send_time", 0) > 0 and (current_ts - msg.get("send_time", 0) > 86400):
+                                continue
+                            _processed_kf_msgids.add(mid)
+                            text = msg.get("text", {}).get("content", "").strip()
+                            if text:
+                                logger.info(f"[WeCom KF] Found msg from {msg.get('external_userid')}: {text[:20]}...")
+                                # Call the local process text with extra KF info
+                                await _process_wecom_text(
+                                    session, agent_id, config, 
+                                    msg.get("external_userid"), text,
+                                    is_kf=True, open_kfid=msg.get("open_kfid"), kf_msg_id=mid
+                                )
+                    if not has_more:
+                        break
+    except Exception as e: 
+        logger.error(f"[WeCom KF] Error in background task: {e}")
 
 
 async def _process_wecom_text(
@@ -368,6 +452,9 @@ async def _process_wecom_text(
     config: ChannelConfig,
     from_user: str,
     user_text: str,
+    is_kf: bool = False,
+    open_kfid: str = None,
+    kf_msg_id: str = None,
 ):
     """Process an incoming WeCom text message and reply."""
     import json
@@ -479,16 +566,29 @@ async def _process_wecom_text(
                 )
                 access_token = tok_resp.json().get("access_token", "")
                 if access_token:
-                    # Send as markdown first (better formatting, but WeCom-client-only)
-                    await client.post(
-                        f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
-                        json={
-                            "touser": from_user,
-                            "msgtype": "text",
-                            "agentid": int(wecom_agent_id) if wecom_agent_id else 0,
-                            "text": {"content": reply_text},
-                        },
-                    )
+                    if is_kf and open_kfid:
+                        # For KF messages, need to bridge/trans state first then send via kf/send_msg
+                        res_state = await client.post(
+                            f"https://qyapi.weixin.qq.com/cgi-bin/kf/service_state/trans?access_token={access_token}", 
+                            json={"open_kfid": open_kfid, "external_userid": from_user, "service_state": 1}
+                        )
+                        logger.info(f"[WeCom KF] trans state result: {res_state.json()}")
+                        res_send = await client.post(
+                            f"https://qyapi.weixin.qq.com/cgi-bin/kf/send_msg?access_token={access_token}", 
+                            json={"touser": from_user, "open_kfid": open_kfid, "msgtype": "text", "text": {"content": reply_text}}
+                        )
+                        logger.info(f"[WeCom KF] send_msg result: {res_send.json()}")
+                    else:
+                        # Default legacy Send as text
+                        await client.post(
+                            f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
+                            json={
+                                "touser": from_user,
+                                "msgtype": "text",
+                                "agentid": int(wecom_agent_id) if wecom_agent_id else 0,
+                                "text": {"content": reply_text},
+                            },
+                        )
         except Exception as e:
             logger.error(f"[WeCom] Failed to send reply: {e}")
 

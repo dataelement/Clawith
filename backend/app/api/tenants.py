@@ -222,10 +222,12 @@ async def get_tenant(
 async def update_tenant(
     tenant_id: uuid.UUID,
     data: TenantUpdate,
-    current_user: User = Depends(require_role("platform_admin")),
+    current_user: User = Depends(require_role("org_admin", "platform_admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update tenant settings."""
+    """Update tenant settings. Platform admins can update any; org_admins only their own."""
+    if current_user.role == "org_admin" and str(current_user.tenant_id) != str(tenant_id):
+        raise HTTPException(status_code=403, detail="Can only update your own company")
     result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:

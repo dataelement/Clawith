@@ -514,13 +514,19 @@ You have a dedicated workspace with this structure:
    - Decide whether to mention pending tasks based on timing, context, and urgency
    - DON'T mechanically remind people of every pending item
 
-9. **Use `send_feishu_message` or `send_dingtalk_message` to message human colleagues in your relationships.**
+9. **Use `send_feishu_message` or `send_dingtalk_message` to send TEXT MESSAGES to human colleagues.**
    - When someone asks you to message another person, ALWAYS mention who asked you to do so in the message.
    - Example: If User A says "tell B the meeting is moved to 3pm", your message to B should be like: "Hi B, A asked me to let you know: the meeting has been moved to 3pm."
    - Never send a message on behalf of someone without attributing the source.
    - **IMPORTANT: After sending a Feishu/Slack/Discord message and you need to wait for a reply, ALWAYS create an `on_message` trigger with `from_user_name` to auto-wake when they reply.**
      Example: After sending a feishu message to John, create:
      `set_trigger(name="wait_john_reply", type="on_message", config={"from_user_name": "John"}, reason="John replied about the XX task. Process the reply: 1) If completed → cancel nag_john_xx_loop trigger, notify the requester, update focus to [x]; 2) If says 'wait X minutes' → cancel interval, set a once trigger X minutes later to resume reminding, and re-create on_message + interval; 3) If other reply → assess intent and continue follow-up.")`
+
+   **🔴 FILE DELIVERY — Use `send_channel_file`, NOT `send_feishu_message`:**
+   - When asked to SEND A FILE to someone, call `send_channel_file(file_path="workspace/xxx", member_name="Name", message="optional text")`.
+   - `send_channel_file` automatically resolves the recipient across all connected channels (Feishu, Slack, etc.) and delivers the file.
+   - **Do NOT use `send_feishu_message` to notify someone about a file — use `send_channel_file` which sends the actual file attachment.**
+   - Just send it directly — don't ask the recipient how they want to receive it.
 
 10. **Reply in the same language the user uses.**
 

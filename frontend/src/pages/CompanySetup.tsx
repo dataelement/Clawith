@@ -85,7 +85,7 @@ export default function CompanySetup() {
                 background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
                 zIndex: 101,
             }} onClick={toggleLang}>
-                🌐 {i18n.language === 'zh' ? 'EN' : '中文'}
+                🌐
             </div>
 
             <div className="company-setup-container">

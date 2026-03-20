@@ -279,6 +279,7 @@ from app.api.webhooks import router as webhooks_router
 from app.api.notification import router as notification_router
 from app.api.gateway import router as gateway_router
 from app.api.admin import router as admin_router
+from app.api.pages import router as pages_router, public_router as pages_public_router
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(agents_router, prefix=settings.API_PREFIX)
@@ -314,9 +315,47 @@ app.include_router(webhooks_router)  # Public endpoint, no API prefix
 app.include_router(ws_router)
 app.include_router(gateway_router, prefix=settings.API_PREFIX)
 app.include_router(admin_router, prefix=settings.API_PREFIX)
+app.include_router(pages_router, prefix=settings.API_PREFIX)
+app.include_router(pages_public_router)  # Public endpoint for /p/{short_id}, no API prefix
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])
 async def health_check():
     """Health check endpoint."""
     return HealthResponse(status="ok", version=settings.APP_VERSION)
+
+
+# ── Version endpoint (public, no auth required) ──
+def _load_version_info() -> dict[str, str]:
+    """Read version + commit hash once at startup."""
+    import os, subprocess
+    version = "unknown"
+    for candidate in ["../frontend/VERSION", "frontend/VERSION", "VERSION"]:
+        try:
+            version = open(candidate).read().strip()
+            break
+        except FileNotFoundError:
+            continue
+    commit = ""
+    for commit_file in ["../COMMIT", "COMMIT", "../frontend/COMMIT"]:
+        try:
+            commit = open(commit_file).read().strip()
+            break
+        except FileNotFoundError:
+            continue
+    if not commit:
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL, timeout=3,
+            ).decode().strip()
+        except Exception:
+            pass
+    return {"version": version, "commit": commit}
+
+_version_cache = _load_version_info()
+
+@app.get("/api/version", tags=["system"])
+async def get_version():
+    """Return current Clawith version and commit hash."""
+    return _version_cache

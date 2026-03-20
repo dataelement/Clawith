@@ -537,7 +537,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                             }}
                                         >
                                             <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)' }}>{tmpl.icon || tmpl.name?.[0] || '·'}</div>
-                                            <div style={{ fontSize: '12px', marginTop: '4px' }}>{tmpl.name}</div>
+                                            <div style={{ fontSize: '12px', marginTop: '4px' }}>{String(t(`wizard.templates.${tmpl.name}`, tmpl.name))}</div>
                                         </div>
                                     ))}
                                 </div>
@@ -545,7 +545,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                 {/* JSON Import */}
                                 <div style={{ marginTop: '8px' }}>
                                     <label className="btn btn-ghost" style={{ fontSize: '12px', cursor: 'pointer', color: 'var(--text-tertiary)' }}>
-                                        ↑ Import from JSON
+                                        ↑ {t('wizard.step1.importFromJson')}
                                         <input type="file" accept=".json" style={{ display: 'none' }} onChange={e => {
                                             const file = e.target.files?.[0];
                                             if (!file) return;
@@ -572,7 +572,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                         )}
 
                         <div className="form-group">
-                            <label className="form-label">{t('agent.fields.name')} *</label>
+                            <label className="form-label">{t('agent.fields.name')} <span style={{ color: 'var(--error)' }}>*</span></label>
                             <input className={`form-input${fieldErrors.name ? ' input-error' : ''}`} value={form.name}
                                 onChange={(e) => { setForm({ ...form, name: e.target.value }); clearFieldError('name'); }}
                                 placeholder={t("wizard.step1.namePlaceholder")} autoFocus />
@@ -588,7 +588,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
 
                         {/* Model Selection */}
                         <div className="form-group">
-                            <label className="form-label">{t('wizard.step1.primaryModel')} *</label>
+                            <label className="form-label">{t('wizard.step1.primaryModel')} <span style={{ color: 'var(--error)' }}>*</span></label>
                             {models.length > 0 ? (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                     {models.filter((m: any) => m.enabled).map((m: any) => (

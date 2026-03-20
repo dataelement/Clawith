@@ -824,6 +824,35 @@ AGENT_TOOLS = [
             },
         },
     },
+    # --- Pages: public HTML hosting ---
+    {
+        "type": "function",
+        "function": {
+            "name": "publish_page",
+            "description": "Publish an HTML file from workspace as a public page. Returns a public URL that anyone can access without login. Only .html/.htm files can be published.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path in workspace, e.g. 'workspace/output.html'",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_published_pages",
+            "description": "List all pages published by this agent, showing their public URLs and view counts.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]
 
 
@@ -1202,6 +1231,11 @@ async def execute_tool(
         # ── Email Tools ──
         elif tool_name in ("send_email", "read_emails", "reply_email"):
             result = await _handle_email_tool(tool_name, agent_id, ws, arguments)
+        # ── Pages: public HTML hosting ──
+        elif tool_name == "publish_page":
+            result = await _publish_page(agent_id, user_id, ws, arguments)
+        elif tool_name == "list_published_pages":
+            result = await _list_published_pages(agent_id)
         else:
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
@@ -2802,13 +2836,23 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 timeout=120.0,
             )
             try:
+                import asyncio
+                import httpx
                 for _round in range(max_tool_rounds):
-                    response = await llm_client.complete(
-                        messages=full_msgs,
-                        tools=tools_for_llm if tools_for_llm else None,
-                        temperature=0.7,
-                        max_tokens=4096,
-                    )
+                    # Retry up to 3 times on transient LLM timeouts before aborting
+                    for _attempt in range(3):
+                        try:
+                            response = await llm_client.complete(
+                                messages=full_msgs,
+                                tools=tools_for_llm if tools_for_llm else None,
+                                temperature=0.7,
+                                max_tokens=4096,
+                            )
+                            break
+                        except httpx.ReadTimeout:
+                            if _attempt == 2:
+                                raise
+                            await asyncio.sleep(2 ** _attempt)  # 1s, then 2s
 
                     # Track tokens from API response
                     real_tokens = extract_usage_tokens(response.usage)
@@ -2920,7 +2964,8 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return f"❌ Message send error: {str(e)[:200]}"
+        err_detail = str(e) or type(e).__name__
+        return f"❌ Message send error: {err_detail[:200]}"
 
 
 
@@ -4844,6 +4889,116 @@ async def _get_email_config(agent_id: uuid.UUID) -> dict:
         agent_config = (at.config or {}) if at else {}
         # Merge global + agent override
         return {**(tool.config or {}), **agent_config}
+
+
+# ── Pages: public HTML hosting ──────────────────────────
+
+async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    """Publish an HTML file as a public page."""
+    import secrets
+    import re
+
+    path = arguments.get("path", "")
+    if not path:
+        return "Missing required argument 'path'"
+
+    # Validate file extension
+    if not path.lower().endswith((".html", ".htm")):
+        return "Only .html and .htm files can be published"
+
+    # Resolve and check file exists
+    full_path = (ws / path).resolve()
+    if not str(full_path).startswith(str(ws.resolve())):
+        return "Path traversal not allowed"
+    if not full_path.exists() or not full_path.is_file():
+        return f"File not found: {path}"
+
+    # Extract title from HTML
+    try:
+        content = full_path.read_text(encoding="utf-8", errors="replace")
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", content, re.IGNORECASE | re.DOTALL)
+        title = title_match.group(1).strip()[:200] if title_match else full_path.stem
+    except Exception:
+        title = full_path.stem
+
+    # Generate short_id
+    short_id = secrets.token_urlsafe(6)[:8]  # 8-char URL-safe string
+
+    # Look up tenant_id
+    tenant_id = None
+    try:
+        from app.models.agent import Agent as _AgModel
+        async with async_session() as _db:
+            _r = await _db.execute(select(_AgModel.tenant_id).where(_AgModel.id == agent_id))
+            tenant_id = _r.scalar_one_or_none()
+    except Exception:
+        pass
+
+    # Create record
+    from app.models.published_page import PublishedPage
+    try:
+        async with async_session() as db:
+            page = PublishedPage(
+                short_id=short_id,
+                agent_id=agent_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                source_path=path,
+                title=title,
+            )
+            db.add(page)
+            await db.commit()
+    except Exception as e:
+        return f"Failed to publish: {e}"
+
+    # Build public URL using configured PUBLIC_BASE_URL
+    public_base = ""
+    try:
+        from app.models.system_settings import SystemSetting
+        async with async_session() as db2:
+            r = await db2.execute(
+                select(SystemSetting).where(SystemSetting.key == "platform")
+            )
+            setting = r.scalar_one_or_none()
+            if setting and setting.value and setting.value.get("public_base_url"):
+                raw = setting.value["public_base_url"].strip().rstrip("/")
+                if raw and not raw.startswith("http"):
+                    raw = f"https://{raw}"
+                public_base = raw
+    except Exception:
+        pass
+
+    url = f"{public_base}/p/{short_id}" if public_base else f"/p/{short_id}"
+
+    return f"Published successfully!\n\nPublic URL: {url}\nTitle: {title}\n\nAnyone can access this page without logging in."
+
+
+async def _list_published_pages(agent_id: uuid.UUID) -> str:
+    """List all published pages for this agent."""
+    from app.models.published_page import PublishedPage
+
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(PublishedPage)
+                .where(PublishedPage.agent_id == agent_id)
+                .order_by(PublishedPage.created_at.desc())
+            )
+            pages = result.scalars().all()
+
+        if not pages:
+            return "No published pages yet."
+
+        lines = [f"Published pages ({len(pages)} total):\n"]
+        for p in pages:
+            lines.append(f"- {p.title or 'Untitled'}")
+            lines.append(f"  URL: /p/{p.short_id}")
+            lines.append(f"  Source: {p.source_path}")
+            lines.append(f"  Views: {p.view_count}")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list pages: {e}"
 
 
 async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
