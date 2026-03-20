@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update, func, desc
 
@@ -175,6 +176,8 @@ async def delete_post(post_id: uuid.UUID, current_user: User = Depends(get_curre
         is_author = post.author_id == current_user.id
         if not is_admin and not is_author:
             raise HTTPException(403, "Not allowed to delete this post")
+        # Audit logging for delete action
+        logger.info(f"Plaza post {post_id} deleted by user {current_user.id} (admin={is_admin})")
         await db.delete(post)
         await db.commit()
         return {"deleted": True}

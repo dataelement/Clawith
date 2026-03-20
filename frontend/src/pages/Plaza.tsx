@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
+import ConfirmModal from '../components/ConfirmModal';
 
 /* ────── Inline SVG Icons (monochrome, matching Dashboard) ────── */
 
@@ -65,6 +66,11 @@ const Icons = {
     dot: (
         <svg width="6" height="6" viewBox="0 0 6 6">
             <circle cx="3" cy="3" r="3" fill="currentColor" />
+        </svg>
+    ),
+    trash: (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 4h10M6 4V3a1 1 0 011-1h2a1 1 0 011 1v1M13 4v9a2 2 0 01-2 2H5a2 2 0 01-2-2V4" />
         </svg>
     ),
 };
@@ -285,6 +291,13 @@ function SidebarSection({ icon, title, children }: { icon: React.ReactNode; titl
     );
 }
 
+/* ────── Inline Styles ────── */
+
+const styles = `
+    .delete-btn { opacity: 0.6; color: var(--text-muted); background: none; border: none; cursor: pointer; font-size: 12px; padding: 4px 8px; border-radius: var(--radius-sm); display: flex; align-items: center; }
+    .delete-btn:hover { opacity: 1; color: #ef4444; background: var(--bg-hover); }
+`;
+
 /* ────── Main Component ────── */
 
 export default function Plaza() {
@@ -294,6 +307,7 @@ export default function Plaza() {
     const [newPost, setNewPost] = useState('');
     const [expandedPost, setExpandedPost] = useState<string | null>(null);
     const [newComment, setNewComment] = useState('');
+    const [deleteModalPostId, setDeleteModalPostId] = useState<string | null>(null);
     const tenantId = localStorage.getItem('current_tenant_id') || '';
 
     const { data: posts = [], isLoading } = useQuery<Post[]>({
@@ -567,22 +581,11 @@ export default function Plaza() {
                                         </div>
                                         {(isAdmin || post.author_id === user?.id) && (
                                             <button
-                                                onClick={() => {
-                                                    if (window.confirm('Delete this post?')) {
-                                                        deletePost.mutate(post.id);
-                                                    }
-                                                }}
-                                                style={{
-                                                    background: 'none', border: 'none', cursor: 'pointer',
-                                                    color: 'var(--text-muted)', fontSize: '12px', padding: '4px 8px',
-                                                    borderRadius: 'var(--radius-sm)',
-                                                    opacity: 0.6,
-                                                }}
-                                                onMouseEnter={e => (e.currentTarget.style.color = '#ef4444', e.currentTarget.style.opacity = '1')}
-                                                onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)', e.currentTarget.style.opacity = '0.6')}
-                                                title="Delete post"
+                                                className="delete-btn"
+                                                onClick={() => setDeleteModalPostId(post.id)}
+                                                title={t('plaza.deletePost', 'Delete post')}
                                             >
-                                                🗑
+                                                <span style={{ display: 'flex', marginRight: '4px' }}>{Icons.trash}</span>
                                             </button>
                                         )}
                                     </div>
@@ -774,6 +777,24 @@ export default function Plaza() {
                     </SidebarSection>
                 </div>
             </div>
+
+            {/* Delete Confirmation Modal */}
+            <style>{styles}</style>
+            <ConfirmModal
+                open={!!deleteModalPostId}
+                title={t('plaza.deleteConfirmTitle', 'Delete Post')}
+                message={t('plaza.deleteConfirmMessage', 'Are you sure you want to delete this post? This action cannot be undone.')}
+                confirmLabel={t('plaza.delete', 'Delete')}
+                cancelLabel={t('plaza.cancel', 'Cancel')}
+                danger
+                onConfirm={() => {
+                    if (deleteModalPostId) {
+                        deletePost.mutate(deleteModalPostId);
+                        setDeleteModalPostId(null);
+                    }
+                }}
+                onCancel={() => setDeleteModalPostId(null)}
+            />
         </div>
     );
 }
