@@ -7,12 +7,16 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_user
+from app.core.security import get_current_user, hash_password
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+class PasswordReset(BaseModel):
+    new_password: str
 
 
 class UserQuotaUpdate(BaseModel):
@@ -96,6 +100,35 @@ async def list_users(
         }
         out.append(UserOut(**user_dict))
     return out
+
+
+@router.post("/{user_id}/reset-password")
+async def reset_user_password(
+    user_id: uuid.UUID,
+    data: PasswordReset,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset a user's password. Admins can reset any user; users can reset their own."""
+    is_admin = current_user.role in ("platform_admin", "org_admin")
+    is_self = current_user.id == user_id
+    if not is_admin and not is_self:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+
+    if len(data.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if is_admin and not is_self and user.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot modify users outside your organization")
+
+    user.password_hash = hash_password(data.new_password)
+    await db.commit()
+    return {"success": True}
 
 
 @router.patch("/{user_id}/quota", response_model=UserOut)
