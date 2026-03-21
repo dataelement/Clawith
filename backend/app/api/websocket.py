@@ -234,7 +234,7 @@ async def call_llm(
         _warn_threshold_96 = _max_tool_rounds - 2
         if round_i == _warn_threshold_80:
             api_messages.append(LLMMessage(
-                role="user",
+                role="system",
                 content=(
                     f"⚠️ 你已使用 {round_i}/{_max_tool_rounds} 轮工具调用。"
                     "如果当前任务尚未完成，请尽快保存进度到 focus.md，"
@@ -243,7 +243,7 @@ async def call_llm(
             ))
         elif round_i == _warn_threshold_96:
             api_messages.append(LLMMessage(
-                role="user",
+                role="system",
                 content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 focus.md 并设置续接触发器。",
             ))
 

@@ -139,15 +139,21 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
 
     lines.append("")
     lines.append("⚠️ SKILL USAGE RULES:")
-    lines.append("1. When a user request matches a skill, FIRST call `read_file` with the File path above to load the full instructions.")
+    lines.append(
+        "1. When a user request matches a skill, FIRST call `read_file` with the File path above to load the full instructions."
+    )
     lines.append("2. Follow the loaded instructions to complete the task.")
     lines.append("3. Do NOT guess what the skill contains — always read it first.")
-    lines.append("4. Folder-based skills may contain auxiliary files (scripts/, references/, examples/). Use `list_files` on the skill folder to discover them.")
+    lines.append(
+        "4. Folder-based skills may contain auxiliary files (scripts/, references/, examples/). Use `list_files` on the skill folder to discover them."
+    )
 
     return "\n".join(lines)
 
 
-async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> str:
+async def build_agent_context(
+    agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None
+) -> str:
     """Build a rich system prompt incorporating agent's full context.
 
     Reads from workspace files:
@@ -181,12 +187,15 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     # --- Compose system prompt ---
     from datetime import datetime, timezone as _tz
     from app.services.timezone_utils import get_agent_timezone, now_in_timezone
+
     agent_tz_name = await get_agent_timezone(agent_id)
     agent_local_now = now_in_timezone(agent_tz_name)
     now_str = agent_local_now.strftime(f"%Y-%m-%d %H:%M:%S ({agent_tz_name})")
     parts = [f"You are {agent_name}, an enterprise digital employee."]
     parts.append(f"\n## Current Time\n{now_str}")
-    parts.append(f"Your timezone is **{agent_tz_name}**. When setting cron triggers, use this timezone for time references.")
+    parts.append(
+        f"Your timezone is **{agent_tz_name}**. When setting cron triggers, use this timezone for time references."
+    )
 
     if role_description:
         parts.append(f"\n## Role\n{role_description}")
@@ -196,6 +205,7 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     try:
         from app.models.channel_config import ChannelConfig
         from app.database import async_session as _ctx_session
+
         async with _ctx_session() as _ctx_db:
             _cfg_r = await _ctx_db.execute(
                 select(ChannelConfig).where(
@@ -266,6 +276,7 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
     # --- DingTalk Built-in Tools (only injected when agent has DingTalk configured) ---
     try:
         from app.services.agent.context.dingtalk import get_dingtalk_context
+
         dingtalk_context = await get_dingtalk_context(agent_id)
         if dingtalk_context:
             parts.append(dingtalk_context)
@@ -277,6 +288,7 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
         from app.database import async_session
         from app.models.channel_config import ChannelConfig
         from sqlalchemy import select as sa_select
+
         async with async_session() as db:
             result = await db.execute(
                 sa_select(ChannelConfig).where(
@@ -331,6 +343,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
         from app.database import async_session
         from app.models.system_settings import SystemSetting
         from sqlalchemy import select as sa_select
+
         async with async_session() as db:
             # Resolve agent's tenant_id
             _ag_r = await db.execute(sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id))
@@ -342,6 +355,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
             if _agent_tenant_id:
                 try:
                     from app.models.tenant_setting import TenantSetting
+
                     result = await db.execute(
                         sa_select(TenantSetting).where(
                             TenantSetting.tenant_id == _agent_tenant_id,
@@ -357,18 +371,14 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
             # Priority 2: system_settings with tenant-scoped key (backward compat)
             if not company_intro and _agent_tenant_id:
                 tenant_key = f"company_intro_{_agent_tenant_id}"
-                result = await db.execute(
-                    sa_select(SystemSetting).where(SystemSetting.key == tenant_key)
-                )
+                result = await db.execute(sa_select(SystemSetting).where(SystemSetting.key == tenant_key))
                 setting = result.scalar_one_or_none()
                 if setting and setting.value and setting.value.get("content"):
                     company_intro = setting.value["content"].strip()
 
             # Priority 3: global system_settings fallback
             if not company_intro:
-                result = await db.execute(
-                    sa_select(SystemSetting).where(SystemSetting.key == "company_intro")
-                )
+                result = await db.execute(sa_select(SystemSetting).where(SystemSetting.key == "company_intro"))
                 setting = result.scalar_one_or_none()
                 if setting and setting.value and setting.value.get("content"):
                     company_intro = setting.value["content"].strip()
@@ -381,7 +391,10 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
     if soul and soul not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
         parts.append(f"\n## Personality\n{soul}")
 
-    if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
+    if memory and memory not in (
+        "_这里记录重要的信息和学到的知识。_",
+        "_Record important information and knowledge here._",
+    ):
         parts.append(f"\n## Memory\n{memory}")
 
     if skills_text:
@@ -408,6 +421,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
         from app.database import async_session
         from app.models.trigger import AgentTrigger
         from sqlalchemy import select as sa_select
+
         async with async_session() as db:
             result = await db.execute(
                 sa_select(AgentTrigger).where(
@@ -422,7 +436,9 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
                     config_str = str(t.config)[:80]
                     reason_str = (t.reason or "")[:500]
                     ref_str = f" (focus: {t.focus_ref})" if t.focus_ref else ""
-                    lines.append(f"\n- **{t.name}** [{t.type}]{ref_str}\n  Config: `{config_str}`\n  Reason: {reason_str}")
+                    lines.append(
+                        f"\n- **{t.name}** [{t.type}]{ref_str}\n  Config: `{config_str}`\n  Reason: {reason_str}"
+                    )
                 parts.append("\n## Active Triggers\n" + "\n".join(lines))
     except Exception:
         pass
@@ -546,10 +562,10 @@ You have internet access through these tools — **use them proactively when you
 
 🚫 **NEVER say you cannot access the internet or search the web.** You HAVE these capabilities — use them.""")
 
-
-
     # Inject current user identity
     if current_user_name:
-        parts.append(f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate.")
+        parts.append(
+            f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate."
+        )
 
     return "\n".join(parts)

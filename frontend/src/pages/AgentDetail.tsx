@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Component, ErrorInfo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +8,14 @@ import type { FileBrowserApi } from '../components/FileBrowser';
 import FileBrowser from '../components/FileBrowser';
 import ChannelConfig from '../components/ChannelConfig';
 import MarkdownRenderer from '../components/MarkdownRenderer';
+
+const ChatInput = React.memo(({ onKeyDown, onPaste, placeholder, disabled, autoFocus, inputRef }: {
+    onKeyDown: (e: any) => void; onPaste: (e: any) => void;
+    placeholder: string; disabled: boolean; autoFocus: boolean; inputRef: React.RefObject<HTMLInputElement | null>;
+}) => (
+    <input ref={inputRef} className="chat-input" onKeyDown={onKeyDown} onPaste={onPaste} placeholder={placeholder}
+        disabled={disabled} style={{ flex: 1 }} autoFocus={autoFocus} />
+));
 import PromptModal from '../components/PromptModal';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAuthStore } from '../stores';
@@ -384,7 +392,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                 }}>Reset to Global</button>
                             )}
                             <button className="btn btn-secondary" onClick={() => setConfigTool(null)}>Cancel</button>
-                            <button className="btn btn-primary" onClick={saveConfig} disabled={configSaving}>{configSaving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}</button>
+                            <button className="btn btn-primary" onClick={saveConfig} disabled={configSaving}>{configSaving ? 'Saving…' : 'Save'}</button>
                         </div>
                     </div>
                 </div>
@@ -698,7 +706,6 @@ function AgentDetailInner() {
         queryKey: ['triggers', id],
         queryFn: () => triggerApi.list(id!),
         enabled: !!id && activeTab === 'aware',
-        refetchInterval: activeTab === 'aware' ? 5000 : false,
     });
 
     // ── Aware tab data: focus.md ──
@@ -726,7 +733,6 @@ function AgentDetailInner() {
             return all.filter((s: any) => s.source_channel === 'trigger');
         },
         enabled: !!id && activeTab === 'aware',
-        refetchInterval: activeTab === 'aware' ? 10000 : false,
     });
 
     // ── Aware tab state ──
@@ -776,7 +782,6 @@ function AgentDetailInner() {
         queryKey: ['activity', id],
         queryFn: () => activityApi.list(id!, 100),
         enabled: !!id && (activeTab === 'activityLog' || activeTab === 'status'),
-        refetchInterval: activeTab === 'activityLog' ? 10000 : false,
     });
 
     // Chat history
@@ -863,16 +868,8 @@ function AgentDetailInner() {
     };
 
     const selectSession = async (sess: any) => {
-        // Close the existing WS before switching so its onmessage can no longer
-        // write stale streaming data into the new session's message list.
-        if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-            wsRef.current.close();
-            wsRef.current = null;
-        }
         setChatMessages([]);
         setHistoryMsgs([]);
-        setIsStreaming(false);
-        setIsWaiting(false);
         setActiveSession(sess);
         // Always load stored messages for the selected session
         const tkn = localStorage.getItem('token');
@@ -937,6 +934,7 @@ function AgentDetailInner() {
     interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
     const [chatInput, setChatInput] = useState('');
+    const chatInputRef2 = useRef<HTMLInputElement>(null);
     const [wsConnected, setWsConnected] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
@@ -1041,15 +1039,9 @@ function AgentDetailInner() {
 
     // Reset state whenever the viewed agent changes
     useEffect(() => {
-        if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-            wsRef.current.close();
-            wsRef.current = null;
-        }
         setActiveSession(null);
         setChatMessages([]);
         setHistoryMsgs([]);
-        setIsStreaming(false);
-        setIsWaiting(false);
         setChatScope('mine');
         setAgentExpired(false);
         settingsInitRef.current = false;
@@ -1221,9 +1213,11 @@ function AgentDetailInner() {
 
     const sendChatMsg = () => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-        if (!chatInput.trim() && attachedFiles.length === 0) return;
-        
-        let userMsg = chatInput.trim();
+        const _inputEl = chatInputRef.current;
+        if (!_inputEl) return;
+        const _inputVal = _inputEl.value.trim();
+        if (!_inputVal && attachedFiles.length === 0) return;
+        let userMsg = _inputVal;
         let contentForLLM = userMsg;
         let displayFiles = '';
 
@@ -1270,7 +1264,8 @@ function AgentDetailInner() {
             file_name: attachedFiles.map(f => f.name).join(', ') 
         }));
         
-        setChatInput(''); 
+        if (chatInputRef.current) chatInputRef.current.value = '';
+        setChatInput('');
         setAttachedFiles([]);
     };
 
@@ -1517,7 +1512,6 @@ function AgentDetailInner() {
         queryKey: ['task-logs', id, selectedTaskId],
         queryFn: () => taskApi.getLogs(id!, selectedTaskId!),
         enabled: !!id && !!selectedTaskId,
-        refetchInterval: selectedTaskId ? 3000 : false,
     });
 
     // Schedule execution history (selectedTaskId format: 'sched-{uuid}')
@@ -1717,49 +1711,49 @@ function AgentDetailInner() {
                             {/* Metric cards */}
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '24px' }}>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>📋 {t('agent.tabs.status')}</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.tabs.status')}</div>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                         <span className={`status-dot ${statusKey}`} />
                                         <span style={{ fontSize: '16px', fontWeight: 500 }}>{t(`agent.status.${statusKey}`)}</span>
                                     </div>
                                 </div>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>🗓️ {t('agent.settings.today')} Token</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.settings.today')} Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_today)}</div>
                                     {agent.max_tokens_per_day && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_day)}</div>}
                                 </div>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>📅 {t('agent.settings.month')} Token</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.settings.month')} Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_month)}</div>
                                     {agent.max_tokens_per_month && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_month)}</div>}
                                 </div>
                                 {/* Native agent metrics */}
                                 {(agent as any)?.agent_type !== 'openclaw' && (<>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.llmCallsToday')}</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>LLM Calls Today</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{((agent as any).llm_calls_today || 0).toLocaleString()}</div>
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.status.max')}: {((agent as any).max_llm_calls_per_day || 100).toLocaleString()}</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>Max: {((agent as any).max_llm_calls_per_day || 100).toLocaleString()}</div>
                                 </div>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.totalToken')}</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>Total Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens((agent as any).tokens_used_total || 0)}</div>
                                 </div>
                                 {metrics && (
                                     <>
                                         <div className="card">
-                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>✅ {t('agent.tasks.done')}</div>
+                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.tasks.done')}</div>
                                             <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.tasks?.done || 0}/{metrics.tasks?.total || 0}</div>
                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> {metrics.tasks?.completion_rate || 0}%</div>
                                         </div>
                                         <div className="card">
-                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.pending')}</div>
+                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>Pending</div>
                                             <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>{metrics.approvals?.pending || 0}</div>
                                         </div>
                                         <div className="card" style={{ position: 'relative' }}>
                                             <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                                {t('agent.status.24hActions')}
+                                                {i18n.language?.startsWith('zh') ? '24h 活动' : '24h Actions'}
                                                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
-                                                <span className="metric-tooltip">{t('agent.status.24hActionsTooltip')}</span>
+                                                <span className="metric-tooltip">{i18n.language?.startsWith('zh') ? '过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等' : 'Total recorded operations in the past 24 hours, including chats, tool calls, task executions, etc.'}</span>
                                             </div>
                                             <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
                                         </div>
@@ -1770,12 +1764,12 @@ function AgentDetailInner() {
                                 {(agent as any)?.agent_type === 'openclaw' && (
                                     <div className="card">
                                         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>
-                                            {t('agent.openclaw.lastSeen')}
+                                            {i18n.language?.startsWith('zh') ? '最近连接' : 'Last Seen'}
                                         </div>
                                         <div style={{ fontSize: '16px', fontWeight: 500 }}>
                                             {(agent as any).openclaw_last_seen
                                                 ? new Date((agent as any).openclaw_last_seen).toLocaleString()
-                                                : t('agent.openclaw.notConnected')}
+                                                : (i18n.language?.startsWith('zh') ? '尚未连接' : 'Not connected')}
                                         </div>
                                     </div>
                                 )}
@@ -1784,14 +1778,14 @@ function AgentDetailInner() {
                             {/* Agent Profile & Model Info */}
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
                                 <div className="card">
-                                    <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.profile.title')}</h3>
+                                    <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>📋 Agent Profile</h3>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', gap: '12px' }}>
                                             <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>{t('agent.fields.role')}</span>
                                             <span title={agent.role_description || ''} style={{ textAlign: 'right', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as any }}>{agent.role_description || '—'}</span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.profile.created')}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>Created</span>
                                             <span>{agent.created_at ? formatDate(agent.created_at) : '—'}</span>
                                         </div>
                                         {(agent as any).creator_username && (
@@ -1801,29 +1795,29 @@ function AgentDetailInner() {
                                             </div>
                                         )}
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.profile.lastActive')}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>Last Active</span>
                                             <span>{agent.last_active_at ? formatDate(agent.last_active_at) : '—'}</span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.profile.timezone')}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>🌐 Timezone</span>
                                             <span>{(agent as any).effective_timezone || agent.timezone || 'UTC'}</span>
                                         </div>
                                     </div>
                                 </div>
                                 {(agent as any)?.agent_type !== 'openclaw' ? (
                                 <div className="card">
-                                    <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
+                                    <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>Model Config</h3>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.model')}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>Model</span>
                                             <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{modelLabel}</span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.provider')}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>Provider</span>
                                             <span style={{ textTransform: 'capitalize' }}>{modelProvider}</span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.contextRounds')}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>Context Rounds</span>
                                             <span>{(agent as any).context_window_size || 100}</span>
                                         </div>
                                     </div>
@@ -1831,11 +1825,11 @@ function AgentDetailInner() {
                                 ) : (
                                 <div className="card">
                                     <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>
-                                        {t('agent.openclaw.connection')}
+                                        {i18n.language?.startsWith('zh') ? 'OpenClaw 连接' : 'OpenClaw Connection'}
                                     </h3>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.type')}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{i18n.language?.startsWith('zh') ? '类型' : 'Type'}</span>
                                             <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                 <span style={{
                                                     fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
@@ -1845,15 +1839,15 @@ function AgentDetailInner() {
                                             </span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.lastSeen')}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{i18n.language?.startsWith('zh') ? '最近连接' : 'Last Seen'}</span>
                                             <span>{(agent as any).openclaw_last_seen
                                                 ? new Date((agent as any).openclaw_last_seen).toLocaleString()
-                                                : t('agent.openclaw.never')}
+                                                : (i18n.language?.startsWith('zh') ? '尚未连接' : 'Never')}
                                             </span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.model')}</span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>{t('agent.openclaw.managedBy')}</span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{i18n.language?.startsWith('zh') ? '模型' : 'Model'}</span>
+                                            <span style={{ color: 'var(--text-secondary)' }}>{i18n.language?.startsWith('zh') ? '由 OpenClaw 实例管理' : 'Managed by OpenClaw'}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1883,7 +1877,7 @@ function AgentDetailInner() {
                             {/* Quick Actions */}
                             <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
                                 <button className="btn btn-secondary" onClick={() => setActiveTab('chat')}>{t('agent.actions.chat')}</button>
-                                {(agent as any)?.agent_type !== 'openclaw' && <button className="btn btn-secondary" onClick={() => setActiveTab('aware')}>{t('agent.tabs.aware')}</button>}
+                                {(agent as any)?.agent_type !== 'openclaw' && <button className="btn btn-secondary" onClick={() => setActiveTab('aware')}>Aware</button>}
                                 <button className="btn btn-secondary" onClick={() => setActiveTab('settings')}>{t('agent.tabs.settings')}</button>
                             </div>
                         </div>
@@ -2198,7 +2192,7 @@ function AgentDetailInner() {
                                         className="btn btn-ghost"
                                         style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
                                     >
-                                        {t('agent.aware.showMore', { count: hiddenActiveCount })}
+                                        {i18n.language?.startsWith('zh') ? `显示更多 ${hiddenActiveCount} 项...` : `Show ${hiddenActiveCount} more...`}
                                     </button>
                                 )}
                                 {showAllFocus && activeFocusItems.length > SECTION_PAGE_SIZE && (
@@ -2207,7 +2201,7 @@ function AgentDetailInner() {
                                         className="btn btn-ghost"
                                         style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
                                     >
-                                        {t('agent.aware.showLess')}
+                                        {i18n.language?.startsWith('zh') ? '收起' : 'Show less'}
                                     </button>
                                 )}
 
@@ -2225,8 +2219,8 @@ function AgentDetailInner() {
                                             }}
                                         >
                                             {showCompletedFocus
-                                                ? t('agent.aware.hideCompleted')
-                                                : t('agent.aware.showCompleted', { count: completedFocusItems.length })
+                                                ? (i18n.language?.startsWith('zh') ? '隐藏已完成' : 'Hide completed')
+                                                : (i18n.language?.startsWith('zh') ? `显示 ${completedFocusItems.length} 项已完成` : `Show ${completedFocusItems.length} completed`)
                                             }
                                         </button>
                                         {showCompletedFocus && completedFocusItems.map(renderFocusItem)}
@@ -2892,12 +2886,12 @@ function AgentDetailInner() {
                                 <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px 0', gap: '4px', borderBottom: '1px solid var(--border-subtle)' }}>
                                     <button onClick={() => setChatScope('mine')}
                                         style={{ flex: 1, padding: '5px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: chatScope === 'mine' ? 600 : 400, color: chatScope === 'mine' ? 'var(--text-primary)' : 'var(--text-tertiary)', borderBottom: chatScope === 'mine' ? '2px solid var(--accent-primary)' : '2px solid transparent', paddingBottom: '8px' }}>
-                                        {t('agent.chat.mySessions')}
+                                        My Sessions
                                     </button>
                                     {isAdmin && (
                                         <button onClick={() => { setChatScope('all'); fetchAllSessions(); }}
                                             style={{ flex: 1, padding: '5px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: chatScope === 'all' ? 600 : 400, color: chatScope === 'all' ? 'var(--text-primary)' : 'var(--text-tertiary)', borderBottom: chatScope === 'all' ? '2px solid var(--accent-primary)' : '2px solid transparent', paddingBottom: '8px' }}>
-                                            {t('agent.chat.allUsers')}
+                                            All Users
                                         </button>
                                     )}
                                 </div>
@@ -2909,7 +2903,7 @@ function AgentDetailInner() {
                                             style={{ width: '100%', padding: '5px 8px', background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '6px' }}
                                             onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-secondary)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
                                             onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-secondary)'; }}>
-                                            + {t('agent.chat.newSession')}
+                                            + New Session
                                         </button>
                                     </div>
                                 )}
@@ -2920,7 +2914,7 @@ function AgentDetailInner() {
                                         sessionsLoading ? (
                                             <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>
                                         ) : sessions.length === 0 ? (
-                                            <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.chat.noSessionsYet')}<br />{t('agent.chat.clickToStart')}</div>
+                                            <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>No sessions yet.<br />Click "+ New Session" to start.</div>
                                         ) : sessions.map((s: any) => {
                                             const isActive = activeSession?.id === s.id;
                                             const isOwn = s.user_id === String(currentUser?.id);
@@ -3025,8 +3019,8 @@ function AgentDetailInner() {
                             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
                                 {!activeSession ? (
                                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
-                                        <div>{t('agent.chat.noSessionSelected')}</div>
-                                        <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
+                                        <div>No session selected</div>
+                                        <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>Start a new session</button>
                                     </div>
                                 ) : (activeSession.user_id && currentUser && activeSession.user_id !== String(currentUser.id)) || activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent' ? (
                                     /* ── Read-only history view (other user's session or agent-to-agent) ── */
@@ -3313,17 +3307,19 @@ function AgentDetailInner() {
                                                     <button onClick={() => { uploadAbortRef.current?.(); }} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '0 2px', lineHeight: 1 }} title="Cancel upload">✕</button>
                                                 </div>
                                             )}
-                                            <input ref={chatInputRef} className="chat-input" value={chatInput} onChange={e => setChatInput(e.target.value)}
+                                            <ChatInput
+                                                inputRef={chatInputRef}
+                                                autoFocus={true}
                                                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); sendChatMsg(); } }}
                                                 onPaste={handlePaste}
                                                 placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : attachedFiles.length > 0 ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` }) : t('chat.placeholder')}
-                                                disabled={!wsConnected || isWaiting || isStreaming} style={{ flex: 1 }} autoFocus />
+                                                disabled={!wsConnected || isWaiting || isStreaming} />
                                             {(isStreaming || isWaiting) ? (
                                                 <button className="btn btn-stop-generation" onClick={() => { if (wsRef.current?.readyState === WebSocket.OPEN) { wsRef.current.send(JSON.stringify({ type: 'abort' })); setIsStreaming(false); setIsWaiting(false); } }} style={{ padding: '6px 16px' }} title={t('chat.stop', 'Stop')}>
                                                     <span className="stop-icon" />
                                                 </button>
                                             ) : (
-                                                <button className="btn btn-primary" onClick={sendChatMsg} disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)} style={{ padding: '6px 16px' }}>{t('chat.send')}</button>
+                                                <button className="btn btn-primary" onClick={sendChatMsg} disabled={!wsConnected} style={{ padding: '6px 16px' }}>{t('chat.send')}</button>
                                             )}
                                         </div>
                                     </>
@@ -3387,9 +3383,9 @@ function AgentDetailInner() {
                                     {(logFilter === 'backend' || logFilter === 'heartbeat' || logFilter === 'schedule' || logFilter === 'messages') && (
                                         <>
                                             <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>│</span>
-                                            {filterBtn('heartbeat', '💓 ' + t('agent.mind.heartbeatTitle'))}
-                                            {filterBtn('schedule', '⏰ ' + t('agent.activityLog.scheduleCron'), true)}
-                                            {filterBtn('messages', '📨 ' + t('agent.activityLog.messages'), true)}
+                                            {filterBtn('heartbeat', '💓 Heartbeat', true)}
+                                            {filterBtn('schedule', '⏰ Schedule/Cron', true)}
+                                            {filterBtn('messages', '📨 Messages', true)}
                                         </>
                                     )}
                                     </>)}
@@ -3464,9 +3460,8 @@ function AgentDetailInner() {
                             const { data: approvals = [], refetch: refetchApprovals } = useQuery({
                                 queryKey: ['agent-approvals', id],
                                 queryFn: () => fetchAuth<any[]>(`/agents/${id}/approvals`),
-                                enabled: !!id,
-                                refetchInterval: 15000,
-                            });
+        enabled: !!id,
+    });
                             const resolveMut = useMutation({
                                 mutationFn: async ({ approvalId, action }: { approvalId: string; action: string }) => {
                                     const token = localStorage.getItem('token');
@@ -3918,8 +3913,8 @@ function AgentDetailInner() {
                                 {/* Permission Management */}
                                 {(() => {
                                     const scopeLabels: Record<string, string> = {
-                                        company: '🏢 ' + t('agent.settings.perm.companyWide', 'Company-wide'),
-                                        user: '👤 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
+                                        company: '🏢 ' + t('agent.settings.perm.company', 'Company-wide'),
+                                        user: '👤 ' + t('agent.settings.perm.selfOnly', 'Only Me'),
                                     };
 
                                     const handleScopeChange = async (newScope: string) => {
@@ -3994,8 +3989,8 @@ function AgentDetailInner() {
                                                         <div>
                                                             <div style={{ fontWeight: 500, fontSize: '13px' }}>{scopeLabels[scope]}</div>
                                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                                {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
-                                                                {scope === 'user' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
+                                                                {scope === 'company' && t('agent.settings.perm.companyDesc', 'All users in the organization can use this agent')}
+                                                                {scope === 'user' && t('agent.settings.perm.selfDesc', 'Only the creator can use this agent')}
                                                             </div>
                                                         </div>
                                                     </label>
@@ -4006,11 +4001,11 @@ function AgentDetailInner() {
                                             {currentScope === 'company' && isOwner && (
                                                 <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
                                                     <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
-                                                        {t('agent.settings.perm.defaultAccess', 'Default Access Level')}
+                                                        {t('agent.settings.perm.accessLevel', 'Default Access Level')}
                                                     </label>
                                                     <div style={{ display: 'flex', gap: '8px' }}>
-                                                        {[{ val: 'use', label: '👁️ ' + t('agent.settings.perm.useAccess', 'Use'), desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
-                                                        { val: 'manage', label: '⚙️ ' + t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') }].map(opt => (
+                                                        {[{ val: 'use', label: '👁️ ' + t('agent.settings.perm.useLevel', 'Use'), desc: t('agent.settings.perm.useDesc', 'Task, Chat, Tools, Skills, Workspace') },
+                                                        { val: 'manage', label: '⚙️ ' + t('agent.settings.perm.manageLevel', 'Manage'), desc: t('agent.settings.perm.manageDesc', 'Full access including Settings, Mind, Relationships') }].map(opt => (
                                                             <label key={opt.val}
                                                                 style={{
                                                                     flex: 1,

@@ -56,13 +56,10 @@ async def list_tools(
 ):
     """List platform tools scoped by tenant (builtin + tenant-specific)."""
     from sqlalchemy import or_ as _or
+
     # Exclude tools that were installed by agents via import_mcp_server
     agent_installed_tids = select(AgentTool.tool_id).where(AgentTool.source == "user_installed")
-    query = (
-        select(Tool)
-        .where(~Tool.id.in_(agent_installed_tids))
-        .order_by(Tool.category, Tool.name)
-    )
+    query = select(Tool).where(~Tool.id.in_(agent_installed_tids)).order_by(Tool.category, Tool.name)
     # Scope by tenant: show builtin (tenant_id is NULL) + tenant-specific tools
     tid = tenant_id or (str(current_user.tenant_id) if current_user.tenant_id else None)
     if tid:
@@ -172,6 +169,7 @@ async def get_agent_tools(
 ):
     """Get tools for a specific agent with their enabled status."""
     from app.services.agent_tools import _agent_has_feishu
+
     has_feishu = await _agent_has_feishu(agent_id)
 
     # All available tools
@@ -189,23 +187,22 @@ async def get_agent_tools(
             continue
         tid = str(t.id)
         at = assignments.get(tid)
-        # MCP tools only show for agents that have an explicit assignment
-        if t.type == "mcp" and not at:
-            continue
         # If no explicit assignment, use is_default
         enabled = at.enabled if at else t.is_default
-        result.append({
-            "id": tid,
-            "name": t.name,
-            "display_name": t.display_name,
-            "description": t.description,
-            "type": t.type,
-            "category": t.category,
-            "icon": t.icon,
-            "enabled": enabled,
-            "is_default": t.is_default,
-            "mcp_server_name": t.mcp_server_name,
-        })
+        result.append(
+            {
+                "id": tid,
+                "name": t.name,
+                "display_name": t.display_name,
+                "description": t.description,
+                "type": t.type,
+                "category": t.category,
+                "icon": t.icon,
+                "enabled": enabled,
+                "is_default": t.is_default,
+                "mcp_server_name": t.mcp_server_name,
+            }
+        )
     return result
 
 
@@ -220,9 +217,7 @@ async def update_agent_tools(
     for u in updates:
         tool_id = uuid.UUID(u.tool_id)
         # Upsert
-        result = await db.execute(
-            select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
-        )
+        result = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id))
         at = result.scalar_one_or_none()
         if at:
             at.enabled = u.enabled
@@ -255,6 +250,7 @@ async def test_mcp_connection(
 
 # ─── Agent-installed Tools Management (admin) ───────────────
 
+
 @router.get("/agent-installed")
 async def list_agent_installed_tools(
     tenant_id: str | None = None,
@@ -263,6 +259,7 @@ async def list_agent_installed_tools(
 ):
     """Admin endpoint: list user-installed tools scoped by tenant."""
     from app.models.agent import Agent
+
     query = (
         select(AgentTool, Tool, Agent)
         .join(Tool, AgentTool.tool_id == Tool.id)
@@ -274,6 +271,7 @@ async def list_agent_installed_tools(
     tid = tenant_id or (str(current_user.tenant_id) if current_user.tenant_id else None)
     if tid:
         from app.models.agent import Agent as Ag
+
         tenant_agent_ids = select(Ag.id).where(Ag.tenant_id == tid)
         query = query.where(AgentTool.agent_id.in_(tenant_agent_ids))
     result = await db.execute(query)
@@ -322,6 +320,7 @@ async def delete_agent_tool(
 
 # ─── Per-Agent Tool Config ───────────────────────────────────
 
+
 class AgentToolConfigUpdate(BaseModel):
     config: dict
 
@@ -338,9 +337,7 @@ async def get_agent_tool_config(
     tool = tool_r.scalar_one_or_none()
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
-    at_r = await db.execute(
-        select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
-    )
+    at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id))
     at = at_r.scalar_one_or_none()
     agent_config = at.config if at else {}
     merged = {**(tool.config or {}), **(agent_config or {})}
@@ -361,9 +358,7 @@ async def update_agent_tool_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Save per-agent config override for a tool."""
-    at_r = await db.execute(
-        select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
-    )
+    at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id))
     at = at_r.scalar_one_or_none()
     if at:
         at.config = data.config
@@ -382,6 +377,7 @@ async def get_agent_tools_with_config(
 ):
     """Get agent's enabled tools with per-agent config info and config_schema for settings UI."""
     from app.services.agent_tools import _agent_has_feishu
+
     has_feishu = await _agent_has_feishu(agent_id)
 
     all_tools_r = await db.execute(select(Tool).where(Tool.enabled == True).order_by(Tool.category, Tool.name))
@@ -396,31 +392,31 @@ async def get_agent_tools_with_config(
             continue
         tid = str(t.id)
         at = assignments.get(tid)
-        # MCP tools only show for agents that have an explicit assignment
-        if t.type == "mcp" and not at:
-            continue
         enabled = at.enabled if at else t.is_default
-        result.append({
-            "id": tid,
-            "agent_tool_id": str(at.id) if at else None,
-            "name": t.name,
-            "display_name": t.display_name,
-            "description": t.description,
-            "type": t.type,
-            "category": t.category,
-            "icon": t.icon,
-            "enabled": enabled,
-            "is_default": t.is_default,
-            "mcp_server_name": t.mcp_server_name,
-            "config_schema": t.config_schema or {},
-            "global_config": t.config or {},
-            "agent_config": (at.config if at else {}) or {},
-            "source": at.source if at else "system",
-        })
+        result.append(
+            {
+                "id": tid,
+                "agent_tool_id": str(at.id) if at else None,
+                "name": t.name,
+                "display_name": t.display_name,
+                "description": t.description,
+                "type": t.type,
+                "category": t.category,
+                "icon": t.icon,
+                "enabled": enabled,
+                "is_default": t.is_default,
+                "mcp_server_name": t.mcp_server_name,
+                "config_schema": t.config_schema or {},
+                "global_config": t.config or {},
+                "agent_config": (at.config if at else {}) or {},
+                "source": at.source if at else "system",
+            }
+        )
     return result
 
 
 # ─── Email Connection Testing ──────────────────────────────
+
 
 class EmailTestRequest(BaseModel):
     config: dict
@@ -456,4 +452,3 @@ async def get_email_providers(
         }
         for key, p in EMAIL_PROVIDERS.items()
     }
-
