@@ -93,6 +93,10 @@ MEESEEKS_SKILLS = [
 
 async def seed_default_agents():
     """Create Morty & Meeseeks if they don't already exist."""
+    import os
+    if os.environ.get("SKIP_DEFAULT_AGENTS", "").lower() in ("true", "1", "yes"):
+        logger.info("[AgentSeeder] SKIP_DEFAULT_AGENTS is set, skipping default agents")
+        return
     async with async_session() as db:
         # Check if already seeded (presence of either agent by name)
         existing = await db.execute(
