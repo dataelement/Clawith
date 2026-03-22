@@ -65,6 +65,9 @@ class Settings(BaseSettings):
 
     # File Storage
     AGENT_DATA_DIR: str = _default_agent_data_dir()
+    WORKSPACE_STATIC_DIR: str = "/srv/workspace"
+    WORKSPACE_CONF_DIR: str = "/etc/nginx/workspace.d"
+    WORKSPACE_GATEWAY_CONTAINER: str = "workspace_gateway"
     AGENT_TEMPLATE_DIR: str = "/app/agent_template"
 
     # Docker (for Agent containers)
