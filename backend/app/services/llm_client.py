@@ -214,7 +214,16 @@ class OpenAICompatibleClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            # Kimi For Coding requires a Coding Agent User-Agent
+            headers = {}
+            if self.base_url and "kimi.com/coding" in self.base_url:
+                headers["User-Agent"] = "Kimi-Code/1.0"
+                headers["x-kimi-code"] = "true"
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout, 
+                follow_redirects=True,
+                headers=headers
+            )
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -230,6 +239,17 @@ class OpenAICompatibleClient(LLMClient):
             url = url[: -len("/chat/completions")]
         return url
 
+    def _get_chat_endpoint(self) -> str:
+        """Get the chat completions endpoint path.
+        
+        Some custom endpoints (like api.kimi.com/coding/) use different paths.
+        """
+        base = self._normalize_base_url()
+        # Special handling for kimi.com/coding endpoint which uses /v1/chat/completions
+        if "kimi.com/coding" in base and not base.endswith("/v1"):
+            return f"{base}/v1/chat/completions"
+        return f"{base}/chat/completions"
+
     def _build_payload(
         self,
         messages: list[LLMMessage],
@@ -240,6 +260,11 @@ class OpenAICompatibleClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
+        # Kimi k2.5 models only support temperature=1
+        model_name = (self.model or "").lower()
+        if "kimi-k2.5" in model_name or "kimi-k2-5" in model_name:
+            temperature = 1.0
+
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [m.to_openai_format() for m in messages],
@@ -403,7 +428,7 @@ class OpenAICompatibleClient(LLMClient):
         **kwargs: Any,
     ) -> LLMResponse:
         """Non-streaming completion."""
-        url = f"{self._normalize_base_url()}/chat/completions"
+        url = self._get_chat_endpoint()
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
@@ -440,7 +465,7 @@ class OpenAICompatibleClient(LLMClient):
         **kwargs: Any,
     ) -> LLMResponse:
         """Streaming completion."""
-        url = f"{self._normalize_base_url()}/chat/completions"
+        url = self._get_chat_endpoint()
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=True, **kwargs)
 
         full_content = ""
@@ -1345,11 +1370,14 @@ class AnthropicClient(LLMClient):
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
-            "anthropic-version": self.API_VERSION,
         }
+        # Kimi for Coding doesn't need anthropic-version header
+        if self.base_url and "kimi.com" not in self.base_url:
+            headers["anthropic-version"] = self.API_VERSION
+        return headers
 
     def _build_payload(
         self,
@@ -1724,6 +1752,13 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         protocol="openai_compatible",
         default_base_url="https://api.moonshot.cn/v1",
         default_max_tokens=8192,
+    ),
+    "kimi-coding": ProviderSpec(
+        provider="kimi-coding",
+        display_name="Kimi for Coding",
+        protocol="anthropic",
+        default_base_url="https://api.kimi.com/coding",
+        default_max_tokens=32768,
     ),
     "vllm": ProviderSpec(
         provider="vllm",
