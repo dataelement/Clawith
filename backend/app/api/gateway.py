@@ -34,14 +34,26 @@ def _hash_key(key: str) -> str:
 
 async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
     """Authenticate an OpenClaw agent by its API key."""
-    key_hash = _hash_key(api_key)
+    # First try plaintext (new behavior)
     result = await db.execute(
         select(Agent).where(
-            Agent.api_key_hash == key_hash,
+            Agent.api_key_hash == api_key,
             Agent.agent_type == "openclaw",
         )
     )
     agent = result.scalar_one_or_none()
+
+    # Fallback to hashed (legacy behavior)
+    if not agent:
+        key_hash = _hash_key(api_key)
+        result = await db.execute(
+            select(Agent).where(
+                Agent.api_key_hash == key_hash,
+                Agent.agent_type == "openclaw",
+            )
+        )
+        agent = result.scalar_one_or_none()
+
     if not agent:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return agent
@@ -243,15 +255,21 @@ async def report_result(
     agent.openclaw_last_seen = datetime.now(timezone.utc)
 
     # Save result as assistant chat message and push via WebSocket
-    # (only for user-originated messages; agent-to-agent skips this)
-    if body.result and msg.conversation_id and msg.sender_user_id:
+    # (works for both user-originated and agent-to-agent messages)
+    if body.result and msg.conversation_id:
         from app.models.audit import ChatMessage
+        from app.models.participant import Participant
+        # Look up OpenClaw agent's participant_id
+        part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == agent.id))
+        participant = part_r.scalar_one_or_none()
+        
         assistant_msg = ChatMessage(
             agent_id=agent.id,
-            user_id=msg.sender_user_id,
+            user_id=msg.sender_user_id or getattr(agent, "creator_id", agent.id),
             role="assistant",
             content=body.result,
             conversation_id=msg.conversation_id,
+            participant_id=participant.id if participant else None,
         )
         db.add(assistant_msg)
 

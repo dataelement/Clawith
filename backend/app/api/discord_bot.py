@@ -29,16 +29,26 @@ async def configure_discord_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Configure Discord bot for an agent. Fields: application_id, bot_token, public_key."""
+    """Configure Discord bot for an agent.
+
+    Gateway mode fields: bot_token (+ connection_mode='gateway').
+    Webhook mode fields: application_id, bot_token, public_key.
+    """
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can configure channel")
 
-    application_id = data.get("application_id", "").strip()
+    connection_mode = data.get("connection_mode", "webhook").strip()
     bot_token = data.get("bot_token", "").strip()
+    application_id = data.get("application_id", "").strip()
     public_key = data.get("public_key", "").strip()
-    if not application_id or not bot_token or not public_key:
-        raise HTTPException(status_code=422, detail="application_id, bot_token, and public_key are required")
+
+    if not bot_token:
+        raise HTTPException(status_code=422, detail="bot_token is required")
+    if connection_mode == "webhook" and (not application_id or not public_key):
+        raise HTTPException(status_code=422, detail="application_id and public_key are required for webhook mode")
+
+    extra_config = {"connection_mode": connection_mode}
 
     result = await db.execute(
         select(ChannelConfig).where(
@@ -48,34 +58,39 @@ async def configure_discord_channel(
     )
     existing = result.scalar_one_or_none()
     if existing:
-        existing.app_id = application_id
+        existing.app_id = application_id or existing.app_id
         existing.app_secret = bot_token
-        existing.encrypt_key = public_key
+        existing.encrypt_key = public_key or existing.encrypt_key
+        existing.extra_config = extra_config
         existing.is_configured = True
         await db.flush()
+    else:
+        existing = ChannelConfig(
+            agent_id=agent_id,
+            channel_type="discord",
+            app_id=application_id,
+            app_secret=bot_token,
+            encrypt_key=public_key,
+            extra_config=extra_config,
+            is_configured=True,
+        )
+        db.add(existing)
+        await db.flush()
+
+    # Mode-specific post-configuration
+    if connection_mode == "gateway":
+        # Start Gateway bot
+        from app.services.discord_gateway import discord_gateway_manager
+        await discord_gateway_manager.start_client(agent_id, bot_token)
+    else:
+        # Register slash commands for webhook mode
         try:
             reg = await _register_slash_commands(application_id, bot_token)
-            logger.info(f"[Discord] Slash command registration (update): {reg['status']}")
+            logger.info(f"[Discord] Slash command registration: {reg['status']}")
         except Exception as e:
             logger.warning(f"[Discord] Could not register slash commands: {e}")
-        return ChannelConfigOut.model_validate(existing)
 
-    config = ChannelConfig(
-        agent_id=agent_id,
-        channel_type="discord",
-        app_id=application_id,
-        app_secret=bot_token,
-        encrypt_key=public_key,
-        is_configured=True,
-    )
-    db.add(config)
-    await db.flush()
-    try:
-        reg = await _register_slash_commands(application_id, bot_token)
-        logger.info(f"[Discord] Slash command registration (new): {reg['status']}")
-    except Exception as e:
-        logger.warning(f"[Discord] Could not register slash commands: {e}")
-    return ChannelConfigOut.model_validate(config)
+    return ChannelConfigOut.model_validate(existing)
 
 
 @router.get("/agents/{agent_id}/discord-channel", response_model=ChannelConfigOut)
@@ -131,6 +146,12 @@ async def delete_discord_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Discord not configured")
+    # Stop Gateway client if running
+    try:
+        from app.services.discord_gateway import discord_gateway_manager
+        await discord_gateway_manager.stop_client(agent_id)
+    except Exception:
+        pass
     await db.delete(config)
 
 

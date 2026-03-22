@@ -34,6 +34,7 @@ dependencies = [
     "wecom-aibot-sdk-python>=0.1.4",
     "pycryptodome>=3.20.0",
     "loguru>=0.7.0",
+    "discord.py>=2.3.0",
 ]
 
 [project.optional-dependencies]

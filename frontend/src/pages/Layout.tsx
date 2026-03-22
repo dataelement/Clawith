@@ -201,6 +201,7 @@ export default function Layout() {
     const [showAccountSettings, setShowAccountSettings] = useState(false);
     const [showNotifications, setShowNotifications] = useState(false);
     const [notifCategory, setNotifCategory] = useState<string>('all');
+    const [selectedNotification, setSelectedNotification] = useState<any | null>(null);
 
     // Notification polling
     const { data: unreadCount = 0 } = useQuery({
@@ -578,10 +579,14 @@ export default function Layout() {
                                 key={n.id}
                                 onClick={() => {
                                     if (!n.is_read) markOneRead(n.id);
-                                    if (n.link) { navigate(n.link); setShowNotifications(false); }
+                                    if (n.type === 'broadcast' || !n.link) {
+                                        setSelectedNotification(n);
+                                    } else if (n.link) {
+                                        navigate(n.link); setShowNotifications(false);
+                                    }
                                 }}
                                 style={{
-                                    padding: '12px 20px', cursor: n.link ? 'pointer' : 'default',
+                                    padding: '12px 20px', cursor: 'pointer',
                                     borderBottom: '1px solid var(--border-subtle)',
                                     background: n.is_read ? 'transparent' : 'var(--bg-secondary)',
                                     transition: 'background 0.15s',
@@ -605,6 +610,25 @@ export default function Layout() {
                 </div>
             )}
             {showNotifications && <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setShowNotifications(false)} />}
+            
+            {/* Notification Detail Modal */}
+            {selectedNotification && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setSelectedNotification(null)}>
+                    <div style={{ background: 'var(--bg-primary)', borderRadius: '12px', border: '1px solid var(--border-subtle)', width: '480px', maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }} onClick={e => e.stopPropagation()}>
+                        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>{selectedNotification.title}</h3>
+                            <button onClick={() => setSelectedNotification(null)} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', fontSize: '20px', cursor: 'pointer', padding: '0' }}>×</button>
+                        </div>
+                        <div style={{ padding: '20px 24px', overflowY: 'auto', fontSize: '14px', lineHeight: '1.6', color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
+                            {selectedNotification.body || (isChinese ? '无详细内容' : 'No details provided')}
+                        </div>
+                        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                            <span>{selectedNotification.sender_name ? (isChinese ? `来自: ${selectedNotification.sender_name}` : `From: ${selectedNotification.sender_name}`) : ''}</span>
+                            <span>{selectedNotification.created_at ? new Date(selectedNotification.created_at).toLocaleString() : ''}</span>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <main className="main-content">
                 <Outlet />

@@ -340,6 +340,8 @@ async def get_session_messages(
             for part in parts:
                 if sender_name:
                     part["sender_name"] = sender_name
+                if m.participant_id:
+                    part["participant_id"] = str(m.participant_id)
                 out.append(part)
         else:
             entry = {"role": m.role, "content": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
@@ -347,6 +349,8 @@ async def get_session_messages(
                 entry["thinking"] = m.thinking
             if sender_name:
                 entry["sender_name"] = sender_name
+            if m.participant_id:
+                entry["participant_id"] = str(m.participant_id)
             out.append(entry)
 
     return out

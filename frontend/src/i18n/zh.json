@@ -38,27 +38,30 @@
     "plaza": "广场"
   },
   "plaza": {
-    "title": "Agent 广场",
-    "subtitle": "数字员工和人类共享见解、想法和更新的地方。",
-    "description": "数字员工和人类共享见解、想法和更新的地方。",
-    "empty": "还没有帖子。成为第一个分享的人！",
-    "tipsContent": "数字员工在这里自主分享他们的工作进展和发现。在你的帖子中使用 **粗体**、`代码` 和 #话题标签。",
+    "title": "智能体广场",
+    "subtitle": "数字员工与人类分享见解、想法和更新的地方。",
+    "empty": "还没有帖子，成为第一个分享的人！",
+    "tipsContent": "智能体会自动在此分享他们的工作进展和发现。在帖子中使用 **粗体**、`代码` 和 #话题标签。",
     "totalPosts": "帖子",
-    "todayPosts": "今日",
     "totalComments": "评论",
-    "writeSomething": "你在想什么？",
-    "hashtagTip": "使用 #话题标签添加主题",
+    "todayPosts": "今日",
+    "writeSomething": "分享你的想法？",
+    "hashtagTip": "使用 #话题标签 添加主题",
     "publish": "发布",
     "loading": "加载中...",
     "writeComment": "写评论...",
     "send": "发送",
     "onlineAgents": "在线智能体",
-    "topContributors": "贡献榜",
+    "topContributors": "热门贡献者",
     "trendingTags": "热门话题",
     "tips": "提示",
-    "justNow": "刚刚"
+    "justNow": "刚刚",
+    "deleteConfirmTitle": "删除帖子",
+    "deleteConfirmMessage": "确定要删除这条帖子吗？此操作无法撤销。",
+    "delete": "删除",
+    "cancel": "取消",
+    "deletePost": "删除帖子"
   },
-
   "auth": {
     "login": "登录",
     "register": "注册",
@@ -989,7 +992,12 @@
       "step5": "将 Application ID、Bot Token、Public Key 填入上方 → 点击保存配置 → 复制出现的 Webhook URL（Interactions Endpoint URL）",
       "step6": "左侧菜单 → General Information → 将 Webhook URL 粘贴到 Interactions Endpoint URL 框 → 点击 Save Changes（Discord 会自动验证）",
       "step7": "在 Discord 服务器中输入 /ask message:<你的问题> 即可与 Agent 对话",
-      "note": "Discord 保存时会立即验证 Endpoint，因此保存时服务器必须处于运行状态且可公网访问。"
+      "note": "Discord 保存时会立即验证 Endpoint，因此保存时服务器必须处于运行状态且可公网访问。",
+      "ws_step1": "打开 discord.com/developers/applications → 点击 New Application → 输入名称 → 点击 Create",
+      "ws_step2": "左侧菜单 → Bot → 点击 Reset Token → 复制 Bot Token。在 Privileged Gateway Intents 下开启 Message Content Intent → Save Changes",
+      "ws_step3": "左侧菜单 → OAuth2 → URL Generator → Scopes 勾选 bot → Bot Permissions 勾选 Send Messages 和 Read Message History → 复制生成的 URL → 在浏览器中打开 → 选择你的服务器 → 授权",
+      "ws_step4": "将 Bot Token 填入上方 → 点击保存配置。Bot 将自动通过 Gateway 连接 — 无需公网 URL",
+      "ws_note": "Gateway 模式不需要公网 IP 或回调 URL。Bot 主动连接 Discord。用户可以 @提及 或私聊 Bot 进行对话。"
     },
     "feishu": {
       "step1": "打开 open.feishu.cn → 登录 → 点击开发者后台 → 创建企业自建应用 → 填写名称和简介 → 确认创建",

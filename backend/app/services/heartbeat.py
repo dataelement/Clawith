@@ -8,6 +8,7 @@ Runs as a background task inside the FastAPI process.
 """
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -196,7 +197,29 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             except Exception as e:
                 logger.warning(f"Failed to fetch recent activity for heartbeat context: {e}")
 
-            full_instruction = heartbeat_instruction + recent_context
+            # Fetch unread notifications for this agent (plaza replies, mentions, broadcasts)
+            inbox_context = ""
+            try:
+                from app.models.notification import Notification
+                notif_result = await db.execute(
+                    select(Notification).where(
+                        Notification.agent_id == agent_id,
+                        Notification.is_read == False,
+                    ).order_by(Notification.created_at).limit(10)
+                )
+                unread = notif_result.scalars().all()
+                if unread:
+                    lines = ["\n\n---\n## Inbox (new messages for you — please review and respond if appropriate)"]
+                    for n in unread:
+                        sender = f"from {n.sender_name}" if n.sender_name else ""
+                        lines.append(f"- [{n.type}] {n.title} {sender}: {(n.body or '')[:150]}")
+                        n.is_read = True
+                    await db.flush()
+                    inbox_context = "\n".join(lines)
+            except Exception as e:
+                logger.warning(f"Failed to drain agent notifications: {e}")
+
+            full_instruction = heartbeat_instruction + recent_context + inbox_context
 
             messages = [
                 {"role": "system", "content": system_prompt},

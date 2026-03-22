@@ -46,6 +46,7 @@ const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
     { provider: 'minimax', display_name: 'MiniMax', protocol: 'openai_compatible', default_base_url: 'https://api.minimaxi.com/v1', supports_tool_choice: true, default_max_tokens: 16384 },
     { provider: 'qwen', display_name: 'Qwen (DashScope)', protocol: 'openai_compatible', default_base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', supports_tool_choice: true, default_max_tokens: 8192 },
     { provider: 'zhipu', display_name: 'Zhipu', protocol: 'openai_compatible', default_base_url: 'https://open.bigmodel.cn/api/paas/v4', supports_tool_choice: true, default_max_tokens: 8192 },
+    { provider: 'baidu', display_name: 'Baidu (Qianfan)', protocol: 'openai_compatible', default_base_url: 'https://qianfan.baidubce.com/v2', supports_tool_choice: false, default_max_tokens: 4096 },
     { provider: 'gemini', display_name: 'Gemini', protocol: 'gemini', default_base_url: 'https://generativelanguage.googleapis.com/v1beta', supports_tool_choice: true, default_max_tokens: 8192 },
     { provider: 'openrouter', display_name: 'OpenRouter', protocol: 'openai_compatible', default_base_url: 'https://openrouter.ai/api/v1', supports_tool_choice: true, default_max_tokens: 4096 },
     { provider: 'kimi', display_name: 'Kimi (Moonshot)', protocol: 'openai_compatible', default_base_url: 'https://api.moonshot.cn/v1', supports_tool_choice: true, default_max_tokens: 8192 },
@@ -917,6 +918,81 @@ function CompanyTimezoneEditor() {
 }
 
 
+// ── Broadcast Section ──────────────────────────
+function BroadcastSection() {
+    const { t } = useTranslation();
+    const [title, setTitle] = useState('');
+    const [body, setBody] = useState('');
+    const [sending, setSending] = useState(false);
+    const [result, setResult] = useState<{ users: number; agents: number } | null>(null);
+
+    const handleSend = async () => {
+        if (!title.trim()) return;
+        setSending(true);
+        setResult(null);
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch('/api/notifications/broadcast', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ title: title.trim(), body: body.trim() }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                alert(err.detail || 'Failed to send broadcast');
+                setSending(false);
+                return;
+            }
+            const data = await res.json();
+            setResult({ users: data.users_notified, agents: data.agents_notified });
+            setTitle('');
+            setBody('');
+        } catch (e: any) {
+            alert(e.message || 'Failed');
+        }
+        setSending(false);
+    };
+
+    return (
+        <div style={{ marginTop: '24px', marginBottom: '24px' }}>
+            <h3 style={{ marginBottom: '4px' }}>{t('enterprise.broadcast.title', 'Broadcast Notification')}</h3>
+            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                {t('enterprise.broadcast.description', 'Send a notification to all users and agents in this company.')}
+            </p>
+            <div className="card" style={{ padding: '16px' }}>
+                <input
+                    className="form-input"
+                    placeholder={t('enterprise.broadcast.titlePlaceholder', 'Notification title')}
+                    value={title}
+                    onChange={e => setTitle(e.target.value)}
+                    maxLength={200}
+                    style={{ marginBottom: '8px', fontSize: '13px' }}
+                />
+                <textarea
+                    className="form-input"
+                    placeholder={t('enterprise.broadcast.bodyPlaceholder', 'Optional details...')}
+                    value={body}
+                    onChange={e => setBody(e.target.value)}
+                    maxLength={1000}
+                    rows={3}
+                    style={{ resize: 'vertical', fontSize: '13px', marginBottom: '12px' }}
+                />
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button className="btn btn-primary" onClick={handleSend} disabled={sending || !title.trim()}>
+                        {sending ? t('common.loading') : t('enterprise.broadcast.send', 'Send Broadcast')}
+                    </button>
+                    {result && (
+                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                            {t('enterprise.broadcast.sent', `Sent to ${result.users} users and ${result.agents} agents`, { users: result.users, agents: result.agents })}
+                        </span>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
     const qc = useQueryClient();
@@ -1536,6 +1612,9 @@ export default function EnterpriseSettings() {
 
                         {/* ── Theme Color ── */}
                         <ThemeColorPicker />
+
+                        {/* ── Broadcast ── */}
+                        <BroadcastSection />
 
                         {/* ── Danger Zone: Delete Company ── */}
                         <div style={{ marginTop: '32px', padding: '16px', border: '1px solid var(--status-error, #e53e3e)', borderRadius: '8px' }}>

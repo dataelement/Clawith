@@ -688,10 +688,11 @@ async def generate_or_reset_api_key(
 
     import secrets, hashlib
     raw_key = f"oc-{secrets.token_urlsafe(32)}"
-    agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    # Store in plaintext so frontend can retrieve it anytime to display and copy
+    agent.api_key_hash = raw_key
     await db.commit()
 
-    return {"api_key": raw_key, "message": "Save this key — it won't be shown again."}
+    return {"api_key": raw_key, "message": "Key configured successfully."}
 
 
 @router.get("/{agent_id}/gateway-messages")

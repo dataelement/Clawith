@@ -110,11 +110,19 @@ async def delete_department(
 @router.get("/users", response_model=list[UserOut])
 async def list_users(
     department_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List users, optionally filtered by department."""
+    """List users, optionally filtered by department and tenant."""
     query = select(User).where(User.is_active == True)
+    
+    target_tenant_id = current_user.tenant_id
+    if current_user.role in ("platform_admin", "org_admin") and tenant_id:
+        target_tenant_id = tenant_id
+    if target_tenant_id:
+        query = query.where(User.tenant_id == target_tenant_id)
+        
     if department_id:
         query = query.where(User.department_id == department_id)
     query = query.order_by(User.display_name)

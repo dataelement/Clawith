@@ -243,6 +243,25 @@ BUILTIN_TOOLS = [
         "config_schema": {},
     },
     {
+        "name": "send_file_to_agent",
+        "display_name": "Agent File Transfer",
+        "description": "Send a workspace file to another digital employee. The file is copied to the target agent's workspace/inbox/files/ and an inbox note is created.",
+        "category": "communication",
+        "icon": "📤",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "agent_name": {"type": "string", "description": "Target agent name"},
+                "file_path": {"type": "string", "description": "Workspace-relative source file path"},
+                "message": {"type": "string", "description": "Optional delivery note"},
+            },
+            "required": ["agent_name", "file_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
         "name": "web_search",
         "display_name": "DuckDuckGo Search",
         "description": "Search the internet via DuckDuckGo. May be unavailable on some networks. Use Bing Search as an alternative.",
@@ -1049,4 +1068,3 @@ async def get_atlassian_api_key() -> str:
         if tool and tool.config:
             return tool.config.get("api_key", "")
     return ""
-

@@ -1,14 +1,18 @@
 """Plaza (Agent Square) REST API."""
 
+import re
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update, func, desc
 
+from app.api.auth import get_current_user
 from app.database import async_session
 from app.models.plaza import PlazaPost, PlazaComment, PlazaLike
+from app.models.user import User
 
 router = APIRouter(prefix="/api/plaza", tags=["plaza"])
 
@@ -59,6 +63,67 @@ class CommentOut(BaseModel):
 
 class PostDetail(PostOut):
     comments: list[CommentOut] = []
+
+
+# ── Helpers ─────────────────────────────────────────
+
+async def _notify_mentions(db, content: str, author_id: uuid.UUID, author_name: str,
+                           post_id: uuid.UUID, tenant_id: uuid.UUID | None):
+    """Parse @mentions in content and send notifications to mentioned agents/users."""
+    from app.models.agent import Agent
+    from app.services.notification_service import send_notification
+
+    mentions = re.findall(r'@(\S+)', content)
+    if not mentions:
+        return
+
+    # Find matching agents in the same tenant
+    agent_q = select(Agent).where(Agent.id != author_id)
+    if tenant_id:
+        agent_q = agent_q.where(Agent.tenant_id == tenant_id)
+    agents_result = await db.execute(agent_q)
+    agent_map = {a.name.lower(): a for a in agents_result.scalars().all()}
+
+    # Find matching users in the same tenant
+    user_q = select(User).where(User.id != author_id)
+    if tenant_id:
+        user_q = user_q.where(User.tenant_id == tenant_id)
+    users_result = await db.execute(user_q)
+    user_map = {}
+    for u in users_result.scalars().all():
+        name = (u.display_name or u.username or "").lower()
+        if name:
+            user_map[name] = u
+
+    notified_ids = set()
+    for m in mentions:
+        m_lower = m.lower()
+        # Try agent match
+        agent = agent_map.get(m_lower)
+        if agent and agent.id not in notified_ids:
+            notified_ids.add(agent.id)
+            await send_notification(
+                db, agent_id=agent.id,
+                type="mention",
+                title=f"{author_name} mentioned you in a post",
+                body=content[:150],
+                link=f"/plaza?post={post_id}",
+                ref_id=post_id,
+                sender_name=author_name,
+            )
+        # Try user match
+        user = user_map.get(m_lower)
+        if user and user.id not in notified_ids:
+            notified_ids.add(user.id)
+            await send_notification(
+                db, user_id=user.id,
+                type="mention",
+                title=f"{author_name} mentioned you in a post",
+                body=content[:150],
+                link=f"/plaza?post={post_id}",
+                ref_id=post_id,
+                sender_name=author_name,
+            )
 
 
 # ── Routes ──────────────────────────────────────────
@@ -138,6 +203,14 @@ async def create_post(body: PostCreate):
             tenant_id=body.tenant_id,
         )
         db.add(post)
+        await db.flush()  # get post.id before commit
+
+        # Extract @mentions and notify
+        try:
+            await _notify_mentions(db, body.content, body.author_id, body.author_name, post.id, body.tenant_id)
+        except Exception:
+            pass
+
         await db.commit()
         await db.refresh(post)
         return PostOut.model_validate(post)
@@ -159,6 +232,25 @@ async def get_post(post_id: uuid.UUID):
         data = PostOut.model_validate(post).model_dump()
         data["comments"] = comments
         return PostDetail(**data)
+
+
+@router.delete("/posts/{post_id}")
+async def delete_post(post_id: uuid.UUID, current_user: User = Depends(get_current_user)):
+    """Delete a plaza post. Admins can delete any post; authors can delete their own."""
+    async with async_session() as db:
+        result = await db.execute(select(PlazaPost).where(PlazaPost.id == post_id))
+        post = result.scalar_one_or_none()
+        if not post:
+            raise HTTPException(404, "Post not found")
+        is_admin = current_user.role in ("platform_admin", "org_admin")
+        is_author = post.author_id == current_user.id
+        if not is_admin and not is_author:
+            raise HTTPException(403, "Not allowed to delete this post")
+        # Audit logging for delete action
+        logger.info(f"Plaza post {post_id} deleted by user {current_user.id} (admin={is_admin})")
+        await db.delete(post)
+        await db.commit()
+        return {"deleted": True}
 
 
 @router.post("/posts/{post_id}/comments", response_model=CommentOut)
@@ -189,21 +281,80 @@ async def create_comment(post_id: uuid.UUID, body: CommentCreate):
             try:
                 from app.models.agent import Agent
                 from app.services.notification_service import send_notification
-                # Post author is an agent — find its creator
-                agent_result = await db.execute(select(Agent).where(Agent.id == post.author_id))
-                post_agent = agent_result.scalar_one_or_none()
-                if post_agent and post_agent.creator_id:
+                if post.author_type == "agent":
+                    # Notify the agent directly (consumed by heartbeat)
                     await send_notification(
                         db,
-                        user_id=post_agent.creator_id,
-                        type="plaza_comment",
-                        title=f"{body.author_name} commented on {post_agent.name}'s post",
-                        body=body.content[:100],
+                        agent_id=post.author_id,
+                        type="plaza_reply",
+                        title=f"{body.author_name} commented on your post",
+                        body=body.content[:150],
                         link=f"/plaza?post={post_id}",
                         ref_id=post_id,
+                        sender_name=body.author_name,
+                    )
+                    # Also notify human creator
+                    agent_result = await db.execute(select(Agent).where(Agent.id == post.author_id))
+                    post_agent = agent_result.scalar_one_or_none()
+                    if post_agent and post_agent.creator_id:
+                        await send_notification(
+                            db,
+                            user_id=post_agent.creator_id,
+                            type="plaza_comment",
+                            title=f"{body.author_name} commented on {post_agent.name}'s post",
+                            body=body.content[:100],
+                            link=f"/plaza?post={post_id}",
+                            ref_id=post_id,
+                            sender_name=body.author_name,
+                        )
+                elif post.author_type == "human":
+                    await send_notification(
+                        db,
+                        user_id=post.author_id,
+                        type="plaza_reply",
+                        title=f"{body.author_name} commented on your post",
+                        body=body.content[:150],
+                        link=f"/plaza?post={post_id}",
+                        ref_id=post_id,
+                        sender_name=body.author_name,
                     )
             except Exception:
-                pass  # Non-fatal: notification should not block comment creation
+                pass
+
+        # Notify other agents who have commented on this post
+        try:
+            from app.models.agent import Agent
+            from app.services.notification_service import send_notification
+            other_comments = await db.execute(
+                select(PlazaComment.author_id, PlazaComment.author_type)
+                .where(PlazaComment.post_id == post_id)
+                .distinct()
+            )
+            notified = {post.author_id, body.author_id}  # skip post author (done above) and commenter self
+            for row in other_comments.fetchall():
+                cid, ctype = row
+                if cid in notified:
+                    continue
+                notified.add(cid)
+                if ctype == "agent":
+                    await send_notification(
+                        db,
+                        agent_id=cid,
+                        type="plaza_reply",
+                        title=f"{body.author_name} also commented on a post you commented on",
+                        body=body.content[:150],
+                        link=f"/plaza?post={post_id}",
+                        ref_id=post_id,
+                        sender_name=body.author_name,
+                    )
+        except Exception:
+            pass
+
+        # Extract @mentions and notify mentioned agents/users
+        try:
+            await _notify_mentions(db, body.content, body.author_id, body.author_name, post_id, post.tenant_id)
+        except Exception:
+            pass
 
         await db.commit()
         await db.refresh(comment)

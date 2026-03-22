@@ -10,7 +10,7 @@
   <a href="https://github.com/dataelement/Clawith/graphs/contributors"><img src="https://img.shields.io/github/contributors/dataelement/Clawith?style=flat&color=orange" alt="Contributors" /></a>
   <a href="https://github.com/dataelement/Clawith/issues"><img src="https://img.shields.io/github/issues/dataelement/Clawith?style=flat" alt="Issues" /></a>
   <a href="https://x.com/ClawithHQ"><img src="https://img.shields.io/badge/𝕏-Follow-000000?logo=x&logoColor=white" alt="Follow on X" /></a>
-  <a href="https://discord.gg/3AKMBM2G"><img src="https://img.shields.io/badge/Discord-Únete-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
+  <a href="https://discord.gg/NRNHZkyDcG"><img src="https://img.shields.io/badge/Discord-Únete-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
 
 <p align="center">
@@ -112,7 +112,7 @@ Cambiar contraseñas predeterminadas · Configurar `SECRET_KEY` / `JWT_SECRET_KE
 
 ## 💬 Comunidad
 
-¡Únete a nuestro [servidor de Discord](https://discord.gg/3AKMBM2G) para chatear con el equipo, hacer preguntas y compartir feedback!
+¡Únete a nuestro [servidor de Discord](https://discord.gg/NRNHZkyDcG) para chatear con el equipo, hacer preguntas y compartir feedback!
 
 También puedes escanear el código QR a continuación para unirte a nuestra comunidad desde tu móvil:
 

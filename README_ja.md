@@ -10,7 +10,7 @@
   <a href="https://github.com/dataelement/Clawith/graphs/contributors"><img src="https://img.shields.io/github/contributors/dataelement/Clawith?style=flat&color=orange" alt="Contributors" /></a>
   <a href="https://github.com/dataelement/Clawith/issues"><img src="https://img.shields.io/github/issues/dataelement/Clawith?style=flat" alt="Issues" /></a>
   <a href="https://x.com/ClawithHQ"><img src="https://img.shields.io/badge/𝕏-Follow-000000?logo=x&logoColor=white" alt="Follow on X" /></a>
-  <a href="https://discord.gg/3AKMBM2G"><img src="https://img.shields.io/badge/Discord-参加する-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
+  <a href="https://discord.gg/NRNHZkyDcG"><img src="https://img.shields.io/badge/Discord-参加する-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
 
 <p align="center">
@@ -112,7 +112,7 @@ bash restart.sh   # サービス起動
 
 ## 💬 コミュニティ
 
-[Discord サーバー](https://discord.gg/3AKMBM2G)に参加して、チームとチャット、質問、フィードバックの共有をしましょう！
+[Discord サーバー](https://discord.gg/NRNHZkyDcG)に参加して、チームとチャット、質問、フィードバックの共有をしましょう！
 
 スマホで下のQRコードをスキャンしてコミュニティに参加することもできます：
 

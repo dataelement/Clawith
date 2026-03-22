@@ -1,7 +1,10 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
+import { agentApi } from '../services/api';
+import ConfirmModal from '../components/ConfirmModal';
 
 /* ────── Inline SVG Icons (monochrome, matching Dashboard) ────── */
 
@@ -67,6 +70,11 @@ const Icons = {
             <circle cx="3" cy="3" r="3" fill="currentColor" />
         </svg>
     ),
+    trash: (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 4h10M6 4V3a1 1 0 011-1h2a1 1 0 011 1v1M13 4v9a2 2 0 01-2 2H5a2 2 0 01-2-2V4" />
+        </svg>
+    ),
 };
 
 /* ────── Helpers ────── */
@@ -89,15 +97,20 @@ const postJson = async (url: string, body: any) => {
     return res.json();
 };
 
-// Auto-detect URLs and #hashtags in text
+// Auto-detect URLs, #hashtags, and @mentions in text
 const linkifyContent = (text: string) => {
-    const parts = text.split(/(https?:\/\/[^\s<>"'()，。！？、；：]+|#[\w\u4e00-\u9fff]+)/g);
+    const parts = text.split(/(https?:\/\/[^\s<>"'()\uff0c\u3002\uff01\uff1f\u3001\uff1b\uff1a]+|#[\w\u4e00-\u9fff]+|@\S+)/g);
     if (parts.length <= 1) return text;
     return parts.map((part, i) => {
         if (i % 2 === 1) {
             if (part.startsWith('#')) {
                 return (
                     <span key={i} style={{ color: 'var(--accent-primary)', fontWeight: 500 }}>{part}</span>
+                );
+            }
+            if (part.startsWith('@')) {
+                return (
+                    <span key={i} style={{ color: 'var(--accent-primary)', fontWeight: 600, cursor: 'default' }}>{part}</span>
                 );
             }
             return (
@@ -285,16 +298,198 @@ function SidebarSection({ icon, title, children }: { icon: React.ReactNode; titl
     );
 }
 
+/* ────── Inline Styles ────── */
+
+const styles = `
+    .delete-btn { opacity: 0.6; color: var(--text-muted); background: none; border: none; cursor: pointer; font-size: 12px; padding: 4px 8px; border-radius: var(--radius-sm); display: flex; align-items: center; }
+    .delete-btn:hover { opacity: 1; color: #ef4444; background: var(--bg-hover); }
+`;
+
+/* ────── Mention Autocomplete Component ────── */
+
+function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, maxLength, multiline, style }: {
+    value: string;
+    onChange: (val: string) => void;
+    onSubmit?: () => void;
+    mentionables: { id: string, name: string, isAgent: boolean }[];
+    placeholder?: string;
+    maxLength?: number;
+    multiline?: boolean;
+    style?: React.CSSProperties;
+}) {
+    const [showDropdown, setShowDropdown] = useState(false);
+    const [mentionFilter, setMentionFilter] = useState('');
+    const [mentionStart, setMentionStart] = useState(-1);
+    const [selectedIdx, setSelectedIdx] = useState(0);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement>(null);
+
+    const filtered = mentionables.filter(m =>
+        m.name.toLowerCase().includes(mentionFilter.toLowerCase())
+    ).slice(0, 50);
+
+    const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+        const val = e.target.value;
+        onChange(val);
+
+        const cursorPos = e.target.selectionStart || 0;
+        // Find @ before cursor
+        const textBeforeCursor = val.substring(0, cursorPos);
+        const atIdx = textBeforeCursor.lastIndexOf('@');
+        
+        // Trigger @ if it's at the beginning, or after a space, newline, or non-word character (e.g. CJK chars)
+        const prevChar = atIdx > 0 ? textBeforeCursor[atIdx - 1] : '';
+        if (atIdx >= 0 && (atIdx === 0 || !/[a-zA-Z0-9_]/.test(prevChar))) {
+            const query = textBeforeCursor.substring(atIdx + 1);
+            if (!/\s/.test(query)) {
+                setMentionStart(atIdx);
+                setMentionFilter(query);
+                setShowDropdown(true);
+                setSelectedIdx(0);
+                return;
+            }
+        }
+        setShowDropdown(false);
+    }, [onChange]);
+
+    const insertMention = useCallback((agentName: string) => {
+        const before = value.substring(0, mentionStart);
+        const after = value.substring(mentionStart + mentionFilter.length + 1);
+        const newVal = before + '@' + agentName + ' ' + after;
+        onChange(newVal);
+        setShowDropdown(false);
+        // Re-focus input
+        setTimeout(() => inputRef.current?.focus(), 0);
+    }, [value, mentionStart, mentionFilter, onChange]);
+
+    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (showDropdown && filtered.length > 0) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setSelectedIdx(i => (i + 1) % filtered.length);
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setSelectedIdx(i => (i - 1 + filtered.length) % filtered.length);
+                return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                insertMention(filtered[selectedIdx].name);
+                return;
+            }
+            if (e.key === 'Escape') {
+                setShowDropdown(false);
+                return;
+            }
+        }
+        if (e.key === 'Enter' && !e.shiftKey && !multiline && onSubmit) {
+            e.preventDefault();
+            onSubmit();
+        }
+    }, [showDropdown, filtered, selectedIdx, insertMention, multiline, onSubmit]);
+
+    useEffect(() => {
+        const handleClick = (e: MouseEvent) => {
+            if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+                setShowDropdown(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+    }, []);
+
+    const InputTag = multiline ? 'textarea' : 'input';
+
+    return (
+        <div ref={containerRef} style={{ position: 'relative', flex: style?.flex || 1 }}>
+            <InputTag
+                ref={inputRef as any}
+                value={value}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                placeholder={placeholder}
+                maxLength={maxLength}
+                rows={multiline ? 2 : undefined}
+                style={{
+                    width: '100%', boxSizing: 'border-box',
+                    resize: multiline ? 'none' : undefined,
+                    padding: multiline ? '8px 12px' : '6px 10px',
+                    fontSize: 'var(--text-sm)', lineHeight: 1.5,
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 'var(--radius-md)',
+                    fontFamily: 'var(--font-family)',
+                    transition: 'border-color var(--transition-fast)',
+                    ...style,
+                }}
+                onFocus={e => {
+                    e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                    e.currentTarget.style.boxShadow = '0 0 0 2px var(--accent-subtle)';
+                    if (multiline) (e.currentTarget as HTMLTextAreaElement).rows = 3;
+                }}
+                onBlur={e => {
+                    e.currentTarget.style.borderColor = 'var(--border-default)';
+                    e.currentTarget.style.boxShadow = 'none';
+                    if (multiline && !value) (e.currentTarget as HTMLTextAreaElement).rows = 2;
+                }}
+            />
+            {showDropdown && filtered.length > 0 && (
+                <div style={{
+                    position: 'absolute', left: 0, top: '100%', zIndex: 100,
+                    marginTop: '4px', width: '200px', maxHeight: '240px',
+                    background: 'var(--bg-primary)', border: '1px solid var(--border-default)',
+                    borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)',
+                    overflowY: 'auto', overflowX: 'hidden',
+                }}>
+                    {filtered.map((a, idx) => (
+                        <div key={a.id}
+                            onMouseDown={e => { e.preventDefault(); insertMention(a.name); }}
+                            style={{
+                                padding: '6px 10px', cursor: 'pointer',
+                                fontSize: 'var(--text-sm)',
+                                display: 'flex', alignItems: 'center', gap: '8px',
+                                background: idx === selectedIdx ? 'var(--bg-hover)' : 'transparent',
+                                color: 'var(--text-primary)',
+                            }}
+                            onMouseEnter={() => setSelectedIdx(idx)}
+                        >
+                            <Avatar name={a.name} isAgent={a.isAgent} size={20} />
+                            <span>{a.name}</span>
+                            {a.isAgent && <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>AI</span>}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 /* ────── Main Component ────── */
 
 export default function Plaza() {
     const { t } = useTranslation();
     const { user } = useAuthStore();
     const queryClient = useQueryClient();
+    const [searchParams] = useSearchParams();
     const [newPost, setNewPost] = useState('');
-    const [expandedPost, setExpandedPost] = useState<string | null>(null);
+    const [expandedPost, setExpandedPost] = useState<string | null>(searchParams.get('post') || null);
     const [newComment, setNewComment] = useState('');
+    const [deleteModalPostId, setDeleteModalPostId] = useState<string | null>(null);
     const tenantId = localStorage.getItem('current_tenant_id') || '';
+
+    useEffect(() => {
+        const p = searchParams.get('post');
+        if (p) {
+            setExpandedPost(p);
+            // Scroll to the post smoothly if needed
+            setTimeout(() => {
+                document.getElementById(`post-${p}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 500);
+        }
+    }, [searchParams]);
 
     const { data: posts = [], isLoading } = useQuery<Post[]>({
         queryKey: ['plaza-posts', tenantId],
@@ -309,10 +504,21 @@ export default function Plaza() {
     });
 
     const { data: agents = [] } = useQuery<Agent[]>({
-        queryKey: ['agents-for-plaza'],
-        queryFn: () => fetchJson('/api/agents'),
+        queryKey: ['agents-for-plaza', tenantId],
+        queryFn: () => agentApi.list(tenantId || undefined),
         refetchInterval: 30000,
     });
+
+    const { data: users = [] } = useQuery<any[]>({
+        queryKey: ['users-for-plaza', tenantId],
+        queryFn: () => fetchJson(`/api/org/users${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+        refetchInterval: 60000,
+    });
+
+    const mentionables = [
+        ...agents.map((a: any) => ({ id: a.id, name: a.name, isAgent: true })),
+        ...users.map((u: any) => ({ id: u.id, name: u.display_name, isAgent: false }))
+    ];
 
     const { data: postDetails } = useQuery<Post>({
         queryKey: ['plaza-post-detail', expandedPost],
@@ -355,6 +561,20 @@ export default function Plaza() {
             postJson(`/api/plaza/posts/${postId}/like?author_id=${user?.id}&author_type=human`, {}),
         onSuccess: () => queryClient.invalidateQueries({ queryKey: ['plaza-posts'] }),
     });
+
+    const deletePost = useMutation({
+        mutationFn: (postId: string) =>
+            fetch(`/api/plaza/posts/${postId}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+            }).then(r => { if (!r.ok) throw new Error('Delete failed'); return r.json(); }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['plaza-posts'] });
+            queryClient.invalidateQueries({ queryKey: ['plaza-stats'] });
+        },
+    });
+
+    const isAdmin = user?.role === 'platform_admin' || user?.role === 'org_admin';
 
     const timeAgo = (dateStr: string) => {
         const diff = Date.now() - new Date(dateStr).getTime();
@@ -416,24 +636,13 @@ export default function Plaza() {
                     }}>
                         <div style={{ display: 'flex', gap: '10px' }}>
                             <Avatar name={user?.display_name || 'U'} isAgent={false} size={32} />
-                            <textarea
+                            <MentionInput
                                 value={newPost}
-                                onChange={e => setNewPost(e.target.value)}
+                                onChange={setNewPost}
+                                mentionables={mentionables}
                                 placeholder={t('plaza.writeSomething', "What's on your mind?")}
                                 maxLength={500}
-                                rows={2}
-                                style={{
-                                    flex: 1, resize: 'none', padding: '8px 12px',
-                                    fontSize: 'var(--text-sm)', lineHeight: 1.5,
-                                    background: 'var(--bg-secondary)',
-                                    color: 'var(--text-primary)',
-                                    border: '1px solid var(--border-default)',
-                                    borderRadius: 'var(--radius-md)',
-                                    fontFamily: 'var(--font-family)',
-                                    transition: 'border-color var(--transition-fast)',
-                                }}
-                                onFocus={e => { e.currentTarget.style.borderColor = 'var(--accent-primary)'; e.currentTarget.style.boxShadow = '0 0 0 2px var(--accent-subtle)'; e.currentTarget.rows = 3; }}
-                                onBlur={e => { e.currentTarget.style.borderColor = 'var(--border-default)'; e.currentTarget.style.boxShadow = 'none'; if (!newPost) e.currentTarget.rows = 2; }}
+                                multiline
                             />
                         </div>
                         <div style={{
@@ -441,7 +650,7 @@ export default function Plaza() {
                             alignItems: 'center', marginTop: '10px', paddingLeft: '42px',
                         }}>
                             <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-                                {newPost.length}/500 · {t('plaza.hashtagTip', 'Use #hashtags to add topics')}
+                                {newPost.length}/500 · {t('plaza.hashtagTip', 'Use #hashtags and @mentions')}
                             </span>
                             <button
                                 className={`btn ${newPost.trim() ? 'btn-primary' : 'btn-secondary'}`}
@@ -482,13 +691,14 @@ export default function Plaza() {
                             borderRadius: 'var(--radius-lg)', overflow: 'hidden',
                         }}>
                             {posts.map((post, idx) => (
-                                <div key={post.id} style={{
+                                <div key={post.id} id={`post-${post.id}`} style={{
                                     padding: '14px 16px',
                                     borderBottom: idx < posts.length - 1 ? '1px solid var(--border-subtle)' : 'none',
                                     transition: 'background var(--transition-fast)',
+                                    background: expandedPost === post.id ? 'var(--bg-hover)' : 'transparent',
                                 }}
                                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)'; }}
-                                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = expandedPost === post.id ? 'var(--bg-hover)' : 'transparent'; }}
                                 >
                                     {/* Author row */}
                                     <div style={{
@@ -536,18 +746,30 @@ export default function Plaza() {
                                     {/* Actions */}
                                     <div style={{
                                         display: 'flex', gap: '2px', paddingLeft: '40px',
+                                        justifyContent: 'space-between', alignItems: 'center',
                                     }}>
-                                        <ActionBtn
-                                            icon={post.likes_count > 0 ? Icons.heartFilled : Icons.heart}
-                                            label={post.likes_count || 0}
-                                            active={post.likes_count > 0}
-                                            onClick={() => likePost.mutate(post.id)}
-                                        />
-                                        <ActionBtn
-                                            icon={Icons.comment}
-                                            label={post.comments_count || 0}
-                                            onClick={() => setExpandedPost(expandedPost === post.id ? null : post.id)}
-                                        />
+                                        <div style={{ display: 'flex', gap: '2px' }}>
+                                            <ActionBtn
+                                                icon={post.likes_count > 0 ? Icons.heartFilled : Icons.heart}
+                                                label={post.likes_count || 0}
+                                                active={post.likes_count > 0}
+                                                onClick={() => likePost.mutate(post.id)}
+                                            />
+                                            <ActionBtn
+                                                icon={Icons.comment}
+                                                label={post.comments_count || 0}
+                                                onClick={() => setExpandedPost(expandedPost === post.id ? null : post.id)}
+                                            />
+                                        </div>
+                                        {(isAdmin || post.author_id === user?.id) && (
+                                            <button
+                                                className="delete-btn"
+                                                onClick={() => setDeleteModalPostId(post.id)}
+                                                title={t('plaza.deletePost', 'Delete post')}
+                                            >
+                                                <span style={{ display: 'flex', marginRight: '4px' }}>{Icons.trash}</span>
+                                            </button>
+                                        )}
                                     </div>
 
                                     {/* Comments */}
@@ -587,25 +809,18 @@ export default function Plaza() {
                                                 </div>
                                             ))}
                                             <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
-                                                <input
+                                                <MentionInput
                                                     value={newComment}
-                                                    onChange={e => setNewComment(e.target.value)}
-                                                    placeholder={t('plaza.writeComment', 'Write a comment...')}
-                                                    maxLength={300}
-                                                    onKeyDown={e => {
-                                                        if (e.key === 'Enter' && newComment.trim()) {
+                                                    onChange={setNewComment}
+                                                    onSubmit={() => {
+                                                        if (newComment.trim()) {
                                                             addComment.mutate({ postId: post.id, content: newComment });
                                                         }
                                                     }}
-                                                    style={{
-                                                        flex: 1, padding: '6px 10px',
-                                                        fontSize: 'var(--text-sm)',
-                                                        background: 'var(--bg-secondary)',
-                                                        color: 'var(--text-primary)',
-                                                        border: '1px solid var(--border-default)',
-                                                        borderRadius: 'var(--radius-md)',
-                                                        height: '32px',
-                                                    }}
+                                                    mentionables={mentionables}
+                                                    placeholder={t('plaza.writeComment', 'Write a comment...')}
+                                                    maxLength={300}
+                                                    style={{ height: '32px' }}
                                                 />
                                                 <button
                                                     className={`btn ${newComment.trim() ? 'btn-primary' : 'btn-secondary'}`}
@@ -737,6 +952,24 @@ export default function Plaza() {
                     </SidebarSection>
                 </div>
             </div>
+
+            {/* Delete Confirmation Modal */}
+            <style>{styles}</style>
+            <ConfirmModal
+                open={!!deleteModalPostId}
+                title={t('plaza.deleteConfirmTitle', 'Delete Post')}
+                message={t('plaza.deleteConfirmMessage', 'Are you sure you want to delete this post? This action cannot be undone.')}
+                confirmLabel={t('plaza.delete', 'Delete')}
+                cancelLabel={t('plaza.cancel', 'Cancel')}
+                danger
+                onConfirm={() => {
+                    if (deleteModalPostId) {
+                        deletePost.mutate(deleteModalPostId);
+                        setDeleteModalPostId(null);
+                    }
+                }}
+                onCancel={() => setDeleteModalPostId(null)}
+            />
         </div>
     );
 }

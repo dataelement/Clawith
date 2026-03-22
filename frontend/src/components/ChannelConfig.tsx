@@ -105,14 +105,19 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         icon: DiscordIcon,
         nameKey: 'common.channels.discord',
         nameFallback: 'Discord',
-        desc: 'Slash Commands (/ask)',
+        desc: 'Gateway / Webhook',
         apiSlug: 'discord-channel',
+        connectionMode: true,
         fields: [
             { key: 'application_id', label: 'Application ID', placeholder: '1234567890', required: true },
             { key: 'bot_token', label: 'Bot Token', type: 'password', required: true },
             { key: 'public_key', label: 'Public Key', required: true },
         ],
+        wsFields: [
+            { key: 'bot_token', label: 'Bot Token', type: 'password', required: true },
+        ],
         guide: { prefix: 'channelGuide.discord', steps: 7 },
+        wsGuide: { prefix: 'channelGuide.discord', steps: 4 },
         webhookLabel: 'Interactions Endpoint URL',
     },
     {
@@ -255,6 +260,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [connectionModes, setConnectionModes] = useState<Record<string, string>>({
         feishu: 'websocket',
         wecom: 'websocket',
+        discord: 'gateway',
     });
 
     // Password visibility
@@ -417,6 +423,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             const connMode = connectionModes.wecom || 'websocket';
             if (connMode === 'websocket') {
                 return { connection_mode: 'websocket', bot_id: form.bot_id, bot_secret: form.bot_secret };
+            }
+            return { ...form, connection_mode: 'webhook' };
+        }
+        if (ch.id === 'discord') {
+            const connMode = connectionModes.discord || 'gateway';
+            if (connMode === 'websocket') {
+                return { bot_token: form.bot_token, connection_mode: 'gateway' };
             }
             return { ...form, connection_mode: 'webhook' };
         }
@@ -687,8 +700,17 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 )}
 
                                 {/* Discord extra hint */}
-                                {ch.id === 'discord' && (
+                                {ch.id === 'discord' && configConnMode !== 'gateway' && (
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>Use <code>/ask message:&lt;your question&gt;</code> to talk to this agent</div>
+                                )}
+                                {ch.id === 'discord' && configConnMode === 'gateway' && (
+                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#5865F2', display: 'inline-block' }}></span>
+                                            <span style={{ color: 'var(--text-secondary)' }}>Connected via Gateway (No public URL needed)</span>
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>@mention the bot or send a DM to interact</div>
+                                    </div>
                                 )}
 
                                 {/* DingTalk stream mode hint */}
@@ -750,9 +772,15 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 prefill.bot_token = config.app_secret || '';
                                                 prefill.signing_secret = config.encrypt_key || '';
                                             } else if (ch.id === 'discord') {
-                                                prefill.application_id = config.app_id || '';
-                                                prefill.bot_token = config.app_secret || '';
-                                                prefill.public_key = config.encrypt_key || '';
+                                                const cm = config.extra_config?.connection_mode === 'gateway' ? 'websocket' : 'webhook';
+                                                setConnectionModes(prev => ({ ...prev, discord: cm }));
+                                                if (cm === 'websocket') {
+                                                    prefill.bot_token = config.app_secret || '';
+                                                } else {
+                                                    prefill.application_id = config.app_id || '';
+                                                    prefill.bot_token = config.app_secret || '';
+                                                    prefill.public_key = config.encrypt_key || '';
+                                                }
                                             } else if (ch.id === 'teams') {
                                                 prefill.app_id = config.app_id || '';
                                                 prefill.app_secret = config.app_secret || '';

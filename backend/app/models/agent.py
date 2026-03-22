@@ -111,6 +111,11 @@ class Agent(Base):
 
     # Relationships
     creator: Mapped["User"] = relationship("User", back_populates="created_agents", foreign_keys=[creator_id])
+
+    @property
+    def has_api_key(self) -> bool:
+        """Whether this agent has an API key configured."""
+        return bool(self.api_key_hash)
     permissions: Mapped[list["AgentPermission"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     tasks: Mapped[list["Task"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     channel_config: Mapped["ChannelConfig | None"] = relationship(back_populates="agent", uselist=False)

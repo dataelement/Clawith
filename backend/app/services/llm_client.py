@@ -1703,6 +1703,14 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://open.bigmodel.cn/api/paas/v4",
         default_max_tokens=8192,
     ),
+    "baidu": ProviderSpec(
+        provider="baidu",
+        display_name="Baidu (Qianfan)",
+        protocol="openai_compatible",
+        default_base_url="https://qianfan.baidubce.com/v2",
+        supports_tool_choice=False,
+        default_max_tokens=4096,
+    ),
     "gemini": ProviderSpec(
         provider="gemini",
         display_name="Gemini",
