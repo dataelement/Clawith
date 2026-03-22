@@ -892,6 +892,7 @@ function AgentDetailInner() {
         setAgentExpired(false);
         syncActiveSocketState(sess, targetAgentId);
 
+        // Abort any pending message load and increment sequence
         sessionMsgAbortRef.current?.abort();
         const controller = new AbortController();
         sessionMsgAbortRef.current = controller;
@@ -1188,9 +1189,11 @@ function AgentDetailInner() {
             }
             scheduleReconnect();
         };
-        ws.onerror = () => {
+        ws.onerror = (error) => {
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (isActiveRuntime) setWsConnected(false);
+            console.warn(`WebSocket error for session ${sessionId}:`, error);
+            // Error automatically triggers onclose with abnormal code, which handles reconnect
         };
         ws.onmessage = (e) => {
             const d = JSON.parse(e.data);
@@ -1364,7 +1367,7 @@ function AgentDetailInner() {
     const sendChatMsg = () => {
         if (!id || !activeSession?.id) return;
         const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-        const activeSocket = wsMapRef.current[activeRuntimeKey] || wsRef.current;
+        const activeSocket = wsMapRef.current[activeRuntimeKey];
         if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
         
@@ -3468,7 +3471,7 @@ function AgentDetailInner() {
                                                 <button className="btn btn-stop-generation" onClick={() => {
                                                     if (!id || !activeSession?.id) return;
                                                     const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-                                                    const activeSocket = wsMapRef.current[activeRuntimeKey] || wsRef.current;
+                                                    const activeSocket = wsMapRef.current[activeRuntimeKey];
                                                     if (activeSocket?.readyState === WebSocket.OPEN) {
                                                         activeSocket.send(JSON.stringify({ type: 'abort' }));
                                                         setIsStreaming(false);
