@@ -77,3 +77,48 @@ export interface TokenResponse {
     user: User;
     needs_company_setup?: boolean;
 }
+
+export interface VirtualOrgAgentSummary {
+    id: string;
+    name: string;
+    template_id?: string;
+    department_id: string;
+    department_name: string;
+    title: string;
+    level: 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
+    org_bucket: 'core' | 'expert';
+    manager_agent_id?: string;
+    is_locked: boolean;
+    tags: string[];
+}
+
+export interface VirtualOrgDepartment {
+    id: string;
+    name: string;
+    slug: string;
+    sort_order: number;
+    org_level: string;
+    is_core: boolean;
+    leader?: VirtualOrgAgentSummary | null;
+    core_agents: VirtualOrgAgentSummary[];
+    expert_agents: VirtualOrgAgentSummary[];
+    expert_count: number;
+    children: VirtualOrgDepartment[];
+}
+
+export interface VirtualOrgOverview {
+    executives: VirtualOrgAgentSummary[];
+    departments: VirtualOrgDepartment[];
+    expert_pool: {
+        count: number;
+        agents: VirtualOrgAgentSummary[];
+    };
+    cross_functional: VirtualOrgAgentSummary[];
+}
+
+export interface VirtualOrgAgentListResponse {
+    items: VirtualOrgAgentSummary[];
+    total: number;
+    page: number;
+    page_size: number;
+}

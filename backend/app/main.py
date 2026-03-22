@@ -68,6 +68,7 @@ async def lifespan(app: FastAPI):
     from app.services.trigger_daemon import start_trigger_daemon
     from app.services.tool_seeder import seed_builtin_tools
     from app.services.template_seeder import seed_agent_templates
+    from app.services.virtual_org_bootstrap import prepare_virtual_org_bootstrap_startup
     from app.services.feishu_ws import feishu_ws_manager
     from app.services.dingtalk_stream import dingtalk_stream_manager
     from app.services.wecom_stream import wecom_stream_manager
@@ -97,6 +98,7 @@ async def lifespan(app: FastAPI):
         import app.models.trigger        # noqa
         import app.models.notification   # noqa
         import app.models.gateway_message # noqa
+        import app.models.virtual_org  # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Add 'atlassian' to channel_type_enum if it doesn't exist yet (idempotent)
@@ -170,6 +172,12 @@ async def lifespan(app: FastAPI):
         await seed_agent_templates()
     except Exception as e:
         logger.warning(f"[startup] Agent templates seed failed: {e}")
+
+    try:
+        await prepare_virtual_org_bootstrap_startup()
+    except Exception as e:
+        logger.error(f"[startup] Virtual org bootstrap prep failed: {e}")
+        raise
 
     try:
         from app.services.skill_seeder import seed_skills, push_default_skills_to_existing_agents
@@ -273,6 +281,7 @@ from app.api.dingtalk import router as dingtalk_router
 from app.api.wecom import router as wecom_router
 from app.api.teams import router as teams_router
 from app.api.triggers import router as triggers_router
+from app.api.virtual_org import router as virtual_org_router
 
 from app.api.atlassian import router as atlassian_router
 from app.api.webhooks import router as webhooks_router
@@ -316,6 +325,7 @@ app.include_router(ws_router)
 app.include_router(gateway_router, prefix=settings.API_PREFIX)
 app.include_router(admin_router, prefix=settings.API_PREFIX)
 app.include_router(pages_router, prefix=settings.API_PREFIX)
+app.include_router(virtual_org_router, prefix=settings.API_PREFIX)
 app.include_router(pages_public_router)  # Public endpoint for /p/{short_id}, no API prefix
 
 

@@ -318,6 +318,10 @@ export default function Layout() {
                             <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.home}</span>
                             <span className="sidebar-item-text">{t('nav.dashboard')}</span>
                         </NavLink>
+                        <NavLink to="/virtual-org" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', fontSize: '14px' }}>🏢</span>
+                            <span className="sidebar-item-text">虚拟组织</span>
+                        </NavLink>
                     </div>
                 </div>
 

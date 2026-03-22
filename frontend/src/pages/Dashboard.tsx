@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { agentApi, taskApi, activityApi } from '../services/api';
+import { agentApi, taskApi, activityApi, virtualOrgApi } from '../services/api';
 import type { Agent, Task } from '../types';
 
 /* ────── Inline SVG Icons (monochrome) ────── */
@@ -361,6 +361,12 @@ export default function Dashboard() {
         refetchInterval: 15000,
     });
 
+    const { data: virtualOrgOverview } = useQuery({
+        queryKey: ['dashboard-virtual-org-overview'],
+        queryFn: virtualOrgApi.overview,
+        enabled: !!currentTenant,
+    });
+
     // Fetch tasks & activities for all agents
     const [allTasks, setAllTasks] = useState<Task[]>([]);
     const [allActivities, setAllActivities] = useState<any[]>([]);
@@ -452,6 +458,30 @@ export default function Dashboard() {
                 <>
                     {/* Stats Bar */}
                     <StatsBar agents={agents} allTasks={allTasks} />
+
+                    <div
+                        onClick={() => navigate('/virtual-org')}
+                        style={{
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: 'var(--radius-lg)',
+                            padding: '16px 18px',
+                            marginBottom: '20px',
+                            cursor: 'pointer',
+                            background: 'linear-gradient(135deg, var(--bg-secondary), var(--bg-primary))',
+                        }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center' }}>
+                            <div>
+                                <div style={{ fontSize: '15px', fontWeight: 700, marginBottom: '4px' }}>虚拟组织</div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                    {virtualOrgOverview
+                                        ? `高管层 ${virtualOrgOverview.executives.length} 位 · 核心部门 ${virtualOrgOverview.departments.length} 个 · 专家库 ${virtualOrgOverview.expert_pool.count} 位`
+                                        : '查看核心组织、部门结构与专家库。'}
+                                </div>
+                            </div>
+                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>进入组织视图 →</div>
+                        </div>
+                    </div>
 
                     {/* Agent List Card */}
                     <div style={{

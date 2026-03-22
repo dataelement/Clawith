@@ -14,6 +14,9 @@ import Messages from './pages/Messages';
 import EnterpriseSettings from './pages/EnterpriseSettings';
 import InvitationCodes from './pages/InvitationCodes';
 import AdminCompanies from './pages/AdminCompanies';
+import VirtualOrg from './pages/VirtualOrg';
+import VirtualOrgDepartment from './pages/VirtualOrgDepartment';
+import VirtualOrgAdmin from './pages/VirtualOrgAdmin';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const token = useAuthStore((s) => s.token);
@@ -113,6 +116,9 @@ export default function App() {
                     <Route path="agents/:id" element={<AgentDetail />} />
                     <Route path="agents/:id/chat" element={<Chat />} />
                     <Route path="messages" element={<Messages />} />
+                    <Route path="virtual-org" element={<VirtualOrg />} />
+                    <Route path="virtual-org/departments/:slug" element={<VirtualOrgDepartment />} />
+                    <Route path="virtual-org/admin" element={<VirtualOrgAdmin />} />
                     <Route path="enterprise" element={<EnterpriseSettings />} />
                     <Route path="invitations" element={<InvitationCodes />} />
                     <Route path="admin/platform-settings" element={<AdminCompanies />} />

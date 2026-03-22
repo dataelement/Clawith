@@ -150,6 +150,7 @@ class AgentTemplate(Base):
     soul_template: Mapped[str] = mapped_column(Text, default="")
     default_skills: Mapped[list] = mapped_column(JSON, default=[])
     default_autonomy_policy: Mapped[dict] = mapped_column(JSON, default={})
+    source_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     is_builtin: Mapped[bool] = mapped_column(default=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

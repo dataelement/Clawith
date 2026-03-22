@@ -1,6 +1,15 @@
 /** API service layer */
 
-import type { Agent, TokenResponse, User, Task, ChatMessage } from '../types';
+import type {
+    Agent,
+    TokenResponse,
+    User,
+    Task,
+    ChatMessage,
+    VirtualOrgAgentListResponse,
+    VirtualOrgDepartment,
+    VirtualOrgOverview,
+} from '../types';
 
 const API_BASE = '/api';
 
@@ -204,6 +213,34 @@ export const agentApi = {
 
     gatewayMessages: (id: string) =>
         request<any[]>(`/agents/${id}/gateway-messages`),
+};
+
+export const virtualOrgApi = {
+    overview: () => request<VirtualOrgOverview>('/virtual-org/overview'),
+
+    departments: () => request<VirtualOrgDepartment[]>('/virtual-org/departments'),
+
+    createDepartment: (data: any) =>
+        request<VirtualOrgDepartment>('/virtual-org/departments', { method: 'POST', body: JSON.stringify(data) }),
+
+    updateDepartment: (departmentId: string, data: any) =>
+        request<VirtualOrgDepartment>(`/virtual-org/departments/${departmentId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+    agents: (params: { departmentId?: string; orgBucket?: 'core' | 'expert'; page?: number; pageSize?: number } = {}) => {
+        const search = new URLSearchParams();
+        if (params.departmentId) search.set('department_id', params.departmentId);
+        if (params.orgBucket) search.set('org_bucket', params.orgBucket);
+        if (params.page) search.set('page', String(params.page));
+        if (params.pageSize) search.set('page_size', String(params.pageSize));
+        const query = search.toString();
+        return request<VirtualOrgAgentListResponse>(`/virtual-org/agents${query ? `?${query}` : ''}`);
+    },
+
+    updateAgent: (agentId: string, data: any) =>
+        request(`/virtual-org/agents/${agentId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+    bootstrap: (force: boolean = false) =>
+        request('/virtual-org/bootstrap', { method: 'POST', body: JSON.stringify({ force }) }),
 };
 
 // ─── Tasks ────────────────────────────────────────────

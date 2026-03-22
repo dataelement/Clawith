@@ -1,0 +1,2740 @@
+{
+  "departments": [
+    {
+      "slug": "executive",
+      "name": "高管层",
+      "sort_order": 10,
+      "org_level": "executive",
+      "is_core": true
+    },
+    {
+      "slug": "strategy-pmo",
+      "name": "战略与项目管理办公室",
+      "parent_slug": "executive",
+      "sort_order": 15,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "product",
+      "name": "产品部",
+      "sort_order": 20,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "engineering",
+      "name": "研发部",
+      "sort_order": 30,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "design",
+      "name": "设计部",
+      "sort_order": 40,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "marketing",
+      "name": "市场部",
+      "sort_order": 50,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "sales",
+      "name": "销售部",
+      "sort_order": 60,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "operations",
+      "name": "运营部",
+      "sort_order": 70,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "customer-success",
+      "name": "客户成功与客服部",
+      "sort_order": 80,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "finance",
+      "name": "财务部",
+      "sort_order": 90,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "hr",
+      "name": "人力资源部",
+      "sort_order": 100,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "legal",
+      "name": "法务与合规部",
+      "sort_order": 110,
+      "org_level": "department",
+      "is_core": true
+    },
+    {
+      "slug": "expert-pool",
+      "name": "专家库",
+      "sort_order": 200,
+      "org_level": "department",
+      "is_core": false
+    },
+    {
+      "slug": "expert-unassigned",
+      "name": "待分类专家",
+      "parent_slug": "expert-pool",
+      "sort_order": 10,
+      "org_level": "pod",
+      "is_core": false
+    }
+  ],
+  "assignments": [
+    {
+      "source_key": "academic/academic-anthropologist.md",
+      "template_name": "人类学家",
+      "agent_name": "人类学家",
+      "department_slug": "expert-pool",
+      "title": "人类学家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "academic/academic-geographer.md",
+      "template_name": "地理学家",
+      "agent_name": "地理学家",
+      "department_slug": "expert-pool",
+      "title": "地理学家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "academic/academic-historian.md",
+      "template_name": "历史学家",
+      "agent_name": "历史学家",
+      "department_slug": "expert-pool",
+      "title": "历史学家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "academic/academic-narratologist.md",
+      "template_name": "叙事学家",
+      "agent_name": "叙事学家",
+      "department_slug": "expert-pool",
+      "title": "叙事学家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "academic/academic-psychologist.md",
+      "template_name": "心理学家",
+      "agent_name": "心理学家",
+      "department_slug": "expert-pool",
+      "title": "心理学家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "academic/academic-study-planner.md",
+      "template_name": "学习规划师",
+      "agent_name": "学习规划师",
+      "department_slug": "expert-pool",
+      "title": "学习规划师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "design/design-brand-guardian.md",
+      "template_name": "品牌守护者",
+      "agent_name": "品牌守护者",
+      "department_slug": "design",
+      "title": "品牌一致性负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "design/design-ux-architect.md",
+      "tags": [
+        "core-org",
+        "brand"
+      ]
+    },
+    {
+      "source_key": "design/design-image-prompt-engineer.md",
+      "template_name": "图像提示词工程师",
+      "agent_name": "图像提示词工程师",
+      "department_slug": "design",
+      "title": "图像提示词工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "design/design-ux-architect.md",
+      "tags": [
+        "expert-pool",
+        "design"
+      ]
+    },
+    {
+      "source_key": "design/design-inclusive-visuals-specialist.md",
+      "template_name": "包容性视觉专家",
+      "agent_name": "包容性视觉专家",
+      "department_slug": "design",
+      "title": "包容性视觉专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "design/design-ux-architect.md",
+      "tags": [
+        "expert-pool",
+        "design"
+      ]
+    },
+    {
+      "source_key": "design/design-ui-designer.md",
+      "template_name": "UI 设计师",
+      "agent_name": "UI 设计师",
+      "department_slug": "design",
+      "title": "界面设计负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "design/design-ux-architect.md",
+      "tags": [
+        "core-org",
+        "design-system"
+      ]
+    },
+    {
+      "source_key": "design/design-ux-architect.md",
+      "template_name": "UX 架构师",
+      "agent_name": "UX 架构师",
+      "department_slug": "design",
+      "title": "设计负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "design/design-ux-researcher.md",
+      "template_name": "UX 研究员",
+      "agent_name": "UX 研究员",
+      "department_slug": "design",
+      "title": "用户研究负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "design/design-ux-architect.md",
+      "tags": [
+        "core-org",
+        "research"
+      ]
+    },
+    {
+      "source_key": "design/design-visual-storyteller.md",
+      "template_name": "视觉叙事师",
+      "agent_name": "视觉叙事师",
+      "department_slug": "design",
+      "title": "视觉叙事师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "design/design-ux-architect.md",
+      "tags": [
+        "expert-pool",
+        "design"
+      ]
+    },
+    {
+      "source_key": "design/design-whimsy-injector.md",
+      "template_name": "趣味注入师",
+      "agent_name": "趣味注入师",
+      "department_slug": "design",
+      "title": "趣味注入师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "design/design-ux-architect.md",
+      "tags": [
+        "expert-pool",
+        "design"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-ai-data-remediation-engineer.md",
+      "template_name": "AI 数据修复工程师",
+      "agent_name": "AI 数据修复工程师",
+      "department_slug": "engineering",
+      "title": "AI 数据修复工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-ai-engineer.md",
+      "template_name": "AI 工程师",
+      "agent_name": "AI 工程师",
+      "department_slug": "engineering",
+      "title": "AI工程负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "core-org",
+        "ai"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-autonomous-optimization-architect.md",
+      "template_name": "自主优化架构师",
+      "agent_name": "自主优化架构师",
+      "department_slug": "engineering",
+      "title": "自主优化架构师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-backend-architect.md",
+      "template_name": "后端架构师",
+      "agent_name": "后端架构师",
+      "department_slug": "engineering",
+      "title": "后端架构师",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-code-reviewer.md",
+      "template_name": "代码审查员",
+      "agent_name": "代码审查员",
+      "department_slug": "engineering",
+      "title": "代码审查员",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-data-engineer.md",
+      "template_name": "数据工程师",
+      "agent_name": "数据工程师",
+      "department_slug": "engineering",
+      "title": "数据工程师",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "core-org",
+        "data"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-database-optimizer.md",
+      "template_name": "数据库优化师",
+      "agent_name": "数据库优化师",
+      "department_slug": "engineering",
+      "title": "数据库优化师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-devops-automator.md",
+      "template_name": "DevOps 自动化师",
+      "agent_name": "DevOps 自动化师",
+      "department_slug": "engineering",
+      "title": "DevOps 自动化师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-dingtalk-integration-developer.md",
+      "template_name": "钉钉集成开发工程师",
+      "agent_name": "钉钉集成开发工程师",
+      "department_slug": "engineering",
+      "title": "钉钉集成开发工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-embedded-firmware-engineer.md",
+      "template_name": "嵌入式固件工程师",
+      "agent_name": "嵌入式固件工程师",
+      "department_slug": "engineering",
+      "title": "嵌入式固件工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-embedded-linux-driver-engineer.md",
+      "template_name": "嵌入式 Linux 驱动工程师",
+      "agent_name": "嵌入式 Linux 驱动工程师",
+      "department_slug": "engineering",
+      "title": "嵌入式 Linux 驱动工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-feishu-integration-developer.md",
+      "template_name": "飞书集成开发工程师",
+      "agent_name": "飞书集成开发工程师",
+      "department_slug": "engineering",
+      "title": "飞书集成开发工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-fpga-digital-design-engineer.md",
+      "template_name": "FPGA/ASIC 数字设计工程师",
+      "agent_name": "FPGA/ASIC 数字设计工程师",
+      "department_slug": "engineering",
+      "title": "FPGA/ASIC 数字设计工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-frontend-developer.md",
+      "template_name": "前端开发者",
+      "agent_name": "前端开发者",
+      "department_slug": "engineering",
+      "title": "前端负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "core-org",
+        "frontend"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-git-workflow-master.md",
+      "template_name": "Git 工作流大师",
+      "agent_name": "Git 工作流大师",
+      "department_slug": "engineering",
+      "title": "Git 工作流大师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-incident-response-commander.md",
+      "template_name": "故障响应指挥官",
+      "agent_name": "故障响应指挥官",
+      "department_slug": "engineering",
+      "title": "故障响应指挥官",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-iot-solution-architect.md",
+      "template_name": "IoT 方案架构师",
+      "agent_name": "IoT 方案架构师",
+      "department_slug": "engineering",
+      "title": "IoT 方案架构师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-mobile-app-builder.md",
+      "template_name": "移动应用开发者",
+      "agent_name": "移动应用开发者",
+      "department_slug": "engineering",
+      "title": "移动应用负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "core-org",
+        "mobile"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-rapid-prototyper.md",
+      "template_name": "快速原型师",
+      "agent_name": "快速原型师",
+      "department_slug": "engineering",
+      "title": "快速原型师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-security-engineer.md",
+      "template_name": "安全工程师",
+      "agent_name": "安全工程师",
+      "department_slug": "engineering",
+      "title": "安全工程师",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "core-org",
+        "security"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-senior-developer.md",
+      "template_name": "高级开发者",
+      "agent_name": "高级开发者",
+      "department_slug": "engineering",
+      "title": "高级开发者",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-software-architect.md",
+      "template_name": "软件架构师",
+      "agent_name": "软件架构师",
+      "department_slug": "engineering",
+      "title": "研发负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-solidity-smart-contract-engineer.md",
+      "template_name": "Solidity 智能合约工程师",
+      "agent_name": "Solidity 智能合约工程师",
+      "department_slug": "engineering",
+      "title": "Solidity 智能合约工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-sre.md",
+      "template_name": "SRE (站点可靠性工程师)",
+      "agent_name": "SRE (站点可靠性工程师)",
+      "department_slug": "engineering",
+      "title": "可靠性工程师",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "core-org",
+        "reliability"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-technical-writer.md",
+      "template_name": "技术文档工程师",
+      "agent_name": "技术文档工程师",
+      "department_slug": "engineering",
+      "title": "技术文档工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-threat-detection-engineer.md",
+      "template_name": "威胁检测工程师",
+      "agent_name": "威胁检测工程师",
+      "department_slug": "engineering",
+      "title": "威胁检测工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "engineering/engineering-wechat-mini-program-developer.md",
+      "template_name": "微信小程序开发者",
+      "agent_name": "微信小程序开发者",
+      "department_slug": "engineering",
+      "title": "微信小程序开发者",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "finance/finance-financial-forecaster.md",
+      "template_name": "财务预测分析师",
+      "agent_name": "财务预测分析师",
+      "department_slug": "finance",
+      "title": "财务负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "finance/finance-fraud-detector.md",
+      "template_name": "金融风控分析师",
+      "agent_name": "金融风控分析师",
+      "department_slug": "finance",
+      "title": "金融风控分析师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "finance/finance-financial-forecaster.md",
+      "tags": [
+        "expert-pool",
+        "finance"
+      ]
+    },
+    {
+      "source_key": "finance/finance-invoice-manager.md",
+      "template_name": "发票管理专家",
+      "agent_name": "发票管理专家",
+      "department_slug": "finance",
+      "title": "发票与应收负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "finance/finance-financial-forecaster.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "game-development/blender/blender-addon-engineer.md",
+      "template_name": "Blender 插件工程师",
+      "agent_name": "Blender 插件工程师",
+      "department_slug": "engineering",
+      "title": "Blender 插件工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/game-audio-engineer.md",
+      "template_name": "游戏音频工程师",
+      "agent_name": "游戏音频工程师",
+      "department_slug": "engineering",
+      "title": "游戏音频工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/game-designer.md",
+      "template_name": "游戏设计师",
+      "agent_name": "游戏设计师",
+      "department_slug": "engineering",
+      "title": "游戏设计师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/godot/godot-gameplay-scripter.md",
+      "template_name": "Godot 游戏脚本开发者",
+      "agent_name": "Godot 游戏脚本开发者",
+      "department_slug": "engineering",
+      "title": "Godot 游戏脚本开发者",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/godot/godot-multiplayer-engineer.md",
+      "template_name": "Godot 多人游戏工程师",
+      "agent_name": "Godot 多人游戏工程师",
+      "department_slug": "engineering",
+      "title": "Godot 多人游戏工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/godot/godot-shader-developer.md",
+      "template_name": "Godot Shader 开发者",
+      "agent_name": "Godot Shader 开发者",
+      "department_slug": "engineering",
+      "title": "Godot Shader 开发者",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/level-designer.md",
+      "template_name": "关卡设计师",
+      "agent_name": "关卡设计师",
+      "department_slug": "engineering",
+      "title": "关卡设计师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/narrative-designer.md",
+      "template_name": "叙事设计师",
+      "agent_name": "叙事设计师",
+      "department_slug": "engineering",
+      "title": "叙事设计师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/roblox-studio/roblox-avatar-creator.md",
+      "template_name": "Roblox 虚拟形象创作者",
+      "agent_name": "Roblox 虚拟形象创作者",
+      "department_slug": "engineering",
+      "title": "Roblox 虚拟形象创作者",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/roblox-studio/roblox-experience-designer.md",
+      "template_name": "Roblox 体验设计师",
+      "agent_name": "Roblox 体验设计师",
+      "department_slug": "engineering",
+      "title": "Roblox 体验设计师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/roblox-studio/roblox-systems-scripter.md",
+      "template_name": "Roblox 系统脚本工程师",
+      "agent_name": "Roblox 系统脚本工程师",
+      "department_slug": "engineering",
+      "title": "Roblox 系统脚本工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/technical-artist.md",
+      "template_name": "技术美术",
+      "agent_name": "技术美术",
+      "department_slug": "engineering",
+      "title": "技术美术",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/unity/unity-architect.md",
+      "template_name": "Unity 架构师",
+      "agent_name": "Unity 架构师",
+      "department_slug": "engineering",
+      "title": "Unity 架构师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/unity/unity-editor-tool-developer.md",
+      "template_name": "Unity 编辑器工具开发者",
+      "agent_name": "Unity 编辑器工具开发者",
+      "department_slug": "engineering",
+      "title": "Unity 编辑器工具开发者",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/unity/unity-multiplayer-engineer.md",
+      "template_name": "Unity 多人游戏工程师",
+      "agent_name": "Unity 多人游戏工程师",
+      "department_slug": "engineering",
+      "title": "Unity 多人游戏工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/unity/unity-shader-graph-artist.md",
+      "template_name": "Unity Shader Graph 美术师",
+      "agent_name": "Unity Shader Graph 美术师",
+      "department_slug": "engineering",
+      "title": "Unity Shader Graph 美术师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/unreal-engine/unreal-multiplayer-architect.md",
+      "template_name": "Unreal 多人游戏架构师",
+      "agent_name": "Unreal 多人游戏架构师",
+      "department_slug": "engineering",
+      "title": "Unreal 多人游戏架构师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/unreal-engine/unreal-systems-engineer.md",
+      "template_name": "Unreal 系统工程师",
+      "agent_name": "Unreal 系统工程师",
+      "department_slug": "engineering",
+      "title": "Unreal 系统工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/unreal-engine/unreal-technical-artist.md",
+      "template_name": "Unreal 技术美术",
+      "agent_name": "Unreal 技术美术",
+      "department_slug": "engineering",
+      "title": "Unreal 技术美术",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "game-development/unreal-engine/unreal-world-builder.md",
+      "template_name": "Unreal 世界构建师",
+      "agent_name": "Unreal 世界构建师",
+      "department_slug": "engineering",
+      "title": "Unreal 世界构建师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "game-development"
+      ]
+    },
+    {
+      "source_key": "hr/hr-performance-reviewer.md",
+      "template_name": "绩效管理专家",
+      "agent_name": "绩效管理专家",
+      "department_slug": "hr",
+      "title": "绩效运营负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "hr/hr-recruiter.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "hr/hr-recruiter.md",
+      "template_name": "招聘专家",
+      "agent_name": "招聘专家",
+      "department_slug": "hr",
+      "title": "人力资源负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "integrations/mcp-memory/backend-architect-with-memory.md",
+      "template_name": "Backend Architect",
+      "agent_name": "Backend Architect",
+      "department_slug": "engineering",
+      "title": "Backend Architect",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "legal/legal-contract-reviewer.md",
+      "template_name": "合同审查专家",
+      "agent_name": "合同审查专家",
+      "department_slug": "legal",
+      "title": "合同审查负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "legal/legal-policy-writer.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "legal/legal-policy-writer.md",
+      "template_name": "制度文件撰写专家",
+      "agent_name": "制度文件撰写专家",
+      "department_slug": "legal",
+      "title": "法务与合规负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-ai-citation-strategist.md",
+      "template_name": "AI Citation Strategist",
+      "agent_name": "AI Citation Strategist",
+      "department_slug": "marketing",
+      "title": "AI Citation Strategist",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-app-store-optimizer.md",
+      "template_name": "应用商店优化师",
+      "agent_name": "应用商店优化师",
+      "department_slug": "marketing",
+      "title": "应用商店增长负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "core-org",
+        "growth"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-baidu-seo-specialist.md",
+      "template_name": "百度 SEO 专家",
+      "agent_name": "百度 SEO 专家",
+      "department_slug": "marketing",
+      "title": "百度 SEO 专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-bilibili-content-strategist.md",
+      "template_name": "Bilibili Content Strategist",
+      "agent_name": "Bilibili Content Strategist",
+      "department_slug": "marketing",
+      "title": "Bilibili Content Strategist",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-bilibili-strategist.md",
+      "template_name": "B站内容策略师",
+      "agent_name": "B站内容策略师",
+      "department_slug": "marketing",
+      "title": "B站内容策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-book-co-author.md",
+      "template_name": "图书联合作者",
+      "agent_name": "图书联合作者",
+      "department_slug": "marketing",
+      "title": "图书联合作者",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-carousel-growth-engine.md",
+      "template_name": "轮播图增长引擎",
+      "agent_name": "轮播图增长引擎",
+      "department_slug": "marketing",
+      "title": "轮播图增长引擎",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-china-ecommerce-operator.md",
+      "template_name": "中国电商运营专家",
+      "agent_name": "中国电商运营专家",
+      "department_slug": "marketing",
+      "title": "中国电商运营专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-content-creator.md",
+      "template_name": "内容创作者",
+      "agent_name": "内容创作者",
+      "department_slug": "marketing",
+      "title": "内容增长负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "core-org",
+        "content"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-cross-border-ecommerce.md",
+      "template_name": "跨境电商运营专家",
+      "agent_name": "跨境电商运营专家",
+      "department_slug": "marketing",
+      "title": "跨境电商运营专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-douyin-strategist.md",
+      "template_name": "抖音策略师",
+      "agent_name": "抖音策略师",
+      "department_slug": "marketing",
+      "title": "抖音策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-ecommerce-operator.md",
+      "template_name": "电商运营师",
+      "agent_name": "电商运营师",
+      "department_slug": "marketing",
+      "title": "电商运营师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-growth-hacker.md",
+      "template_name": "增长黑客",
+      "agent_name": "增长黑客",
+      "department_slug": "marketing",
+      "title": "市场负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org",
+        "growth"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-instagram-curator.md",
+      "template_name": "Instagram 策展师",
+      "agent_name": "Instagram 策展师",
+      "department_slug": "marketing",
+      "title": "Instagram 策展师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-knowledge-commerce-strategist.md",
+      "template_name": "知识付费产品策划师",
+      "agent_name": "知识付费产品策划师",
+      "department_slug": "marketing",
+      "title": "知识付费产品策划师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-kuaishou-strategist.md",
+      "template_name": "快手策略师",
+      "agent_name": "快手策略师",
+      "department_slug": "marketing",
+      "title": "快手策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-linkedin-content-creator.md",
+      "template_name": "LinkedIn 内容创作专家",
+      "agent_name": "LinkedIn 内容创作专家",
+      "department_slug": "marketing",
+      "title": "LinkedIn 内容创作专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-livestream-commerce-coach.md",
+      "template_name": "直播电商主播教练",
+      "agent_name": "直播电商主播教练",
+      "department_slug": "marketing",
+      "title": "直播电商主播教练",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-podcast-strategist.md",
+      "template_name": "播客内容策略师",
+      "agent_name": "播客内容策略师",
+      "department_slug": "marketing",
+      "title": "播客内容策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-private-domain-operator.md",
+      "template_name": "私域流量运营师",
+      "agent_name": "私域流量运营师",
+      "department_slug": "marketing",
+      "title": "私域流量运营师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-reddit-community-builder.md",
+      "template_name": "Reddit 社区运营",
+      "agent_name": "Reddit 社区运营",
+      "department_slug": "marketing",
+      "title": "Reddit 社区运营",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-seo-specialist.md",
+      "template_name": "SEO专家",
+      "agent_name": "SEO专家",
+      "department_slug": "marketing",
+      "title": "SEO负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "core-org",
+        "seo"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-short-video-editing-coach.md",
+      "template_name": "短视频剪辑指导师",
+      "agent_name": "短视频剪辑指导师",
+      "department_slug": "marketing",
+      "title": "短视频剪辑指导师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-social-media-strategist.md",
+      "template_name": "社交媒体策略师",
+      "agent_name": "社交媒体策略师",
+      "department_slug": "marketing",
+      "title": "社媒增长负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "core-org",
+        "social"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-tiktok-strategist.md",
+      "template_name": "TikTok 策略师",
+      "agent_name": "TikTok 策略师",
+      "department_slug": "marketing",
+      "title": "TikTok 策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-twitter-engager.md",
+      "template_name": "Twitter 互动官",
+      "agent_name": "Twitter 互动官",
+      "department_slug": "marketing",
+      "title": "Twitter 互动官",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-wechat-official-account.md",
+      "template_name": "微信公众号管理",
+      "agent_name": "微信公众号管理",
+      "department_slug": "marketing",
+      "title": "微信公众号管理",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-wechat-operator.md",
+      "template_name": "微信公众号运营",
+      "agent_name": "微信公众号运营",
+      "department_slug": "marketing",
+      "title": "微信运营负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "core-org",
+        "wechat"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-weibo-strategist.md",
+      "template_name": "微博运营策略师",
+      "agent_name": "微博运营策略师",
+      "department_slug": "marketing",
+      "title": "微博运营策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-weixin-channels-strategist.md",
+      "template_name": "微信视频号运营策略师",
+      "agent_name": "微信视频号运营策略师",
+      "department_slug": "marketing",
+      "title": "微信视频号运营策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-xiaohongshu-operator.md",
+      "template_name": "小红书运营专家",
+      "agent_name": "小红书运营专家",
+      "department_slug": "marketing",
+      "title": "小红书运营专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-xiaohongshu-specialist.md",
+      "template_name": "小红书专家",
+      "agent_name": "小红书专家",
+      "department_slug": "marketing",
+      "title": "小红书专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "marketing/marketing-zhihu-strategist.md",
+      "template_name": "知乎策略师",
+      "agent_name": "知乎策略师",
+      "department_slug": "marketing",
+      "title": "知乎策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "paid-media/paid-media-auditor.md",
+      "template_name": "付费媒体审计师",
+      "agent_name": "付费媒体审计师",
+      "department_slug": "marketing",
+      "title": "付费媒体审计师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "paid-media/paid-media-creative-strategist.md",
+      "template_name": "广告创意策略师",
+      "agent_name": "广告创意策略师",
+      "department_slug": "marketing",
+      "title": "广告创意策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "paid-media/paid-media-paid-social-strategist.md",
+      "template_name": "社交广告策略师",
+      "agent_name": "社交广告策略师",
+      "department_slug": "marketing",
+      "title": "社交广告策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "paid-media/paid-media-ppc-strategist.md",
+      "template_name": "PPC 竞价策略师",
+      "agent_name": "PPC 竞价策略师",
+      "department_slug": "marketing",
+      "title": "投放优化负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "core-org",
+        "paid-media"
+      ]
+    },
+    {
+      "source_key": "paid-media/paid-media-programmatic-buyer.md",
+      "template_name": "程序化广告采买专家",
+      "agent_name": "程序化广告采买专家",
+      "department_slug": "marketing",
+      "title": "程序化广告采买专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "paid-media/paid-media-search-query-analyst.md",
+      "template_name": "搜索词分析师",
+      "agent_name": "搜索词分析师",
+      "department_slug": "marketing",
+      "title": "搜索词分析师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "paid-media/paid-media-tracking-specialist.md",
+      "template_name": "追踪与归因专家",
+      "agent_name": "追踪与归因专家",
+      "department_slug": "marketing",
+      "title": "追踪与归因专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "marketing/marketing-growth-hacker.md",
+      "tags": [
+        "expert-pool",
+        "marketing"
+      ]
+    },
+    {
+      "source_key": "product/product-behavioral-nudge-engine.md",
+      "template_name": "行为助推引擎",
+      "agent_name": "行为助推引擎",
+      "department_slug": "product",
+      "title": "行为助推引擎",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "product/product-manager.md",
+      "tags": [
+        "expert-pool",
+        "product"
+      ]
+    },
+    {
+      "source_key": "product/product-feedback-synthesizer.md",
+      "template_name": "反馈分析师",
+      "agent_name": "反馈分析师",
+      "department_slug": "product",
+      "title": "用户反馈分析师",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "product/product-manager.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "product/product-manager.md",
+      "template_name": "产品经理",
+      "agent_name": "产品经理",
+      "department_slug": "product",
+      "title": "产品负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "product/product-sprint-prioritizer.md",
+      "template_name": "Sprint 排序师",
+      "agent_name": "Sprint 排序师",
+      "department_slug": "product",
+      "title": "迭代规划负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "product/product-manager.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "product/product-trend-researcher.md",
+      "template_name": "趋势研究员",
+      "agent_name": "趋势研究员",
+      "department_slug": "product",
+      "title": "趋势研究员",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "product/product-manager.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "project-management/project-management-experiment-tracker.md",
+      "template_name": "实验追踪员",
+      "agent_name": "实验追踪员",
+      "department_slug": "strategy-pmo",
+      "title": "实验运营负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "project-management/project-management-jira-workflow-steward.md",
+      "template_name": "Jira工作流管家",
+      "agent_name": "Jira工作流管家",
+      "department_slug": "strategy-pmo",
+      "title": "交付流程负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "project-management/project-management-project-shepherd.md",
+      "template_name": "项目牧羊人",
+      "agent_name": "项目牧羊人",
+      "department_slug": "strategy-pmo",
+      "title": "项目推进负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "project-management/project-management-studio-operations.md",
+      "template_name": "工作室运营",
+      "agent_name": "工作室运营",
+      "department_slug": "operations",
+      "title": "运营统筹负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "project-management/project-management-studio-producer.md",
+      "template_name": "工作室制片人",
+      "agent_name": "工作室制片人",
+      "department_slug": "operations",
+      "title": "项目制作负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "project-management/project-manager-senior.md",
+      "template_name": "高级项目经理",
+      "agent_name": "高级项目经理",
+      "department_slug": "strategy-pmo",
+      "title": "战略与项目管理办公室负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "sales/sales-account-strategist.md",
+      "template_name": "客户拓展策略师",
+      "agent_name": "客户拓展策略师",
+      "department_slug": "sales",
+      "title": "销售负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "sales/sales-coach.md",
+      "template_name": "销售教练",
+      "agent_name": "销售教练",
+      "department_slug": "sales",
+      "title": "销售教练",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "sales/sales-account-strategist.md",
+      "tags": [
+        "expert-pool",
+        "sales"
+      ]
+    },
+    {
+      "source_key": "sales/sales-deal-strategist.md",
+      "template_name": "赢单策略师",
+      "agent_name": "赢单策略师",
+      "department_slug": "sales",
+      "title": "赢单策略负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "sales/sales-account-strategist.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "sales/sales-discovery-coach.md",
+      "template_name": "Discovery 教练",
+      "agent_name": "Discovery 教练",
+      "department_slug": "sales",
+      "title": "Discovery 教练",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "sales/sales-account-strategist.md",
+      "tags": [
+        "expert-pool",
+        "sales"
+      ]
+    },
+    {
+      "source_key": "sales/sales-engineer.md",
+      "template_name": "售前工程师",
+      "agent_name": "售前工程师",
+      "department_slug": "sales",
+      "title": "售前工程负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "sales/sales-account-strategist.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "sales/sales-outbound-strategist.md",
+      "template_name": "Outbound 策略师",
+      "agent_name": "Outbound 策略师",
+      "department_slug": "sales",
+      "title": "外呼增长负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "sales/sales-account-strategist.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "sales/sales-pipeline-analyst.md",
+      "template_name": "Pipeline 分析师",
+      "agent_name": "Pipeline 分析师",
+      "department_slug": "sales",
+      "title": "销售管线分析负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "sales/sales-account-strategist.md",
+      "tags": [
+        "core-org"
+      ]
+    },
+    {
+      "source_key": "sales/sales-proposal-strategist.md",
+      "template_name": "投标策略师",
+      "agent_name": "投标策略师",
+      "department_slug": "sales",
+      "title": "投标策略师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "sales/sales-account-strategist.md",
+      "tags": [
+        "expert-pool",
+        "sales"
+      ]
+    },
+    {
+      "source_key": "spatial-computing/macos-spatial-metal-engineer.md",
+      "template_name": "macOS Metal 空间工程师",
+      "agent_name": "macOS Metal 空间工程师",
+      "department_slug": "engineering",
+      "title": "macOS Metal 空间工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "spatial-computing/terminal-integration-specialist.md",
+      "template_name": "终端集成专家",
+      "agent_name": "终端集成专家",
+      "department_slug": "engineering",
+      "title": "终端集成专家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "spatial-computing/visionos-spatial-engineer.md",
+      "template_name": "visionOS 空间工程师",
+      "agent_name": "visionOS 空间工程师",
+      "department_slug": "engineering",
+      "title": "visionOS 空间工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "spatial-computing/xr-cockpit-interaction-specialist.md",
+      "template_name": "XR 座舱交互专家",
+      "agent_name": "XR 座舱交互专家",
+      "department_slug": "engineering",
+      "title": "XR 座舱交互专家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "spatial-computing/xr-immersive-developer.md",
+      "template_name": "XR 沉浸式开发者",
+      "agent_name": "XR 沉浸式开发者",
+      "department_slug": "engineering",
+      "title": "XR 沉浸式开发者",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "spatial-computing/xr-interface-architect.md",
+      "template_name": "XR 界面架构师",
+      "agent_name": "XR 界面架构师",
+      "department_slug": "engineering",
+      "title": "XR 界面架构师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "engineering"
+      ]
+    },
+    {
+      "source_key": "specialized/accounts-payable-agent.md",
+      "template_name": "应付账款智能体",
+      "agent_name": "应付账款智能体",
+      "department_slug": "expert-pool",
+      "title": "应付账款智能体",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/agentic-identity-trust.md",
+      "template_name": "身份信任架构师",
+      "agent_name": "身份信任架构师",
+      "department_slug": "expert-pool",
+      "title": "身份信任架构师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/agents-orchestrator.md",
+      "template_name": "智能体编排者",
+      "agent_name": "智能体编排者",
+      "department_slug": "expert-pool",
+      "title": "智能体编排者",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/automation-governance-architect.md",
+      "template_name": "自动化治理架构师",
+      "agent_name": "自动化治理架构师",
+      "department_slug": "expert-pool",
+      "title": "自动化治理架构师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/blockchain-security-auditor.md",
+      "template_name": "区块链安全审计师",
+      "agent_name": "区块链安全审计师",
+      "department_slug": "expert-pool",
+      "title": "区块链安全审计师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/compliance-auditor.md",
+      "template_name": "合规审计师",
+      "agent_name": "合规审计师",
+      "department_slug": "expert-pool",
+      "title": "合规审计师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/corporate-training-designer.md",
+      "template_name": "企业培训课程设计师",
+      "agent_name": "企业培训课程设计师",
+      "department_slug": "expert-pool",
+      "title": "企业培训课程设计师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/data-consolidation-agent.md",
+      "template_name": "数据整合师",
+      "agent_name": "数据整合师",
+      "department_slug": "expert-pool",
+      "title": "数据整合师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/gaokao-college-advisor.md",
+      "template_name": "高考志愿填报顾问",
+      "agent_name": "高考志愿填报顾问",
+      "department_slug": "expert-pool",
+      "title": "高考志愿填报顾问",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/government-digital-presales-consultant.md",
+      "template_name": "政务数字化售前顾问",
+      "agent_name": "政务数字化售前顾问",
+      "department_slug": "expert-pool",
+      "title": "政务数字化售前顾问",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/healthcare-marketing-compliance.md",
+      "template_name": "医疗健康营销合规师",
+      "agent_name": "医疗健康营销合规师",
+      "department_slug": "expert-pool",
+      "title": "医疗健康营销合规师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/identity-graph-operator.md",
+      "template_name": "身份图谱操作员",
+      "agent_name": "身份图谱操作员",
+      "department_slug": "expert-pool",
+      "title": "身份图谱操作员",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/lsp-index-engineer.md",
+      "template_name": "LSP 索引工程师",
+      "agent_name": "LSP 索引工程师",
+      "department_slug": "expert-pool",
+      "title": "LSP 索引工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/prompt-engineer.md",
+      "template_name": "提示词工程师",
+      "agent_name": "提示词工程师",
+      "department_slug": "expert-pool",
+      "title": "提示词工程师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/recruitment-specialist.md",
+      "template_name": "Recruitment Specialist",
+      "agent_name": "Recruitment Specialist",
+      "department_slug": "expert-pool",
+      "title": "Recruitment Specialist",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/report-distribution-agent.md",
+      "template_name": "报告分发师",
+      "agent_name": "报告分发师",
+      "department_slug": "expert-pool",
+      "title": "报告分发师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/sales-data-extraction-agent.md",
+      "template_name": "销售数据提取师",
+      "agent_name": "销售数据提取师",
+      "department_slug": "expert-pool",
+      "title": "销售数据提取师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-ai-policy-writer.md",
+      "template_name": "AI 治理政策专家",
+      "agent_name": "AI 治理政策专家",
+      "department_slug": "expert-pool",
+      "title": "AI 治理政策专家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-cultural-intelligence-strategist.md",
+      "template_name": "文化智能策略师",
+      "agent_name": "文化智能策略师",
+      "department_slug": "expert-pool",
+      "title": "文化智能策略师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-developer-advocate.md",
+      "template_name": "开发者布道师",
+      "agent_name": "开发者布道师",
+      "department_slug": "expert-pool",
+      "title": "开发者布道师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-document-generator.md",
+      "template_name": "文档生成器",
+      "agent_name": "文档生成器",
+      "department_slug": "expert-pool",
+      "title": "文档生成器",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-french-consulting-market.md",
+      "template_name": "French Consulting Market Navigator",
+      "agent_name": "French Consulting Market Navigator",
+      "department_slug": "expert-pool",
+      "title": "French Consulting Market Navigator",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-korean-business-navigator.md",
+      "template_name": "Korean Business Navigator",
+      "agent_name": "Korean Business Navigator",
+      "department_slug": "expert-pool",
+      "title": "Korean Business Navigator",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-mcp-builder.md",
+      "template_name": "MCP 构建器",
+      "agent_name": "MCP 构建器",
+      "department_slug": "expert-pool",
+      "title": "MCP 构建器",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-meeting-assistant.md",
+      "template_name": "会议效率专家",
+      "agent_name": "会议效率专家",
+      "department_slug": "expert-pool",
+      "title": "会议效率专家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-model-qa.md",
+      "template_name": "模型 QA 专家",
+      "agent_name": "模型 QA 专家",
+      "department_slug": "expert-pool",
+      "title": "模型 QA 专家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-pricing-optimizer.md",
+      "template_name": "动态定价策略师",
+      "agent_name": "动态定价策略师",
+      "department_slug": "expert-pool",
+      "title": "动态定价策略师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-risk-assessor.md",
+      "template_name": "企业风险评估师",
+      "agent_name": "企业风险评估师",
+      "department_slug": "expert-pool",
+      "title": "企业风险评估师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-salesforce-architect.md",
+      "template_name": "Salesforce 架构师",
+      "agent_name": "Salesforce 架构师",
+      "department_slug": "expert-pool",
+      "title": "Salesforce 架构师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/specialized-workflow-architect.md",
+      "template_name": "工作流架构师",
+      "agent_name": "工作流架构师",
+      "department_slug": "expert-pool",
+      "title": "工作流架构师",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/study-abroad-advisor.md",
+      "template_name": "留学规划顾问",
+      "agent_name": "留学规划顾问",
+      "department_slug": "expert-pool",
+      "title": "留学规划顾问",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/supply-chain-strategist.md",
+      "template_name": "Supply Chain Strategist",
+      "agent_name": "Supply Chain Strategist",
+      "department_slug": "expert-pool",
+      "title": "Supply Chain Strategist",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "specialized/zk-steward.md",
+      "template_name": "ZK 管家",
+      "agent_name": "ZK 管家",
+      "department_slug": "expert-pool",
+      "title": "ZK 管家",
+      "level": "L5",
+      "org_bucket": "expert",
+      "manager_source_key": null,
+      "tags": [
+        "advisor",
+        "expert-pool"
+      ]
+    },
+    {
+      "source_key": "supply-chain/supply-chain-inventory-forecaster.md",
+      "template_name": "库存预测专家",
+      "agent_name": "库存预测专家",
+      "department_slug": "operations",
+      "title": "库存预测专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "expert-pool",
+        "operations"
+      ]
+    },
+    {
+      "source_key": "supply-chain/supply-chain-route-optimizer.md",
+      "template_name": "物流路线优化师",
+      "agent_name": "物流路线优化师",
+      "department_slug": "operations",
+      "title": "物流路线优化师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "expert-pool",
+        "operations"
+      ]
+    },
+    {
+      "source_key": "supply-chain/supply-chain-vendor-evaluator.md",
+      "template_name": "供应商评估专家",
+      "agent_name": "供应商评估专家",
+      "department_slug": "operations",
+      "title": "供应商评估专家",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "expert-pool",
+        "operations"
+      ]
+    },
+    {
+      "source_key": "support/support-analytics-reporter.md",
+      "template_name": "数据分析师",
+      "agent_name": "数据分析师",
+      "department_slug": "strategy-pmo",
+      "title": "经营分析负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "support/support-executive-summary-generator.md",
+      "template_name": "高管摘要师",
+      "agent_name": "高管摘要师",
+      "department_slug": "executive",
+      "title": "CEO办公室战略参谋",
+      "level": "L1",
+      "org_bucket": "core",
+      "manager_source_key": null,
+      "tags": [
+        "core-org",
+        "executive"
+      ]
+    },
+    {
+      "source_key": "support/support-finance-tracker.md",
+      "template_name": "财务追踪员",
+      "agent_name": "财务追踪员",
+      "department_slug": "finance",
+      "title": "经营财务追踪负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "finance/finance-financial-forecaster.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "support/support-infrastructure-maintainer.md",
+      "template_name": "基础设施运维师",
+      "agent_name": "基础设施运维师",
+      "department_slug": "operations",
+      "title": "基础设施运维负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "support/support-legal-compliance-checker.md",
+      "template_name": "法务合规员",
+      "agent_name": "法务合规员",
+      "department_slug": "legal",
+      "title": "合规检查负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "legal/legal-policy-writer.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "support/support-recruitment-specialist.md",
+      "template_name": "招聘运营专家",
+      "agent_name": "招聘运营专家",
+      "department_slug": "hr",
+      "title": "招聘运营负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "hr/hr-recruiter.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "support/support-supply-chain-strategist.md",
+      "template_name": "供应链采购策略师",
+      "agent_name": "供应链采购策略师",
+      "department_slug": "operations",
+      "title": "供应链协调负责人",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "support/support-support-responder.md",
+      "template_name": "客服响应者",
+      "agent_name": "客服响应者",
+      "department_slug": "customer-success",
+      "title": "客户成功负责人",
+      "level": "L2",
+      "org_bucket": "core",
+      "manager_source_key": "support/support-executive-summary-generator.md",
+      "tags": [
+        "core-org",
+        "shared-service"
+      ]
+    },
+    {
+      "source_key": "testing/testing-accessibility-auditor.md",
+      "template_name": "无障碍审核员",
+      "agent_name": "无障碍审核员",
+      "department_slug": "engineering",
+      "title": "无障碍审核员",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "qa"
+      ]
+    },
+    {
+      "source_key": "testing/testing-api-tester.md",
+      "template_name": "API 测试员",
+      "agent_name": "API 测试员",
+      "department_slug": "engineering",
+      "title": "API质量工程师",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "core-org",
+        "qa"
+      ]
+    },
+    {
+      "source_key": "testing/testing-embedded-qa-engineer.md",
+      "template_name": "嵌入式测试工程师",
+      "agent_name": "嵌入式测试工程师",
+      "department_slug": "engineering",
+      "title": "嵌入式测试工程师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "qa"
+      ]
+    },
+    {
+      "source_key": "testing/testing-evidence-collector.md",
+      "template_name": "证据收集者",
+      "agent_name": "证据收集者",
+      "department_slug": "engineering",
+      "title": "证据收集者",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "qa"
+      ]
+    },
+    {
+      "source_key": "testing/testing-performance-benchmarker.md",
+      "template_name": "性能基准师",
+      "agent_name": "性能基准师",
+      "department_slug": "engineering",
+      "title": "性能质量工程师",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "core-org",
+        "qa"
+      ]
+    },
+    {
+      "source_key": "testing/testing-reality-checker.md",
+      "template_name": "现实检验者",
+      "agent_name": "现实检验者",
+      "department_slug": "engineering",
+      "title": "现实检验者",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "qa"
+      ]
+    },
+    {
+      "source_key": "testing/testing-test-results-analyzer.md",
+      "template_name": "测试结果分析师",
+      "agent_name": "测试结果分析师",
+      "department_slug": "engineering",
+      "title": "测试结果分析师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "qa"
+      ]
+    },
+    {
+      "source_key": "testing/testing-tool-evaluator.md",
+      "template_name": "工具评估师",
+      "agent_name": "工具评估师",
+      "department_slug": "engineering",
+      "title": "工具评估师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "qa"
+      ]
+    },
+    {
+      "source_key": "testing/testing-workflow-optimizer.md",
+      "template_name": "工作流优化师",
+      "agent_name": "工作流优化师",
+      "department_slug": "engineering",
+      "title": "工作流优化师",
+      "level": "L4",
+      "org_bucket": "expert",
+      "manager_source_key": "engineering/engineering-software-architect.md",
+      "tags": [
+        "expert-pool",
+        "qa"
+      ]
+    },
+    {
+      "source_key": null,
+      "template_name": "Morty",
+      "agent_name": "Morty",
+      "department_slug": "strategy-pmo",
+      "title": "跨部门研究与情报中枢",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "cross-functional"
+      ]
+    },
+    {
+      "source_key": null,
+      "template_name": "Meeseeks",
+      "agent_name": "Meeseeks",
+      "department_slug": "strategy-pmo",
+      "title": "跨部门执行与推进中枢",
+      "level": "L3",
+      "org_bucket": "core",
+      "manager_source_key": "project-management/project-manager-senior.md",
+      "tags": [
+        "core-org",
+        "cross-functional"
+      ]
+    }
+  ]
+}

@@ -12,6 +12,7 @@ from app.core.security import get_current_user, require_role
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission
 from app.models.user import User
+from app.models.virtual_org import AgentVirtualOrg, AgentVirtualTag, VirtualDepartment
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -169,9 +170,23 @@ async def create_agent(
             default_min_poll = tenant.min_poll_interval_floor or 5
             default_webhook_rate = tenant.max_webhook_rate_ceiling or 5
 
+    selected_template = None
+    if data.template_id:
+        from app.models.agent import AgentTemplate
+
+        template_result = await db.execute(select(AgentTemplate).where(AgentTemplate.id == data.template_id))
+        selected_template = template_result.scalar_one_or_none()
+        if not selected_template:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+    resolved_role_description = data.role_description or (selected_template.description if selected_template else "")
+    resolved_autonomy_policy = data.autonomy_policy or (
+        selected_template.default_autonomy_policy if selected_template else None
+    )
+
     agent = Agent(
         name=data.name,
-        role_description=data.role_description,
+        role_description=resolved_role_description,
         bio=data.bio,
         avatar_url=data.avatar_url,
         creator_id=current_user.id,
@@ -189,8 +204,8 @@ async def create_agent(
         min_poll_interval_min=default_min_poll,
         webhook_rate_limit=default_webhook_rate,
     )
-    if data.autonomy_policy:
-        agent.autonomy_policy = data.autonomy_policy
+    if resolved_autonomy_policy:
+        agent.autonomy_policy = resolved_autonomy_policy
 
     db.add(agent)
     await db.flush()
@@ -232,6 +247,7 @@ async def create_agent(
     from app.services.agent_manager import agent_manager
     await agent_manager.initialize_agent_files(
         db, agent,
+        template_soul=selected_template.soul_template if selected_template else None,
         personality=data.personality,
         boundaries=data.boundaries,
     )
@@ -307,6 +323,29 @@ async def get_agent(
         if tenant:
             effective_tz = tenant.timezone or "UTC"
     out["effective_timezone"] = effective_tz or "UTC"
+
+    virtual_org_result = await db.execute(
+        select(AgentVirtualOrg, VirtualDepartment)
+        .join(VirtualDepartment, VirtualDepartment.id == AgentVirtualOrg.department_id)
+        .where(AgentVirtualOrg.agent_id == agent.id, AgentVirtualOrg.is_primary == True)
+    )
+    virtual_org_row = virtual_org_result.first()
+    if virtual_org_row:
+        assignment, department = virtual_org_row
+        tag_result = await db.execute(
+            select(AgentVirtualTag).where(AgentVirtualTag.agent_id == agent.id).order_by(AgentVirtualTag.tag.asc())
+        )
+        out["virtual_org"] = {
+            "department_id": str(department.id),
+            "department_name": department.name,
+            "department_slug": department.slug,
+            "title": assignment.title,
+            "level": assignment.level,
+            "org_bucket": assignment.org_bucket,
+            "manager_agent_id": str(assignment.manager_agent_id) if assignment.manager_agent_id else None,
+            "is_locked": assignment.is_locked,
+            "tags": [row.tag for row in tag_result.scalars().all()],
+        }
 
     return out
 

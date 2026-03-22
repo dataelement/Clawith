@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from string import Template
+from typing import Any, cast
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -36,8 +37,14 @@ class AgentManager:
     def _template_dir(self) -> Path:
         return Path(settings.AGENT_TEMPLATE_DIR)
 
-    async def initialize_agent_files(self, db: AsyncSession, agent: Agent,
-                                      personality: str = "", boundaries: str = "") -> None:
+    async def initialize_agent_files(
+        self,
+        db: AsyncSession,
+        agent: Agent,
+        template_soul: str | None = None,
+        personality: str = "",
+        boundaries: str = "",
+    ) -> None:
         """Copy template files and customize for this agent."""
         agent_dir = self._agent_dir(agent.id)
         template_dir = self._template_dir()
@@ -68,12 +75,16 @@ class AgentManager:
         creator_name = creator.display_name if creator else "Unknown"
 
         soul_content = f"# Personality\n\nI'm {agent.name}, {agent.role_description or 'a digital assistant'}.\n"
-        if soul_path.exists():
-            template_content = soul_path.read_text()
-            soul_content = template_content.replace("{{agent_name}}", agent.name)
-            soul_content = soul_content.replace("{{role_description}}", agent.role_description or "通用助手")
-            soul_content = soul_content.replace("{{creator_name}}", creator_name)
-            soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        if template_soul:
+            soul_content = template_soul.strip()
+        elif soul_path.exists():
+            soul_content = soul_path.read_text(encoding="utf-8")
+
+        soul_content = soul_content.replace("{name}", agent.name)
+        soul_content = soul_content.replace("{{agent_name}}", agent.name)
+        soul_content = soul_content.replace("{{role_description}}", agent.role_description or "General Assistant")
+        soul_content = soul_content.replace("{{creator_name}}", creator_name)
+        soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
         if personality:
             soul_content += f"\n\n## Personality\n{personality}\n"
@@ -165,7 +176,8 @@ class AgentManager:
         container_port = 18789 + hash(str(agent.id)) % 10000
 
         try:
-            container = self.docker_client.containers.run(
+            restart_policy: Any = {"Name": "unless-stopped"}
+            container = cast(Any, self.docker_client.containers).run(
                 settings.OPENCLAW_IMAGE,
                 detach=True,
                 name=f"clawith-agent-{str(agent.id)[:8]}",
@@ -177,7 +189,7 @@ class AgentManager:
                 environment={
                     "OPENCLAW_GATEWAY_TOKEN": str(uuid.uuid4()),
                 },
-                restart_policy={"Name": "unless-stopped"},
+                restart_policy=restart_policy,
                 labels={
                     "clawith.agent_id": str(agent.id),
                     "clawith.agent_name": agent.name,

@@ -1682,6 +1682,41 @@ function AgentDetailInner() {
                     </div>
                 </div>
 
+                {(agent as any).virtual_org && (
+                    <div className="card" style={{ padding: '14px 16px', marginBottom: '16px' }}>
+                        <div style={{ fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.4px', color: 'var(--text-tertiary)', marginBottom: '10px' }}>
+                            虚拟组织
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+                            <div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>所属部门</div>
+                                <div style={{ fontSize: '13px', fontWeight: 600 }}>{(agent as any).virtual_org.department_name}</div>
+                            </div>
+                            <div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>岗位</div>
+                                <div style={{ fontSize: '13px', fontWeight: 600 }}>{(agent as any).virtual_org.title}</div>
+                            </div>
+                            <div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>层级</div>
+                                <div style={{ fontSize: '13px', fontWeight: 600 }}>{(agent as any).virtual_org.level}</div>
+                            </div>
+                            <div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>组织桶位</div>
+                                <div style={{ fontSize: '13px', fontWeight: 600 }}>{(agent as any).virtual_org.org_bucket === 'core' ? '核心组织' : '专家库'}</div>
+                            </div>
+                        </div>
+                        {!!(agent as any).virtual_org.tags?.length && (
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' }}>
+                                {(agent as any).virtual_org.tags.map((tag: string) => (
+                                    <span key={tag} style={{ padding: '4px 8px', borderRadius: '999px', background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', fontSize: '11px', color: 'var(--text-secondary)' }}>
+                                        {tag}
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {/* Tabs */}
                 <div className="tabs">
                     {TABS.filter(tab => {

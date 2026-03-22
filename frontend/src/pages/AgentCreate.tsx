@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -37,6 +37,13 @@ export default function AgentCreate() {
         skill_ids: [] as string[],
     });
     const [channelValues, setChannelValues] = useState<Record<string, string>>({});
+    const [templateCategory, setTemplateCategory] = useState('all');
+    const [templateSearch, setTemplateSearch] = useState('');
+
+    const formatTemplateCategory = (category: string) =>
+        category === 'all'
+            ? t('common.all', '全部')
+            : category.replace(/-/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
 
     // Fetch LLM models for step 1
     const { data: models = [] } = useQuery({
@@ -49,6 +56,26 @@ export default function AgentCreate() {
         queryKey: ['templates'],
         queryFn: enterpriseApi.templates,
     });
+
+    const templateCategories = useMemo(
+        () => ['all', ...Array.from(new Set((templates as any[]).map((tmpl: any) => String(tmpl.category || 'general')))).sort()],
+        [templates],
+    );
+
+    const filteredTemplates = useMemo(() => {
+        const needle = templateSearch.trim().toLowerCase();
+        return (templates as any[]).filter((tmpl: any) => {
+            if (templateCategory !== 'all' && tmpl.category !== templateCategory) return false;
+            if (!needle) return true;
+            return [tmpl.name, tmpl.description, tmpl.category]
+                .some((value) => String(value || '').toLowerCase().includes(needle));
+        });
+    }, [templateCategory, templateSearch, templates]);
+
+    const selectedTemplate = useMemo(
+        () => (templates as any[]).find((tmpl: any) => tmpl.id === form.template_id),
+        [form.template_id, templates],
+    );
 
     // Fetch global skills for step 3
     const { data: globalSkills = [] } = useQuery({
@@ -514,7 +541,29 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                         {templates.length > 0 && (
                             <div className="form-group">
                                 <label className="form-label">{t('wizard.step1.selectTemplate')}</label>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: '8px', marginBottom: '8px' }}>
+                                    <input
+                                        className="form-input"
+                                        value={templateSearch}
+                                        onChange={(e) => setTemplateSearch(e.target.value)}
+                                        placeholder={t('wizard.step1.searchTemplates', '搜索角色名称、描述或部门')}
+                                    />
+                                    <select
+                                        className="form-input"
+                                        value={templateCategory}
+                                        onChange={(e) => setTemplateCategory(e.target.value)}
+                                    >
+                                        {templateCategories.map((category) => (
+                                            <option key={category} value={category}>{formatTemplateCategory(category)}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                    {filteredTemplates.length} / {templates.length} {t('wizard.step1.templatesAvailable', '个角色模板可选')}
+                                </div>
+
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', maxHeight: '320px', overflowY: 'auto', paddingRight: '4px' }}>
                                     <div
                                         onClick={() => setForm({ ...form, template_id: '' })}
                                         style={{
@@ -526,7 +575,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                         <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)' }}>{t('wizard.step1.custom')}</div>
                                         <div style={{ fontSize: '12px', marginTop: '4px' }}>{t('wizard.step1.custom')}</div>
                                     </div>
-                                    {templates.map((tmpl: any) => (
+                                    {filteredTemplates.map((tmpl: any) => (
                                         <div
                                             key={tmpl.id}
                                             onClick={() => setForm({ ...form, template_id: tmpl.id, role_description: tmpl.description })}
@@ -538,9 +587,32 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                         >
                                             <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)' }}>{tmpl.icon || tmpl.name?.[0] || '·'}</div>
                                             <div style={{ fontSize: '12px', marginTop: '4px' }}>{String(t(`wizard.templates.${tmpl.name}`, tmpl.name))}</div>
+                                            <div style={{ fontSize: '10px', marginTop: '4px', color: 'var(--text-tertiary)' }}>{formatTemplateCategory(String(tmpl.category || 'general'))}</div>
                                         </div>
                                     ))}
                                 </div>
+
+                                {filteredTemplates.length === 0 && (
+                                    <div style={{ marginTop: '8px', padding: '12px', borderRadius: '8px', background: 'var(--bg-elevated)', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                        {t('wizard.step1.noTemplateMatch', '没有匹配的角色模板，请换个关键词试试。')}
+                                    </div>
+                                )}
+
+                                {selectedTemplate && (
+                                    <div style={{ marginTop: '12px', padding: '12px', borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-primary)' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                            <span style={{ fontSize: '16px' }}>{selectedTemplate.icon || '·'}</span>
+                                            <strong style={{ fontSize: '13px' }}>{selectedTemplate.name}</strong>
+                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{formatTemplateCategory(String(selectedTemplate.category || 'general'))}</span>
+                                        </div>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                            {selectedTemplate.description}
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '8px' }}>
+                                            {t('wizard.step1.templateAppliedHint', '创建时会把这个角色的人格提示写入 soul.md，你在下一步填写的 Personality / Boundaries 会追加到模板后面。')}
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* JSON Import */}
                                 <div style={{ marginTop: '8px' }}>
