@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI):
     from app.services.dingtalk_stream import dingtalk_stream_manager
     from app.services.wecom_stream import wecom_stream_manager
     from app.services.discord_gateway import discord_gateway_manager
+    from app.services.workspace_health import run_health_checks
 
     # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
     try:
@@ -98,6 +99,7 @@ async def lifespan(app: FastAPI):
         import app.models.trigger        # noqa
         import app.models.notification   # noqa
         import app.models.gateway_message # noqa
+        import app.models.workspace  # noqa: F401
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Add 'atlassian' to channel_type_enum if it doesn't exist yet (idempotent)
@@ -208,6 +210,7 @@ async def lifespan(app: FastAPI):
             ("dingtalk_stream", dingtalk_stream_manager.start_all()),
             ("wecom_stream", wecom_stream_manager.start_all()),
             ("discord_gw", discord_gateway_manager.start_all()),
+            ("workspace_health", run_health_checks()),
         ]:
             task = asyncio.create_task(coro, name=name)
             task.add_done_callback(_bg_task_error)
@@ -282,6 +285,7 @@ from app.api.notification import router as notification_router
 from app.api.gateway import router as gateway_router
 from app.api.admin import router as admin_router
 from app.api.pages import router as pages_router, public_router as pages_public_router
+from app.api.workspace import public_router as workspace_public_router, router as workspace_router
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(agents_router, prefix=settings.API_PREFIX)
@@ -319,6 +323,8 @@ app.include_router(gateway_router, prefix=settings.API_PREFIX)
 app.include_router(admin_router, prefix=settings.API_PREFIX)
 app.include_router(pages_router, prefix=settings.API_PREFIX)
 app.include_router(pages_public_router)  # Public endpoint for /p/{short_id}, no API prefix
+app.include_router(workspace_public_router)  # Public endpoint, no API prefix
+app.include_router(workspace_router, prefix=settings.API_PREFIX)
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])
