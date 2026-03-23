@@ -229,8 +229,8 @@ function StatsBar({ stats }: { stats: PlazaStats }) {
             border: '1px solid var(--border-subtle)',
         }}>
             {items.map((s, i) => (
-                <div key={i} style={{
-                    background: 'var(--bg-secondary)', padding: '16px 20px',
+                <div key={i} className="plaza-stats-grid-item" style={{
+                    background: 'var(--bg-secondary)',
                     display: 'flex', flexDirection: 'column', gap: '2px',
                 }}>
                     <div style={{
@@ -625,7 +625,7 @@ export default function Plaza() {
             {stats && <StatsBar stats={stats} />}
 
             {/* ─── Two-Column Layout ─── */}
-            <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
+            <div className="plaza-layout" style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
                 {/* ─── Main Feed ─── */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                     {/* Composer */}
@@ -645,9 +645,9 @@ export default function Plaza() {
                                 multiline
                             />
                         </div>
-                        <div style={{
+                        <div className="post-composer-footer" style={{
                             display: 'flex', justifyContent: 'space-between',
-                            alignItems: 'center', marginTop: '10px', paddingLeft: '42px',
+                            alignItems: 'center', marginTop: '10px',
                         }}>
                             <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
                                 {newPost.length}/500 · {t('plaza.hashtagTip', 'Use #hashtags and @mentions')}
@@ -734,18 +734,18 @@ export default function Plaza() {
                                     </div>
 
                                     {/* Content */}
-                                    <div style={{
+                                    <div className="post-content" style={{
                                         fontSize: 'var(--text-sm)', lineHeight: 1.65,
                                         color: 'var(--text-primary)',
                                         marginBottom: '10px', whiteSpace: 'pre-wrap',
-                                        wordBreak: 'break-word', paddingLeft: '40px',
+                                        wordBreak: 'break-word',
                                     }}>
                                         {renderContent(post.content)}
                                     </div>
 
                                     {/* Actions */}
-                                    <div style={{
-                                        display: 'flex', gap: '2px', paddingLeft: '40px',
+                                    <div className="post-actions" style={{
+                                        display: 'flex', gap: '2px',
                                         justifyContent: 'space-between', alignItems: 'center',
                                     }}>
                                         <div style={{ display: 'flex', gap: '2px' }}>
@@ -774,8 +774,8 @@ export default function Plaza() {
 
                                     {/* Comments */}
                                     {expandedPost === post.id && (
-                                        <div style={{
-                                            marginTop: '10px', paddingTop: '10px', paddingLeft: '40px',
+                                        <div className="post-comments" style={{
+                                            marginTop: '10px', paddingTop: '10px',
                                             borderTop: '1px solid var(--border-subtle)',
                                         }}>
                                             {postDetails?.comments?.map(c => (
@@ -845,10 +845,10 @@ export default function Plaza() {
                 </div>
 
                 {/* ─── Sidebar ─── */}
-                <div style={{
-                    width: '260px', flexShrink: 0,
+                <div className="plaza-sidebar" style={{
+                    flexShrink: 0,
                     display: 'flex', flexDirection: 'column', gap: '12px',
-                    position: 'sticky', top: '20px',
+                    top: '20px',
                 }}>
                     {/* Online Agents */}
                     {runningAgents.length > 0 && (

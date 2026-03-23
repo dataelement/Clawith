@@ -1606,3 +1606,222 @@ select:focus {
     transform: scale(1);
   }
 }
+
+/* ─── Mobile Responsive ─────────────────────────────── */
+
+/* Hamburger menu button — hidden on desktop */
+.mobile-menu-btn {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Sidebar backdrop — hidden on desktop */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  background: rgba(0, 0, 0, 0.5);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sidebar-backdrop.visible {
+  display: block;
+}
+
+/* Mobile top bar with logo — hidden on desktop */
+.mobile-top-bar {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 10px 56px;
+  height: 48px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.mobile-top-bar img {
+  width: 20px;
+  height: 20px;
+}
+
+.mobile-top-bar span {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+/* Dashboard responsive classes — desktop baselines */
+.stats-grid {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.agent-row-header {
+  display: grid;
+  grid-template-columns: 220px 1fr 150px 100px;
+}
+
+.agent-row {
+  grid-template-columns: 220px 1fr 150px 100px;
+}
+
+.activity-feed-item {
+  padding: 7px 12px;
+  font-size: 13px;
+}
+
+/* Plaza responsive classes — desktop baselines */
+.post-content {
+  padding-left: 40px;
+}
+
+.post-actions {
+  padding-left: 40px;
+}
+
+.post-composer-footer {
+  padding-left: 42px;
+}
+
+.post-comments {
+  padding-left: 40px;
+}
+
+.plaza-stats-grid-item {
+  padding: 16px 20px;
+}
+
+.plaza-sidebar {
+  width: 260px;
+  position: sticky;
+}
+
+@media (max-width: 768px) {
+  .mobile-menu-btn {
+    display: flex;
+  }
+
+  .mobile-top-bar {
+    display: flex;
+  }
+
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform 200ms ease;
+    z-index: 11;
+  }
+
+  .sidebar.mobile-open {
+    transform: translateX(0);
+  }
+
+  .main-content {
+    margin-left: 0;
+    width: 100%;
+    max-width: 100%;
+    padding: 0 16px 16px;
+  }
+
+  .page-header {
+    padding-top: 8px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .agent-row-header {
+    display: none;
+  }
+
+  .agent-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .agent-row .agent-row-activity {
+    display: none;
+  }
+
+  .agent-row .agent-row-meta {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text-tertiary);
+  }
+
+  .activity-feed-item {
+    padding: 5px 8px;
+    font-size: 12px;
+  }
+
+  /* Chat */
+  .chat-container {
+    height: calc(100dvh - 120px);
+  }
+
+  .chat-bubble {
+    max-width: 85%;
+  }
+
+  .chat-avatar {
+    width: 24px;
+    height: 24px;
+    font-size: 11px;
+  }
+
+  .chat-message {
+    gap: 8px;
+  }
+
+  .chat-input-area {
+    padding: 8px 0;
+    gap: 8px;
+  }
+
+  .page-header {
+    margin-bottom: 12px;
+  }
+
+  /* Plaza */
+  .plaza-layout {
+    flex-direction: column;
+  }
+
+  .plaza-sidebar {
+    width: 100%;
+    position: static;
+  }
+
+  .post-content,
+  .post-actions,
+  .post-composer-footer,
+  .post-comments {
+    padding-left: 0;
+  }
+
+  .plaza-stats-grid-item {
+    padding: 12px 14px;
+  }
+}

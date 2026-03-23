@@ -274,6 +274,21 @@ export default function Layout() {
         });
     };
 
+    // Mobile sidebar
+    const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+    useEffect(() => {
+        const mq = window.matchMedia('(max-width: 768px)');
+        const handler = (e: MediaQueryListEvent | MediaQueryList) => {
+            if (!e.matches) setIsMobileMenuOpen(false);
+        };
+        handler(mq);
+        mq.addEventListener('change', handler);
+        return () => mq.removeEventListener('change', handler);
+    }, []);
+
+    const closeMobileMenu = () => setIsMobileMenuOpen(false);
+
     // Use user's own tenant_id directly (no switching)
     const currentTenant = user?.tenant_id || '';
 
@@ -301,7 +316,24 @@ export default function Layout() {
 
     return (
         <div className="app-layout">
-            <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
+            {/* Mobile hamburger */}
+            <button
+                className="mobile-menu-btn"
+                onClick={() => setIsMobileMenuOpen(v => !v)}
+                aria-label="Menu"
+            >
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                    <path d="M3 5h14M3 10h14M3 15h14" />
+                </svg>
+            </button>
+
+            {/* Mobile backdrop */}
+            <div
+                className={`sidebar-backdrop${isMobileMenuOpen ? ' visible' : ''}`}
+                onClick={() => setIsMobileMenuOpen(false)}
+            />
+
+            <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}${isMobileMenuOpen ? ' mobile-open' : ''}`}>
                 <div className="sidebar-top">
                     <div className="sidebar-logo">
                         <img src={theme === 'dark' ? '/logo-white.png' : '/logo-black.png'} alt="" style={{ width: 22, height: 22 }} />
@@ -311,11 +343,11 @@ export default function Layout() {
 
 
                     <div className="sidebar-section">
-                        <NavLink to="/plaza" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                        <NavLink to="/plaza" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} onClick={closeMobileMenu}>
                             <span className="sidebar-item-icon" style={{ display: 'flex', fontSize: '14px' }}>🏛️</span>
                             <span className="sidebar-item-text">{t('nav.plaza', 'Plaza')}</span>
                         </NavLink>
-                        <NavLink to="/dashboard" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                        <NavLink to="/dashboard" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} onClick={closeMobileMenu}>
                             <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.home}</span>
                             <span className="sidebar-item-text">{t('nav.dashboard')}</span>
                         </NavLink>
@@ -370,6 +402,7 @@ export default function Layout() {
                                     className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
                                     title={agent.name}
                                     style={{ paddingRight: '28px' }}
+                                    onClick={closeMobileMenu}
                                 >
                                     <span className="sidebar-item-icon" style={{ position: 'relative' }}>
                                         <span className={`agent-avatar${agent.agent_type === 'openclaw' ? ' openclaw' : ''}`}>{avatarChar}</span>
@@ -419,19 +452,19 @@ export default function Layout() {
                 <div className="sidebar-bottom">
                     <div className="sidebar-section" style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px', marginBottom: 0 }}>
                         {user && (
-                            <NavLink to="/agents/new" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.newAgent')}>
+                            <NavLink to="/agents/new" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.newAgent')} onClick={closeMobileMenu}>
                                 <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.plus}</span>
                                 <span className="sidebar-item-text">{t('nav.newAgent')}</span>
                             </NavLink>
                         )}
                         {user && ['platform_admin', 'org_admin'].includes(user.role) && (
-                            <NavLink to="/enterprise" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.enterprise')}>
+                            <NavLink to="/enterprise" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.enterprise')} onClick={closeMobileMenu}>
                                 <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.settings}</span>
                                 <span className="sidebar-item-text">{t('nav.enterprise')}</span>
                             </NavLink>
                         )}
                         {user && user.role === 'platform_admin' && (
-                            <NavLink to="/admin/platform-settings" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.platformSettings', 'Platform Settings')}>
+                            <NavLink to="/admin/platform-settings" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.platformSettings', 'Platform Settings')} onClick={closeMobileMenu}>
                                 <span className="sidebar-item-icon" style={{ display: 'flex' }}>
                                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                                         <circle cx="8" cy="8" r="2.5" /><path d="M13.5 8a5.5 5.5 0 01-.3 1.8l1.3.8-.8 1.4-1.3-.8a5.5 5.5 0 01-1.5 1l.1 1.5H9.2l.1-1.5a5.5 5.5 0 01-1.5-1l-1.3.8-.8-1.4 1.3-.8A5.5 5.5 0 016.7 8a5.5 5.5 0 01.3-1.8l-1.3-.8.8-1.4 1.3.8a5.5 5.5 0 011.5-1L9.2 2.3h1.6l-.1 1.5a5.5 5.5 0 011.5 1l1.3-.8.8 1.4-1.3.8a5.5 5.5 0 01.5 1.8z" />
@@ -490,7 +523,7 @@ export default function Layout() {
                                     padding: '4px 6px', borderRadius: '6px',
                                     transition: 'background 0.15s',
                                 }}
-                                onClick={() => setShowAccountSettings(true)}
+                                onClick={() => { closeMobileMenu(); setShowAccountSettings(true); }}
                                 onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
                                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                                 title={isChinese ? '账户设置' : 'Account Settings'}
@@ -631,6 +664,11 @@ export default function Layout() {
             )}
 
             <main className="main-content">
+                {/* Mobile top bar */}
+                <div className="mobile-top-bar">
+                    <img src={theme === 'dark' ? '/logo-white.png' : '/logo-black.png'} alt="" />
+                    <span>Clawith</span>
+                </div>
                 <Outlet />
             </main>
 
