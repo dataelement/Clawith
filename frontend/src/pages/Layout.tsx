@@ -276,12 +276,10 @@ export default function Layout() {
 
     // Mobile sidebar
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-    const [isMobile, setIsMobile] = useState(false);
 
     useEffect(() => {
         const mq = window.matchMedia('(max-width: 768px)');
         const handler = (e: MediaQueryListEvent | MediaQueryList) => {
-            setIsMobile(e.matches);
             if (!e.matches) setIsMobileMenuOpen(false);
         };
         handler(mq);
@@ -289,9 +287,7 @@ export default function Layout() {
         return () => mq.removeEventListener('change', handler);
     }, []);
 
-    const closeMobileMenu = () => {
-        if (isMobile) setIsMobileMenuOpen(false);
-    };
+    const closeMobileMenu = () => setIsMobileMenuOpen(false);
 
     // Use user's own tenant_id directly (no switching)
     const currentTenant = user?.tenant_id || '';
@@ -527,7 +523,7 @@ export default function Layout() {
                                     padding: '4px 6px', borderRadius: '6px',
                                     transition: 'background 0.15s',
                                 }}
-                                onClick={() => setShowAccountSettings(true)}
+                                onClick={() => { closeMobileMenu(); setShowAccountSettings(true); }}
                                 onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
                                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                                 title={isChinese ? '账户设置' : 'Account Settings'}
