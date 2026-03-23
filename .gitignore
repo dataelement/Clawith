@@ -38,3 +38,4 @@ cloudfront-config.json
 
 # Unnecessary extra requirements file (deps in pyproject.toml)
 backend/requirements.txt
+.worktrees/
