@@ -524,12 +524,12 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                         }}
                                     >
                                         <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)' }}>{t('wizard.step1.custom')}</div>
-                                        <div style={{ fontSize: '12px', marginTop: '4px' }}>{t('wizard.step1.custom')}</div>
+                                        <div style={{ fontSize: '12px', marginTop: '4px' }}>{t('wizard.step1.customRole')}</div>
                                     </div>
                                     {templates.map((tmpl: any) => (
                                         <div
                                             key={tmpl.id}
-                                            onClick={() => setForm({ ...form, template_id: tmpl.id, role_description: tmpl.description })}
+                                            onClick={() => setForm({ ...form, template_id: tmpl.id, role_description: String(t(`wizard.templates.${tmpl.name} Description`, tmpl.description)) })}
                                             style={{
                                                 padding: '12px', borderRadius: '8px', cursor: 'pointer', textAlign: 'center',
                                                 border: `1px solid ${form.template_id === tmpl.id ? 'var(--accent-primary)' : 'var(--border-default)'}`,

@@ -179,7 +179,7 @@
       "settings": "设置"
     },
     "fields": {
-      "name": "名称",
+      "name": "🏷️ 名称",
       "role": "👤 角色",
       "avatar": "头像",
       "personality": "人格设定",
@@ -218,6 +218,7 @@
       "searchMembers": "搜索组织架构成员...",
       "noRelationships": "暂无关系",
       "addRelationship": "添加关系",
+      "selectAgent": "— 选择数字员工 —",
       "supervisor": "上级",
       "colleague": "同事",
       "subordinate": "下级",
@@ -481,7 +482,11 @@
         "search": "搜索",
         "custom": "自定义",
         "general": "通用",
-        "email": "邮件"
+        "email": "邮件",
+        "aware": "感知与触发",
+        "social": "社交",
+        "code": "代码与执行",
+        "discovery": "发现"
       },
       "upload": {
         "success": "上传成功",
@@ -491,7 +496,10 @@
     },
     "tools": {
       "platformTools": "平台预置工具",
-      "agentInstalled": "数字员工自行安装的工具"
+      "agentInstalled": "数字员工自行安装的工具",
+      "noInstalled": "暂无数字员工安装的工具",
+      "config": "配置",
+      "configTitle": "配置数字员工专属设置"
     },
     "toolCategories": {
       "file": "文件操作",
@@ -500,7 +508,12 @@
       "search": "搜索",
       "custom": "自定义",
       "general": "通用",
-      "email": "邮件"
+      "email": "邮件",
+      "aware": "感知与触发",
+      "social": "社交",
+      "code": "代码与执行",
+      "discovery": "发现",
+      "atlassian": "Atlassian"
     },
     "upload": {
       "success": "上传成功",
@@ -522,24 +535,29 @@
     "nameHint": "给你的数字员工起个名字",
     "roleHint": "描述它的角色定位",
     "step1": {
-      "title": "基础信息与模型选择",
-      "selectTemplate": "选择模板（可选）",
+      "title": "📋 基础信息与模型选择",
+      "selectTemplate": "🎨 选择模板（可选）",
       "custom": "自定义",
-      "primaryModel": "主模型",
+      "customRole": "🎭 自定义角色",
+      "primaryModel": "🤖 主模型",
       "noModels": "暂无可用模型，请先在",
       "enterpriseSettings": "企业设置",
       "addModels": "中添加 LLM 模型",
-      "dailyTokenLimit": "每日 Token 上限",
-      "monthlyTokenLimit": "每月 Token 上限",
+      "dailyTokenLimit": "📅 每日 Token 上限",
+      "monthlyTokenLimit": "📈 每月 Token 上限",
       "unlimited": "不限制",
       "namePlaceholder": "例：小智",
       "importFromJson": "从 JSON 导入"
     },
     "templates": {
-      "Project Manager": "项目经理",
-      "Designer": "设计师",
-      "Product Intern": "产品实习生",
-      "Market Researcher": "市场研究员"
+      "Project Manager": "📋 项目经理",
+      "Project Manager Description": "管理项目时间线、任务分配、跨团队协调和进度报告",
+      "Designer": "🎨 设计师",
+      "Designer Description": "创建视觉设计、用户界面和品牌元素",
+      "Product Intern": "🚀 产品实习生",
+      "Product Intern Description": "协助产品开发、市场调研和用户反馈收集",
+      "Market Researcher": "📊 市场研究员",
+      "Market Researcher Description": "分析市场趋势、竞争对手和消费者行为"
     },
     "step2": {
       "title": "人格与边界",
@@ -671,6 +689,14 @@
       "maxWebhookRate": "最大 Webhook 速率（/分钟）",
       "maxWebhookRateDesc": "全公司上限：每个数字员工每分钟的最大 Webhook 点击次数"
     },
+    "broadcast": {
+      "title": "广播通知",
+      "description": "向公司内所有用户和数字员工发送通知。",
+      "titlePlaceholder": "通知标题",
+      "bodyPlaceholder": "可选详情...",
+      "send": "发送广播",
+      "sent": "已发送给 {{users}} 位用户和 {{agents}} 位数字员工"
+    },
     "tabs": {
       "llm": "模型池",
       "tools": "工具",
@@ -735,7 +761,11 @@
       "testing": "测试中...",
       "testSuccess": "OK ({{latency}}ms)",
       "testFailed": "测试失败: {{error}}\n\n延迟: {{latency}}ms",
-      "testError": "测试错误: {{message}}"
+      "testError": "测试错误: {{message}}",
+      "editModel": "编辑模型",
+      "temperature": "模型温度",
+      "temperaturePlaceholder": "例如 0.7 或 1.0（留空使用默认值）",
+      "temperatureDesc": "留空使用提供商默认值。o1/o3 推理模型通常需要 1.0"
     },
     "tools": {
       "title": "全局工具管理",
@@ -799,7 +829,18 @@
       "githubUrlPlaceholder": "https://github.com/owner/repo/tree/main/skills/my-skill",
       "preview": "预览",
       "loading": "加载中...",
-      "edit": "编辑"
+      "edit": "编辑",
+      "recentActivity": "最近活动",
+      "viewAll": "查看全部 →",
+      "upload": "上传",
+      "importFromGithubUrl": "从 GitHub URL 导入",
+      "pasteGithubUrlSkill": "粘贴指向技能目录的 GitHub URL（必须包含 SKILL.md）。",
+      "cancel": "取消",
+      "import": "导入",
+      "searchClawhubToFindSkills": "搜索 ClawHub 查找技能",
+      "importPreset": "从公司导入",
+      "selectPresetSkill": "选择一个公司技能导入到这个数字员工。所有技能文件将被复制到数字员工的技能文件夹。",
+      "default": "默认"
     },
     "org": {
       "feishuSync": "飞书通讯录同步配置",
@@ -900,7 +941,8 @@
       "slack": "Slack",
       "teams": "Microsoft Teams",
       "dingtalk": "钉钉",
-      "wecom": "企业微信"
+      "wecom": "企业微信",
+      "atlassian": "Atlassian"
     }
   },
   "admin": {
@@ -935,7 +977,45 @@
     "createdAt": "创建时间",
     "showing": "{{start}}-{{end}} / {{total}}",
     "prev": "上一页",
-    "next": "下一页"
+    "next": "下一页",
+    "builtIn": "内置",
+    "default": "默认",
+    "mcp": "MCP"
+  },
+  "admin": {
+    "platformSettings": "平台设置",
+    "platformSettingsDesc": "管理平台级设置和公司租户。",
+    "tab": {
+      "platform": "平台",
+      "companies": "公司"
+    },
+    "allowSelfCreate": "允许用户自行创建公司",
+    "allowSelfCreateDesc": "关闭后，仅平台管理员可以创建公司。",
+    "publicUrl": {
+      "title": "公共 URL",
+      "desc": "用于 webhook 回调（Slack、飞书、Discord 等）和发布页面链接的外部 URL。包含协议（例如 https://example.com）。"
+    },
+    "company": "公司",
+    "users": "用户数",
+    "agents": "数字员工",
+    "tokens": "Token 用量",
+    "createdAt": "创建时间",
+    "status": "状态",
+    "active": "正常",
+    "disabled": "已停用",
+    "disable": "停用",
+    "enable": "启用",
+    "createCompany": "创建公司",
+    "companyNamePlaceholder": "公司名称",
+    "companyCreated": "公司创建成功",
+    "companyCreatedDesc": "已成功创建。",
+    "inviteCodeLabel": "管理员邀请码",
+    "inviteCodeHowTo": "如何使用此邀请码：",
+    "inviteCodeExplain": "将此邀请码发送给负责管理该公司的人员。他们需要在平台上注册一个新账号，然后输入此邀请码加入公司。首位使用此邀请码的用户将自动成为该公司的管理员。此邀请码仅限一次使用。",
+    "copyCode": "复制邀请码",
+    "copied": "已复制",
+    "confirmDisable": "停用此公司？所有用户和数字员工将被暂停。",
+    "cannotDisableDefault": "无法停用默认公司 -- 平台管理员将无法登录"
   },
   "companySetup": {
     "title": "设置你的公司",

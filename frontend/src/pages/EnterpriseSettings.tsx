@@ -282,9 +282,9 @@ function ThemeColorPicker() {
                     style={{ width: '120px', fontSize: '13px', fontFamily: 'var(--font-mono)' }}
                     onKeyDown={e => e.key === 'Enter' && handleCustom()}
                 />
-                <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={handleCustom}>Apply</button>
+                <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={handleCustom}>{t('common.apply', 'Apply')}</button>
                 {currentColor && (
-                    <button className="btn btn-ghost" style={{ fontSize: '12px', color: 'var(--text-tertiary)' }} onClick={handleReset}>Reset</button>
+                    <button className="btn btn-ghost" style={{ fontSize: '12px', color: 'var(--text-tertiary)' }} onClick={handleReset}>{t('common.reset', 'Reset')}</button>
                 )}
                 {currentColor && (
                     <div style={{ width: '20px', height: '20px', borderRadius: '4px', background: currentColor, border: '1px solid var(--border-default)' }} />
@@ -1370,7 +1370,7 @@ export default function EnterpriseSettings() {
                                     {editingModelId === m.id ? (
                                         /* Inline edit form */
                                         <div className="card" style={{ border: '1px solid var(--accent-primary)' }}>
-                                            <h3 style={{ marginBottom: '16px' }}>Edit Model</h3>
+                                            <h3 style={{ marginBottom: '16px' }}>{t('enterprise.llm.editModel', 'Edit Model')}</h3>
                                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                                                 <div className="form-group">
                                                     <label className="form-label">{t('enterprise.llm.provider')}</label>
@@ -1937,9 +1937,9 @@ export default function EnterpriseSettings() {
                                                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                             <span style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</span>
                                                             <span style={{ fontSize: '10px', background: tool.type === 'mcp' ? 'var(--primary)' : 'var(--bg-tertiary)', color: tool.type === 'mcp' ? '#fff' : 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>
-                                                                {tool.type === 'mcp' ? 'MCP' : 'Built-in'}
+                                                                {tool.type === 'mcp' ? t('common.mcp', 'MCP') : t('common.builtIn', 'Built-in')}
                                                             </span>
-                                                            {tool.is_default && <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.15)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>Default</span>}
+                                                            {tool.is_default && <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.15)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>{t('common.default', 'Default')}</span>}
                                                         </div>
                                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                                             {tool.description?.slice(0, 60)}

@@ -168,7 +168,7 @@
       "settings": "Settings"
     },
     "fields": {
-      "name": "Name",
+      "name": "🏷️ Name",
       "role": "👤 Role",
       "avatar": "Avatar",
       "personality": "Personality",
@@ -176,7 +176,7 @@
       "lastActive": "Last Active",
       "tasksInProgress": "In Progress",
       "supervisions": "Supervisions",
-      "createdBy": "👨‍💼 Created by"
+      "createdBy": "Created By"
     },
     "profile": {
       "title": "📋 Agent Profile",
@@ -200,13 +200,14 @@
     },
     "detail": {
       "loading": "Loading...",
-      "notFound": "Digital employee not found",
+      "notFound": "Agent not found",
       "backToDashboard": "Back to Dashboard",
       "humanRelationships": "Human Relationships",
       "agentRelationships": "Agent Relationships",
-      "searchMembers": "Search org members...",
-      "noRelationships": "No relationships",
+      "searchMembers": "Search organization members...",
+      "noRelationships": "No relationships yet",
       "addRelationship": "Add Relationship",
+      "selectAgent": "— Select Agent —",
       "supervisor": "Supervisor",
       "colleague": "Colleague",
       "subordinate": "Subordinate",
@@ -440,7 +441,10 @@
     },
     "tools": {
       "platformTools": "Platform Tools",
-      "agentInstalled": "Agent-Installed Tools"
+      "agentInstalled": "Agent-Installed Tools",
+      "noInstalled": "No agent-installed tools yet",
+      "config": "Config",
+      "configTitle": "Configure per-agent settings"
     },
     "toolCategories": {
       "file": "File Operations",
@@ -449,7 +453,12 @@
       "search": "Search",
       "custom": "Custom",
       "general": "General",
-      "email": "Email"
+      "email": "Email",
+      "aware": "Aware & Triggers",
+      "social": "Social",
+      "code": "Code & Execution",
+      "discovery": "Discovery",
+      "atlassian": "Atlassian"
     },
     "upload": {
       "success": "Upload successful",
@@ -471,18 +480,29 @@
     "nameHint": "Name your digital employee",
     "roleHint": "Describe its role",
     "step1": {
-      "title": "Basic Info & Model Selection",
-      "selectTemplate": "Select template (optional)",
+      "title": "📋 Basic Info & Model Selection",
+      "selectTemplate": "🎨 Select template (optional)",
       "custom": "Custom",
-      "primaryModel": "Primary Model",
+      "customRole": "🎭 Custom Role",
+      "primaryModel": "🤖 Primary Model",
       "noModels": "No available models. Please add LLM models in",
       "enterpriseSettings": "Company Settings",
       "addModels": "first",
-      "dailyTokenLimit": "Daily Token Limit",
-      "monthlyTokenLimit": "Monthly Token Limit",
+      "dailyTokenLimit": "📅 Daily Token Limit",
+      "monthlyTokenLimit": "📈 Monthly Token Limit",
       "unlimited": "Unlimited",
       "namePlaceholder": "e.g. Smart Assistant",
       "importFromJson": "Import from JSON"
+    },
+    "templates": {
+      "Project Manager": "Project Manager",
+      "Project Manager Description": "Manages project timelines, task delegation, cross-team coordination, and progress reporting",
+      "Designer": "Designer",
+      "Designer Description": "Creates visual designs, user interfaces, and brand elements",
+      "Product Intern": "Product Intern",
+      "Product Intern Description": "Assists with product development, market research, and user feedback collection",
+      "Market Researcher": "Market Researcher",
+      "Market Researcher Description": "Analyzes market trends, competitors, and consumer behavior"
     },
     "step2": {
       "title": "Personality & Boundaries",
@@ -634,6 +654,14 @@
       "maxWebhookRate": "Max Webhook Rate (/min)",
       "maxWebhookRateDesc": "Company-wide ceiling: max webhook hits per minute per agent"
     },
+    "broadcast": {
+      "title": "Broadcast Notification",
+      "description": "Send a notification to all users and agents in this company.",
+      "titlePlaceholder": "Notification title",
+      "bodyPlaceholder": "Optional details...",
+      "send": "Send Broadcast",
+      "sent": "Sent to {{users}} users and {{agents}} agents"
+    },
     "stats": {
       "users": "{{count}} users",
       "runningAgents": "{{running}}/{{total}} running"
@@ -665,9 +693,13 @@
       "testing": "Testing...",
       "testSuccess": "OK ({{latency}}ms)",
       "testFailed": "Test failed: {{error}}\n\nLatency: {{latency}}ms",
-      "testError": "Test error: {{message}}"
-    },
-    "tools": {
+      "testError": "Test error: {{message}}",
+      "editModel": "Edit Model",
+      "temperature": "Temperature",
+      "temperaturePlaceholder": "e.g. 0.7 or 1.0 (Leave empty for default)",
+      "temperatureDesc": "Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0"
+  },
+  "tools": {
       "title": "Global Tool Management",
       "testConnection": "Test Connection",
       "testing": "Testing...",
@@ -729,7 +761,18 @@
       "githubUrlPlaceholder": "https://github.com/owner/repo/tree/main/skills/my-skill",
       "preview": "Preview",
       "loading": "Loading...",
-      "edit": "Edit"
+      "edit": "Edit",
+      "recentActivity": "Recent Activity",
+      "viewAll": "View All →",
+      "upload": "Upload",
+      "importFromGithubUrl": "Import from GitHub URL",
+      "pasteGithubUrlSkill": "Paste a GitHub URL pointing to a skill directory (must contain SKILL.md).",
+      "cancel": "Cancel",
+      "import": "Import",
+      "searchClawhubToFindSkills": "Search ClawHub to find skills",
+      "importPreset": "Import from Company",
+      "selectPresetSkill": "Select a company skill to import into this agent. All skill files will be copied to the agent's skills folder.",
+      "default": "Default"
     },
     "org": {
       "feishuSync": "Feishu Directory Sync",
@@ -815,8 +858,47 @@
       "slack": "Slack",
       "teams": "Microsoft Teams",
       "dingtalk": "DingTalk",
-      "wecom": "WeCom"
-    }
+      "wecom": "WeCom",
+      "atlassian": "Atlassian"
+    },
+    "builtIn": "Built-in",
+    "default": "Default",
+    "mcp": "MCP"
+  },
+  "admin": {
+    "platformSettings": "Platform Settings",
+    "platformSettingsDesc": "Manage platform-wide settings and company tenants.",
+    "tab": {
+      "platform": "Platform",
+      "companies": "Companies"
+    },
+    "allowSelfCreate": "Allow users to create their own companies",
+    "allowSelfCreateDesc": "When disabled, only platform admins can create companies.",
+    "publicUrl": {
+      "title": "Public URL",
+      "desc": "The external URL used for webhook callbacks (Slack, Feishu, Discord, etc.) and published page links. Include the protocol (e.g. https://example.com)."
+    },
+    "company": "Company",
+    "users": "Users",
+    "agents": "Agents",
+    "tokens": "Token Usage",
+    "createdAt": "Created",
+    "status": "Status",
+    "active": "Active",
+    "disabled": "Disabled",
+    "disable": "Disable",
+    "enable": "Enable",
+    "createCompany": "Create Company",
+    "companyNamePlaceholder": "Company name",
+    "companyCreated": "Company Created",
+    "companyCreatedDesc": "has been created successfully.",
+    "inviteCodeLabel": "Admin Invitation Code",
+    "inviteCodeHowTo": "How to use this code:",
+    "inviteCodeExplain": "Send this code to the person who will manage this company. They should register a new account on the platform, then enter this code to join. The first person to use it will automatically become the Org Admin of this company. This code is single-use.",
+    "copyCode": "Copy Code",
+    "copied": "Copied",
+    "confirmDisable": "Disable this company? All users and agents will be paused.",
+    "cannotDisableDefault": "Cannot disable the default company — platform admin would be locked out"
   },
   "openclaw": {
     "created": "OpenClaw Agent Created",
