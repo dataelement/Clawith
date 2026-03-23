@@ -34,6 +34,7 @@ const getCategoryLabels = (t: any): Record<string, string> => ({
     discovery: t('agent.toolCategories.discovery', 'Discovery'),
     email: t('agent.toolCategories.email', 'Email'),
     feishu: t('agent.toolCategories.feishu', 'Feishu / Lark'),
+    atlassian: t('agent.toolCategories.atlassian', 'Atlassian'),
     custom: t('agent.toolCategories.custom'),
     general: t('agent.toolCategories.general'),
 });
@@ -138,7 +139,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                 <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
                                             )}
                                             {tool.type === 'builtin' && (
-                                                <span style={{ fontSize: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>Built-in</span>
+                                                <span style={{ fontSize: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>{t('common.builtIn', 'Built-in')}</span>
                                             )}
                                             {hasAgentOverride && (
                                                 <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>Configured</span>
@@ -155,8 +156,8 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                         <button
                                             onClick={() => openConfig(tool)}
                                             style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                                            title="Configure per-agent settings"
-                                        >⚙️ Config</button>
+                                            title={t('agent.tools.configTitle', 'Configure per-agent settings')}
+                                        >⚙️ {t('agent.tools.config', 'Config')}</button>
                                     )}
                                     {canManage && tool.source === 'user_installed' && tool.agent_tool_id && (
                                         <button
@@ -647,7 +648,7 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                     <div style={{ border: '1px solid rgba(16,185,129,0.5)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}>
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                             <select className="input" value={selectedAgentId} onChange={e => setSelectedAgentId(e.target.value)} style={{ flex: 1, minWidth: 0, fontSize: '12px' }}>
-                                <option value="">— Select Agent —</option>
+                                <option value="">{t('agent.detail.selectAgent', '— Select Agent —')}</option>
                                 {availableAgents.map((a: any) => <option key={a.id} value={a.id}>{a.name} — {a.role_description || 'Agent'}</option>)}
                             </select>
                             <select className="input" value={agentRelation} onChange={e => setAgentRelation(e.target.value)} style={{ width: '150px', flexShrink: 0, fontSize: '12px' }}>
@@ -2011,8 +2012,8 @@ function AgentDetailInner() {
                             {activityLogs && activityLogs.length > 0 && (
                                 <div className="card">
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                        <h3 style={{ fontSize: '14px', fontWeight: 600 }}>📊 Recent Activity</h3>
-                                        <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setActiveTab('activityLog')}>View All →</button>
+                                        <h3 style={{ fontSize: '14px', fontWeight: 600 }}>📊 {t('enterprise.tools.recentActivity')}</h3>
+                                        <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setActiveTab('activityLog')}>{t('enterprise.tools.viewAll')}</button>
                                     </div>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                         {activityLogs.slice(0, 5).map((log: any, i: number) => (
@@ -2792,21 +2793,21 @@ function AgentDetailInner() {
                                                 style={{ fontSize: '13px' }}
                                                 onClick={() => { setShowAgentUrlImport(true); setAgentUrlInput(''); }}
                                             >
-                                                Import from URL
+                                                {t('enterprise.tools.importFromUrl')}
                                             </button>
                                             <button
                                                 className="btn btn-secondary"
                                                 style={{ fontSize: '13px' }}
                                                 onClick={() => { setShowAgentClawhub(true); setAgentClawhubQuery(''); setAgentClawhubResults([]); }}
                                             >
-                                                Browse ClawHub
+                                                {t('enterprise.tools.browseClawhub')}
                                             </button>
                                             <button
                                                 className="btn btn-primary"
                                                 style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
                                                 onClick={() => setShowImportSkillModal(true)}
                                             >
-                                                Import from Presets
+                                                {t('enterprise.tools.importPreset')}
                                             </button>
                                         </div>
                                     </div>
@@ -2822,16 +2823,16 @@ function AgentDetailInner() {
                                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowAgentClawhub(false)}>
                                         <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                                <h3>Browse ClawHub</h3>
+                                                <h3>{t('enterprise.tools.browseClawhub')}</h3>
                                                 <button onClick={() => setShowAgentClawhub(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>x</button>
                                             </div>
                                             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 12px' }}>
-                                                Search and install skills from ClawHub directly into this agent's workspace.
+                                                {t('enterprise.tools.searchForSkills')}
                                             </p>
                                             <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
                                                 <input
                                                     className="input"
-                                                    placeholder="Search skills..."
+                                                    placeholder={t('enterprise.tools.searchSkills')}
                                                     value={agentClawhubQuery}
                                                     onChange={e => setAgentClawhubQuery(e.target.value)}
                                                     onKeyDown={e => {
@@ -2851,12 +2852,12 @@ function AgentDetailInner() {
                                                         skillApi.clawhub.search(agentClawhubQuery).then(r => { setAgentClawhubResults(r); setAgentClawhubSearching(false); }).catch(() => setAgentClawhubSearching(false));
                                                     }}
                                                 >
-                                                    {agentClawhubSearching ? 'Searching...' : 'Search'}
+                                                    {agentClawhubSearching ? t('enterprise.tools.searching') : t('enterprise.tools.search')}
                                                 </button>
                                             </div>
                                             <div style={{ flex: 1, overflowY: 'auto' }}>
                                                 {agentClawhubResults.length === 0 && !agentClawhubSearching && (
-                                                    <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>Search ClawHub to find skills</div>
+                                                    <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('enterprise.tools.searchClawhubToFindSkills')}</div>
                                                 )}
                                                 {agentClawhubResults.map((r: any) => (
                                                     <div key={r.slug} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: '8px', marginBottom: '6px', border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
@@ -2895,21 +2896,21 @@ function AgentDetailInner() {
                                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowAgentUrlImport(false)}>
                                         <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '500px', width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                                <h3>Import from GitHub URL</h3>
+                                                <h3>{t('enterprise.tools.importFromGithubUrl')}</h3>
                                                 <button onClick={() => setShowAgentUrlImport(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>x</button>
                                             </div>
                                             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 12px' }}>
-                                                Paste a GitHub URL pointing to a skill directory (must contain SKILL.md).
+                                                {t('enterprise.tools.pasteGithubUrlSkill')}
                                             </p>
                                             <input
                                                 className="input"
-                                                placeholder="https://github.com/owner/repo/tree/main/path/to/skill"
+                                                placeholder={t('enterprise.tools.githubUrlPlaceholder')}
                                                 value={agentUrlInput}
                                                 onChange={e => setAgentUrlInput(e.target.value)}
                                                 style={{ width: '100%', fontSize: '13px', marginBottom: '12px', boxSizing: 'border-box' }}
                                             />
                                             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                                                <button className="btn btn-secondary" onClick={() => setShowAgentUrlImport(false)}>Cancel</button>
+                                                <button className="btn btn-secondary" onClick={() => setShowAgentUrlImport(false)}>{t('enterprise.tools.cancel')}</button>
                                                 <button
                                                     className="btn btn-primary"
                                                     disabled={!agentUrlInput.trim() || agentUrlImporting}
@@ -2927,7 +2928,7 @@ function AgentDetailInner() {
                                                         }
                                                     }}
                                                 >
-                                                    {agentUrlImporting ? 'Importing...' : 'Import'}
+                                                    {agentUrlImporting ? t('enterprise.tools.installing') : t('enterprise.tools.import')}
                                                 </button>
                                             </div>
                                         </div>
@@ -2939,11 +2940,11 @@ function AgentDetailInner() {
                                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillModal(false)}>
                                         <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                                <h3>📦 {t('agent.skills.importPreset', 'Import from Presets')}</h3>
+                                                <h3>🏢 {t('enterprise.tools.importPreset')}</h3>
                                                 <button onClick={() => setShowImportSkillModal(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
                                             </div>
                                             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px' }}>
-                                                {t('agent.skills.importDesc', 'Select a preset skill to import into this agent. All skill files will be copied to the agent\'s skills folder.')}
+                                                {t('enterprise.tools.selectPresetSkill')}
                                             </p>
                                             <div style={{ flex: 1, overflowY: 'auto' }}>
                                                 {!globalSkillsForImport ? (
@@ -2972,7 +2973,7 @@ function AgentDetailInner() {
                                                                     </div>
                                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                                                                         📁 {skill.folder_name}
-                                                                        {skill.is_default && <span style={{ marginLeft: '8px', color: 'var(--accent-primary)', fontWeight: 600 }}>✓ Default</span>}
+                                                                        {skill.is_default && <span style={{ marginLeft: '8px', color: 'var(--accent-primary)', fontWeight: 600 }}>✓ {t('enterprise.tools.default')}</span>}
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -2994,7 +2995,7 @@ function AgentDetailInner() {
                                                                     }
                                                                 }}
                                                             >
-                                                                {importingSkillId === skill.id ? '⏳ ...' : '⬇️ Import'}
+                                                                {importingSkillId === skill.id ? '⏳ ...' : `⬇️ ${t('enterprise.tools.import')}`}
                                                             </button>
                                                         </div>
                                                     ))
@@ -3608,9 +3609,13 @@ function AgentDetailInner() {
                                                             {icons[log.action_type] || '·'}
                                                         </span>
                                                         <div style={{ flex: 1, minWidth: 0 }}>
-                                                            <div style={{ fontWeight: 500, marginBottom: '2px' }}>{log.summary}</div>
+                                                            <div style={{ fontWeight: 500, marginBottom: '2px' }}>
+                                                                {log.action_type === 'heartbeat' && log.summary.startsWith('Heartbeat: ') 
+                                                                    ? `${t('agent.mind.heartbeatTitle')}: ${log.summary.substring(10)}` 
+                                                                    : log.summary}
+                                                            </div>
                                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                                                {time} · {log.action_type}
+                                                                {time} · {log.action_type === 'heartbeat' ? t('agent.mind.heartbeatTitle') : log.action_type}
                                                                 {log.detail && !isExpanded && <span style={{ marginLeft: '8px', color: 'var(--accent-primary)' }}>▸ Details</span>}
                                                             </div>
                                                         </div>
@@ -3620,7 +3625,11 @@ function AgentDetailInner() {
                                                             {Object.entries(log.detail).map(([k, v]: [string, any]) => (
                                                                 <div key={k} style={{ marginBottom: '6px' }}>
                                                                     <span style={{ color: 'var(--accent-primary)', fontWeight: 600 }}>{k}:</span>{' '}
-                                                                    <span>{typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v)}</span>
+                                                                    <span>
+                                                                        {typeof v === 'object' 
+                                                                            ? JSON.stringify(v, null, 2) 
+                                                                            : String(v).replace(/^Heartbeat: /, `${t('agent.mind.heartbeatTitle')}: `)}
+                                                                    </span>
                                                                 </div>
                                                             ))}
                                                         </div>
