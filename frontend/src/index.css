@@ -1714,6 +1714,11 @@ select:focus {
   position: sticky;
 }
 
+.agent-chat-sidebar {
+  width: 220px;
+  border-right: 1px solid var(--border-subtle);
+}
+
 @media (max-width: 768px) {
   .mobile-menu-btn {
     display: flex;
@@ -1823,5 +1828,36 @@ select:focus {
 
   .plaza-stats-grid-item {
     padding: 12px 14px;
+  }
+
+  /* Agent detail tabs — horizontal scroll */
+  .tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tab {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Agent detail chat tab — stack vertically */
+  .agent-chat-layout {
+    flex-direction: column;
+    height: calc(100dvh - 220px);
+  }
+
+  .agent-chat-sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+    max-height: 200px;
+    flex-shrink: 0;
   }
 }

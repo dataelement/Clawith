@@ -3032,9 +3032,9 @@ function AgentDetailInner() {
 
                 {
                     activeTab === 'chat' && (
-                        <div style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)' }}>
+                        <div className="agent-chat-layout" style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)' }}>
                             {/* ── Left: session sidebar ── */}
-                            <div style={{ width: '220px', flexShrink: 0, borderRight: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                            <div className="agent-chat-sidebar" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                                 {/* Tab row */}
                                 <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px 0', gap: '4px', borderBottom: '1px solid var(--border-subtle)' }}>
                                     <button onClick={() => setChatScope('mine')}
