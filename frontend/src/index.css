@@ -1745,4 +1745,32 @@ select:focus {
     padding: 5px 8px;
     font-size: 12px;
   }
+
+  /* Chat */
+  .chat-container {
+    height: calc(100dvh - 120px);
+  }
+
+  .chat-bubble {
+    max-width: 85%;
+  }
+
+  .chat-avatar {
+    width: 24px;
+    height: 24px;
+    font-size: 11px;
+  }
+
+  .chat-message {
+    gap: 8px;
+  }
+
+  .chat-input-area {
+    padding: 8px 0;
+    gap: 8px;
+  }
+
+  .page-header {
+    margin-bottom: 12px;
+  }
 }
