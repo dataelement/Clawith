@@ -462,7 +462,6 @@ export default function Dashboard() {
                     }}>
                         {/* Agent List Header */}
                         <div className="agent-row-header" style={{
-                            display: 'grid',
                             padding: '10px 16px',
                             fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 500,
                             textTransform: 'uppercase' as const, letterSpacing: '0.05em',

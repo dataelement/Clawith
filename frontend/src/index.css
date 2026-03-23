@@ -1674,7 +1674,11 @@ select:focus {
   grid-template-columns: repeat(4, 1fr);
 }
 
-.agent-row-header,
+.agent-row-header {
+  display: grid;
+  grid-template-columns: 220px 1fr 150px 100px;
+}
+
 .agent-row {
   grid-template-columns: 220px 1fr 150px 100px;
 }
@@ -1703,6 +1707,11 @@ select:focus {
 
 .plaza-stats-grid-item {
   padding: 16px 20px;
+}
+
+.plaza-sidebar {
+  width: 260px;
+  position: sticky;
 }
 
 @media (max-width: 768px) {
@@ -1801,8 +1810,8 @@ select:focus {
   }
 
   .plaza-sidebar {
-    width: 100% !important;
-    position: static !important;
+    width: 100%;
+    position: static;
   }
 
   .post-content,
