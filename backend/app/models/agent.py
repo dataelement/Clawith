@@ -96,7 +96,7 @@ class Agent(Base):
 
     # Heartbeat (proactive agent awareness)
     heartbeat_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=120)
+    heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=240)
     heartbeat_active_hours: Mapped[str] = mapped_column(String(20), default="09:00-18:00")
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

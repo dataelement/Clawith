@@ -163,7 +163,7 @@ class LLMClient(ABC):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -175,7 +175,7 @@ class LLMClient(ABC):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
@@ -234,7 +234,7 @@ class OpenAICompatibleClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
         stream: bool = False,
         **kwargs: Any,
@@ -243,9 +243,10 @@ class OpenAICompatibleClient(LLMClient):
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [m.to_openai_format() for m in messages],
-            "temperature": temperature,
             "stream": stream,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
 
         # Request usage stats in streaming responses (OpenAI extension)
         if stream:
@@ -398,7 +399,7 @@ class OpenAICompatibleClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -433,7 +434,7 @@ class OpenAICompatibleClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
@@ -654,7 +655,7 @@ class OpenAIResponsesClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
         stream: bool = False,
         **kwargs: Any,
@@ -663,9 +664,10 @@ class OpenAIResponsesClient(LLMClient):
         payload: dict[str, Any] = {
             "model": self.model,
             "input": self._messages_to_input(messages),
-            "temperature": temperature,
             "stream": stream,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
 
         if max_tokens:
             payload["max_output_tokens"] = max_tokens
@@ -775,7 +777,7 @@ class OpenAIResponsesClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -807,7 +809,7 @@ class OpenAIResponsesClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
@@ -1066,11 +1068,13 @@ class GeminiClient(LLMClient):
                     }],
                 })
 
+        generation_config: dict[str, Any] = {}
+        if temperature is not None:
+            generation_config["temperature"] = temperature
+
         payload: dict[str, Any] = {
             "contents": contents or [{"role": "user", "parts": [{"text": ""}]}],
-            "generationConfig": {
-                "temperature": temperature,
-            },
+            "generationConfig": generation_config,
         }
 
         if max_tokens:
@@ -1165,7 +1169,7 @@ class GeminiClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -1201,7 +1205,7 @@ class GeminiClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
@@ -1355,7 +1359,7 @@ class AnthropicClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
         stream: bool = False,
         **kwargs: Any,
@@ -1376,9 +1380,10 @@ class AnthropicClient(LLMClient):
             "model": self.model,
             "messages": anthropic_messages,
             "max_tokens": max_tokens or 4096,
-            "temperature": temperature,
             "stream": stream,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
 
         if system_content:
             payload["system"] = system_content
@@ -1411,7 +1416,7 @@ class AnthropicClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -1472,7 +1477,7 @@ class AnthropicClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
@@ -1944,7 +1949,7 @@ async def chat_complete(
     messages: list[dict],
     base_url: str | None = None,
     tools: list[dict] | None = None,
-    temperature: float = 0.7,
+    temperature: float | None = None,
     max_tokens: int | None = None,
     timeout: float = 120.0,
 ) -> dict:
@@ -1986,7 +1991,7 @@ async def chat_stream(
     messages: list[dict],
     base_url: str | None = None,
     tools: list[dict] | None = None,
-    temperature: float = 0.7,
+    temperature: float | None = None,
     max_tokens: int | None = None,
     timeout: float = 120.0,
     on_chunk: ChunkCallback | None = None,

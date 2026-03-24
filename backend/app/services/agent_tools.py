@@ -3147,7 +3147,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                             response = await llm_client.complete(
                                 messages=full_msgs,
                                 tools=tools_for_llm if tools_for_llm else None,
-                                temperature=0.7,
+                                temperature=target_model.temperature,
                                 max_tokens=4096,
                             )
                             break

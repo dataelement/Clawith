@@ -407,22 +407,49 @@ function schedToCron(sched: { freq: string; interval: number; time: string; week
 }
 
 const getRelationOptions = (t: any) => [
-    { value: 'direct_leader', label: t('agent.detail.supervisor') },
-    { value: 'collaborator', label: t('agent.detail.collaborator') },
-    { value: 'stakeholder', label: 'Stakeholder' },
-    { value: 'team_member', label: 'Team Member' },
+    { value: 'supervisor', label: t('agent.detail.supervisor') },
     { value: 'subordinate', label: t('agent.detail.subordinate') },
-    { value: 'mentor', label: 'Mentor' },
-    { value: 'other', label: 'Other' },
+    { value: 'collaborator', label: t('agent.detail.collaborator') },
+    { value: 'peer', label: t('agent.detail.peer') },
+    { value: 'mentor', label: t('agent.detail.mentor') },
+    { value: 'stakeholder', label: t('agent.detail.stakeholder') },
+    { value: 'other', label: t('agent.detail.other') },
 ];
 
-const getAgentRelationOptions = (t: any) => [
-    { value: 'peer', label: t('agent.detail.colleague') },
-    { value: 'supervisor', label: t('agent.detail.supervisor') },
-    { value: 'assistant', label: 'Assistant' },
-    { value: 'collaborator', label: t('agent.detail.collaborator') },
-    { value: 'other', label: 'Other' },
-];
+const getAgentRelationOptions = getRelationOptions;
+
+/** Tiny copy button shown on hover at the bottom of message bubbles */
+function CopyMessageButton({ text }: { text: string }) {
+    const [copied, setCopied] = React.useState(false);
+    const handleCopy = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        });
+    };
+    return (
+        <button
+            onClick={handleCopy}
+            title="Copy"
+            style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: '2px',
+                color: copied ? 'var(--accent-text)' : 'var(--text-tertiary)',
+                opacity: copied ? 1 : 0.5, transition: 'opacity .15s, color .15s',
+                display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle',
+                marginLeft: '6px', flexShrink: 0,
+            }}
+            onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+            onMouseLeave={e => (e.currentTarget.style.opacity = copied ? '1' : '0.5')}
+        >
+            {copied ? (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+            ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+            )}
+        </button>
+    );
+}
 
 function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -652,11 +679,11 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                 {!readOnly && addingAgent && (
                     <div style={{ border: '1px solid rgba(16,185,129,0.5)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}>
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                            <select className="input" value={selectedAgentId} onChange={e => setSelectedAgentId(e.target.value)} style={{ flex: 1, fontSize: '12px' }}>
-                                <option value="">— Select —</option>
+                            <select className="input" value={selectedAgentId} onChange={e => setSelectedAgentId(e.target.value)} style={{ flex: 1, minWidth: 0, fontSize: '12px' }}>
+                                <option value="">— Select Agent —</option>
                                 {availableAgents.map((a: any) => <option key={a.id} value={a.id}>{a.name} — {a.role_description || 'Agent'}</option>)}
                             </select>
-                            <select className="input" value={agentRelation} onChange={e => setAgentRelation(e.target.value)} style={{ width: '140px', fontSize: '12px' }}>
+                            <select className="input" value={agentRelation} onChange={e => setAgentRelation(e.target.value)} style={{ width: '150px', flexShrink: 0, fontSize: '12px' }}>
                                 {getAgentRelationOptions(t).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
                             </select>
                         </div>
@@ -971,7 +998,7 @@ function AgentDetailInner() {
                 setIsWaiting(false);
             }
             await fetchMySessions(false, id);
-            await fetchAllSessions(id);
+            await fetchAllSessions();
         } catch (e: any) {
             alert(e.message || 'Delete failed');
         }
@@ -3212,8 +3239,9 @@ function AgentDetailInner() {
                                                     : null;
                                                 return historyMsgs.map((m: any, i: number) => {
                                                 // Determine if this message is from "this agent" (left) or peer (right)
+                                                // Actually, "this agent" should be on the RIGHT (like 'me'), and peer on the LEFT
                                                 const isLeft = isA2A && thisAgentPid
-                                                    ? m.participant_id === thisAgentPid
+                                                    ? m.participant_id !== thisAgentPid
                                                     : m.role === 'assistant';
                                             if (m.role === 'tool_call') {
                                                     const tName = m.toolName || (() => { try { return JSON.parse(m.content || '{}').name; } catch { return 'tool'; } })();
@@ -3306,7 +3334,7 @@ function AgentDetailInner() {
                                                                     </>
                                                                 );
                                                             })()}
-                                                            {m.created_at && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.6 }}>{(() => { const d = new Date(m.created_at); const now = new Date(); const diffMs = now.getTime() - d.getTime(); const isToday = d.toDateString() === now.toDateString(); if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); if (diffMs < 7 * 86400000) return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); })()}</div>}
+                                                            {m.created_at && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.6, display: 'flex', alignItems: 'center' }}>{(() => { const d = new Date(m.created_at); const now = new Date(); const diffMs = now.getTime() - d.getTime(); const isToday = d.toDateString() === now.toDateString(); if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); if (diffMs < 7 * 86400000) return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); })()}{m.content && <CopyMessageButton text={m.content} />}</div>}
                                                         </div>
                                                     </div>
                                                 );
@@ -3421,7 +3449,7 @@ function AgentDetailInner() {
                                                                     </div>
                                                                 ) : <MarkdownRenderer content={msg.content} />
                                                             ) : msg.content ? <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div> : null}
-                                                            {msg.timestamp && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.6, textAlign: msg.role === 'user' ? 'right' : 'left' }}>{(() => { const d = new Date(msg.timestamp); const now = new Date(); const diffMs = now.getTime() - d.getTime(); const isToday = d.toDateString() === now.toDateString(); if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); if (diffMs < 7 * 86400000) return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); })()}</div>}
+                                                            {msg.timestamp && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.6, display: 'flex', alignItems: 'center', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>{(() => { const d = new Date(msg.timestamp); const now = new Date(); const diffMs = now.getTime() - d.getTime(); const isToday = d.toDateString() === now.toDateString(); if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); if (diffMs < 7 * 86400000) return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); })()}{msg.content && <CopyMessageButton text={msg.content} />}</div>}
                                                         </div>
                                                     </div>
                                                 );

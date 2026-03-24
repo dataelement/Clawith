@@ -262,7 +262,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                     response = await client.complete(
                         messages=llm_messages,
                         tools=tools_for_llm,
-                        temperature=0.7,
+                        temperature=model.temperature,
                         max_tokens=get_max_tokens(model.provider, model.model, getattr(model, 'max_output_tokens', None)),
                     )
                 except LLMError as e:
@@ -295,13 +295,35 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                         reasoning_content=response.reasoning_content,
                     ))
 
+                    # Tools that require arguments — if LLM sends empty args, skip and ask to retry
+                    # (aligned with call_llm in websocket.py)
+                    _TOOLS_REQUIRING_ARGS = {
+                        "write_file", "read_file", "delete_file", "read_document",
+                        "send_message_to_agent", "send_feishu_message", "send_email",
+                        "web_search", "jina_search", "jina_read",
+                    }
+
                     for tc in response.tool_calls:
                         fn = tc["function"]
                         tool_name = fn["name"]
+                        raw_args = fn.get("arguments", "{}")
+                        logger.info(f"[Heartbeat] Raw arguments for {tool_name} (len={len(raw_args) if raw_args else 0}): {repr(raw_args[:300]) if raw_args else 'None'}")
                         try:
-                            args = json.loads(fn["arguments"]) if fn.get("arguments") else {}
-                        except Exception:
+                            args = json.loads(raw_args) if raw_args else {}
+                        except json.JSONDecodeError as je:
+                            logger.warning(f"[Heartbeat] JSON parse failed for {tool_name}: {je}. Raw: {repr(raw_args[:200])}")
                             args = {}
+
+                        # Guard: if a tool that requires arguments received empty args,
+                        # return an error to LLM instead of executing
+                        if not args and tool_name in _TOOLS_REQUIRING_ARGS:
+                            logger.warning(f"[Heartbeat] Empty arguments for {tool_name}, asking LLM to retry")
+                            llm_messages.append(LLMMessage(
+                                role="tool",
+                                tool_call_id=tc["id"],
+                                content=f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments.",
+                            ))
+                            continue
 
                         # ── Hard rate limits for plaza actions ──
                         if tool_name == "plaza_create_post":
@@ -403,7 +425,7 @@ async def _heartbeat_tick():
                     continue
 
                 # Check interval
-                interval = timedelta(minutes=agent.heartbeat_interval_minutes or 30)
+                interval = timedelta(minutes=agent.heartbeat_interval_minutes or 240)
                 if agent.last_heartbeat_at and (now - agent.last_heartbeat_at) < interval:
                     continue
 

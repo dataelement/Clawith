@@ -222,7 +222,14 @@
       "colleague": "同事",
       "subordinate": "下级",
       "collaborator": "协作",
-      "reporter": "汇报对象"
+      "reporter": "汇报对象",
+      "stakeholder": "利益相关者",
+      "team_member": "团队成员",
+      "mentor": "导师",
+      "peer": "同事",
+      "assistant": "助理",
+      "direct_leader": "直属领导",
+      "other": "其他"
     },
     "tasks": {
       "todo": "待办",

@@ -159,6 +159,7 @@ async def create_agent(
     default_max_triggers = 20
     default_min_poll = 5
     default_webhook_rate = 5
+    default_heartbeat_interval = 240  # model default
     if target_tenant_id:
         from app.models.tenant import Tenant
         tenant_result = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
@@ -168,6 +169,9 @@ async def create_agent(
             default_max_triggers = tenant.default_max_triggers or 20
             default_min_poll = tenant.min_poll_interval_floor or 5
             default_webhook_rate = tenant.max_webhook_rate_ceiling or 5
+            # Enforce heartbeat floor: new agents must respect company minimum
+            if tenant.min_heartbeat_interval_minutes and tenant.min_heartbeat_interval_minutes > default_heartbeat_interval:
+                default_heartbeat_interval = tenant.min_heartbeat_interval_minutes
 
     agent = Agent(
         name=data.name,
@@ -188,6 +192,7 @@ async def create_agent(
         max_triggers=default_max_triggers,
         min_poll_interval_min=default_min_poll,
         webhook_rate_limit=default_webhook_rate,
+        heartbeat_interval_minutes=default_heartbeat_interval,
     )
     if data.autonomy_policy:
         agent.autonomy_policy = data.autonomy_policy

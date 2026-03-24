@@ -27,7 +27,7 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 interface LLMModel {
     id: string; provider: string; model: string; label: string;
-    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; created_at: string;
+    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; temperature?: number; created_at: string;
 }
 
 interface LLMProviderSpec {
@@ -1169,7 +1169,7 @@ export default function EnterpriseSettings() {
     });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string });
+    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, temperature: '' as string });
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
@@ -1272,6 +1272,7 @@ export default function EnterpriseSettings() {
                                     base_url: defaultSpec?.default_base_url || '',
                                     label: '', supports_vision: false,
                                     max_output_tokens: defaultSpec ? String(defaultSpec.default_max_tokens) : '4096',
+                                    temperature: '',
                                 });
                                 setShowAddModel(true);
                             }}>+ {t('enterprise.llm.addModel')}</button>
@@ -1327,9 +1328,14 @@ export default function EnterpriseSettings() {
                                         </label>
                                     </div>
                                     <div className="form-group">
-                                        <label className="form-label">{t('enterprise.llm.maxOutputTokens')}</label>
-                                        <input className="form-input" type="number" placeholder={t('enterprise.llm.maxOutputTokensPlaceholder')} value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc')}</div>
+                                        <label className="form-label">{t('enterprise.llm.maxOutputTokens', 'Max Output Tokens')}</label>
+                                        <input className="form-input" type="number" placeholder={t('enterprise.llm.maxOutputTokensPlaceholder', 'e.g. 4096')} value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc', 'Limits generation length')}</div>
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">{t('enterprise.llm.temperature', 'Temperature')}</label>
+                                        <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={e => setModelForm({ ...modelForm, temperature: e.target.value })} />
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
@@ -1361,7 +1367,11 @@ export default function EnterpriseSettings() {
                                         }
                                     }}>{t('enterprise.llm.test')}</button>
                                     <button className="btn btn-primary" onClick={() => {
-                                        const data = { ...modelForm, max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null };
+                                        const data = { 
+                                            ...modelForm, 
+                                            max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
+                                            temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
+                                        };
                                         addModel.mutate(data);
                                     }} disabled={!modelForm.model || !modelForm.api_key}>
                                         {t('common.save')}
@@ -1416,9 +1426,14 @@ export default function EnterpriseSettings() {
                                                     </label>
                                                 </div>
                                                 <div className="form-group">
-                                                    <label className="form-label">{t('enterprise.llm.maxOutputTokens')}</label>
-                                                    <input className="form-input" type="number" placeholder={t('enterprise.llm.maxOutputTokensPlaceholder')} value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc')}</div>
+                                                    <label className="form-label">{t('enterprise.llm.maxOutputTokens', 'Max Output Tokens')}</label>
+                                                    <input className="form-input" type="number" placeholder={t('enterprise.llm.maxOutputTokensPlaceholder', 'e.g. 4096')} value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc', 'Limits generation length')}</div>
+                                                </div>
+                                                <div className="form-group">
+                                                    <label className="form-label">{t('enterprise.llm.temperature', 'Temperature')}</label>
+                                                    <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={e => setModelForm({ ...modelForm, temperature: e.target.value })} />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
                                                 </div>
                                             </div>
                                             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
@@ -1451,7 +1466,11 @@ export default function EnterpriseSettings() {
                                                     }
                                                 }}>{t('enterprise.llm.test')}</button>
                                                 <button className="btn btn-primary" onClick={() => {
-                                                    const data = { ...modelForm, max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null };
+                                                    const data = { 
+                                                        ...modelForm, 
+                                                        max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
+                                                        temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
+                                                    };
                                                     updateModel.mutate({ id: editingModelId!, data });
                                                 }} disabled={!modelForm.model}>
                                                     {t('common.save')}
@@ -1475,7 +1494,7 @@ export default function EnterpriseSettings() {
                                                 {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>👁 Vision</span>}
                                                 <button className="btn btn-ghost" onClick={() => {
                                                     setEditingModelId(m.id);
-                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '' });
+                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
                                                     setShowAddModel(true);
                                                 }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>

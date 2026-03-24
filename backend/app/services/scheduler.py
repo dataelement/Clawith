@@ -6,6 +6,7 @@ and executes them by calling the LLM with the schedule's instruction.
 """
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 

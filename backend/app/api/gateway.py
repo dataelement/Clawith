@@ -364,8 +364,9 @@ async def _send_to_agent_background(
             import uuid as _uuid
             _ns = _uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
             # Sort IDs so session is the same regardless of who initiates
-            sorted_ids = sorted([source_agent_id, target_agent_id])
-            session_uuid = _uuid.uuid5(_ns, f"{sorted_ids[0]}_{sorted_ids[1]}")
+            session_agent_id = min(source_agent_id, target_agent_id, key=str)
+            session_peer_id = max(source_agent_id, target_agent_id, key=str)
+            session_uuid = _uuid.uuid5(_ns, f"{session_agent_id}_{session_peer_id}")
             conv_id = str(session_uuid)
 
             # Find or create the ChatSession
@@ -377,11 +378,11 @@ async def _send_to_agent_background(
                 from datetime import datetime, timezone
                 session = ChatSession(
                     id=session_uuid,
-                    agent_id=target_agent_id,
+                    agent_id=session_agent_id,
                     user_id=target_creator_id,
                     title=f"{source_agent_name} ↔ {target_agent_name}",
                     source_channel="agent",
-                    peer_agent_id=source_agent_id,
+                    peer_agent_id=session_peer_id,
                     created_at=datetime.now(timezone.utc),
                 )
                 db.add(session)
@@ -406,6 +407,13 @@ async def _send_to_agent_background(
             system_prompt = await build_agent_context(
                 target_agent_id, target_agent_name, target_role_description
             )
+            system_prompt += (
+                "\n\n--- Agent-to-Agent Communication Alert ---\n"
+                f"You are receiving a direct message from another digital employee ({source_agent_name}). "
+                "CRITICAL INSTRUCTION: Your direct text reply will automatically be delivered back to them. "
+                "DO NOT use the `send_agent_message` tool to reply to this conversation. Just reply naturally in text.\n"
+                "If they are asking you to create or analyze a file, deliver the file using `send_file_to_agent` after writing it."
+            )
 
             # Load recent conversation history for context
             hist_result = await db.execute(
@@ -424,6 +432,14 @@ async def _send_to_agent_background(
             user_msg = f"[Message from agent: {source_agent_name}]\n{content}"
             messages.append({"role": "user", "content": user_msg})
 
+            from app.models.participant import Participant
+            
+            # Lookup participants for both agents
+            src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == source_agent_id))
+            tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent_id))
+            src_participant = src_part_r.scalar_one_or_none()
+            tgt_participant = tgt_part_r.scalar_one_or_none()
+            
             # Save user message to conversation
             db.add(ChatMessage(
                 agent_id=target_agent_id,
@@ -431,6 +447,7 @@ async def _send_to_agent_background(
                 role="user",
                 content=user_msg,
                 user_id=target_creator_id,
+                participant_id=src_participant.id if src_participant else None,
             ))
             await db.commit()
 
@@ -452,12 +469,17 @@ async def _send_to_agent_background(
 
         # Save assistant reply to conversation
         async with async_session() as db:
+            from app.models.participant import Participant
+            tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent_id))
+            tgt_participant = tgt_part_r.scalar_one_or_none()
+            
             db.add(ChatMessage(
                 agent_id=target_agent_id,
                 conversation_id=conv_id,
                 role="assistant",
                 content=final_reply,
                 user_id=target_creator_id,
+                participant_id=tgt_participant.id if tgt_participant else None,
             ))
 
             # Write reply to gateway_messages for source (OpenClaw) to poll

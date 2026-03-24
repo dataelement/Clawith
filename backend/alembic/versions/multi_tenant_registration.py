@@ -7,7 +7,7 @@ Revises: add_llm_max_output_tokens
 from alembic import op
 
 revision = "multi_tenant_registration"
-down_revision = "add_llm_max_output_tokens"
+down_revision = "add_skill_tenant_id"
 branch_labels = None
 depends_on = None
 

@@ -247,7 +247,7 @@ async def _process_tool_call(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def call_llm(
-    model,
+    model: LLMModel,
     messages: list[dict],
     agent_name: str,
     role_description: str,
@@ -267,10 +267,10 @@ async def call_llm(
     # Get user's name for personalized context
     _user_name = await _get_user_name(user_id)
 
-    # Build system prompt
-    system_prompt = f"你的名字是 {agent_name}。{role_description}"
-    if _user_name:
-        system_prompt += f"\n\n当前用户是: {_user_name}"
+    # Build rich prompt with soul, memory, skills, relationships
+    from app.services.agent_context import build_agent_context
+    # Look up current user's display name so the agent knows who it's talking to
+    system_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_user_name)
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
@@ -328,19 +328,19 @@ async def call_llm(
             response = await client.stream(
                 messages=api_messages,
                 tools=tools_for_llm if tools_for_llm else None,
-                temperature=0.7,
+                temperature=model.temperature,
                 max_tokens=max_tokens,
                 on_chunk=on_chunk,
                 on_thinking=on_thinking,
             )
         except LLMError as e:
-            logger.error(f"[LLM] LLMError: {e}")
+            logger.error(f"[LLM] LLMError: provider={getattr(model, 'provider', '?')} model={getattr(model, 'model', '?')} {e}")
             if agent_id and _accumulated_tokens > 0:
                 await record_token_usage(agent_id, _accumulated_tokens)
             await client.close()
             return f"[LLM Error] {e}"
         except Exception as e:
-            logger.error(f"[LLM] Unexpected error: {type(e).__name__}: {str(e)[:300]}")
+            logger.exception(f"[LLM] Unexpected error: {type(e).__name__}: {str(e)[:300]}")
             if agent_id and _accumulated_tokens > 0:
                 await record_token_usage(agent_id, _accumulated_tokens)
             await client.close()

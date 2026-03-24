@@ -35,7 +35,7 @@ class Tenant(Base):
     default_max_llm_calls_per_day: Mapped[int] = mapped_column(Integer, default=100)
 
     # Heartbeat frequency floor (minutes) — agents cannot heartbeat faster than this
-    min_heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=120)
+    min_heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=240)
 
     # Default timezone for all agents in this company (IANA format, e.g. "Asia/Shanghai")
     timezone: Mapped[str] = mapped_column(String(50), default="UTC")

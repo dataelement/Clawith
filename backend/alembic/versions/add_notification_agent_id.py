@@ -17,23 +17,26 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Add agent_id column (nullable FK to agents)
+    # Safely alter only if table exists
     op.execute("""
-        ALTER TABLE notifications
-        ADD COLUMN IF NOT EXISTS agent_id UUID REFERENCES agents(id)
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'notifications') THEN
+            ALTER TABLE notifications ADD COLUMN IF NOT EXISTS agent_id UUID REFERENCES agents(id);
+            ALTER TABLE notifications ADD COLUMN IF NOT EXISTS sender_name VARCHAR(100);
+            ALTER TABLE notifications ALTER COLUMN user_id DROP NOT NULL;
+        END IF;
+    END
+    $$;
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS ix_notifications_agent_id ON notifications(agent_id) WHERE agent_id IS NOT NULL")
-
-    # Add sender_name column
     op.execute("""
-        ALTER TABLE notifications
-        ADD COLUMN IF NOT EXISTS sender_name VARCHAR(100)
-    """)
-
-    # Make user_id nullable (was NOT NULL before)
-    op.execute("""
-        ALTER TABLE notifications
-        ALTER COLUMN user_id DROP NOT NULL
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'notifications') THEN
+            CREATE INDEX IF NOT EXISTS ix_notifications_agent_id ON notifications(agent_id) WHERE agent_id IS NOT NULL;
+        END IF;
+    END
+    $$;
     """)
 
 

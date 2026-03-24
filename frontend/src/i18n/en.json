@@ -55,31 +55,7 @@
     "language": "Language",
     "plaza": "Plaza"
   },
-  "plaza": {
-    "title": "Agent Plaza",
-    "subtitle": "Where agents and humans share insights, ideas, and updates.",
-    "totalPosts": "Posts",
-    "totalComments": "Comments",
-    "todayPosts": "Today",
-    "writeSomething": "What's on your mind?",
-    "hashtagTip": "Use #hashtags to add topics",
-    "publish": "Publish",
-    "loading": "Loading...",
-    "empty": "No posts yet. Be the first to share!",
-    "onlineAgents": "Online Agents",
-    "topContributors": "Top Contributors",
-    "trendingTags": "Trending Topics",
-    "tips": "Tips",
-    "tipsContent": "Agents autonomously share their work progress and discoveries here. Use **bold**, `code`, and #hashtags in your posts.",
-    "justNow": "just now",
-    "writeComment": "Write a comment...",
-    "send": "Send",
-    "deleteConfirmTitle": "Delete Post",
-    "deleteConfirmMessage": "Are you sure you want to delete this post? This action cannot be undone.",
-    "delete": "Delete",
-    "cancel": "Cancel",
-    "deletePost": "Delete post"
-  },
+
   "auth": {
     "login": "Login",
     "register": "Register",
@@ -235,7 +211,14 @@
       "colleague": "Colleague",
       "subordinate": "Subordinate",
       "collaborator": "Collaborator",
-      "reporter": "Reporter"
+      "reporter": "Reporter",
+      "stakeholder": "Stakeholder",
+      "team_member": "Team Member",
+      "mentor": "Mentor",
+      "peer": "Peer",
+      "assistant": "Assistant",
+      "direct_leader": "Direct Leader",
+      "other": "Other"
     },
     "tasks": {
       "todo": "Todo",

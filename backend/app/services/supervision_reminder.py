@@ -145,7 +145,7 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
     try:
         response = await client.complete(
             messages=messages,
-            temperature=0.7,
+            temperature=model.temperature,
             max_tokens=512,
         )
         content = (response.content or "").strip()
