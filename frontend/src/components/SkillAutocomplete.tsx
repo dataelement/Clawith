@@ -21,7 +21,7 @@ interface SkillAutocompleteProps {
     placeholder?: string;
     className?: string;
     disabled?: boolean;
-    inputRef?: React.RefObject<HTMLInputElement>;
+    inputRef?: React.RefObject<HTMLInputElement | null>;
     onPaste?: React.ClipboardEventHandler<HTMLInputElement>;
 }
 
