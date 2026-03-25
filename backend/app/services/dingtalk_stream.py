@@ -5,16 +5,268 @@ Uses the dingtalk-stream SDK to receive bot messages via persistent connections.
 """
 
 import asyncio
+import base64
+import json
 import threading
 import uuid
-from typing import Dict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
+import httpx
 from loguru import logger
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.database import async_session
 from app.models.channel_config import ChannelConfig
 
+
+# ─── DingTalk Media Helpers ─────────────────────────────
+
+async def _get_dingtalk_access_token(app_key: str, app_secret: str) -> Optional[str]:
+    """Get DingTalk access token via OAuth2."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+                json={"appKey": app_key, "appSecret": app_secret},
+            )
+            data = resp.json()
+            token = data.get("accessToken")
+            if token:
+                logger.debug("[DingTalk] Got access token successfully")
+                return token
+            logger.error(f"[DingTalk] Failed to get access token: {data}")
+            return None
+    except Exception as e:
+        logger.error(f"[DingTalk] Error getting access token: {e}")
+        return None
+
+
+async def _get_media_download_url(
+    access_token: str, download_code: str, robot_code: str
+) -> Optional[str]:
+    """Get media file download URL from DingTalk API."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://api.dingtalk.com/v1.0/robot/messageFiles/download",
+                headers={"x-acs-dingtalk-access-token": access_token},
+                json={"downloadCode": download_code, "robotCode": robot_code},
+            )
+            data = resp.json()
+            url = data.get("downloadUrl")
+            if url:
+                return url
+            logger.error(f"[DingTalk] Failed to get download URL: {data}")
+            return None
+    except Exception as e:
+        logger.error(f"[DingTalk] Error getting download URL: {e}")
+        return None
+
+
+async def _download_file(url: str) -> Optional[bytes]:
+    """Download a file from a URL and return its bytes."""
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.content
+    except Exception as e:
+        logger.error(f"[DingTalk] Error downloading file: {e}")
+        return None
+
+
+async def _download_dingtalk_media(
+    app_key: str, app_secret: str, download_code: str
+) -> Optional[bytes]:
+    """Download a media file from DingTalk using downloadCode.
+
+    Steps: get access_token -> get download URL -> download file bytes.
+    """
+    access_token = await _get_dingtalk_access_token(app_key, app_secret)
+    if not access_token:
+        return None
+
+    download_url = await _get_media_download_url(access_token, download_code, app_key)
+    if not download_url:
+        return None
+
+    return await _download_file(download_url)
+
+
+def _resolve_upload_dir(agent_id: uuid.UUID) -> Path:
+    """Get the uploads directory for an agent, creating it if needed."""
+    settings = get_settings()
+    upload_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    return upload_dir
+
+
+async def _process_media_message(
+    msg_data: dict,
+    app_key: str,
+    app_secret: str,
+    agent_id: uuid.UUID,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """Process a DingTalk message and extract text + media info.
+
+    Returns:
+        (user_text, image_base64_list, saved_file_paths)
+        - user_text: text content for the LLM (may include markers)
+        - image_base64_list: list of base64-encoded image data URIs, or None
+        - saved_file_paths: list of saved file paths, or None
+    """
+    msgtype = msg_data.get("msgtype", "text")
+    logger.info(f"[DingTalk] Processing message type: {msgtype}")
+
+    image_base64_list: List[str] = []
+    saved_file_paths: List[str] = []
+
+    if msgtype == "text":
+        # Plain text — handled by existing logic, return empty
+        text_content = msg_data.get("text", {}).get("content", "").strip()
+        return text_content, None, None
+
+    elif msgtype == "picture":
+        # Image message
+        download_code = msg_data.get("content", {}).get("downloadCode", "")
+        if not download_code:
+            # Try alternate location
+            download_code = msg_data.get("downloadCode", "")
+        if not download_code:
+            logger.warning("[DingTalk] Picture message without downloadCode")
+            return "[用户发送了图片，但无法下载]", None, None
+
+        file_bytes = await _download_dingtalk_media(app_key, app_secret, download_code)
+        if not file_bytes:
+            return "[用户发送了图片，但下载失败]", None, None
+
+        # Save to disk
+        upload_dir = _resolve_upload_dir(agent_id)
+        filename = f"dingtalk_img_{uuid.uuid4().hex[:8]}.jpg"
+        save_path = upload_dir / filename
+        save_path.write_bytes(file_bytes)
+        logger.info(f"[DingTalk] Saved image to {save_path} ({len(file_bytes)} bytes)")
+
+        # Base64 encode for LLM vision
+        b64_data = base64.b64encode(file_bytes).decode("ascii")
+        image_marker = f"[image_data:data:image/jpeg;base64,{b64_data}]"
+        return f"[用户发送了图片]\n{image_marker}", [f"data:image/jpeg;base64,{b64_data}"], [str(save_path)]
+
+    elif msgtype == "richText":
+        # Rich text: may contain text segments + images
+        rich_text = msg_data.get("content", {}).get("richText", [])
+        text_parts: List[str] = []
+
+        for section in rich_text:
+            for item in section if isinstance(section, list) else [section]:
+                if "text" in item:
+                    text_parts.append(item["text"])
+                elif "downloadCode" in item:
+                    # Inline image in rich text
+                    file_bytes = await _download_dingtalk_media(
+                        app_key, app_secret, item["downloadCode"]
+                    )
+                    if file_bytes:
+                        upload_dir = _resolve_upload_dir(agent_id)
+                        filename = f"dingtalk_richimg_{uuid.uuid4().hex[:8]}.jpg"
+                        save_path = upload_dir / filename
+                        save_path.write_bytes(file_bytes)
+                        logger.info(f"[DingTalk] Saved rich text image to {save_path}")
+
+                        b64_data = base64.b64encode(file_bytes).decode("ascii")
+                        image_marker = f"[image_data:data:image/jpeg;base64,{b64_data}]"
+                        text_parts.append(image_marker)
+                        image_base64_list.append(f"data:image/jpeg;base64,{b64_data}")
+                        saved_file_paths.append(str(save_path))
+
+        combined_text = "\n".join(text_parts).strip()
+        if not combined_text:
+            combined_text = "[用户发送了富文本消息]"
+
+        return (
+            combined_text,
+            image_base64_list if image_base64_list else None,
+            saved_file_paths if saved_file_paths else None,
+        )
+
+    elif msgtype == "audio":
+        # Audio message — prefer recognition text if available
+        content = msg_data.get("content", {})
+        recognition = content.get("recognition", "")
+        if recognition:
+            logger.info(f"[DingTalk] Audio with recognition: {recognition[:80]}")
+            return f"[语音消息] {recognition}", None, None
+
+        # No recognition — try to download the audio file
+        download_code = content.get("downloadCode", "")
+        if download_code:
+            file_bytes = await _download_dingtalk_media(app_key, app_secret, download_code)
+            if file_bytes:
+                upload_dir = _resolve_upload_dir(agent_id)
+                duration = content.get("duration", "unknown")
+                filename = f"dingtalk_audio_{uuid.uuid4().hex[:8]}.amr"
+                save_path = upload_dir / filename
+                save_path.write_bytes(file_bytes)
+                logger.info(f"[DingTalk] Saved audio to {save_path} ({len(file_bytes)} bytes)")
+                return (
+                    f"[用户发送了语音消息，时长{duration}ms，已保存到 {filename}]",
+                    None,
+                    [str(save_path)],
+                )
+        return "[用户发送了语音消息，但无法处理]", None, None
+
+    elif msgtype == "video":
+        # Video message
+        content = msg_data.get("content", {})
+        download_code = content.get("downloadCode", "")
+        if download_code:
+            file_bytes = await _download_dingtalk_media(app_key, app_secret, download_code)
+            if file_bytes:
+                upload_dir = _resolve_upload_dir(agent_id)
+                duration = content.get("duration", "unknown")
+                filename = f"dingtalk_video_{uuid.uuid4().hex[:8]}.mp4"
+                save_path = upload_dir / filename
+                save_path.write_bytes(file_bytes)
+                logger.info(f"[DingTalk] Saved video to {save_path} ({len(file_bytes)} bytes)")
+                return (
+                    f"[用户发送了视频，时长{duration}ms，已保存到 {filename}]",
+                    None,
+                    [str(save_path)],
+                )
+        return "[用户发送了视频，但无法下载]", None, None
+
+    elif msgtype == "file":
+        # File message
+        content = msg_data.get("content", {})
+        download_code = content.get("downloadCode", "")
+        original_filename = content.get("fileName", "unknown_file")
+        if download_code:
+            file_bytes = await _download_dingtalk_media(app_key, app_secret, download_code)
+            if file_bytes:
+                upload_dir = _resolve_upload_dir(agent_id)
+                # Preserve original filename, add prefix to avoid collision
+                safe_name = f"dingtalk_{uuid.uuid4().hex[:8]}_{original_filename}"
+                save_path = upload_dir / safe_name
+                save_path.write_bytes(file_bytes)
+                logger.info(
+                    f"[DingTalk] Saved file '{original_filename}' to {save_path} "
+                    f"({len(file_bytes)} bytes)"
+                )
+                return (
+                    f"[file:{original_filename}]",
+                    None,
+                    [str(save_path)],
+                )
+        return f"[用户发送了文件 {original_filename}，但无法下载]", None, None
+
+    else:
+        logger.warning(f"[DingTalk] Unsupported message type: {msgtype}")
+        return f"[用户发送了 {msgtype} 类型消息，暂不支持]", None, None
+
+
+# ─── Stream Manager ─────────────────────────────────────
 
 class DingTalkStreamManager:
     """Manages DingTalk Stream clients for all agents."""
@@ -84,49 +336,81 @@ class DingTalkStreamManager:
                     so we must dispatch to the main FastAPI loop for DB + LLM work.
                     """
                     try:
-                        # Parse the raw data into a ChatbotMessage via class method
+                        # Parse the raw data
                         incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
+                        msg_data = callback.data if isinstance(callback.data, dict) else json.loads(callback.data)
 
-                        # Extract text content
-                        text_list = incoming.get_text_list()
-                        user_text = " ".join(text_list).strip() if text_list else ""
-
-                        if not user_text:
-                            return dingtalk_stream.AckMessage.STATUS_OK, "empty message"
-
+                        msgtype = msg_data.get("msgtype", "text")
                         sender_staff_id = incoming.sender_staff_id or incoming.sender_id or ""
                         conversation_id = incoming.conversation_id or ""
                         conversation_type = incoming.conversation_type or "1"
                         session_webhook = incoming.session_webhook or ""
 
                         logger.info(
-                            f"[DingTalk Stream] Message from {sender_staff_id}: {user_text[:80]}"
+                            f"[DingTalk Stream] Received {msgtype} message from {sender_staff_id}"
                         )
 
-                        # Dispatch to the main FastAPI event loop for DB + LLM processing
-                        from app.api.dingtalk import process_dingtalk_message
+                        if msgtype == "text":
+                            # Plain text — use existing logic
+                            text_list = incoming.get_text_list()
+                            user_text = " ".join(text_list).strip() if text_list else ""
+                            if not user_text:
+                                return dingtalk_stream.AckMessage.STATUS_OK, "empty message"
 
-                        if main_loop and main_loop.is_running():
-                            future = asyncio.run_coroutine_threadsafe(
-                                process_dingtalk_message(
-                                    agent_id=agent_id,
-                                    sender_staff_id=sender_staff_id,
-                                    user_text=user_text,
-                                    conversation_id=conversation_id,
-                                    conversation_type=conversation_type,
-                                    session_webhook=session_webhook,
-                                ),
-                                main_loop,
+                            logger.info(
+                                f"[DingTalk Stream] Text from {sender_staff_id}: {user_text[:80]}"
                             )
-                            # Wait for result (with timeout)
-                            try:
-                                future.result(timeout=120)
-                            except Exception as e:
-                                logger.error(f"[DingTalk Stream] LLM processing error: {e}")
-                                import traceback
-                                traceback.print_exc()
+
+                            from app.api.dingtalk import process_dingtalk_message
+
+                            if main_loop and main_loop.is_running():
+                                future = asyncio.run_coroutine_threadsafe(
+                                    process_dingtalk_message(
+                                        agent_id=agent_id,
+                                        sender_staff_id=sender_staff_id,
+                                        user_text=user_text,
+                                        conversation_id=conversation_id,
+                                        conversation_type=conversation_type,
+                                        session_webhook=session_webhook,
+                                    ),
+                                    main_loop,
+                                )
+                                try:
+                                    future.result(timeout=120)
+                                except Exception as e:
+                                    logger.error(f"[DingTalk Stream] LLM processing error: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                            else:
+                                logger.warning("[DingTalk Stream] Main loop not available")
+
                         else:
-                            logger.warning("[DingTalk Stream] Main loop not available for dispatch")
+                            # Non-text message: process media in the main loop
+                            from app.api.dingtalk import process_dingtalk_message
+
+                            if main_loop and main_loop.is_running():
+                                # Process media (download + encode) in the main loop
+                                future = asyncio.run_coroutine_threadsafe(
+                                    self._handle_media_and_dispatch(
+                                        msg_data=msg_data,
+                                        app_key=app_key,
+                                        app_secret=app_secret,
+                                        agent_id=agent_id,
+                                        sender_staff_id=sender_staff_id,
+                                        conversation_id=conversation_id,
+                                        conversation_type=conversation_type,
+                                        session_webhook=session_webhook,
+                                    ),
+                                    main_loop,
+                                )
+                                try:
+                                    future.result(timeout=120)
+                                except Exception as e:
+                                    logger.error(f"[DingTalk Stream] Media processing error: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                            else:
+                                logger.warning("[DingTalk Stream] Main loop not available")
 
                         return dingtalk_stream.AckMessage.STATUS_OK, "ok"
                     except Exception as e:
@@ -134,6 +418,42 @@ class DingTalkStreamManager:
                         import traceback
                         traceback.print_exc()
                         return dingtalk_stream.AckMessage.STATUS_SYSTEM_EXCEPTION, str(e)
+
+                @staticmethod
+                async def _handle_media_and_dispatch(
+                    msg_data: dict,
+                    app_key: str,
+                    app_secret: str,
+                    agent_id: uuid.UUID,
+                    sender_staff_id: str,
+                    conversation_id: str,
+                    conversation_type: str,
+                    session_webhook: str,
+                ):
+                    """Download media, then dispatch to process_dingtalk_message."""
+                    from app.api.dingtalk import process_dingtalk_message
+
+                    user_text, image_base64_list, saved_file_paths = await _process_media_message(
+                        msg_data=msg_data,
+                        app_key=app_key,
+                        app_secret=app_secret,
+                        agent_id=agent_id,
+                    )
+
+                    if not user_text:
+                        logger.info("[DingTalk Stream] Empty content after media processing, skipping")
+                        return
+
+                    await process_dingtalk_message(
+                        agent_id=agent_id,
+                        sender_staff_id=sender_staff_id,
+                        user_text=user_text,
+                        conversation_id=conversation_id,
+                        conversation_type=conversation_type,
+                        session_webhook=session_webhook,
+                        image_base64_list=image_base64_list,
+                        saved_file_paths=saved_file_paths,
+                    )
 
             credential = dingtalk_stream.Credential(client_id=app_key, client_secret=app_secret)
             client = dingtalk_stream.DingTalkStreamClient(credential=credential)

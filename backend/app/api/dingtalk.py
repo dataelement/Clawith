@@ -129,8 +129,15 @@ async def process_dingtalk_message(
     conversation_id: str,
     conversation_type: str,
     session_webhook: str,
+    image_base64_list: list[str] | None = None,
+    saved_file_paths: list[str] | None = None,
 ):
-    """Process an incoming DingTalk bot message and reply via session webhook."""
+    """Process an incoming DingTalk bot message and reply via session webhook.
+
+    Args:
+        image_base64_list: List of base64-encoded image data URIs for vision LLM.
+        saved_file_paths: List of local file paths where media files were saved.
+    """
     import json
     import httpx
     from datetime import datetime, timezone
@@ -213,9 +220,18 @@ async def process_dingtalk_message(
             db, agent_id, user_text,
             history=history, user_id=platform_user_id,
         )
-        logger.info(f"[DingTalk] LLM reply: {reply_text[:100]}")
+        has_media = bool(image_base64_list or saved_file_paths)
+        logger.info(
+            f"[DingTalk] LLM reply ({('media' if has_media else 'text')} input): "
+            f"{reply_text[:100]}"
+        )
 
         # Reply via session webhook (markdown)
+        # TODO: Webhook only supports text/markdown. To send images/files back,
+        # use DingTalk's proactive message API (requires access_token + conversation API).
+        # This would need a separate implementation using:
+        #   POST https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend
+        # or the older robot/groupMessages/send endpoint.
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(session_webhook, json={
