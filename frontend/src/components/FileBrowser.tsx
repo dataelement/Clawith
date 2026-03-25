@@ -539,7 +539,7 @@ export default function FileBrowser({
                                         ⬇
                                     </a>
                                 )}
-                                {canDelete && !f.is_dir && (
+                                {canDelete && (
                                     <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                                         onClick={(e) => { e.stopPropagation(); setDeleteTarget({ path: f.path || `${currentPath}/${f.name}`, name: f.name }); }}>
                                         ×
