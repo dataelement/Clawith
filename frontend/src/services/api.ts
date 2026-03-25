@@ -411,3 +411,56 @@ export const triggerApi = {
     delete: (agentId: string, triggerId: string) =>
         request<void>(`/agents/${agentId}/triggers/${triggerId}`, { method: 'DELETE' }),
 };
+
+// ─── Workflows ────────────────────────────────────────
+export const workflowApi = {
+    create: (instruction: string) =>
+        request<{ id: string }>('/workflows/', { method: 'POST', body: JSON.stringify({ instruction }) }),
+    list: (page = 1, size = 20) =>
+        request<{ items: any[]; total: number }>(`/workflows/?page=${page}&size=${size}`),
+    get: (id: string) =>
+        request<any>(`/workflows/${id}`),
+    retry: (id: string) =>
+        request<{ message: string; retried: number }>(`/workflows/${id}/retry`, { method: 'POST' }),
+    delete: (id: string) =>
+        request<void>(`/workflows/${id}`, { method: 'DELETE' }),
+    chat: (id: string, message: string) =>
+        request<{ reply: string }>(`/workflows/${id}/chat`, { method: 'POST', body: JSON.stringify({ message }) }),
+};
+
+// ─── CRM ──────────────────────────────────────────────
+export const crmApi = {
+    listContacts: (params?: { search?: string; country?: string; source?: string; page?: number }) => {
+        const p = new URLSearchParams();
+        if (params?.search) p.set('search', params.search);
+        if (params?.country) p.set('country', params.country);
+        if (params?.source) p.set('source', params.source);
+        if (params?.page) p.set('page', String(params.page));
+        const qs = p.toString();
+        return request<{ items: unknown[]; total: number; page: number }>(`/crm/contacts${qs ? '?' + qs : ''}`);
+    },
+    getContact: (id: string) => request<any>(`/crm/contacts/${id}`),
+    createContact: (data: unknown) =>
+        request<any>('/crm/contacts', { method: 'POST', body: JSON.stringify(data) }),
+    updateContact: (id: string, data: unknown) =>
+        request<any>(`/crm/contacts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    deleteContact: (id: string) =>
+        request<void>(`/crm/contacts/${id}`, { method: 'DELETE' }),
+    batchDeleteContacts: (ids: string[]) =>
+        request<any>('/crm/contacts/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
+    listDeals: (stage?: string) => {
+        const params = stage ? `?stage=${encodeURIComponent(stage)}` : '';
+        return request<any[]>(`/crm/deals${params}`);
+    },
+    createDeal: (data: unknown) =>
+        request<any>('/crm/deals', { method: 'POST', body: JSON.stringify(data) }),
+    updateDeal: (id: string, data: unknown) =>
+        request<any>(`/crm/deals/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    deleteDeal: (id: string) =>
+        request<void>(`/crm/deals/${id}`, { method: 'DELETE' }),
+    listActivities: (contactId: string) =>
+        request<any[]>(`/crm/activities/${contactId}`),
+    createActivity: (data: { contact_id: string; type: string; summary: string }) =>
+        request<any>('/crm/activities', { method: 'POST', body: JSON.stringify(data) }),
+    stats: () => request<any>('/crm/stats'),
+};

@@ -53,7 +53,9 @@
     "newAgent": "New Digital Employee",
     "enterprise": "Company Settings",
     "language": "Language",
-    "plaza": "Plaza"
+    "plaza": "Plaza",
+    "workflow": "Workflows",
+    "crm": "CRM"
   },
 
   "auth": {
@@ -919,6 +921,119 @@
       "ws_step5": "Copy the Bot ID and Secret that are generated → paste them above → click Save Config",
       "ws_step6": "Find the bot in WeCom and send a test message",
       "ws_note": "WebSocket mode requires no public IP, callback URL, or domain verification (ICP). The connection is managed automatically."
+    }
+  },
+  "workflow": {
+    "title": "Workflows",
+    "subtitle": "Enter your business goal and AI agents will collaborate to complete it",
+    "placeholder": "e.g. Help me develop the German LED lighting market",
+    "creating": "Starting...",
+    "create": "Start Workflow",
+    "loading": "Loading...",
+    "empty": "No workflows yet. Enter your goal to get started.",
+    "deleteConfirm": "Delete this workflow?",
+    "status": {
+      "planning": "Planning",
+      "running": "Running",
+      "done": "Completed",
+      "failed": "Failed"
+    },
+    "detail": {
+      "loading": "Loading...",
+      "retrying": "Retrying...",
+      "retryFailed": "Retry Failed Steps",
+      "runningProgress": "Running {{done}}/{{total}}",
+      "chat": "Chat",
+      "hideChat": "Hide Chat",
+      "planningTitle": "Agents are planning",
+      "planningDesc": "AI team is analyzing your requirements, breaking down tasks and assigning to the best agents...",
+      "analyzing": "Analyzing requirements...",
+      "breakingDown": "Breaking down tasks...",
+      "assigning": "Assigning agents...",
+      "noSteps": "No task steps yet",
+      "summary": "Summary",
+      "copied": "Copied",
+      "copy": "Copy",
+      "importCRM": "Import to CRM",
+      "agentWorking": "{{name}} is working...",
+      "pendingExecution": "Waiting for execution",
+      "noContent": "No content",
+      "assembling": "Agent team assembling",
+      "assemblingDesc": "AI is analyzing \"{{instruction}}\", breaking it down into subtasks and assigning them to the best agents.",
+      "estimatedTime": "Usually takes 10-30 seconds",
+      "selectStep": "Select a step on the left to view deliverables"
+    },
+    "chat": {
+      "title": "Workflow Assistant",
+      "context": "Based on current workflow context",
+      "empty": "Ask me anything about this workflow",
+      "suggestAnalyze": "Analyze the customer mining results",
+      "suggestPriority": "Which customers should I prioritize?",
+      "suggestOptimize": "Help me optimize outreach email content",
+      "suggestRetry": "Retry failed steps",
+      "thinking": "Thinking...",
+      "send": "Send",
+      "placeholder": "Type a message...",
+      "error": "Error: {{message}}"
+    },
+    "importSuccess": "Import successful: {{imported}} contacts, skipped {{skipped}}"
+  },
+  "crm": {
+    "title": "CRM",
+    "stats": "{{contacts}} contacts / {{deals}} deals",
+    "pipeline": "Pipeline",
+    "contacts": "Contacts",
+    "addContact": "+ Contact",
+    "searchPlaceholder": "Search name, company, email...",
+    "deleteSelected": "Delete {{count}}",
+    "deleteConfirm": "Delete {{count}} contacts?",
+    "loading": "Loading...",
+    "noContacts": "No contacts yet",
+    "showing": "Showing {{shown}} of {{total}}",
+    "newContact": "New Contact",
+    "editContact": "Edit Contact",
+    "fields": {
+      "name": "Name",
+      "nameRequired": "Name *",
+      "company": "Company",
+      "email": "Email",
+      "phone": "Phone",
+      "country": "Country",
+      "industry": "Industry",
+      "source": "Source",
+      "notes": "Notes",
+      "deals": "Deals",
+      "contactName": "Contact name"
+    },
+    "deals": "Deals",
+    "addDeal": "+ Deal",
+    "newDeal": "New Deal",
+    "dealFields": {
+      "title": "Title",
+      "titleRequired": "Title *",
+      "value": "Value",
+      "currency": "Currency",
+      "stage": "Stage"
+    },
+    "activity": "Activity",
+    "create": "Create",
+    "createDeal": "Create Deal",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "del": "Del",
+    "edit": "Edit",
+    "dropHere": "Drop here",
+    "deleteContactConfirm": "Delete this contact and all deals?",
+    "deleteDealConfirm": "Delete deal?",
+    "stages": {
+      "lead": "Lead",
+      "contacted": "Contacted",
+      "qualified": "Qualified",
+      "proposal": "Proposal",
+      "negotiation": "Negotiation",
+      "won": "Won",
+      "lost": "Lost"
     }
   }
 }

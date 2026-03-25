@@ -319,6 +319,14 @@ export default function Layout() {
                             <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.home}</span>
                             <span className="sidebar-item-text">{t('nav.dashboard')}</span>
                         </NavLink>
+                        <NavLink to="/workflows" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', fontSize: '14px' }}>⚡</span>
+                            <span className="sidebar-item-text">{t('nav.workflow', 'Workflows')}</span>
+                        </NavLink>
+                        <NavLink to="/crm" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', fontSize: '14px' }}>📇</span>
+                            <span className="sidebar-item-text">{t('nav.crm', 'CRM')}</span>
+                        </NavLink>
                     </div>
                 </div>
 
