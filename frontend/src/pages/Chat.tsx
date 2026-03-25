@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
+import SkillAutocomplete from '../components/SkillAutocomplete';
 import { agentApi, enterpriseApi } from '../services/api';
 import { useAuthStore } from '../stores';
 
@@ -60,6 +61,7 @@ interface Message {
     thinking?: string;
     imageUrl?: string;
     timestamp?: string;
+    isSkillIndicator?: boolean;
 }
 
 export default function Chat() {
@@ -231,6 +233,23 @@ export default function Chat() {
                         }
                         return updated;
                     });
+                } else if (data.type === 'skill_loaded') {
+                    setMessages(prev => [...prev, {
+                        role: 'assistant' as const,
+                        content: `${data.emoji || ''} ${data.name} loaded`.trim(),
+                        isSkillIndicator: true,
+                    }]);
+                } else if (data.type === 'skill_error') {
+                    setMessages(prev => [...prev, {
+                        role: 'assistant' as const,
+                        content: `⚠️ ${data.message}`,
+                        isSkillIndicator: true,
+                    }]);
+                } else if (data.type === 'edit_ack') {
+                    setMessages(prev => {
+                        const idx = prev.findIndex(m => m.id === data.message_id);
+                        return idx >= 0 ? prev.slice(0, idx + 1) : prev;
+                    });
                 } else {
                     // Legacy format: {role, content}
                     setMessages(prev => [...prev, { role: data.role, content: data.content }]);
@@ -372,6 +391,21 @@ export default function Chat() {
                         </div>
                     )}
                     {messages.map((msg, i) => (
+                        msg.isSkillIndicator ? (
+                            <div key={i} style={{ display: 'flex', justifyContent: 'center' }}>
+                                <div style={{
+                                    display: 'inline-block',
+                                    padding: '4px 12px',
+                                    borderRadius: '12px',
+                                    background: 'var(--bg-secondary, #2a2a2a)',
+                                    color: 'var(--text-secondary, #888)',
+                                    fontSize: '12px',
+                                    margin: '4px 0',
+                                }}>
+                                    {msg.content}
+                                </div>
+                            </div>
+                        ) : (
                         <div key={i} className={`chat-message ${msg.role}`}>
                             <div className="chat-avatar" style={{ color: 'var(--text-tertiary)' }}>
                                 {msg.role === 'user' ? Icons.user : Icons.bot}
@@ -473,6 +507,7 @@ export default function Chat() {
                                 )}
                             </div>
                         </div>
+                        )
                     ))}
                     {(isWaiting || (streaming && (messages.length === 0 || messages[messages.length - 1].role === 'user'))) && (
                         <div className="chat-message assistant">
@@ -534,12 +569,13 @@ export default function Chat() {
                     >
                         {uploading ? Icons.loader : Icons.clip}
                     </button>
-                    <input
-                        className="chat-input"
+                    <SkillAutocomplete
                         value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKeyDown}
+                        onChange={setInput}
+                        onSubmit={sendMessage}
+                        skillMap={agent?.skill_map || {}}
                         placeholder={attachedFile ? t('agent.chat.askAboutFile', { name: attachedFile.name }) : t('chat.placeholder')}
+                        className="chat-input"
                         disabled={!connected || isWaiting || streaming}
                     />
                     {(streaming || isWaiting) ? (

@@ -9,6 +9,7 @@ import FileBrowser from '../components/FileBrowser';
 import ChannelConfig from '../components/ChannelConfig';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
+import SkillAutocomplete from '../components/SkillAutocomplete';
 import OpenClawSettings from './OpenClawSettings';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAuthStore } from '../stores';
@@ -1004,7 +1005,7 @@ function AgentDetailInner() {
         } catch (e) { alert('Failed: ' + e); }
         setExpirySaving(false);
     };
-    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
+    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; id?: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; isSkillIndicator?: boolean; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
@@ -1266,6 +1267,23 @@ function AgentDetailInner() {
             } else if (d.type === 'trigger_notification') {
                 setChatMessages(prev => [...prev, { role: 'assistant', content: d.content }]);
                 fetchMySessions(true, agentId);
+            } else if (d.type === 'skill_loaded') {
+                setChatMessages(prev => [...prev, {
+                    role: 'assistant' as const,
+                    content: `${d.emoji || ''} ${d.name} loaded`.trim(),
+                    isSkillIndicator: true,
+                }]);
+            } else if (d.type === 'skill_error') {
+                setChatMessages(prev => [...prev, {
+                    role: 'assistant' as const,
+                    content: `⚠️ ${d.message}`,
+                    isSkillIndicator: true,
+                }]);
+            } else if (d.type === 'edit_ack') {
+                setChatMessages(prev => {
+                    const idx = prev.findIndex(m => m.id === d.message_id);
+                    return idx >= 0 ? prev.slice(0, idx + 1) : prev;
+                });
             } else {
                 setChatMessages(prev => [...prev, { role: d.role, content: d.content }]);
             }
@@ -3324,6 +3342,23 @@ function AgentDetailInner() {
                                                 </div>
                                             )}
                                             {chatMessages.map((msg, i) => {
+                                                if (msg.isSkillIndicator) {
+                                                    return (
+                                                        <div key={i} style={{ display: 'flex', justifyContent: 'center' }}>
+                                                            <div style={{
+                                                                display: 'inline-block',
+                                                                padding: '4px 12px',
+                                                                borderRadius: '12px',
+                                                                background: 'var(--bg-secondary, #2a2a2a)',
+                                                                color: 'var(--text-secondary, #888)',
+                                                                fontSize: '12px',
+                                                                margin: '4px 0',
+                                                            }}>
+                                                                {msg.content}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }
                                                 if (msg.role === 'tool_call') {
                                                     return (
                                                         <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
@@ -3488,11 +3523,16 @@ function AgentDetailInner() {
                                                     <button onClick={() => { uploadAbortRef.current?.(); }} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '0 2px', lineHeight: 1 }} title="Cancel upload">✕</button>
                                                 </div>
                                             )}
-                                            <input ref={chatInputRef} className="chat-input" value={chatInput} onChange={e => setChatInput(e.target.value)}
-                                                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); sendChatMsg(); } }}
-                                                onPaste={handlePaste}
+                                            <SkillAutocomplete
+                                                value={chatInput}
+                                                onChange={setChatInput}
+                                                onSubmit={sendChatMsg}
+                                                skillMap={agent?.skill_map || {}}
                                                 placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : attachedFiles.length > 0 ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` }) : t('chat.placeholder')}
-                                                disabled={!wsConnected || isWaiting || isStreaming} style={{ flex: 1 }} autoFocus />
+                                                className="chat-input"
+                                                disabled={!wsConnected || isWaiting || isStreaming}
+                                                inputRef={chatInputRef}
+                                            />
                                             {(isStreaming || isWaiting) ? (
                                                 <button className="btn btn-stop-generation" onClick={() => {
                                                     if (!id || !activeSession?.id) return;
