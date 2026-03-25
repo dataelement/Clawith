@@ -60,36 +60,25 @@ export default function AdminCompanies() {
     ];
 
     return (
-        <div style={{ maxWidth: '1040px', margin: '0 auto', padding: '32px 24px' }}>
-            {/* Header */}
-            <div style={{ marginBottom: '24px' }}>
-                <h1 style={{ fontSize: '20px', fontWeight: 600, marginBottom: '4px' }}>
-                    {t('admin.platformSettings', 'Platform Settings')}
-                </h1>
-                <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>
-                    {t('admin.platformSettingsDesc', 'Manage platform-wide settings and company tenants.')}
-                </p>
+        <div>
+            <div className="page-header">
+                <div>
+                    <h1 className="page-title">{t('admin.platformSettings', 'Platform Settings')}</h1>
+                    <p className="page-subtitle">
+                        {t('admin.platformSettingsDesc', 'Manage platform-wide settings and company tenants.')}
+                    </p>
+                </div>
             </div>
 
-            {/* Tabs */}
-            <div style={{
-                display: 'flex', gap: '0', borderBottom: '1px solid var(--border-subtle)',
-                marginBottom: '24px',
-            }}>
+            <div className="tabs">
                 {tabs.map(tab => (
-                    <button
+                    <div
                         key={tab.key}
+                        className={`tab ${activeTab === tab.key ? 'active' : ''}`}
                         onClick={() => setActiveTab(tab.key)}
-                        style={{
-                            padding: '8px 16px', fontSize: '13px', fontWeight: 500,
-                            background: 'none', border: 'none', cursor: 'pointer',
-                            color: activeTab === tab.key ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                            borderBottom: activeTab === tab.key ? '2px solid var(--accent-primary)' : '2px solid transparent',
-                            marginBottom: '-1px', transition: 'all 0.15s',
-                        }}
                     >
                         {tab.label}
-                    </button>
+                    </div>
                 ))}
             </div>
 

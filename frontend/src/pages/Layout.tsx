@@ -4,69 +4,40 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
 import { agentApi } from '../services/api';
+import {
+    IconHome,
+    IconPlus,
+    IconSettings,
+    IconUser,
+    IconSun,
+    IconMoon,
+    IconLogout,
+    IconWorld,
+    IconLayoutSidebarLeftCollapse,
+    IconLayoutSidebarLeftExpand,
+    IconBell,
+    IconBuildingMonument,
+    IconSearch,
+    IconX,
+    IconPin,
+    IconPinnedOff,
+    IconArrowUpRight,
+    IconBuilding
+} from '@tabler/icons-react';
 
-/* ────── SVG Icons ────── */
+/* ────── Tabler Icons ────── */
 const SidebarIcons = {
-    home: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2.5 6.5L8 2l5.5 4.5V13a1 1 0 01-1 1h-3V10H6.5v4h-3a1 1 0 01-1-1V6.5z" />
-        </svg>
-    ),
-    plus: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <path d="M8 3v10M3 8h10" />
-        </svg>
-    ),
-    settings: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="8" r="2" />
-            <path d="M13.5 8a5.5 5.5 0 00-.3-1.8l1.3-1-1.2-2-1.5.6a5.5 5.5 0 00-1.6-.9L9.8 1.5H7.6l-.4 1.4a5.5 5.5 0 00-1.6.9L4 3.2 2.8 5.2l1.3 1A5.5 5.5 0 003.8 8c0 .6.1 1.2.3 1.8l-1.3 1 1.2 2 1.5-.6c.5.4 1 .7 1.6.9l.4 1.4h2.2l.4-1.4c.6-.2 1.1-.5 1.6-.9l1.5.6 1.2-2-1.3-1c.2-.6.3-1.2.3-1.8z" />
-        </svg>
-    ),
-    user: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="5.5" r="2.5" />
-            <path d="M3 14v-1a4 4 0 018 0v1" />
-        </svg>
-    ),
-    sun: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <circle cx="8" cy="8" r="3" />
-            <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" />
-        </svg>
-    ),
-    moon: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M13.5 8.5a5.5 5.5 0 01-8-4.5 5.5 5.5 0 003 10c2 0 3.8-1 4.8-2.7a4 4 0 01.2-2.8z" />
-        </svg>
-    ),
-    logout: (
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M6 14H3a1 1 0 01-1-1V3a1 1 0 011-1h3M11 11l3-3-3-3M14 8H6" />
-        </svg>
-    ),
-    globe: (
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="8" r="6" />
-            <path d="M2 8h12M8 2a10 10 0 013 6 10 10 0 01-3 6 10 10 0 01-3-6 10 10 0 013-6z" />
-        </svg>
-    ),
-    collapse: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M15 18l-6-6 6-6" />
-        </svg>
-    ),
-    expand: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 18l6-6-6-6" />
-        </svg>
-    ),
-    bell: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 6a4 4 0 018 0c0 2 1 3.5 1.5 4.5H2.5C3 9.5 4 8 4 6z" />
-            <path d="M6.5 12.5a1.5 1.5 0 003 0" />
-        </svg>
-    ),
+    home: <IconHome size={16} stroke={1.5} />,
+    plus: <IconPlus size={16} stroke={1.5} />,
+    settings: <IconSettings size={16} stroke={1.5} />,
+    user: <IconUser size={16} stroke={1.5} />,
+    sun: <IconSun size={16} stroke={1.5} />,
+    moon: <IconMoon size={16} stroke={1.5} />,
+    logout: <IconLogout size={16} stroke={1.5} />,
+    globe: <IconWorld size={16} stroke={1.5} />,
+    collapse: <IconLayoutSidebarLeftCollapse size={16} stroke={1.5} />,
+    expand: <IconLayoutSidebarLeftExpand size={16} stroke={1.5} />,
+    bell: <IconBell size={16} stroke={1.5} />,
 };
 
 const fetchJson = async <T,>(url: string): Promise<T> => {
@@ -312,7 +283,9 @@ export default function Layout() {
 
                     <div className="sidebar-section">
                         <NavLink to="/plaza" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
-                            <span className="sidebar-item-icon" style={{ display: 'flex', fontSize: '14px' }}>🏛️</span>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                <IconBuildingMonument size={14} stroke={1.5} />
+                            </span>
                             <span className="sidebar-item-text">{t('nav.plaza', 'Plaza')}</span>
                         </NavLink>
                         <NavLink to="/dashboard" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
@@ -321,14 +294,16 @@ export default function Layout() {
                         </NavLink>
                     </div>
                 </div>
+                
+                <div className="sidebar-divider" />
 
                 <div className="sidebar-scrollable">
                     {/* Sidebar search */}
                     {!isSidebarCollapsed && agents.length >= 5 && (
                         <div style={{ padding: '4px 12px 4px', position: 'relative' }}>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2" strokeLinecap="round" style={{ position: 'absolute', left: '20px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
-                                <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
-                            </svg>
+                            <div style={{ position: 'absolute', left: '20px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-tertiary)', display: 'flex' }}>
+                                <IconSearch size={14} stroke={2} />
+                            </div>
                             <input
                                 type="text"
                                 value={sidebarSearch}
@@ -343,7 +318,9 @@ export default function Layout() {
                                 onBlur={e => e.target.style.borderColor = 'var(--border-subtle)'}
                             />
                             {sidebarSearch && (
-                                <button onClick={() => setSidebarSearch('')} style={{ position: 'absolute', right: '18px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '2px', lineHeight: 1 }}>&#x2715;</button>
+                                <button onClick={() => setSidebarSearch('')} style={{ position: 'absolute', right: '18px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex', padding: 0 }}>
+                                    <IconX size={14} stroke={2} />
+                                </button>
                             )}
                         </div>
                     )}
@@ -369,16 +346,12 @@ export default function Layout() {
                                     to={`/agents/${agent.id}`}
                                     className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
                                     title={agent.name}
-                                    style={{ paddingRight: '28px' }}
                                 >
                                     <span className="sidebar-item-icon" style={{ position: 'relative' }}>
                                         <span className={`agent-avatar${agent.agent_type === 'openclaw' ? ' openclaw' : ''}`}>{avatarChar}</span>
                                         {agent.agent_type === 'openclaw' && (
-                                            <span className="agent-avatar-link">
-                                                <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                                                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                                                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                                                </svg>
+                                            <span className="agent-avatar-link" style={{ display: 'flex' }}>
+                                                <IconArrowUpRight size={10} stroke={2.5} />
                                             </span>
                                         )}
                                         {badge && <span className={`agent-avatar-badge ${badge}`} />}
@@ -391,9 +364,14 @@ export default function Layout() {
                                         className={`sidebar-pin-btn ${pinnedAgents.has(agent.id) ? 'pinned' : ''}`}
                                         title={pinnedAgents.has(agent.id) ? (isChinese ? '取消置顶' : 'Unpin') : (isChinese ? '置顶' : 'Pin to top')}
                                     >
-                                        <svg width="10" height="10" viewBox="0 0 24 24" fill={pinnedAgents.has(agent.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                            <path d="M12 17v5" /><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V5a1 1 0 0 1 1-1h1V2H7v2h1a1 1 0 0 1 1 1z" />
-                                        </svg>
+                                        {pinnedAgents.has(agent.id) ? (
+                                            <>
+                                                <IconPin size={14} stroke={1.5} className="pin-default" />
+                                                <IconPinnedOff size={14} stroke={1.5} className="pin-hover" />
+                                            </>
+                                        ) : (
+                                            <IconPin size={14} stroke={1.5} className="pin-on" />
+                                        )}
                                     </button>
                                 )}
                             </div>
@@ -426,16 +404,14 @@ export default function Layout() {
                         )}
                         {user && ['platform_admin', 'org_admin'].includes(user.role) && (
                             <NavLink to="/enterprise" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.enterprise')}>
-                                <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.settings}</span>
+                                <span className="sidebar-item-icon" style={{ display: 'flex' }}><IconBuilding size={16} stroke={1.5} /></span>
                                 <span className="sidebar-item-text">{t('nav.enterprise')}</span>
                             </NavLink>
                         )}
                         {user && user.role === 'platform_admin' && (
                             <NavLink to="/admin/platform-settings" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.platformSettings', 'Platform Settings')}>
                                 <span className="sidebar-item-icon" style={{ display: 'flex' }}>
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                                        <circle cx="8" cy="8" r="2.5" /><path d="M13.5 8a5.5 5.5 0 01-.3 1.8l1.3.8-.8 1.4-1.3-.8a5.5 5.5 0 01-1.5 1l.1 1.5H9.2l.1-1.5a5.5 5.5 0 01-1.5-1l-1.3.8-.8-1.4 1.3-.8A5.5 5.5 0 016.7 8a5.5 5.5 0 01.3-1.8l-1.3-.8.8-1.4 1.3.8a5.5 5.5 0 011.5-1L9.2 2.3h1.6l-.1 1.5a5.5 5.5 0 011.5 1l1.3-.8.8 1.4-1.3.8a5.5 5.5 0 01.5 1.8z" />
-                                    </svg>
+                                    <IconSettings size={16} stroke={1.5} />
                                 </span>
                                 <span className="sidebar-item-text">{t('nav.platformSettings', 'Platform Settings')}</span>
                             </NavLink>
