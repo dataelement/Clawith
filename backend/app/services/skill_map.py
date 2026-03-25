@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from app.config import settings
+from app.config import get_settings
 
 # Simple TTL cache: (agent_id -> (timestamp, result))
 _cache: dict[str, tuple[float, dict]] = {}
@@ -50,7 +50,7 @@ def _load_reference_json(agent_skills_dir: Path, skill_name: str) -> dict | None
 
     # 2. Global fallback (only for 'role' skill)
     if skill_name == "role":
-        global_dir = Path(settings.AGENCY_AGENTS_DIR)
+        global_dir = Path(get_settings().AGENCY_AGENTS_DIR)
         global_ref = global_dir / "reference.json"
         if global_ref.exists():
             try:

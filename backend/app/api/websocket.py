@@ -36,7 +36,8 @@ async def _resolve_skill_content(
     """
     from app.services.skill_map import _load_reference_json
     from app.services.agent_context import TOOL_WORKSPACE, PERSISTENT_DATA, _parse_skill_frontmatter
-    from app.config import settings
+    from app.config import get_settings
+    _settings = get_settings()
 
     for ws_root in [TOOL_WORKSPACE / str(agent_id), PERSISTENT_DATA / str(agent_id)]:
         skills_dir = ws_root / "skills"
@@ -45,8 +46,8 @@ async def _resolve_skill_content(
             ref_data = _load_reference_json(skills_dir, skill_name)
             if ref_data and sub_item in ref_data:
                 entry = ref_data[sub_item]
-                file_path = (Path(settings.AGENCY_AGENTS_DIR) / entry["path"]).resolve()
-                if not str(file_path).startswith(str(Path(settings.AGENCY_AGENTS_DIR).resolve())):
+                file_path = (Path(_settings.AGENCY_AGENTS_DIR) / entry["path"]).resolve()
+                if not str(file_path).startswith(str(Path(_settings.AGENCY_AGENTS_DIR).resolve())):
                     return None, None, None
                 if not file_path.exists():
                     file_path = (skills_dir / skill_name / entry["path"]).resolve()
