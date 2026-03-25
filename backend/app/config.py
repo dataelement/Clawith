@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     WORKSPACE_CONF_DIR: str = "/etc/nginx/workspace.d"
     WORKSPACE_GATEWAY_CONTAINER: str = "workspace_gateway"
     AGENT_TEMPLATE_DIR: str = "/app/agent_template"
+    AGENCY_AGENTS_DIR: str = "/data/shared/agency-agents"
 
     # Docker (for Agent containers)
     DOCKER_NETWORK: str = "clawith_network"
