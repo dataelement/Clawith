@@ -1012,6 +1012,8 @@ function AgentDetailInner() {
     const [uploading, setUploading] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
+    const [chatEditingId, setChatEditingId] = useState<string | null>(null);
+    const [chatEditContent, setChatEditContent] = useState('');
     const [uploadProgress, setUploadProgress] = useState(-1);
     const uploadAbortRef = useRef<(() => void) | null>(null);
     const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string }[]>([]);
@@ -1725,6 +1727,7 @@ function AgentDetailInner() {
 
     return (
         <>
+            <style>{`.message-row:hover .edit-btn { opacity: 1 !important; }`}</style>
             <div>
                 {/* Header */}
                 <div className="page-header">
@@ -3403,7 +3406,7 @@ function AgentDetailInner() {
                                                     return null;
                                                 }
                                                 return (
-                                                    <div key={i} style={{ display: 'flex', flexDirection: msg.role === 'assistant' ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
+                                                    <div key={i} className="message-row" style={{ display: 'flex', flexDirection: msg.role === 'assistant' ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
                                                         <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: msg.role === 'assistant' ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{msg.role === 'user' ? 'U' : 'A'}</div>
                                                         <div style={{ maxWidth: '70%', padding: '8px 12px', borderRadius: '12px', background: msg.role === 'assistant' ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.1)', fontSize: '13px', lineHeight: '1.5', wordBreak: 'break-word' }}>
                                                             {msg.fileName && (() => {
@@ -3450,7 +3453,51 @@ function AgentDetailInner() {
                                                                         <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
                                                                     </div>
                                                                 ) : <MarkdownRenderer content={msg.content} />
-                                                            ) : msg.content ? <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div> : null}
+                                                            ) : chatEditingId === msg.id ? (
+                                                                <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end', width: '100%' }}>
+                                                                    <textarea
+                                                                        value={chatEditContent}
+                                                                        onChange={e => setChatEditContent(e.target.value)}
+                                                                        autoFocus
+                                                                        style={{ flex: 1, minHeight: '40px', resize: 'vertical', padding: '8px', borderRadius: '4px', border: '1px solid var(--border-color, #333)', background: 'var(--bg-secondary, #1e1e1e)', color: 'inherit' }}
+                                                                    />
+                                                                    <button onClick={() => {
+                                                                        wsRef.current?.send(JSON.stringify({
+                                                                            type: 'edit',
+                                                                            message_id: msg.id,
+                                                                            content: chatEditContent,
+                                                                        }));
+                                                                        setChatEditingId(null);
+                                                                    }} style={{ padding: '4px 12px', borderRadius: '4px', background: 'var(--primary, #4a9eff)', color: 'white', border: 'none', cursor: 'pointer' }}>Save</button>
+                                                                    <button onClick={() => setChatEditingId(null)} style={{ padding: '4px 12px', borderRadius: '4px', background: 'transparent', border: '1px solid var(--border-color, #333)', cursor: 'pointer', color: 'inherit' }}>Cancel</button>
+                                                                </div>
+                                                            ) : msg.content ? (
+                                                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+                                                                    <div style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{msg.content}</div>
+                                                                    {msg.role === 'user' && !msg.isSkillIndicator && msg.id && (
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                setChatEditingId(msg.id || null);
+                                                                                setChatEditContent(msg.content);
+                                                                            }}
+                                                                            title="Edit"
+                                                                            style={{
+                                                                                opacity: 0,
+                                                                                transition: 'opacity 0.2s',
+                                                                                background: 'none',
+                                                                                border: 'none',
+                                                                                cursor: 'pointer',
+                                                                                padding: '4px',
+                                                                                fontSize: '14px',
+                                                                                flexShrink: 0,
+                                                                            }}
+                                                                            className="edit-btn"
+                                                                        >
+                                                                            ✏️
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            ) : null}
                                                             {msg.timestamp && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.6, textAlign: msg.role === 'user' ? 'right' : 'left' }}>{(() => { const d = new Date(msg.timestamp); const now = new Date(); const diffMs = now.getTime() - d.getTime(); const isToday = d.toDateString() === now.toDateString(); if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); if (diffMs < 7 * 86400000) return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); })()}</div>}
                                                         </div>
                                                     </div>
