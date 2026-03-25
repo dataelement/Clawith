@@ -35,7 +35,7 @@ dependencies = [
     "pycryptodome>=3.20.0",
     "loguru>=0.7.0",
     "discord.py>=2.3.0",
-    "agentbay>=0.1.0",
+    "wuying-agentbay-sdk>=0.18.0",
 ]
 
 [project.optional-dependencies]
