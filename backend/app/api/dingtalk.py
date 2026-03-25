@@ -215,11 +215,112 @@ async def process_dingtalk_message(
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
-        # Call LLM
-        reply_text = await _call_agent_llm(
-            db, agent_id, user_text,
-            history=history, user_id=platform_user_id,
+        # ── Set up channel_file_sender so the agent can send files via DingTalk ──
+        from app.services.agent_tools import channel_file_sender as _cfs
+        from app.services.dingtalk_stream import (
+            _upload_dingtalk_media,
+            _send_dingtalk_media_message,
         )
+
+        # Load DingTalk credentials from ChannelConfig
+        _dt_cfg_r = await db.execute(
+            _select(ChannelConfig).where(
+                ChannelConfig.agent_id == agent_id,
+                ChannelConfig.channel_type == "dingtalk",
+            )
+        )
+        _dt_cfg = _dt_cfg_r.scalar_one_or_none()
+        _dt_app_key = _dt_cfg.app_id if _dt_cfg else None
+        _dt_app_secret = _dt_cfg.app_secret if _dt_cfg else None
+
+        _cfs_token = None
+        if _dt_app_key and _dt_app_secret:
+            # Determine send target: group → conversation_id, P2P → sender_staff_id
+            _dt_target_id = conversation_id if conversation_type == "2" else sender_staff_id
+            _dt_conv_type = conversation_type
+
+            async def _dingtalk_file_sender(file_path: str, msg: str = ""):
+                """Send a file/image/video via DingTalk proactive message API."""
+                from pathlib import Path as _P
+
+                _fp = _P(file_path)
+                _ext = _fp.suffix.lower()
+
+                # Determine media type from extension
+                if _ext in (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"):
+                    _media_type = "image"
+                elif _ext in (".mp4", ".mov", ".avi", ".mkv"):
+                    _media_type = "video"
+                elif _ext in (".mp3", ".wav", ".ogg", ".amr", ".m4a"):
+                    _media_type = "voice"
+                else:
+                    _media_type = "file"
+
+                # Upload media to DingTalk
+                _mid = await _upload_dingtalk_media(
+                    _dt_app_key, _dt_app_secret, file_path, _media_type
+                )
+
+                if _mid:
+                    # Send via proactive message API
+                    _ok = await _send_dingtalk_media_message(
+                        _dt_app_key, _dt_app_secret,
+                        _dt_target_id, _mid, _media_type,
+                        _dt_conv_type, filename=_fp.name,
+                    )
+                    if _ok:
+                        # Also send accompany text if provided
+                        if msg:
+                            try:
+                                async with httpx.AsyncClient(timeout=10) as _cl:
+                                    await _cl.post(session_webhook, json={
+                                        "msgtype": "text",
+                                        "text": {"content": msg},
+                                    })
+                            except Exception:
+                                pass
+                        return
+
+                # Fallback: send a text message with download link
+                from pathlib import Path as _P2
+                from app.config import get_settings as _gs_fallback
+                _fs = _gs_fallback()
+                _base_url = getattr(_fs, 'BASE_URL', '').rstrip('/') or ''
+                _fp2 = _P2(file_path)
+                _ws_root = _P2(_fs.AGENT_DATA_DIR)
+                try:
+                    _rel = str(_fp2.relative_to(_ws_root / str(agent_id)))
+                except ValueError:
+                    _rel = _fp2.name
+                _fallback_parts = []
+                if msg:
+                    _fallback_parts.append(msg)
+                if _base_url:
+                    _dl_url = f"{_base_url}/api/agents/{agent_id}/files/download?path={_rel}"
+                    _fallback_parts.append(f"📎 {_fp2.name}\n🔗 {_dl_url}")
+                _fallback_parts.append("⚠️ 文件通过钉钉直接发送失败，请通过上方链接下载。")
+                try:
+                    async with httpx.AsyncClient(timeout=10) as _cl:
+                        await _cl.post(session_webhook, json={
+                            "msgtype": "text",
+                            "text": {"content": "\n\n".join(_fallback_parts)},
+                        })
+                except Exception as _fb_err:
+                    logger.error(f"[DingTalk] Fallback file text also failed: {_fb_err}")
+
+            _cfs_token = _cfs.set(_dingtalk_file_sender)
+
+        # Call LLM
+        try:
+            reply_text = await _call_agent_llm(
+                db, agent_id, user_text,
+                history=history, user_id=platform_user_id,
+            )
+        finally:
+            # Reset ContextVar
+            if _cfs_token is not None:
+                _cfs.reset(_cfs_token)
+
         has_media = bool(image_base64_list or saved_file_paths)
         logger.info(
             f"[DingTalk] LLM reply ({('media' if has_media else 'text')} input): "
@@ -227,11 +328,7 @@ async def process_dingtalk_message(
         )
 
         # Reply via session webhook (markdown)
-        # TODO: Webhook only supports text/markdown. To send images/files back,
-        # use DingTalk's proactive message API (requires access_token + conversation API).
-        # This would need a separate implementation using:
-        #   POST https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend
-        # or the older robot/groupMessages/send endpoint.
+        # Note: File/image sending is handled by channel_file_sender ContextVar above.
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(session_webhook, json={
