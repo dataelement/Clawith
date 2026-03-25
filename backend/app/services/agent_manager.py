@@ -5,7 +5,6 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from string import Template
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -237,16 +236,19 @@ class AgentManager:
             logger.error(f"Failed to remove container: {e}")
             return False
 
-    async def archive_agent_files(self, agent_id: uuid.UUID) -> None:
-        """Archive (move) agent files to a backup location."""
+    async def archive_agent_files(self, agent_id: uuid.UUID) -> Path:
+        """Archive agent files to a backup location and return the archive directory."""
         agent_dir = self._agent_dir(agent_id)
+        archive_dir = Path(settings.AGENT_DATA_DIR) / "_archived"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dest = archive_dir / f"{agent_id}_{timestamp}"
         if agent_dir.exists():
-            archive_dir = Path(settings.AGENT_DATA_DIR) / "_archived"
-            archive_dir.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            dest = archive_dir / f"{agent_id}_{timestamp}"
             shutil.move(str(agent_dir), str(dest))
             logger.info(f"Archived agent files to {dest}")
+        else:
+            dest.mkdir(parents=True, exist_ok=True)
+        return dest
 
     def get_container_status(self, agent: Agent) -> dict:
         """Get real-time container status."""
