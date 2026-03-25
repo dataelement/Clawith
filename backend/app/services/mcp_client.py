@@ -113,7 +113,8 @@ class MCPClient:
 
     async def _streamable_request(self, method: str, params: dict | None = None) -> dict:
         """Send a JSON-RPC request via Streamable HTTP transport."""
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        timeout = 210 if method == "tools/call" else 30
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             if not self._session_id:
                 await self._streamable_initialize(client)
 
@@ -190,7 +191,7 @@ class MCPClient:
 
         body: dict = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
 
-        timeout = 60 if method == "tools/call" else 30
+        timeout = 210 if method == "tools/call" else 30
 
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             # Open the SSE stream
