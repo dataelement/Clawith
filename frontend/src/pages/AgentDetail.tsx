@@ -10,6 +10,7 @@ import ChannelConfig from '../components/ChannelConfig';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
+import { Settings, X, Wrench, Bot, Paperclip, Pencil, ClipboardList, Calendar, CalendarDays, CheckCircle, BarChart3, Dna, Brain, Heart, Package, Folder, Check, Zap, Loader2, FileText, FileEdit, User, Mail, Lock, Unlock, Building2, Eye, Globe, Clock } from 'lucide-react';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAuthStore } from '../stores';
 
@@ -156,7 +157,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                             onClick={() => openConfig(tool)}
                                             style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
                                             title="Configure per-agent settings"
-                                        >⚙️ Config</button>
+                                        ><Settings size={13} /> Config</button>
                                     )}
                                     {canManage && tool.source === 'user_installed' && tool.agent_tool_id && (
                                         <button
@@ -177,7 +178,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                             disabled={deletingToolId === tool.id}
                                             style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-tertiary)', opacity: deletingToolId === tool.id ? 0.5 : 1 }}
                                             title={t('agent.tools.removeTool', 'Remove from agent')}
-                                        >{deletingToolId === tool.id ? '...' : '✕'}</button>
+                                        >{deletingToolId === tool.id ? '...' : <X size={14} />}</button>
                                     )}
                                     {canManage ? (
                                         <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
@@ -229,7 +230,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                             boxShadow: toolTab === 'platform' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
                         }}
                     >
-                        🔧 {t('agent.tools.platformTools', 'Platform Tools')} ({systemTools.length})
+                        <Wrench size={14} /> {t('agent.tools.platformTools', 'Platform Tools')} ({systemTools.length})
                     </button>
                     <button
                         onClick={() => setToolTab('installed')}
@@ -241,7 +242,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                             boxShadow: toolTab === 'installed' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
                         }}
                     >
-                        🤖 {t('agent.tools.agentInstalled', 'Agent-Installed Tools')} ({agentInstalledTools.length})
+                        <Bot size={14} /> {t('agent.tools.agentInstalled', 'Agent-Installed Tools')} ({agentInstalledTools.length})
                     </button>
                 </div>
 
@@ -267,10 +268,10 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                     <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                             <div>
-                                <h3 style={{ margin: 0 }}>⚙️ {configTool.display_name}</h3>
+                                <h3 style={{ margin: 0 }}><Settings size={14} /> {configTool.display_name}</h3>
                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>Per-agent configuration (overrides global defaults)</div>
                             </div>
-                            <button onClick={() => setConfigTool(null)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
+                            <button onClick={() => setConfigTool(null)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}><X size={14} /></button>
                         </div>
 
                         {configTool.config_schema?.fields?.length > 0 ? (
@@ -1411,7 +1412,7 @@ function AgentDetailInner() {
             let filesDisplay = '';
             
             attachedFiles.forEach(file => {
-                filesDisplay += `[📎 ${file.name}] `;
+                filesDisplay += `[${file.name}] `;
                 if (file.imageUrl && supportsVision) {
                     filesPrompt += `[image_data:${file.imageUrl}]\n`;
                 } else if (file.imageUrl) {
@@ -1601,7 +1602,7 @@ function AgentDetailInner() {
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['schedules', id] });
-            showToast('✅ Schedule triggered — executing in background', 'success');
+            showToast('Schedule triggered — executing in background', 'success');
         },
         onError: (err: any) => {
             const msg = err?.response?.data?.detail || err?.message || 'Failed to trigger schedule';
@@ -1843,7 +1844,7 @@ function AgentDetailInner() {
                                         style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '11px', color: 'var(--text-tertiary)', padding: '1px 4px', borderRadius: '4px', lineHeight: 1 }}
                                         onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-secondary)')}
                                         onMouseLeave={e => (e.currentTarget.style.background = 'none')}
-                                    >✏️ {t((agent as any).expires_at || (agent as any).is_expired ? 'agent.settings.expiry.renew' : 'agent.settings.expiry.setExpiry')}</button>
+                                    ><Pencil size={13} /> {t((agent as any).expires_at || (agent as any).is_expired ? 'agent.settings.expiry.renew' : 'agent.settings.expiry.setExpiry')}</button>
                                 )}
                             </p>
                         </div>
@@ -1897,19 +1898,19 @@ function AgentDetailInner() {
                             {/* Metric cards */}
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '24px' }}>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>📋 {t('agent.tabs.status')}</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}><ClipboardList size={13} /> {t('agent.tabs.status')}</div>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                         <span className={`status-dot ${statusKey}`} />
                                         <span style={{ fontSize: '16px', fontWeight: 500 }}>{t(`agent.status.${statusKey}`)}</span>
                                     </div>
                                 </div>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>🗓️ {t('agent.settings.today')} Token</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}><Calendar size={13} /> {t('agent.settings.today')} Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_today)}</div>
                                     {agent.max_tokens_per_day && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_day)}</div>}
                                 </div>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>📅 {t('agent.settings.month')} Token</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}><CalendarDays size={13} /> {t('agent.settings.month')} Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_month)}</div>
                                     {agent.max_tokens_per_month && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_month)}</div>}
                                 </div>
@@ -1927,7 +1928,7 @@ function AgentDetailInner() {
                                 {metrics && (
                                     <>
                                         <div className="card">
-                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>✅ {t('agent.tasks.done')}</div>
+                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}><CheckCircle size={13} /> {t('agent.tasks.done')}</div>
                                             <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.tasks?.done || 0}/{metrics.tasks?.total || 0}</div>
                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> {metrics.tasks?.completion_rate || 0}%</div>
                                         </div>
@@ -2044,7 +2045,7 @@ function AgentDetailInner() {
                             {activityLogs && activityLogs.length > 0 && (
                                 <div className="card">
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                        <h3 style={{ fontSize: '14px', fontWeight: 600 }}>📊 Recent Activity</h3>
+                                        <h3 style={{ fontSize: '14px', fontWeight: 600 }}><BarChart3 size={14} /> Recent Activity</h3>
                                         <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setActiveTab('activityLog')}>View All →</button>
                                     </div>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -2753,7 +2754,7 @@ function AgentDetailInner() {
                                 {/* Soul Section */}
                                 <div>
                                     <h3 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        🧬 {t('agent.soul.title')}
+                                        <Dna size={16} /> {t('agent.soul.title')}
                                     </h3>
                                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                                         {t('agent.mind.soulDesc', 'Core identity, personality, and behavior boundaries.')}
@@ -2761,10 +2762,23 @@ function AgentDetailInner() {
                                     <FileBrowser api={adapter} singleFile="soul.md" title="" features={{ edit: (agent as any)?.access_level !== 'use' }} />
                                 </div>
 
+                                {/* Secrets Section — only visible to agent creator */}
+                                {((agent as any)?.creator_id === currentUser?.id || currentUser?.role === 'platform_admin') && (
+                                    <div>
+                                        <h3 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <Lock size={16} /> {t('agent.mind.secretsTitle', 'Secrets')}
+                                        </h3>
+                                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                            {t('agent.mind.secretsDesc', 'Sensitive credentials (passwords, API keys, connection strings). Only visible to the agent creator.')}
+                                        </p>
+                                        <FileBrowser api={adapter} singleFile="secrets.md" title="" features={{ edit: true }} />
+                                    </div>
+                                )}
+
                                 {/* Memory Section */}
                                 <div>
                                     <h3 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        🧠 {t('agent.memory.title')}
+                                        <Brain size={16} /> {t('agent.memory.title')}
                                     </h3>
                                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                                         {t('agent.mind.memoryDesc', 'Persistent memory accumulated through conversations and experiences.')}
@@ -2775,7 +2789,7 @@ function AgentDetailInner() {
                                 {/* Heartbeat Section */}
                                 <div>
                                     <h3 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        💓 {t('agent.mind.heartbeatTitle', 'Heartbeat')}
+                                        <Heart size={16} /> {t('agent.mind.heartbeatTitle', 'Heartbeat')}
                                     </h3>
                                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                                         {t('agent.mind.heartbeatDesc', 'Instructions for periodic awareness checks. The agent reads this file during each heartbeat.')}
@@ -2976,8 +2990,8 @@ function AgentDetailInner() {
                                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillModal(false)}>
                                         <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                                <h3>📦 {t('agent.skills.importPreset', 'Import from Presets')}</h3>
-                                                <button onClick={() => setShowImportSkillModal(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
+                                                <h3><Package size={14} /> {t('agent.skills.importPreset', 'Import from Presets')}</h3>
+                                                <button onClick={() => setShowImportSkillModal(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}><X size={14} /></button>
                                             </div>
                                             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px' }}>
                                                 {t('agent.skills.importDesc', 'Select a preset skill to import into this agent. All skill files will be copied to the agent\'s skills folder.')}
@@ -3008,8 +3022,8 @@ function AgentDetailInner() {
                                                                         {skill.description?.substring(0, 100)}{skill.description?.length > 100 ? '...' : ''}
                                                                     </div>
                                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                                        📁 {skill.folder_name}
-                                                                        {skill.is_default && <span style={{ marginLeft: '8px', color: 'var(--accent-primary)', fontWeight: 600 }}>✓ Default</span>}
+                                                                        <Folder size={12} /> {skill.folder_name}
+                                                                        {skill.is_default && <span style={{ marginLeft: '8px', color: 'var(--accent-primary)', fontWeight: 600 }}><Check size={12} /> Default</span>}
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -3021,17 +3035,17 @@ function AgentDetailInner() {
                                                                     setImportingSkillId(skill.id);
                                                                     try {
                                                                         const res = await fileApi.importSkill(id!, skill.id);
-                                                                        alert(`✅ Imported "${skill.name}" (${res.files_written} files)`);
+                                                                        alert(`Imported "${skill.name}" (${res.files_written} files)`);
                                                                         queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
                                                                         setShowImportSkillModal(false);
                                                                     } catch (err: any) {
-                                                                        alert(`❌ Import failed: ${err?.message || err}`);
+                                                                        alert(`Import failed: ${err?.message || err}`);
                                                                     } finally {
                                                                         setImportingSkillId(null);
                                                                     }
                                                                 }}
                                                             >
-                                                                {importingSkillId === skill.id ? '⏳ ...' : '⬇️ Import'}
+                                                                {importingSkillId === skill.id ? <><Loader2 size={13} className="spin" /> ...</> : 'Import'}
                                                             </button>
                                                         </div>
                                                     ))
@@ -3230,7 +3244,7 @@ function AgentDetailInner() {
                                     <>
                                         <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px', padding: '4px 8px', background: 'var(--bg-secondary)', borderRadius: '4px', display: 'inline-block' }}>
-                                                {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                                                {activeSession.source_channel === 'agent' ? <><Bot size={14} /> Agent Conversation · {activeSession.username || 'Agents'}</> : <>Read-only · {activeSession.username || 'User'}</>}
                                             </div>
                                             {(() => {
                                                 // For A2A sessions, determine which participant is "this agent" (left side)
@@ -3255,7 +3269,7 @@ function AgentDetailInner() {
                                                         <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
                                                             <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
                                                                 <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
-                                                                    <span style={{ fontSize: '13px' }}>⚡</span>
+                                                                    <span style={{ fontSize: '13px' }}><Zap size={13} /></span>
                                                                     <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
                                                                     {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
                                                                 </summary>
@@ -3297,11 +3311,11 @@ function AgentDetailInner() {
                                                     <div key={i} style={{ display: 'flex', flexDirection: isLeft ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
                                                         <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{m.sender_name ? m.sender_name[0] : (isLeft ? 'A' : 'U')}</div>
                                                         <div style={{ maxWidth: '70%', padding: '8px 12px', borderRadius: '12px', background: isLeft ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.1)', fontSize: '13px', lineHeight: '1.5', wordBreak: 'break-word' }}>
-                                                            {m.sender_name && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600 }}>🤖 {m.sender_name}</div>}
+                                                            {m.sender_name && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '3px' }}><Bot size={14} /> {m.sender_name}</div>}
                                                             {(() => {
                                                                 const pm = parseChatMsg({ role: m.role as ChatMsg['role'], content: m.content || '' });
                                                                 const fe = pm.fileName?.split('.').pop()?.toLowerCase() ?? '';
-                                                                const fi = fe === 'pdf' ? '📄' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '📊' : (fe === 'docx' || fe === 'doc') ? '📝' : '📎';
+                                                                const fi = fe === 'pdf' ? <FileText size={13} /> : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? <BarChart3 size={13} /> : (fe === 'docx' || fe === 'doc') ? <FileEdit size={13} /> : <Paperclip size={13} />;
                                                                 return (
                                                                     <>
                                                                         {m.thinking && (
@@ -3315,7 +3329,7 @@ function AgentDetailInner() {
                                                                                     color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
                                                                                     userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
                                                                                 }}>
-                                                                                    💭 Thinking
+                                                                                    <Brain size={13} /> Thinking
                                                                                 </summary>
                                                                                 <div style={{
                                                                                     padding: '4px 10px 8px',
@@ -3366,7 +3380,7 @@ function AgentDetailInner() {
                                                         <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
                                                             <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
                                                                 <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
-                                                                    <span style={{ fontSize: '13px' }}>{msg.toolStatus === 'running' ? '⏳' : '⚡'}</span>
+                                                                    <span style={{ fontSize: '13px' }}>{msg.toolStatus === 'running' ? <Loader2 size={13} className="spin" /> : <Zap size={13} />}</span>
                                                                     <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{msg.toolName}</span>
                                                                     {msg.toolArgs && Object.keys(msg.toolArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(msg.toolArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
                                                                     {msg.toolStatus === 'running' && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', marginLeft: 'auto' }}>{t('common.loading')}</span>}
@@ -3416,7 +3430,7 @@ function AgentDetailInner() {
                                                                         <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} />
                                                                     </div>);
                                                                 }
-                                                                const fi = fe === 'pdf' ? '📄' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '📊' : (fe === 'docx' || fe === 'doc') ? '📝' : '📎';
+                                                                const fi = fe === 'pdf' ? <FileText size={13} /> : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? <BarChart3 size={13} /> : (fe === 'docx' || fe === 'doc') ? <FileEdit size={13} /> : <Paperclip size={13} />;
                                                                 return (<div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}><span>{fi}</span><span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span></div>);
                                                             })()}
                                                             {msg.thinking && (
@@ -3430,7 +3444,7 @@ function AgentDetailInner() {
                                                                         color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
                                                                         userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
                                                                     }}>
-                                                                        💭 Thinking
+                                                                        <Brain size={13} /> Thinking
                                                                     </summary>
                                                                     <div style={{
                                                                         padding: '4px 10px 8px',
@@ -3494,17 +3508,17 @@ function AgentDetailInner() {
                                                         {file.imageUrl ? (
                                                             <img src={file.imageUrl} alt={file.name} style={{ width: '20px', height: '20px', borderRadius: '4px', objectFit: 'cover' }} />
                                                         ) : (
-                                                            <span>📎</span>
+                                                            <span><Paperclip size={13} /></span>
                                                         )}
                                                         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-                                                        <button onClick={() => setAttachedFiles(prev => prev.filter((_, i) => i !== idx))} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '14px', padding: '0 2px' }} title="Remove file">✕</button>
+                                                        <button onClick={() => setAttachedFiles(prev => prev.filter((_, i) => i !== idx))} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '14px', padding: '0 2px' }} title="Remove file"><X size={14} /></button>
                                                     </div>
                                                 ))}
                                             </div>
                                         )}
                                         <div style={{ display: 'flex', gap: '8px', padding: '6px 12px', borderTop: '1px solid var(--border-subtle)' }}>
                                             <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
-                                            <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={!wsConnected || uploading || isWaiting || isStreaming || attachedFiles.length >= 10} style={{ padding: '6px 10px', fontSize: '14px', minWidth: 'auto', ...( (!wsConnected || uploading || isWaiting || isStreaming) ? { cursor: 'not-allowed', opacity: 0.4 } : {}) }}>{uploading ? '⏳' : '⦹'}</button>
+                                            <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={!wsConnected || uploading || isWaiting || isStreaming || attachedFiles.length >= 10} style={{ padding: '6px 10px', fontSize: '14px', minWidth: 'auto', ...( (!wsConnected || uploading || isWaiting || isStreaming) ? { cursor: 'not-allowed', opacity: 0.4 } : {}) }}>{uploading ? <Loader2 size={13} className="spin" /> : '⦹'}</button>
                                             {uploading && uploadProgress >= 0 && (
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '0 0 140px' }}>
                                                     {uploadProgress <= 100 ? (
@@ -3522,7 +3536,7 @@ function AgentDetailInner() {
                                                             <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>Processing...</span>
                                                         </div>
                                                     )}
-                                                    <button onClick={() => { uploadAbortRef.current?.(); }} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '0 2px', lineHeight: 1 }} title="Cancel upload">✕</button>
+                                                    <button onClick={() => { uploadAbortRef.current?.(); }} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '0 2px', lineHeight: 1 }} title="Cancel upload"><X size={14} /></button>
                                                 </div>
                                             )}
                                             <input ref={chatInputRef} className="chat-input" value={chatInput} onChange={e => setChatInput(e.target.value)}
@@ -3576,7 +3590,7 @@ function AgentDetailInner() {
                             filteredLogs = activityLogs.filter((l: any) => messageTypes.includes(l.action_type));
                         }
 
-                        const filterBtn = (key: string, label: string, indent = false) => (
+                        const filterBtn = (key: string, label: React.ReactNode, indent = false) => (
                             <button
                                 key={key}
                                 onClick={() => setLogFilter(key)}
@@ -3603,15 +3617,15 @@ function AgentDetailInner() {
 
                                 {/* Filter tabs */}
                                 <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
-                                    {filterBtn('user', '👤 ' + t('agent.activityLog.userActions', 'User Actions'))}
+                                    {filterBtn('user', <><User size={13} /> {t('agent.activityLog.userActions', 'User Actions')}</>)}
                                     {(agent as any)?.agent_type !== 'openclaw' && (<>
-                                    {filterBtn('backend', '⚙️ ' + t('agent.activityLog.backendServices', 'Backend Services'))}
+                                    {filterBtn('backend', <><Settings size={13} /> {t('agent.activityLog.backendServices', 'Backend Services')}</>)}
                                     {(logFilter === 'backend' || logFilter === 'heartbeat' || logFilter === 'schedule' || logFilter === 'messages') && (
                                         <>
                                             <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>│</span>
-                                            {filterBtn('heartbeat', '💓 ' + t('agent.mind.heartbeatTitle'))}
-                                            {filterBtn('schedule', '⏰ ' + t('agent.activityLog.scheduleCron'), true)}
-                                            {filterBtn('messages', '📨 ' + t('agent.activityLog.messages'), true)}
+                                            {filterBtn('heartbeat', <><Heart size={13} /> {t('agent.mind.heartbeatTitle')}</>)}
+                                            {filterBtn('schedule', <><Clock size={13} /> {t('agent.activityLog.scheduleCron')}</>, true)}
+                                            {filterBtn('messages', <><Mail size={13} /> {t('agent.activityLog.messages')}</>, true)}
                                         </>
                                     )}
                                     </>)}
@@ -3620,11 +3634,11 @@ function AgentDetailInner() {
                                 {filteredLogs.length > 0 ? (
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                         {filteredLogs.map((log: any) => {
-                                            const icons: Record<string, string> = {
-                                                chat_reply: '💬', tool_call: '⚡', feishu_msg_sent: '📤',
-                                                agent_msg_sent: '🤖', web_msg_sent: '🌐', task_created: '📋',
-                                                task_updated: '✅', file_written: '📝', error: '❌',
-                                                schedule_run: '⏰', heartbeat: '💓', plaza_post: '🏛️',
+                                            const icons: Record<string, React.ReactNode> = {
+                                                chat_reply: <Brain size={14} />, tool_call: <Zap size={14} />, feishu_msg_sent: <Mail size={14} />,
+                                                agent_msg_sent: <Bot size={14} />, web_msg_sent: <Globe size={14} />, task_created: <ClipboardList size={14} />,
+                                                task_updated: <Check size={14} />, file_written: <FileText size={14} />, error: <X size={14} />,
+                                                schedule_run: <Clock size={14} />, heartbeat: <Heart size={14} />, plaza_post: <Building2 size={14} />,
                                             };
                                             const time = log.created_at ? new Date(log.created_at).toLocaleString('zh-CN', {
                                                 month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -3936,7 +3950,7 @@ function AgentDetailInner() {
 
                                 {/* Max Tool Call Rounds */}
                                 <div className="card" style={{ marginBottom: '12px' }}>
-                                    <h4 style={{ marginBottom: '12px' }}>🔧 {t('agent.settings.maxToolRounds', 'Max Tool Call Rounds')}</h4>
+                                    <h4 style={{ marginBottom: '12px' }}><Wrench size={14} /> {t('agent.settings.maxToolRounds', 'Max Tool Call Rounds')}</h4>
                                     <div>
                                         <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxToolRoundsLabel', 'Maximum rounds per message')}</label>
                                         <input
@@ -4069,7 +4083,7 @@ function AgentDetailInner() {
                                         <div className="card" style={{ marginBottom: '12px' }}>
                                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
                                                 <h4 style={{ margin: 0 }}>{isChinese ? '欢迎语' : 'Welcome Message'}</h4>
-                                                {wmSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>✓ {isChinese ? '已保存' : 'Saved'}</span>}
+                                                {wmSaved && <span style={{ fontSize: '12px', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: '3px' }}><Check size={12} /> {isChinese ? '已保存' : 'Saved'}</span>}
                                             </div>
                                             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                                                 {isChinese
@@ -4145,8 +4159,8 @@ function AgentDetailInner() {
                                 {/* Permission Management */}
                                 {(() => {
                                     const scopeLabels: Record<string, string> = {
-                                        company: '🏢 ' + t('agent.settings.perm.companyWide', 'Company-wide'),
-                                        user: '👤 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
+                                        company: t('agent.settings.perm.companyWide', 'Company-wide'),
+                                        user: t('agent.settings.perm.onlyMe', 'Only Me'),
                                     };
 
                                     const handleScopeChange = async (newScope: string) => {
@@ -4183,7 +4197,7 @@ function AgentDetailInner() {
 
                                     return (
                                         <div className="card" style={{ marginBottom: '12px' }}>
-                                            <h4 style={{ marginBottom: '12px' }}>🔒 {t('agent.settings.perm.title', 'Access Permissions')}</h4>
+                                            <h4 style={{ marginBottom: '12px' }}><Lock size={14} /> {t('agent.settings.perm.title', 'Access Permissions')}</h4>
                                             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
                                                 {t('agent.settings.perm.description', 'Control who can see and interact with this agent. Only the creator or admin can change this.')}
                                             </p>
@@ -4236,8 +4250,8 @@ function AgentDetailInner() {
                                                         {t('agent.settings.perm.defaultAccess', 'Default Access Level')}
                                                     </label>
                                                     <div style={{ display: 'flex', gap: '8px' }}>
-                                                        {[{ val: 'use', label: '👁️ ' + t('agent.settings.perm.useAccess', 'Use'), desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
-                                                        { val: 'manage', label: '⚙️ ' + t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') }].map(opt => (
+                                                        {[{ val: 'use', label: t('agent.settings.perm.useAccess', 'Use'), desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
+                                                        { val: 'manage', label: t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') }].map(opt => (
                                                             <label key={opt.val}
                                                                 style={{
                                                                     flex: 1,
@@ -4285,7 +4299,7 @@ function AgentDetailInner() {
                                 {/* Timezone */}
                                 <div className="card" style={{ marginBottom: '12px' }}>
                                     <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        {t('agent.settings.timezone.title', '🌐 Timezone')}
+                                        <Globe size={14} /> {t('agent.settings.timezone.title', 'Timezone')}
                                     </h4>
                                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
                                         {t('agent.settings.timezone.description', 'The timezone used for this agent\'s scheduling, active hours, and time awareness. Defaults to the company timezone if not set.')}
@@ -4550,12 +4564,12 @@ function AgentDetailInner() {
                         <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '12px', padding: '24px', width: '360px', maxWidth: '90vw' }}
                             onClick={e => e.stopPropagation()}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>⏰ {t('agent.settings.expiry.title')}</h3>
+                                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}><Clock size={15} /> {t('agent.settings.expiry.title')}</h3>
                                 <button onClick={() => setShowExpiryModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '18px', lineHeight: 1 }}>×</button>
                             </div>
                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
                                 {(agent as any).is_expired
-                                    ? <span style={{ color: 'var(--error)', fontWeight: 600 }}>⏰ {t('agent.settings.expiry.expired')}</span>
+                                    ? <span style={{ color: 'var(--error)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Clock size={14} /> {t('agent.settings.expiry.expired')}</span>
                                     : (agent as any).expires_at
                                         ? <>{t('agent.settings.expiry.currentExpiry')} <strong>{new Date((agent as any).expires_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}</strong></>
                                         : <span style={{ color: 'var(--success)' }}>{t('agent.settings.expiry.neverExpires')}</span>
@@ -4585,7 +4599,7 @@ function AgentDetailInner() {
                             <div style={{ display: 'flex', gap: '8px', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <button onClick={() => saveExpiry(true)} disabled={expirySaving}
                                     style={{ padding: '7px 12px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'none', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                    🔓 {t('agent.settings.expiry.neverExpires')}
+                                    <Unlock size={14} /> {t('agent.settings.expiry.neverExpires')}
                                 </button>
                                 <div style={{ display: 'flex', gap: '8px' }}>
                                     <button onClick={() => setShowExpiryModal(false)} disabled={expirySaving}

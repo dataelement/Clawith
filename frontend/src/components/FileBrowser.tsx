@@ -6,6 +6,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Folder, Pencil } from 'lucide-react';
 import MarkdownRenderer from './MarkdownRenderer';
 
 // ─── Types ─────────────────────────────────────────────
@@ -255,7 +256,7 @@ export default function FileBrowser({
                     style={{ cursor: 'pointer', color: 'var(--accent-primary)', fontWeight: 500 }}
                     onClick={() => { setCurrentPath(rootPath); setViewing(null); setEditing(false); }}
                 >
-                    📁 {rootPath || 'root'}
+                    <Folder size={14} /> {rootPath || 'root'}
                 </span>
                 {pathParts.slice(rootPath ? rootPath.split('/').filter(Boolean).length : 0).map((part, i) => {
                     const upTo = pathParts.slice(0, (rootPath ? rootPath.split('/').filter(Boolean).length : 0) + i + 1).join('/');
@@ -394,7 +395,7 @@ export default function FileBrowser({
                     {isText && edit && (
                         !editing ? (
                             <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}
-                                onClick={() => { setEditContent(content); setEditing(true); }}>✏️ {t('agent.soul.editButton')}</button>
+                                onClick={() => { setEditContent(content); setEditing(true); }}><Pencil size={14} /> {t('agent.soul.editButton')}</button>
                         ) : (
                             <div style={{ display: 'flex', gap: '6px' }}>
                                 <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}
@@ -461,7 +462,7 @@ export default function FileBrowser({
                     {newFolder && (
                         <button className="btn btn-secondary" style={{ fontSize: '12px' }}
                             onClick={() => setPromptModal({ title: t('agent.workspace.newFolder'), placeholder: t('agent.workspace.newFolderName'), action: 'newFolder' })}>
-                            📁 {t('agent.workspace.newFolder')}
+                            <Folder size={14} /> {t('agent.workspace.newFolder')}
                         </button>
                     )}
                     {newFile && !fileFilter && (

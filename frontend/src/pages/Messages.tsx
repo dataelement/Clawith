@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { messageApi } from '../services/api';
 
 const ACTION_ICONS: Record<string, string> = {
-    text: '💬',
+    text: '',
     notify: '·',
     consult: '?',
     task_delegate: '+',

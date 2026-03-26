@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
+import { Brain, X } from 'lucide-react';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import { agentApi, enterpriseApi } from '../services/api';
 import { useAuthStore } from '../stores';
@@ -385,7 +386,7 @@ export default function Chat() {
                                             color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
                                             userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
                                         }}>
-                                            💭 Thinking
+                                            <Brain size={14} /> Thinking
                                         </summary>
                                         <div style={{
                                             padding: '4px 10px 8px',
@@ -499,7 +500,7 @@ export default function Chat() {
                         <button
                             onClick={() => setAttachedFile(null)}
                             style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '14px' }}
-                        >✕</button>
+                        ><X size={14} /></button>
                     </div>
                 )}
 

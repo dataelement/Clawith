@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores';
 import { useEffect, useState } from 'react';
 import { authApi } from './services/api';
+import { X } from 'lucide-react';
 import Login from './pages/Login';
 import CompanySetup from './pages/CompanySetup';
 import Layout from './pages/Layout';
@@ -66,7 +67,7 @@ function NotificationBar() {
     return (
         <div className="notification-bar">
             <span className="notification-bar-text">{config!.text}</span>
-            <button className="notification-bar-close" onClick={handleDismiss} aria-label="Close">✕</button>
+            <button className="notification-bar-close" onClick={handleDismiss} aria-label="Close"><X size={14} /></button>
         </div>
     );
 }
