@@ -131,6 +131,7 @@ async def process_dingtalk_message(
     session_webhook: str,
     image_base64_list: list[str] | None = None,
     saved_file_paths: list[str] | None = None,
+    sender_nick: str = "",
 ):
     """Process an incoming DingTalk bot message and reply via session webhook.
 
@@ -178,12 +179,24 @@ async def process_dingtalk_message(
                 username=dt_username,
                 email=f"{dt_username}@dingtalk.local",
                 password_hash=hash_password(_uuid.uuid4().hex),
-                display_name=f"DingTalk {sender_staff_id[:8]}",
+                display_name=sender_nick or f"DingTalk {sender_staff_id[:8]}",
                 role="member",
                 tenant_id=agent_obj.tenant_id if agent_obj else None,
+                source="dingtalk",
             )
             db.add(platform_user)
             await db.flush()
+        else:
+            # Update display_name and source for existing users
+            updated = False
+            if sender_nick and platform_user.display_name != sender_nick:
+                platform_user.display_name = sender_nick
+                updated = True
+            if not platform_user.source or platform_user.source == "web":
+                platform_user.source = "dingtalk"
+                updated = True
+            if updated:
+                await db.flush()
         platform_user_id = platform_user.id
 
         # Find or create session

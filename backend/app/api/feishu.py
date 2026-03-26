@@ -451,6 +451,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     feishu_open_id=sender_open_id,
                     feishu_user_id=sender_user_id_feishu or None,
                     tenant_id=agent_obj.tenant_id if agent_obj else None,
+                    source="feishu",
                 )
                 db.add(new_user)
                 await db.flush()
@@ -848,6 +849,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
                 role="member", feishu_open_id=sender_open_id,
                 feishu_user_id=sender_user_id_feishu or None,
                 tenant_id=agent_obj.tenant_id if agent_obj else None,
+                source="feishu",
             )
             db.add(_pu)
             await db.flush()

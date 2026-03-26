@@ -502,6 +502,7 @@ class DingTalkStreamManager:
 
                     msgtype = msg_data.get("msgtype", "text")
                     sender_staff_id = incoming.sender_staff_id or incoming.sender_id or ""
+                    sender_nick = incoming.sender_nick or ""
                     conversation_id = incoming.conversation_id or ""
                     conversation_type = incoming.conversation_type or "1"
                     session_webhook = incoming.session_webhook or ""
@@ -532,6 +533,7 @@ class DingTalkStreamManager:
                                     conversation_id=conversation_id,
                                     conversation_type=conversation_type,
                                     session_webhook=session_webhook,
+                                    sender_nick=sender_nick,
                                 ),
                                 main_loop,
                             )
@@ -560,6 +562,7 @@ class DingTalkStreamManager:
                                     conversation_id=conversation_id,
                                     conversation_type=conversation_type,
                                     session_webhook=session_webhook,
+                                    sender_nick=sender_nick,
                                 ),
                                 main_loop,
                             )
@@ -589,6 +592,7 @@ class DingTalkStreamManager:
                 conversation_id: str,
                 conversation_type: str,
                 session_webhook: str,
+                sender_nick: str = "",
             ):
                 """Download media, then dispatch to process_dingtalk_message."""
                 from app.api.dingtalk import process_dingtalk_message
@@ -613,6 +617,7 @@ class DingTalkStreamManager:
                     session_webhook=session_webhook,
                     image_base64_list=image_base64_list,
                     saved_file_paths=saved_file_paths,
+                    sender_nick=sender_nick,
                 )
 
         while not stop_event.is_set() and retries <= MAX_RETRIES:
