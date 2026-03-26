@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.security import decode_access_token
+from app.utils.sanitize import sanitize_tool_args
 from app.core.permissions import check_agent_access, is_agent_expired
 from app.database import async_session
 from app.models.agent import Agent
@@ -340,7 +341,7 @@ async def call_llm(
                 try:
                     await on_tool_call({
                         "name": tool_name,
-                        "args": args,
+                        "args": sanitize_tool_args(args),
                         "status": "running",
                         "reasoning_content": full_reasoning_content
                     })
@@ -359,7 +360,7 @@ async def call_llm(
                 try:
                     await on_tool_call({
                         "name": tool_name,
-                        "args": args,
+                        "args": sanitize_tool_args(args),
                         "status": "done",
                         "result": result,
                         "reasoning_content": full_reasoning_content
@@ -703,7 +704,7 @@ async def websocket_chat(
                                         role="tool_call",
                                         content=_json_tc.dumps({
                                             "name": data.get("name", ""),
-                                            "args": data.get("args"),
+                                            "args": sanitize_tool_args(data.get("args")),
                                             "status": "done",
                                             "result": (data.get("result") or "")[:500],
                                             "reasoning_content": data.get("reasoning_content"),
