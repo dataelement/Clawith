@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -22,7 +22,8 @@ import {
     IconPin,
     IconPinnedOff,
     IconArrowUpRight,
-    IconBuilding
+    IconBuilding,
+    IconChevronUp
 } from '@tabler/icons-react';
 
 /* ────── Tabler Icons ────── */
@@ -173,6 +174,8 @@ export default function Layout() {
     const queryClient = useQueryClient();
     const isChinese = i18n.language?.startsWith('zh');
     const [showAccountSettings, setShowAccountSettings] = useState(false);
+    const [showAccountMenu, setShowAccountMenu] = useState(false);
+    const accountMenuRef = useRef<HTMLDivElement>(null);
     const [showNotifications, setShowNotifications] = useState(false);
     const [notifCategory, setNotifCategory] = useState<string>('all');
     const [selectedNotification, setSelectedNotification] = useState<any | null>(null);
@@ -273,6 +276,16 @@ export default function Layout() {
         i18n.changeLanguage(i18n.language === 'zh' ? 'en' : 'zh');
     };
 
+    useEffect(() => {
+        const handleClickOutside = (e: MouseEvent) => {
+            if (accountMenuRef.current && !accountMenuRef.current.contains(e.target as Node)) {
+                setShowAccountMenu(false);
+            }
+        };
+        if (showAccountMenu) document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showAccountMenu]);
+
     return (
         <div className="app-layout">
             <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
@@ -280,6 +293,12 @@ export default function Layout() {
                     <div className="sidebar-logo">
                         <img src={theme === 'dark' ? '/logo-white.png' : '/logo-black.png'} alt="" style={{ width: 22, height: 22 }} />
                         <span className="sidebar-logo-text">Clawith</span>
+                        <button className="btn btn-ghost sidebar-collapse-btn" onClick={toggleSidebar} style={{
+                            padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            marginLeft: 'auto', color: 'var(--text-tertiary)',
+                        }} title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}>
+                            {isSidebarCollapsed ? SidebarIcons.expand : SidebarIcons.collapse}
+                        </button>
                     </div>
 
 
@@ -423,15 +442,13 @@ export default function Layout() {
 
                     <div className="sidebar-footer">
                         <div className="sidebar-footer-controls" style={{
-                            display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '12px',
+                            display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px',
                         }}>
-                            <button className="btn btn-ghost" onClick={toggleSidebar} style={{
-                                padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center'
-                            }} title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}>
-                                {isSidebarCollapsed ? SidebarIcons.expand : SidebarIcons.collapse}
+                            <button className="btn btn-ghost" onClick={toggleTheme} style={{
+                                padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            }} title={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}>
+                                {theme === 'dark' ? SidebarIcons.sun : SidebarIcons.moon}
                             </button>
-                            <div style={{ flex: 1 }} />
-                            {/* Notification bell */}
                             <button className="btn btn-ghost" onClick={() => { setShowNotifications(v => !v); if (!showNotifications) refetchNotifications(); }} style={{
                                 padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative',
                             }} title={isChinese ? '通知' : 'Notifications'}>
@@ -448,31 +465,28 @@ export default function Layout() {
                                     }}>{(unreadCount as number) > 99 ? '99+' : unreadCount}</span>
                                 )}
                             </button>
-                            <button className="btn btn-ghost" onClick={toggleTheme} style={{
-                                fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px',
-                                padding: '4px 8px',
-                            }}>
-                                {theme === 'dark' ? SidebarIcons.sun : SidebarIcons.moon}
-                            </button>
-                            <button className="btn btn-ghost" onClick={toggleLang} style={{
-                                fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px',
-                                padding: '4px 8px',
-                            }} title={i18n.language === 'zh' ? 'English' : '中文'}>
-                                {SidebarIcons.globe}
-                            </button>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div ref={accountMenuRef} style={{ position: 'relative' }}>
+                            {showAccountMenu && (
+                                <div className="account-dropdown">
+                                    <button className="account-dropdown-item" onClick={() => { toggleLang(); setShowAccountMenu(false); }}>
+                                        <IconWorld size={15} stroke={1.5} />
+                                        <span>{i18n.language === 'zh' ? 'English' : '中文'}</span>
+                                    </button>
+                                    <button className="account-dropdown-item" onClick={() => { setShowAccountSettings(true); setShowAccountMenu(false); }}>
+                                        <IconUser size={15} stroke={1.5} />
+                                        <span>{isChinese ? '账户设置' : 'Account Settings'}</span>
+                                    </button>
+                                    <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '4px 0' }} />
+                                    <button className="account-dropdown-item account-dropdown-danger" onClick={() => { handleLogout(); setShowAccountMenu(false); }}>
+                                        <IconLogout size={15} stroke={1.5} />
+                                        <span>{t('layout.logout', 'Logout')}</span>
+                                    </button>
+                                </div>
+                            )}
                             <div
-                                style={{
-                                    display: 'flex', alignItems: 'center', gap: '8px',
-                                    flex: 1, minWidth: 0, cursor: 'pointer',
-                                    padding: '4px 6px', borderRadius: '6px',
-                                    transition: 'background 0.15s',
-                                }}
-                                onClick={() => setShowAccountSettings(true)}
-                                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
-                                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                                title={isChinese ? '账户设置' : 'Account Settings'}
+                                className="sidebar-account-row"
+                                onClick={() => setShowAccountMenu(v => !v)}
                             >
                                 <div style={{
                                     width: '28px', height: '28px', borderRadius: 'var(--radius-md)',
@@ -492,103 +506,105 @@ export default function Layout() {
                                                 user?.role === 'agent_admin' ? t('roles.agentAdmin') : t('roles.member')}
                                     </div>
                                 </div>
+                                <IconChevronUp size={14} stroke={1.5} style={{
+                                    color: 'var(--text-tertiary)', flexShrink: 0,
+                                    transform: showAccountMenu ? 'rotate(0deg)' : 'rotate(180deg)',
+                                    transition: 'transform 0.2s ease',
+                                }} />
                             </div>
-                            <button className="btn btn-ghost" onClick={handleLogout} style={{
-                                padding: '4px 6px', color: 'var(--text-tertiary)',
-                                display: 'flex', alignItems: 'center', flexShrink: 0,
-                            }} title={t('layout.logout', 'Logout')}>
-                                {SidebarIcons.logout}
-                            </button>
                         </div>
-                        {/* Version */}
                         <VersionDisplay />
                     </div>
                 </div>
             </nav>
 
-            {/* Notification Panel */}
+            {/* Notification Modal */}
             {showNotifications && (
-                <div style={{
-                    position: 'fixed', top: 0, bottom: 0, left: isSidebarCollapsed ? '60px' : '220px',
-                    width: '360px', background: 'var(--bg-primary)', borderRight: '1px solid var(--border-subtle)',
-                    zIndex: 9999, display: 'flex', flexDirection: 'column',
-                    boxShadow: '4px 0 24px rgba(0,0,0,0.15)', transition: 'left 0.2s',
-                }}>
-                    <div style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                        <div style={{ padding: '16px 20px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 600, flex: 1 }}>{isChinese ? '通知' : 'Notifications'}</h3>
-                            {(unreadCount as number) > 0 && (
-                                <button className="btn btn-ghost" onClick={markAllRead} style={{ fontSize: '11px', padding: '4px 8px' }}>
-                                    {isChinese ? '全部已读' : 'Mark all read'}
-                                </button>
-                            )}
-                            <button className="btn btn-ghost" onClick={() => setShowNotifications(false)} style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>×</button>
+                <>
+                    <div style={{ position: 'fixed', inset: 0, zIndex: 9998, background: 'rgba(0,0,0,0.5)' }} onClick={() => setShowNotifications(false)} />
+                    <div style={{
+                        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+                        width: 'calc(100vw - 80px)', maxWidth: '800px',
+                        height: '80vh', maxHeight: '800px',
+                        background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
+                        borderRadius: '12px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+                        zIndex: 9999, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                    }}>
+                        <div style={{ borderBottom: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+                            <div style={{ padding: '16px 24px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, flex: 1 }}>{isChinese ? '通知' : 'Notifications'}</h3>
+                                {(unreadCount as number) > 0 && (
+                                    <button className="btn btn-ghost" onClick={markAllRead} style={{ fontSize: '12px', padding: '4px 10px' }}>
+                                        {isChinese ? '全部已读' : 'Mark all read'}
+                                    </button>
+                                )}
+                                <button className="btn btn-ghost" onClick={() => setShowNotifications(false)} style={{ padding: '4px 8px', fontSize: '18px', lineHeight: 1 }}>×</button>
+                            </div>
+                            <div style={{ display: 'flex', gap: '0', padding: '0 24px', marginTop: '12px' }}>
+                                {[
+                                    { key: 'all', zh: '全部', en: 'All' },
+                                    { key: 'tool', zh: '工具执行', en: 'Tool' },
+                                    { key: 'approval', zh: '审批', en: 'Approval' },
+                                    { key: 'social', zh: '社交', en: 'Social' },
+                                ].map(tab => (
+                                    <button
+                                        key={tab.key}
+                                        onClick={() => { setNotifCategory(tab.key); }}
+                                        style={{
+                                            background: 'none', border: 'none', cursor: 'pointer',
+                                            padding: '8px 14px', fontSize: '13px', fontWeight: 500,
+                                            color: notifCategory === tab.key ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                                            borderBottom: notifCategory === tab.key ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                                            marginBottom: '-1px', transition: 'all 0.15s',
+                                        }}
+                                    >
+                                        {isChinese ? tab.zh : tab.en}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
-                        <div style={{ display: 'flex', gap: '0', padding: '0 20px', marginTop: '12px' }}>
-                            {[
-                                { key: 'all', zh: '全部', en: 'All' },
-                                { key: 'tool', zh: '工具执行', en: 'Tool' },
-                                { key: 'approval', zh: '审批', en: 'Approval' },
-                                { key: 'social', zh: '社交', en: 'Social' },
-                            ].map(tab => (
-                                <button
-                                    key={tab.key}
-                                    onClick={() => { setNotifCategory(tab.key); }}
-                                    style={{
-                                        background: 'none', border: 'none', cursor: 'pointer',
-                                        padding: '6px 12px', fontSize: '12px', fontWeight: 500,
-                                        color: notifCategory === tab.key ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                                        borderBottom: notifCategory === tab.key ? '2px solid var(--accent-primary)' : '2px solid transparent',
-                                        marginBottom: '-1px', transition: 'all 0.15s',
+                        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+                            {(notifications as any[]).length === 0 && (
+                                <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                    {isChinese ? '暂无通知' : 'No notifications'}
+                                </div>
+                            )}
+                            {(notifications as any[]).map((n: any) => (
+                                <div
+                                    key={n.id}
+                                    onClick={() => {
+                                        if (!n.is_read) markOneRead(n.id);
+                                        if (n.type === 'broadcast' || !n.link) {
+                                            setSelectedNotification(n);
+                                        } else if (n.link) {
+                                            navigate(n.link); setShowNotifications(false);
+                                        }
                                     }}
+                                    style={{
+                                        padding: '14px 24px', cursor: 'pointer',
+                                        borderBottom: '1px solid var(--border-subtle)',
+                                        background: n.is_read ? 'transparent' : 'var(--bg-secondary)',
+                                        transition: 'background 0.15s',
+                                    }}
+                                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
+                                    onMouseLeave={e => (e.currentTarget.style.background = n.is_read ? 'transparent' : 'var(--bg-secondary)')}
                                 >
-                                    {isChinese ? tab.zh : tab.en}
-                                </button>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                                        {!n.is_read && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-primary)', flexShrink: 0 }} />}
+                                        <span style={{ fontSize: '13px', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {n.title}
+                                        </span>
+                                    </div>
+                                    {n.body && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: '1.4', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.body}</div>}
+                                    <div style={{ fontSize: '11px', color: 'var(--text-quaternary)', marginTop: '4px' }}>
+                                        {n.created_at ? new Date(n.created_at).toLocaleString() : ''}
+                                    </div>
+                                </div>
                             ))}
                         </div>
                     </div>
-                    <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-                        {(notifications as any[]).length === 0 && (
-                            <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                                {isChinese ? '暂无通知' : 'No notifications'}
-                            </div>
-                        )}
-                        {(notifications as any[]).map((n: any) => (
-                            <div
-                                key={n.id}
-                                onClick={() => {
-                                    if (!n.is_read) markOneRead(n.id);
-                                    if (n.type === 'broadcast' || !n.link) {
-                                        setSelectedNotification(n);
-                                    } else if (n.link) {
-                                        navigate(n.link); setShowNotifications(false);
-                                    }
-                                }}
-                                style={{
-                                    padding: '12px 20px', cursor: 'pointer',
-                                    borderBottom: '1px solid var(--border-subtle)',
-                                    background: n.is_read ? 'transparent' : 'var(--bg-secondary)',
-                                    transition: 'background 0.15s',
-                                }}
-                                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
-                                onMouseLeave={e => (e.currentTarget.style.background = n.is_read ? 'transparent' : 'var(--bg-secondary)')}
-                            >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                                    {!n.is_read && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-primary)', flexShrink: 0 }} />}
-                                    <span style={{ fontSize: '12px', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {n.title}
-                                    </span>
-                                </div>
-                                {n.body && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: '1.4', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.body}</div>}
-                                <div style={{ fontSize: '10px', color: 'var(--text-quaternary)', marginTop: '4px' }}>
-                                    {n.created_at ? new Date(n.created_at).toLocaleString() : ''}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
+                </>
             )}
-            {showNotifications && <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setShowNotifications(false)} />}
             
             {/* Notification Detail Modal */}
             {selectedNotification && (

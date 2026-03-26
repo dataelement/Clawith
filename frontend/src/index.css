@@ -387,7 +387,7 @@ select:focus {
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
   color: var(--text-secondary);
-  transition: all 0.35s ease-in-out;
+  transition: all 0.25s ease-in-out;
   cursor: pointer;
   text-decoration: none;
   white-space: nowrap;
@@ -453,7 +453,7 @@ select:focus {
   padding: 3px;
   color: var(--text-tertiary);
   opacity: 0;
-  transition: opacity 0.35s ease-in-out, color 0.35s ease-in-out, background 0.35s ease-in-out;
+  transition: opacity 0.25s ease-in-out, color 0.25s ease-in-out, background 0.25s ease-in-out;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -497,6 +497,79 @@ select:focus {
   padding: var(--space-4) var(--space-5);
 }
 
+/* Collapse/expand toggle in logo row */
+.sidebar-collapse-btn {
+  transition: opacity 0.2s ease;
+}
+
+.sidebar.collapsed .sidebar-collapse-btn {
+  margin-left: 0 !important;
+}
+
+/* Account row trigger */
+.sidebar-account-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.sidebar-account-row:hover {
+  background: var(--bg-tertiary);
+}
+
+/* Account dropdown menu */
+.account-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 4px;
+  box-shadow: var(--shadow-lg);
+  z-index: 100;
+  animation: accountDropdownIn 0.15s ease;
+}
+
+@keyframes accountDropdownIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.account-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.account-dropdown-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.account-dropdown-danger {
+  color: var(--error);
+}
+
+.account-dropdown-danger:hover {
+  background: var(--error-subtle);
+  color: var(--error);
+}
+
 .main-content {
   margin-left: var(--sidebar-width);
   flex: 1;
@@ -517,6 +590,8 @@ select:focus {
 .sidebar.collapsed .sidebar-logo {
   justify-content: center;
   padding: var(--space-3) 0;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .sidebar.collapsed .sidebar-logo-text {
@@ -563,10 +638,17 @@ select:focus {
 .sidebar.collapsed .sidebar-footer-controls {
   flex-direction: column;
   gap: var(--space-2);
-  margin-bottom: 0 !important;
+  margin-bottom: 4px !important;
 }
 
-.sidebar.collapsed .sidebar-footer-user-info {
+.sidebar.collapsed .sidebar-account-row {
+  justify-content: center;
+  padding: var(--space-2) 0;
+}
+
+.sidebar.collapsed .sidebar-footer-user-info,
+.sidebar.collapsed .account-dropdown,
+.sidebar.collapsed .sidebar-account-row > svg {
   display: none;
 }
 

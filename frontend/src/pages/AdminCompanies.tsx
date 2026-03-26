@@ -35,7 +35,7 @@ function formatDate(dt: string | null | undefined): string {
     return new Date(dt).toLocaleDateString(undefined, { year: 'numeric', month: '2-digit', day: '2-digit' });
 }
 
-type SortKey = 'name' | 'org_admin_email' | 'user_count' | 'agent_count' | 'total_tokens' | 'created_at' | 'is_active';
+type SortKey = 'name' | 'org_admin_email' | 'user_count' | 'agent_count' | 'total_tokens' | 'created_at';
 type SortDir = 'asc' | 'desc';
 
 const PAGE_SIZE = 15;
@@ -180,6 +180,21 @@ function PlatformTab() {
         setUrlSaving(false);
     };
 
+    const switchStyle = (checked: boolean, disabled?: boolean): React.CSSProperties => ({
+        position: 'relative', display: 'inline-block', width: '40px', height: '22px',
+        cursor: disabled ? 'not-allowed' : 'pointer', flexShrink: 0,
+    });
+    const switchTrack = (checked: boolean): React.CSSProperties => ({
+        position: 'absolute', inset: 0,
+        background: checked ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+        borderRadius: '11px', transition: 'background 0.2s',
+    });
+    const switchThumb = (checked: boolean): React.CSSProperties => ({
+        position: 'absolute', left: checked ? '20px' : '2px', top: '2px',
+        width: '18px', height: '18px', background: '#fff',
+        borderRadius: '50%', transition: 'left 0.2s',
+    });
+
     return (
         <>
             {toast && (
@@ -201,11 +216,11 @@ function PlatformTab() {
                                 <div style={{ fontSize: '13px', fontWeight: 500 }}>{s.label}</div>
                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{s.desc}</div>
                             </div>
-                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: settingsLoading ? 'not-allowed' : 'pointer', flexShrink: 0 }}>
+                            <label style={switchStyle(!!settings[s.key], settingsLoading)}>
                                 <input type="checkbox" checked={!!settings[s.key]} onChange={(e) => handleToggleSetting(s.key, e.target.checked)} disabled={settingsLoading}
                                     style={{ opacity: 0, width: 0, height: 0 }} />
-                                <span style={{ position: 'absolute', inset: 0, background: settings[s.key] ? '#22c55e' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
-                                    <span style={{ position: 'absolute', left: settings[s.key] ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                <span style={switchTrack(!!settings[s.key])}>
+                                    <span style={switchThumb(!!settings[s.key])} />
                                 </span>
                             </label>
                         </div>
@@ -215,38 +230,45 @@ function PlatformTab() {
 
             {/* Notification Bar */}
             <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
-                    {t('enterprise.notificationBar.title', 'Notification Bar')}
-                </div>
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                    {t('enterprise.notificationBar.description', 'Display a notification bar at the top of the page, visible to all users.')}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}>
-                        <input
-                            type="checkbox"
-                            checked={nbEnabled}
-                            onChange={e => setNbEnabled(e.target.checked)}
-                            style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-                        />
-                        {t('enterprise.notificationBar.enabled', 'Enable notification bar')}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div>
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                            {t('enterprise.notificationBar.title', 'Notification Bar')}
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                            {t('enterprise.notificationBar.description', 'Display a notification bar at the top of the page, visible to all users.')}
+                        </div>
+                    </div>
+                    <label style={switchStyle(nbEnabled)}>
+                        <input type="checkbox" checked={nbEnabled} onChange={e => setNbEnabled(e.target.checked)}
+                            style={{ opacity: 0, width: 0, height: 0 }} />
+                        <span style={switchTrack(nbEnabled)}>
+                            <span style={switchThumb(nbEnabled)} />
+                        </span>
                     </label>
                 </div>
-                <div style={{ marginBottom: '12px' }}>
-                    <label className="form-label">{t('enterprise.notificationBar.text', 'Notification text')}</label>
-                    <input
-                        className="form-input"
-                        value={nbText}
-                        onChange={e => setNbText(e.target.value)}
-                        placeholder={t('enterprise.notificationBar.textPlaceholder', 'e.g. v2.1 released with new features!')}
-                        style={{ fontSize: '13px' }}
-                    />
-                </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <button className="btn btn-primary" onClick={saveNotificationBar} disabled={nbSaving}>
-                        {nbSaving ? t('common.loading') : t('common.save', 'Save')}
-                    </button>
-                    {nbSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('enterprise.config.saved', 'Saved')}</span>}
+                <div style={{
+                    maxHeight: nbEnabled ? '200px' : '0',
+                    opacity: nbEnabled ? 1 : 0,
+                    overflow: 'hidden',
+                    transition: 'max-height 0.3s ease, opacity 0.25s ease',
+                }}>
+                    <div style={{ marginBottom: '12px', paddingTop: '16px' }}>
+                        <label className="form-label">{t('enterprise.notificationBar.text', 'Notification text')}</label>
+                        <input
+                            className="form-input"
+                            value={nbText}
+                            onChange={e => setNbText(e.target.value)}
+                            placeholder={t('enterprise.notificationBar.textPlaceholder', 'e.g. v2.1 released with new features!')}
+                            style={{ fontSize: '13px' }}
+                        />
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button className="btn btn-primary" onClick={saveNotificationBar} disabled={nbSaving}>
+                            {nbSaving ? t('common.loading') : t('common.save', 'Save')}
+                        </button>
+                        {nbSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('enterprise.config.saved', 'Saved')}</span>}
+                    </div>
                 </div>
             </div>
 
@@ -289,6 +311,9 @@ function CompaniesTab() {
     // Sorting
     const [sortKey, setSortKey] = useState<SortKey>('created_at');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+    // Status filter
+    const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'disabled'>('all');
 
     // Pagination
     const [page, setPage] = useState(0);
@@ -335,7 +360,9 @@ function CompaniesTab() {
     };
 
     const sorted = useMemo(() => {
-        const list = [...companies];
+        let list = [...companies];
+        if (statusFilter === 'active') list = list.filter(c => c.is_active);
+        else if (statusFilter === 'disabled') list = list.filter(c => !c.is_active);
         list.sort((a, b) => {
             let av = a[sortKey], bv = b[sortKey];
             if (sortKey === 'name' || sortKey === 'org_admin_email') {
@@ -346,16 +373,12 @@ function CompaniesTab() {
                 av = av ? new Date(av).getTime() : 0;
                 bv = bv ? new Date(bv).getTime() : 0;
             }
-            if (sortKey === 'is_active') {
-                av = av ? 1 : 0;
-                bv = bv ? 1 : 0;
-            }
             if (av < bv) return sortDir === 'asc' ? -1 : 1;
             if (av > bv) return sortDir === 'asc' ? 1 : -1;
             return 0;
         });
         return list;
-    }, [companies, sortKey, sortDir]);
+    }, [companies, sortKey, sortDir, statusFilter]);
 
     // Pagination
     const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
@@ -415,10 +438,11 @@ function CompaniesTab() {
         { key: 'agent_count', label: t('admin.agents', 'Agents'), flex: '80px' },
         { key: 'total_tokens', label: t('admin.tokens', 'Token Usage'), flex: '100px' },
         { key: 'created_at', label: t('admin.createdAt', 'Created'), flex: '100px' },
-        { key: 'is_active', label: t('admin.status', 'Status'), flex: '120px' },
     ];
+    const statusColFlex = '80px';
+    const actionColFlex = '80px';
 
-    const gridCols = columns.map(c => c.flex).join(' ');
+    const gridCols = columns.map(c => c.flex).join(' ') + ' ' + statusColFlex + ' ' + actionColFlex;
 
     return (
         <>
@@ -558,6 +582,23 @@ function CompaniesTab() {
                             {col.label}<SortArrow col={col.key} />
                         </div>
                     ))}
+                    <div>
+                        <select
+                            value={statusFilter}
+                            onChange={e => { setStatusFilter(e.target.value as any); setPage(0); }}
+                            style={{
+                                background: 'transparent', border: 'none', color: 'var(--text-tertiary)',
+                                fontSize: '11px', fontWeight: 600, textTransform: 'uppercase',
+                                letterSpacing: '0.05em', cursor: 'pointer', outline: 'none',
+                                padding: 0,
+                            }}
+                        >
+                            <option value="all">{t('admin.status', 'Status')}: {t('admin.all', 'All')}</option>
+                            <option value="active">{t('admin.active', 'Active')}</option>
+                            <option value="disabled">{t('admin.disabled', 'Disabled')}</option>
+                        </select>
+                    </div>
+                    <div>{t('admin.action', 'Action')}</div>
                 </div>
 
                 {loading && (
@@ -594,14 +635,16 @@ function CompaniesTab() {
                         <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                             {formatDate(c.created_at)}
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div>
                             <span className={`badge ${c.is_active ? 'badge-success' : 'badge-error'}`} style={{ fontSize: '10px' }}>
                                 {c.is_active ? t('admin.active', 'Active') : t('admin.disabled', 'Disabled')}
                             </span>
+                        </div>
+                        <div>
                             <button
                                 className="btn btn-ghost"
                                 style={{
-                                    padding: '2px 6px', fontSize: '10px',
+                                    padding: '2px 8px', fontSize: '11px', height: '24px',
                                     color: c.slug === 'default' ? 'var(--text-tertiary)' : c.is_active ? 'var(--error)' : 'var(--success)',
                                     cursor: c.slug === 'default' ? 'not-allowed' : 'pointer',
                                     opacity: c.slug === 'default' ? 0.5 : 1,
