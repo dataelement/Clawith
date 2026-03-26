@@ -13,8 +13,8 @@ import {
     IconMoon,
     IconLogout,
     IconWorld,
-    IconLayoutSidebarLeftCollapse,
-    IconLayoutSidebarLeftExpand,
+    IconChevronsLeft,
+    IconChevronsRight,
     IconBell,
     IconBuildingMonument,
     IconSearch,
@@ -36,8 +36,8 @@ const SidebarIcons = {
     moon: <IconMoon size={16} stroke={1.5} />,
     logout: <IconLogout size={16} stroke={1.5} />,
     globe: <IconWorld size={16} stroke={1.5} />,
-    collapse: <IconLayoutSidebarLeftCollapse size={16} stroke={1.5} />,
-    expand: <IconLayoutSidebarLeftExpand size={16} stroke={1.5} />,
+    collapse: <IconChevronsLeft size={16} stroke={1.5} />,
+    expand: <IconChevronsRight size={16} stroke={1.5} />,
     bell: <IconBell size={16} stroke={1.5} />,
 };
 

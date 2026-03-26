@@ -63,7 +63,7 @@ export default function AdminCompanies() {
     ];
 
     return (
-        <div>
+        <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)' }}>
             <div className="page-header">
                 <div>
                     <h1 className="page-title">{t('admin.platformSettings', 'Platform Settings')}</h1>
@@ -85,9 +85,11 @@ export default function AdminCompanies() {
                 ))}
             </div>
 
-            {activeTab === 'dashboard' && <PlatformDashboard />}
-            {activeTab === 'platform' && <PlatformTab />}
-            {activeTab === 'companies' && <CompaniesTab />}
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                {activeTab === 'dashboard' && <PlatformDashboard />}
+                {activeTab === 'platform' && <PlatformTab />}
+                {activeTab === 'companies' && <CompaniesTab />}
+            </div>
         </div>
     );
 }
@@ -458,7 +460,7 @@ function CompaniesTab() {
     const gridCols = columns.map(c => c.flex).join(' ') + ' ' + statusColFlex + ' ' + actionColFlex;
 
     return (
-        <>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
             {toast && (
                 <div style={{
                     position: 'fixed', top: '20px', right: '20px', padding: '10px 20px',
@@ -582,13 +584,14 @@ function CompaniesTab() {
             )}
 
             {/* Company List */}
-            <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+            <div className="card" style={{ padding: '0', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'visible' }}>
                 {/* Table Header */}
                 <div style={{
                     display: 'grid', gridTemplateColumns: gridCols,
                     gap: '12px', padding: '10px 16px', fontSize: '11px', fontWeight: 600,
                     color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em',
                     borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)',
+                    borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0', flexShrink: 0, position: 'relative', zIndex: 10,
                 }}>
                     {columns.map(col => (
                         <div key={col.key} style={thStyle} onClick={() => handleSort(col.key)}>
@@ -639,6 +642,8 @@ function CompaniesTab() {
                     <div>{t('admin.action', 'Action')}</div>
                 </div>
 
+                {/* Scrollable table body */}
+                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
                 {loading && (
                     <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
                         {t('common.loading', 'Loading...')}
@@ -697,11 +702,14 @@ function CompaniesTab() {
                     </div>
                 ))}
 
-                {!loading && companies.length === 0 && !error && (
+                {!loading && paged.length === 0 && !error && (
                     <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                        {t('common.noData', 'No data')}
+                        {statusFilter !== 'all'
+                            ? t('admin.noFilterResults', 'No companies match the current filter.')
+                            : t('common.noData', 'No data')}
                     </div>
                 )}
+                </div>
 
                 {/* Pagination */}
                 {!loading && totalPages > 1 && (
@@ -709,6 +717,7 @@ function CompaniesTab() {
                         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                         padding: '10px 16px', borderTop: '1px solid var(--border-subtle)',
                         fontSize: '12px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)',
+                        flexShrink: 0, borderRadius: '0 0 var(--radius-lg) var(--radius-lg)',
                     }}>
                         <span>
                             {t('admin.showing', '{{start}}-{{end}} of {{total}}', {
@@ -730,6 +739,6 @@ function CompaniesTab() {
                     </div>
                 )}
             </div>
-        </>
+        </div>
     );
 }
