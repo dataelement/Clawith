@@ -1197,8 +1197,10 @@ async def execute_tool(
                 _ar = await _adb.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 _agent = _ar.scalar_one_or_none()
                 if _agent:
+                    from app.utils.sanitize import sanitize_tool_args as _sanitize_tool_args
+                    _sanitized_args = _sanitize_tool_args(arguments) or {}
                     result_check = await autonomy_service.check_and_enforce(
-                        _adb, _agent, action_type, {"tool": tool_name, "args": str(arguments)[:200], "requested_by": str(user_id)}
+                        _adb, _agent, action_type, {"tool": tool_name, "args": str(_sanitized_args)[:200], "requested_by": str(user_id)}
                     )
                     await _adb.commit()
                     if not result_check.get("allowed"):
@@ -1322,10 +1324,12 @@ async def execute_tool(
         # Log tool call activity (skip noisy read operations)
         if tool_name not in ("list_files", "read_file", "read_document"):
             from app.services.activity_logger import log_activity
+            from app.utils.sanitize import sanitize_tool_args
+            _log_args = sanitize_tool_args(arguments) or {}
             await log_activity(
                 agent_id, "tool_call",
                 f"Called tool {tool_name}: {result[:80]}",
-                detail={"tool": tool_name, "args": {k: str(v)[:100] for k, v in arguments.items()}, "result": result[:300]},
+                detail={"tool": tool_name, "args": {k: str(v)[:100] for k, v in _log_args.items()}, "result": result[:300]},
             )
         return result
     except Exception as e:
