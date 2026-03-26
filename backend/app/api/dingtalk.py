@@ -50,7 +50,7 @@ async def configure_dingtalk_channel(
         existing.app_id = app_key
         existing.app_secret = app_secret
         existing.is_configured = True
-        await db.flush()
+        await db.commit()
         # Restart Stream client
         from app.services.dingtalk_stream import dingtalk_stream_manager
         import asyncio
@@ -65,7 +65,7 @@ async def configure_dingtalk_channel(
         is_configured=True,
     )
     db.add(config)
-    await db.flush()
+    await db.commit()
 
     # Start Stream client
     from app.services.dingtalk_stream import dingtalk_stream_manager

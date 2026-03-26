@@ -477,166 +477,231 @@ class DingTalkStreamManager:
         app_secret: str,
         stop_event: threading.Event,
     ):
-        """Run the DingTalk Stream client in a blocking thread."""
-        try:
-            import dingtalk_stream
+        """Run the DingTalk Stream client with auto-reconnect."""
+        import dingtalk_stream  # ImportError here exits immediately (no retry)
 
-            # Reference to manager's main loop for async dispatch
-            main_loop = self._main_loop
+        MAX_RETRIES = 5
+        RETRY_DELAYS = [2, 5, 15, 30, 60]  # exponential backoff, seconds
 
-            class ClawithChatbotHandler(dingtalk_stream.ChatbotHandler):
-                """Custom handler that dispatches messages to the Clawith LLM pipeline."""
+        main_loop = self._main_loop
+        retries = 0
 
-                async def process(self, callback: dingtalk_stream.CallbackMessage):
-                    """Handle incoming bot message from DingTalk Stream.
+        class ClawithChatbotHandler(dingtalk_stream.ChatbotHandler):
+            """Custom handler that dispatches messages to the Clawith LLM pipeline."""
 
-                    NOTE: The SDK invokes this method in the thread's own asyncio loop,
-                    so we must dispatch to the main FastAPI loop for DB + LLM work.
-                    """
-                    try:
-                        # Parse the raw data
-                        incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
-                        msg_data = callback.data if isinstance(callback.data, dict) else json.loads(callback.data)
+            async def process(self, callback: dingtalk_stream.CallbackMessage):
+                """Handle incoming bot message from DingTalk Stream.
 
-                        msgtype = msg_data.get("msgtype", "text")
-                        sender_staff_id = incoming.sender_staff_id or incoming.sender_id or ""
-                        conversation_id = incoming.conversation_id or ""
-                        conversation_type = incoming.conversation_type or "1"
-                        session_webhook = incoming.session_webhook or ""
+                NOTE: The SDK invokes this method in the thread's own asyncio loop,
+                so we must dispatch to the main FastAPI loop for DB + LLM work.
+                """
+                try:
+                    # Parse the raw data
+                    incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
+                    msg_data = callback.data if isinstance(callback.data, dict) else json.loads(callback.data)
+
+                    msgtype = msg_data.get("msgtype", "text")
+                    sender_staff_id = incoming.sender_staff_id or incoming.sender_id or ""
+                    conversation_id = incoming.conversation_id or ""
+                    conversation_type = incoming.conversation_type or "1"
+                    session_webhook = incoming.session_webhook or ""
+
+                    logger.info(
+                        f"[DingTalk Stream] Received {msgtype} message from {sender_staff_id}"
+                    )
+
+                    if msgtype == "text":
+                        # Plain text — use existing logic
+                        text_list = incoming.get_text_list()
+                        user_text = " ".join(text_list).strip() if text_list else ""
+                        if not user_text:
+                            return dingtalk_stream.AckMessage.STATUS_OK, "empty message"
 
                         logger.info(
-                            f"[DingTalk Stream] Received {msgtype} message from {sender_staff_id}"
+                            f"[DingTalk Stream] Text from {sender_staff_id}: {user_text[:80]}"
                         )
 
-                        if msgtype == "text":
-                            # Plain text — use existing logic
-                            text_list = incoming.get_text_list()
-                            user_text = " ".join(text_list).strip() if text_list else ""
-                            if not user_text:
-                                return dingtalk_stream.AckMessage.STATUS_OK, "empty message"
+                        from app.api.dingtalk import process_dingtalk_message
 
-                            logger.info(
-                                f"[DingTalk Stream] Text from {sender_staff_id}: {user_text[:80]}"
+                        if main_loop and main_loop.is_running():
+                            future = asyncio.run_coroutine_threadsafe(
+                                process_dingtalk_message(
+                                    agent_id=agent_id,
+                                    sender_staff_id=sender_staff_id,
+                                    user_text=user_text,
+                                    conversation_id=conversation_id,
+                                    conversation_type=conversation_type,
+                                    session_webhook=session_webhook,
+                                ),
+                                main_loop,
                             )
-
-                            from app.api.dingtalk import process_dingtalk_message
-
-                            if main_loop and main_loop.is_running():
-                                future = asyncio.run_coroutine_threadsafe(
-                                    process_dingtalk_message(
-                                        agent_id=agent_id,
-                                        sender_staff_id=sender_staff_id,
-                                        user_text=user_text,
-                                        conversation_id=conversation_id,
-                                        conversation_type=conversation_type,
-                                        session_webhook=session_webhook,
-                                    ),
-                                    main_loop,
-                                )
-                                try:
-                                    future.result(timeout=120)
-                                except Exception as e:
-                                    logger.error(f"[DingTalk Stream] LLM processing error: {e}")
-                                    import traceback
-                                    traceback.print_exc()
-                            else:
-                                logger.warning("[DingTalk Stream] Main loop not available")
-
+                            try:
+                                future.result(timeout=120)
+                            except Exception as e:
+                                logger.error(f"[DingTalk Stream] LLM processing error: {e}")
+                                import traceback
+                                traceback.print_exc()
                         else:
-                            # Non-text message: process media in the main loop
-                            from app.api.dingtalk import process_dingtalk_message
+                            logger.warning("[DingTalk Stream] Main loop not available")
 
-                            if main_loop and main_loop.is_running():
-                                # Process media (download + encode) in the main loop
-                                future = asyncio.run_coroutine_threadsafe(
-                                    self._handle_media_and_dispatch(
-                                        msg_data=msg_data,
-                                        app_key=app_key,
-                                        app_secret=app_secret,
-                                        agent_id=agent_id,
-                                        sender_staff_id=sender_staff_id,
-                                        conversation_id=conversation_id,
-                                        conversation_type=conversation_type,
-                                        session_webhook=session_webhook,
-                                    ),
-                                    main_loop,
-                                )
-                                try:
-                                    future.result(timeout=120)
-                                except Exception as e:
-                                    logger.error(f"[DingTalk Stream] Media processing error: {e}")
-                                    import traceback
-                                    traceback.print_exc()
-                            else:
-                                logger.warning("[DingTalk Stream] Main loop not available")
+                    else:
+                        # Non-text message: process media in the main loop
+                        from app.api.dingtalk import process_dingtalk_message
 
-                        return dingtalk_stream.AckMessage.STATUS_OK, "ok"
-                    except Exception as e:
-                        logger.error(f"[DingTalk Stream] Error in message handler: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        return dingtalk_stream.AckMessage.STATUS_SYSTEM_EXCEPTION, str(e)
+                        if main_loop and main_loop.is_running():
+                            # Process media (download + encode) in the main loop
+                            future = asyncio.run_coroutine_threadsafe(
+                                self._handle_media_and_dispatch(
+                                    msg_data=msg_data,
+                                    app_key=app_key,
+                                    app_secret=app_secret,
+                                    agent_id=agent_id,
+                                    sender_staff_id=sender_staff_id,
+                                    conversation_id=conversation_id,
+                                    conversation_type=conversation_type,
+                                    session_webhook=session_webhook,
+                                ),
+                                main_loop,
+                            )
+                            try:
+                                future.result(timeout=120)
+                            except Exception as e:
+                                logger.error(f"[DingTalk Stream] Media processing error: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        else:
+                            logger.warning("[DingTalk Stream] Main loop not available")
 
-                @staticmethod
-                async def _handle_media_and_dispatch(
-                    msg_data: dict,
-                    app_key: str,
-                    app_secret: str,
-                    agent_id: uuid.UUID,
-                    sender_staff_id: str,
-                    conversation_id: str,
-                    conversation_type: str,
-                    session_webhook: str,
-                ):
-                    """Download media, then dispatch to process_dingtalk_message."""
-                    from app.api.dingtalk import process_dingtalk_message
+                    return dingtalk_stream.AckMessage.STATUS_OK, "ok"
+                except Exception as e:
+                    logger.error(f"[DingTalk Stream] Error in message handler: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return dingtalk_stream.AckMessage.STATUS_SYSTEM_EXCEPTION, str(e)
 
-                    user_text, image_base64_list, saved_file_paths = await _process_media_message(
-                        msg_data=msg_data,
-                        app_key=app_key,
-                        app_secret=app_secret,
-                        agent_id=agent_id,
+            @staticmethod
+            async def _handle_media_and_dispatch(
+                msg_data: dict,
+                app_key: str,
+                app_secret: str,
+                agent_id: uuid.UUID,
+                sender_staff_id: str,
+                conversation_id: str,
+                conversation_type: str,
+                session_webhook: str,
+            ):
+                """Download media, then dispatch to process_dingtalk_message."""
+                from app.api.dingtalk import process_dingtalk_message
+
+                user_text, image_base64_list, saved_file_paths = await _process_media_message(
+                    msg_data=msg_data,
+                    app_key=app_key,
+                    app_secret=app_secret,
+                    agent_id=agent_id,
+                )
+
+                if not user_text:
+                    logger.info("[DingTalk Stream] Empty content after media processing, skipping")
+                    return
+
+                await process_dingtalk_message(
+                    agent_id=agent_id,
+                    sender_staff_id=sender_staff_id,
+                    user_text=user_text,
+                    conversation_id=conversation_id,
+                    conversation_type=conversation_type,
+                    session_webhook=session_webhook,
+                    image_base64_list=image_base64_list,
+                    saved_file_paths=saved_file_paths,
+                )
+
+        while not stop_event.is_set() and retries <= MAX_RETRIES:
+            try:
+                credential = dingtalk_stream.Credential(client_id=app_key, client_secret=app_secret)
+                client = dingtalk_stream.DingTalkStreamClient(credential=credential)
+                client.register_callback_handler(
+                    dingtalk_stream.chatbot.ChatbotMessage.TOPIC,
+                    ClawithChatbotHandler(),
+                )
+
+                logger.info(
+                    f"[DingTalk Stream] Connecting for agent {agent_id}... "
+                    f"(attempt {retries + 1}/{MAX_RETRIES + 1})"
+                )
+                retries = 0  # reset on successful connection
+                # start_forever() blocks until disconnected
+                client.start_forever()
+
+                # start_forever returned — connection dropped
+                if stop_event.is_set():
+                    break  # intentional stop, no retry
+
+                logger.warning(
+                    f"[DingTalk Stream] Connection lost for agent {agent_id}, will retry..."
+                )
+
+            except ImportError:
+                logger.warning(
+                    "[DingTalk Stream] dingtalk-stream package not installed. "
+                    "Install with: pip install dingtalk-stream"
+                )
+                break  # no point retrying without the package
+            except Exception as e:
+                retries += 1
+                logger.error(
+                    f"[DingTalk Stream] Connection error for {agent_id} "
+                    f"(attempt {retries}/{MAX_RETRIES + 1}): {e}"
+                )
+
+                if retries > MAX_RETRIES:
+                    logger.error(
+                        f"[DingTalk Stream] Agent {agent_id} exhausted all retries, giving up"
                     )
+                    # Notify creator about permanent failure
+                    if main_loop and main_loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            self._notify_connection_failed(agent_id, str(e)),
+                            main_loop,
+                        )
+                    break
 
-                    if not user_text:
-                        logger.info("[DingTalk Stream] Empty content after media processing, skipping")
-                        return
+                delay = RETRY_DELAYS[min(retries - 1, len(RETRY_DELAYS) - 1)]
+                logger.info(
+                    f"[DingTalk Stream] Retrying in {delay}s for agent {agent_id}..."
+                )
+                # Use stop_event.wait so we exit immediately if stopped
+                if stop_event.wait(timeout=delay):
+                    break  # stop was requested during wait
 
-                    await process_dingtalk_message(
+        self._threads.pop(agent_id, None)
+        self._stop_events.pop(agent_id, None)
+        logger.info(f"[DingTalk Stream] Client stopped for agent {agent_id}")
+
+    async def _notify_connection_failed(self, agent_id: uuid.UUID, error_msg: str):
+        """Send notification to agent creator when DingTalk connection permanently fails."""
+        try:
+            from app.models.agent import Agent
+            from app.services.notification_service import send_notification
+            async with async_session() as db:
+                result = await db.execute(select(Agent).where(Agent.id == agent_id))
+                agent = result.scalar_one_or_none()
+                if agent and agent.creator_id:
+                    await send_notification(
+                        db,
+                        user_id=agent.creator_id,
                         agent_id=agent_id,
-                        sender_staff_id=sender_staff_id,
-                        user_text=user_text,
-                        conversation_id=conversation_id,
-                        conversation_type=conversation_type,
-                        session_webhook=session_webhook,
-                        image_base64_list=image_base64_list,
-                        saved_file_paths=saved_file_paths,
+                        type="channel_error",
+                        title=f"DingTalk connection failed for {agent.name}",
+                        body=(
+                            f"Failed to connect after multiple retries. "
+                            f"Last error: {error_msg[:200]}. "
+                            f"Please check your DingTalk app credentials and try reconfiguring the channel."
+                        ),
+                        link=f"/agents/{agent_id}#settings",
                     )
-
-            credential = dingtalk_stream.Credential(client_id=app_key, client_secret=app_secret)
-            client = dingtalk_stream.DingTalkStreamClient(credential=credential)
-            client.register_callback_handler(
-                dingtalk_stream.chatbot.ChatbotMessage.TOPIC,
-                ClawithChatbotHandler(),
-            )
-
-            logger.info(f"[DingTalk Stream] Connecting for agent {agent_id}...")
-            # start_forever() blocks until disconnected
-            client.start_forever()
-
-        except ImportError:
-            logger.warning(
-                "[DingTalk Stream] dingtalk-stream package not installed. "
-                "Install with: pip install dingtalk-stream"
-            )
+                    await db.commit()
         except Exception as e:
-            logger.error(f"[DingTalk Stream] Client error for {agent_id}: {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            self._threads.pop(agent_id, None)
-            self._stop_events.pop(agent_id, None)
-            logger.info(f"[DingTalk Stream] Client stopped for agent {agent_id}")
+            logger.error(f"[DingTalk Stream] Failed to send connection failure notification: {e}")
 
     async def stop_client(self, agent_id: uuid.UUID):
         """Stop a running Stream client for an agent."""
@@ -645,7 +710,10 @@ class DingTalkStreamManager:
             stop_event.set()
         thread = self._threads.pop(agent_id, None)
         if thread and thread.is_alive():
-            logger.info(f"[DingTalk Stream] Stopping client for agent {agent_id}")
+            logger.info(f"[DingTalk Stream] Stopping client for agent {agent_id}, waiting for thread...")
+            thread.join(timeout=5)
+            if thread.is_alive():
+                logger.warning(f"[DingTalk Stream] Thread for {agent_id} did not exit within 5s")
 
     async def start_all(self):
         """Start Stream clients for all configured DingTalk agents."""
