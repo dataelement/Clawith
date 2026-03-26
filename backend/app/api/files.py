@@ -21,6 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 settings = get_settings()
 router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
 
+# Files only visible/editable by agent creator (platform_admin also allowed)
+CREATOR_ONLY_FILES = {"secrets.md"}
+
 
 class FileInfo(BaseModel):
     name: str
@@ -60,7 +63,8 @@ async def list_files(
     db: AsyncSession = Depends(get_db),
 ):
     """List files and directories in an agent's file system."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    is_creator = (agent.creator_id == current_user.id) or (current_user.role == "platform_admin")
     target = _safe_path(agent_id, path)
 
     if not target.exists():
@@ -72,6 +76,9 @@ async def list_files(
     base_abs = _agent_base_dir(agent_id).resolve()
     for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
         if entry.name == '.gitkeep':
+            continue
+        # Hide creator-only files from non-creators
+        if entry.name in CREATOR_ONLY_FILES and not is_creator:
             continue
         rel = str(entry.resolve().relative_to(base_abs))
         stat = entry.stat()
@@ -93,8 +100,14 @@ async def read_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Read the content of a file."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    is_creator = (agent.creator_id == current_user.id) or (current_user.role == "platform_admin")
     target = _safe_path(agent_id, path)
+
+    # Block non-creators from reading creator-only files
+    filename = Path(path).name
+    if filename in CREATOR_ONLY_FILES and not is_creator:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -138,7 +151,11 @@ async def download_file(
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
-    await check_agent_access(db, user, agent_id)
+    agent, _access = await check_agent_access(db, user, agent_id)
+    is_creator = (agent.creator_id == user.id) or (user.role == "platform_admin")
+    filename = Path(path).name
+    if filename in CREATOR_ONLY_FILES and not is_creator:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     target = _safe_path(agent_id, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -154,7 +171,11 @@ async def write_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Write content to a file (create or overwrite)."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    is_creator = (agent.creator_id == current_user.id) or (current_user.role == "platform_admin")
+    filename = Path(path).name
+    if filename in CREATOR_ONLY_FILES and not is_creator:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     target = _safe_path(agent_id, path)
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -172,7 +193,11 @@ async def delete_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a file."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    is_creator = (agent.creator_id == current_user.id) or (current_user.role == "platform_admin")
+    filename = Path(path).name
+    if filename in CREATOR_ONLY_FILES and not is_creator:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     target = _safe_path(agent_id, path)
 
     if not target.exists():
