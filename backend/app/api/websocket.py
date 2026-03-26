@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.security import decode_access_token
-from app.utils.sanitize import sanitize_tool_args
+from app.utils.sanitize import sanitize_tool_args, _is_secrets_file_path
 from app.core.permissions import check_agent_access, is_agent_expired
 from app.database import async_session
 from app.models.agent import Agent
@@ -358,11 +358,16 @@ async def call_llm(
             # Notify client about tool call result
             if on_tool_call:
                 try:
+                    # Redact secrets.md content from tool results sent to frontend
+                    _client_result = result
+                    if tool_name == "read_file" and _is_secrets_file_path(args.get("path", "") if args else ""):
+                        _client_result = "[Content hidden — secrets.md is protected]"
+
                     await on_tool_call({
                         "name": tool_name,
                         "args": sanitize_tool_args(args),
                         "status": "done",
-                        "result": result,
+                        "result": _client_result,
                         "reasoning_content": full_reasoning_content
                     })
                 except Exception:

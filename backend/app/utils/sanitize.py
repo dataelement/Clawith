@@ -39,7 +39,19 @@ def sanitize_tool_args(args: dict | None) -> dict | None:
         if isinstance(sanitized[key], str) and _looks_like_connection_uri(sanitized[key]):
             sanitized[key] = "******"
 
+    # Special case: hide content when writing to secrets.md
+    path_val = sanitized.get("path", "") or ""
+    if _is_secrets_file_path(path_val):
+        if "content" in sanitized:
+            sanitized["content"] = "******"
+
     return sanitized
+
+
+def _is_secrets_file_path(path: str) -> bool:
+    """Check if a path references secrets.md."""
+    normalized = path.strip("/")
+    return normalized == "secrets.md" or normalized.endswith("/secrets.md")
 
 
 def _mask_uri_password(uri: str) -> str:
