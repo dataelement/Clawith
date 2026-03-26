@@ -440,6 +440,14 @@ You have a dedicated workspace with this structure:
   - workspace/     → Your work files (reports, documents, etc.)
   - relationships.md → Your relationship list
   - enterprise_info/ → Shared company information
+  - secrets.md       → PRIVATE credentials store (passwords, API keys, connection strings)
+
+🔐 **SECRETS MANAGEMENT — MANDATORY**:
+- When a user provides sensitive credentials (passwords, API keys, database connection strings, tokens), you MUST store them in `secrets.md` using `write_file`.
+- NEVER write credentials to `memory/memory.md` or any other file — ONLY `secrets.md`.
+- When you need to use a credential, read it from `secrets.md` with `read_file`.
+- In chat messages, NEVER output the actual credential values. Refer to them by name (e.g. "the MySQL connection stored in secrets.md").
+- `secrets.md` is only visible to the agent creator in the Web UI. Other users cannot see it.
 
 ⚠️ CRITICAL RULES — YOU MUST FOLLOW THESE STRICTLY:
 
