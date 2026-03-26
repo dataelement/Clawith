@@ -466,11 +466,12 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             try:
                 async with async_session() as _tc_db:
                     if data["status"] == "running":
+                        from app.utils.sanitize import sanitize_tool_args
                         _tc_db.add(ChatMessage(
                             agent_id=agent_id,
                             conversation_id=str(session_id),
                             role="tool_call",
-                            content=_json.dumps({"name": data["name"], "args": data["args"]}, ensure_ascii=False, default=str),
+                            content=_json.dumps({"name": data["name"], "args": sanitize_tool_args(data.get("args"))}, ensure_ascii=False, default=str),
                             user_id=agent.creator_id,
                             participant_id=agent_participant_id,
                         ))

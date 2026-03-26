@@ -3265,6 +3265,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
                             # Save tool_call to DB so it appears in chat history
                             try:
+                                from app.utils.sanitize import sanitize_tool_args
                                 async with async_session() as _tc_db:
                                     _tc_db.add(ChatMessage(
                                         agent_id=session_agent_id,
@@ -3272,7 +3273,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                                         role="tool_call",
                                         content=json.dumps({
                                             "name": tool_name,
-                                            "args": tool_args,
+                                            "args": sanitize_tool_args(tool_args),
                                             "status": "done",
                                             "result": str(tool_result)[:500],
                                         }, ensure_ascii=False),
