@@ -1117,6 +1117,7 @@ _TOOL_AUTONOMY_MAP = {
     "send_file_to_agent": "send_feishu_message",
     "web_search": "web_search",
     "execute_code": "execute_code",
+    "sql_execute": "sql_execute",
 }
 
 
@@ -1157,6 +1158,8 @@ async def _execute_tool_direct(
             return _write_file(ws, path, content, tenant_id=_agent_tenant_id)
         elif tool_name == "execute_code":
             return await _execute_code(ws, arguments)
+        elif tool_name == "sql_execute":
+            return await _sql_execute(arguments)
         elif tool_name == "web_search":
             return await _web_search(arguments)
         elif tool_name == "jina_search":
@@ -1269,6 +1272,8 @@ async def execute_tool(
             result = await _plaza_add_comment(agent_id, arguments)
         elif tool_name == "execute_code":
             result = await _execute_code(ws, arguments)
+        elif tool_name == "sql_execute":
+            result = await _sql_execute(arguments)
         elif tool_name == "upload_image":
             result = await _upload_image(agent_id, ws, arguments)
         elif tool_name == "discover_resources":
@@ -5678,3 +5683,152 @@ async def _install_skill(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     except Exception as e:
         return f"❌ Install failed: {str(e)[:300]}"
 
+
+
+async def _sql_execute(arguments: dict) -> str:
+    """Execute SQL on any database via connection URI."""
+    import asyncio
+
+    connection_string = arguments.get("connection_string", "").strip()
+    sql = arguments.get("sql", "").strip()
+    timeout = min(int(arguments.get("timeout", 30)), 120)
+
+    if not connection_string:
+        return "❌ Missing required argument 'connection_string'"
+    if not sql:
+        return "❌ Missing required argument 'sql'"
+
+    # Determine database type from URI scheme
+    uri_lower = connection_string.lower()
+
+    try:
+        if uri_lower.startswith("sqlite"):
+            return await asyncio.wait_for(_sql_execute_sqlite(connection_string, sql), timeout=timeout)
+        elif uri_lower.startswith("mysql"):
+            return await asyncio.wait_for(_sql_execute_mysql(connection_string, sql), timeout=timeout)
+        elif uri_lower.startswith("postgresql") or uri_lower.startswith("postgres"):
+            return await asyncio.wait_for(_sql_execute_postgres(connection_string, sql), timeout=timeout)
+        else:
+            return "❌ Unsupported database type. Supported: mysql://, postgresql://, sqlite:///"
+    except asyncio.TimeoutError:
+        return f"❌ Query timed out after {timeout}s"
+    except Exception as e:
+        return f"❌ Database error: {type(e).__name__}: {str(e)[:500]}"
+
+
+async def _sql_execute_sqlite(connection_string: str, sql: str) -> str:
+    """Execute SQL on SQLite."""
+    import aiosqlite
+
+    # Parse path from sqlite:///path or sqlite:////absolute/path
+    db_path = connection_string.replace("sqlite:///", "", 1)
+    if not db_path:
+        return "❌ Invalid SQLite connection string. Use: sqlite:///path/to/db.sqlite"
+
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(sql)
+
+        # Check if it's a SELECT-like query that returns rows
+        if cursor.description:
+            columns = [d[0] for d in cursor.description]
+            rows = await cursor.fetchmany(500)
+            await db.commit()
+            return _format_sql_result(columns, [tuple(r) for r in rows], cursor.rowcount)
+        else:
+            await db.commit()
+            return f"✅ Statement executed successfully. Rows affected: {cursor.rowcount}"
+
+
+async def _sql_execute_mysql(connection_string: str, sql: str) -> str:
+    """Execute SQL on MySQL."""
+    import aiomysql
+    from urllib.parse import urlparse, parse_qs, unquote
+
+    parsed = urlparse(connection_string)
+
+    conn = await aiomysql.connect(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 3306,
+        user=unquote(parsed.username or "root"),
+        password=unquote(parsed.password or ""),
+        db=parsed.path.lstrip("/") if parsed.path else None,
+        charset=parse_qs(parsed.query).get("charset", ["utf8mb4"])[0],
+    )
+
+    try:
+        async with conn.cursor() as cursor:
+            await cursor.execute(sql)
+
+            if cursor.description:
+                columns = [d[0] for d in cursor.description]
+                rows = await cursor.fetchmany(500)
+                return _format_sql_result(columns, rows, cursor.rowcount)
+            else:
+                await conn.commit()
+                return f"✅ Statement executed successfully. Rows affected: {cursor.rowcount}"
+    finally:
+        conn.close()
+
+
+async def _sql_execute_postgres(connection_string: str, sql: str) -> str:
+    """Execute SQL on PostgreSQL."""
+    import asyncpg
+
+    # asyncpg uses standard postgres:// URI
+    dsn = connection_string
+    if dsn.startswith("postgresql://"):
+        dsn = "postgres://" + dsn[len("postgresql://"):]
+
+    conn = await asyncpg.connect(dsn)
+
+    try:
+        # Try fetch first (for SELECT-like queries)
+        stmt = await conn.prepare(sql)
+
+        if stmt.get_attributes():
+            # Has columns — it's a query
+            columns = [attr.name for attr in stmt.get_attributes()]
+            rows = await stmt.fetch(500)
+            return _format_sql_result(columns, [tuple(r.values()) for r in rows], len(rows))
+        else:
+            # No columns — it's a statement
+            result = await conn.execute(sql)
+            return f"✅ Statement executed successfully. {result}"
+    finally:
+        await conn.close()
+
+
+def _format_sql_result(columns: list, rows: list, total_count: int) -> str:
+    """Format SQL query results as a readable table string."""
+    if not rows:
+        return f"Query returned 0 rows.\nColumns: {', '.join(columns)}"
+
+    # Convert all values to strings
+    str_rows = []
+    for row in rows:
+        str_rows.append([str(v) if v is not None else "NULL" for v in row])
+
+    # Calculate column widths (cap at 50 chars per column)
+    widths = [min(max(len(c), max((len(r[i]) for r in str_rows), default=0)), 50) for i, c in enumerate(columns)]
+
+    # Build table
+    header = " | ".join(c.ljust(w) for c, w in zip(columns, widths))
+    separator = "-+-".join("-" * w for w in widths)
+
+    lines = [header, separator]
+    for row in str_rows[:100]:  # Display max 100 rows in formatted output
+        line = " | ".join(str(v)[:50].ljust(w) for v, w in zip(row, widths))
+        lines.append(line)
+
+    result = "\n".join(lines)
+
+    if len(rows) > 100:
+        result += f"\n... ({len(rows)} rows total, showing first 100)"
+    else:
+        result += f"\n({len(rows)} rows)"
+
+    if total_count > len(rows):
+        result += f"\n(Total matching: {total_count}, fetched: {len(rows)})"
+
+    return result
