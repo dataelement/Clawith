@@ -95,14 +95,20 @@ export default function SkillAutocomplete({
         setSelectedIndex(0);
     }, [value, skillMap]);
 
+    const hasChildren = useCallback((item: DropdownItem) => {
+        return Object.keys(skillMap).some(k => k.startsWith(item.fullKey + ':'));
+    }, [skillMap]);
+
     const selectItem = useCallback((item: DropdownItem) => {
-        if (item.isLeaf) {
+        if (item.isLeaf && !hasChildren(item)) {
+            // Pure leaf — select and close
             onChange(`/${item.fullKey} `);
             setShowDropdown(false);
         } else {
+            // Has children (whether or not it's also a leaf) — drill down
             onChange(`/${item.fullKey}:`);
         }
-    }, [onChange]);
+    }, [onChange, hasChildren]);
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (showDropdown) {
@@ -118,7 +124,14 @@ export default function SkillAutocomplete({
             }
             if (e.key === 'Enter' && items[selectedIndex]) {
                 e.preventDefault();
-                selectItem(items[selectedIndex]);
+                const item = items[selectedIndex];
+                if (item.isLeaf) {
+                    // Enter always selects as leaf (even if it has children)
+                    onChange(`/${item.fullKey} `);
+                    setShowDropdown(false);
+                } else {
+                    selectItem(item);
+                }
                 return;
             }
             if (e.key === 'Escape') {

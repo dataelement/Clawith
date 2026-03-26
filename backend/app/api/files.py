@@ -299,8 +299,41 @@ async def upload_file_to_workspace(
     }
 
 
-MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50MB compressed
 MAX_ZIP_FILES = 1000
+MAX_UNCOMPRESSED = 500 * 1024 * 1024  # 500MB uncompressed
+
+
+def _validate_zip(content: bytes) -> tuple[zipfile.ZipFile, list[str], str]:
+    """Validate and open a zip archive.
+
+    Returns (ZipFile, file_names, root_folder).
+    Raises HTTPException on validation failure.
+    """
+    if len(content) > MAX_ZIP_SIZE:
+        raise HTTPException(status_code=400, detail=f"Zip file too large (max {MAX_ZIP_SIZE // 1024 // 1024}MB)")
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Invalid zip file")
+
+    names = zf.namelist()
+    total_uncompressed = sum(i.file_size for i in zf.infolist())
+    if total_uncompressed > MAX_UNCOMPRESSED:
+        zf.close()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Zip uncompressed size too large (max 500MB, got {total_uncompressed // 1024 // 1024}MB)",
+        )
+    if len(names) > MAX_ZIP_FILES:
+        zf.close()
+        raise HTTPException(status_code=400, detail=f"Too many files (max {MAX_ZIP_FILES})")
+
+    parts = [n.split("/")[0] for n in names if "/" in n]
+    root_folder = parts[0] if parts and all(p == parts[0] for p in parts) else ""
+
+    return zf, names, root_folder
 
 
 @upload_router.post("/preview-zip")
@@ -314,32 +347,19 @@ async def preview_zip(
     await check_agent_access(db, current_user, agent_id)
 
     content = await file.read()
-    if len(content) > MAX_ZIP_SIZE:
-        raise HTTPException(status_code=400, detail=f"Zip file too large (max {MAX_ZIP_SIZE // 1024 // 1024}MB)")
+    zf, names, root_folder = _validate_zip(content)
+    with zf:
+        files = [n for n in names if not n.endswith("/")]
+        return {
+            "root_folder": root_folder,
+            "files": files[:200],
+            "total": len(files),
+        }
 
-    try:
-        with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            names = zf.namelist()
-            # Check total uncompressed size (max 500MB)
-            MAX_UNCOMPRESSED = 500 * 1024 * 1024
-            total_uncompressed = sum(i.file_size for i in zf.infolist())
-            if total_uncompressed > MAX_UNCOMPRESSED:
-                raise HTTPException(status_code=400, detail=f"Zip uncompressed size too large (max 500MB, got {total_uncompressed // 1024 // 1024}MB)")
-            if len(names) > MAX_ZIP_FILES:
-                raise HTTPException(status_code=400, detail=f"Too many files (max {MAX_ZIP_FILES})")
 
-            parts = [n.split("/")[0] for n in names if "/" in n]
-            root_folder = parts[0] if parts and all(p == parts[0] for p in parts) else ""
+import re as _re
 
-            files = [n for n in names if not n.endswith("/")]
-
-            return {
-                "root_folder": root_folder,
-                "files": files[:200],
-                "total": len(files),
-            }
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Invalid zip file")
+_VALID_ROOT_NAME = _re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 @upload_router.post("/extract-zip")
@@ -354,9 +374,11 @@ async def extract_zip(
     """Extract zip into agent's skills directory."""
     await check_agent_access(db, current_user, agent_id)
 
+    if root_name and not _VALID_ROOT_NAME.match(root_name):
+        raise HTTPException(status_code=400, detail="Invalid root folder name (alphanumeric, hyphens, underscores only)")
+
     content = await file.read()
-    if len(content) > MAX_ZIP_SIZE:
-        raise HTTPException(status_code=400, detail=f"Zip file too large (max {MAX_ZIP_SIZE // 1024 // 1024}MB)")
+    zf, _names, zip_root = _validate_zip(content)
 
     base = _agent_base_dir(agent_id)
     skills_root = (base / "skills").resolve()
@@ -368,57 +390,42 @@ async def extract_zip(
     else:
         target_dir = skills_root
 
-    try:
-        with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            names = zf.namelist()
-            # Check total uncompressed size (max 500MB)
-            MAX_UNCOMPRESSED = 500 * 1024 * 1024
-            total_uncompressed = sum(i.file_size for i in zf.infolist())
-            if total_uncompressed > MAX_UNCOMPRESSED:
-                raise HTTPException(status_code=400, detail=f"Zip uncompressed size too large (max 500MB, got {total_uncompressed // 1024 // 1024}MB)")
-            if len(names) > MAX_ZIP_FILES:
-                raise HTTPException(status_code=400, detail=f"Too many files (max {MAX_ZIP_FILES})")
+    with zf:
+        extracted = []
+        for info in zf.infolist():
+            if info.is_dir() or info.external_attr >> 28 == 0xA:
+                continue
+            if info.filename.startswith("/") or ".." in Path(info.filename).parts:
+                continue
 
-            parts = [n.split("/")[0] for n in names if "/" in n]
-            zip_root = parts[0] if parts and all(p == parts[0] for p in parts) else ""
-
-            extracted = []
-            for info in zf.infolist():
-                if info.is_dir() or info.external_attr >> 28 == 0xA:
+            rel_path = info.filename
+            if root_name == "" and zip_root:
+                if rel_path.startswith(zip_root + "/"):
+                    rel_path = rel_path[len(zip_root) + 1:]
+                else:
                     continue
-                if info.filename.startswith("/") or ".." in info.filename:
-                    continue
+            elif root_name and zip_root and rel_path.startswith(zip_root + "/"):
+                rel_path = root_name + rel_path[len(zip_root):]
 
-                rel_path = info.filename
-                if root_name == "" and zip_root:
-                    if rel_path.startswith(zip_root + "/"):
-                        rel_path = rel_path[len(zip_root) + 1:]
-                    else:
-                        continue
-                elif root_name and zip_root and rel_path.startswith(zip_root + "/"):
-                    rel_path = root_name + rel_path[len(zip_root):]
+            if not rel_path:
+                continue
 
-                if not rel_path:
-                    continue
+            out_path = (target_dir / rel_path).resolve()
+            if not str(out_path).startswith(str(skills_root)):
+                continue
 
-                out_path = (target_dir / rel_path).resolve()
-                if not str(out_path).startswith(str(skills_root)):
-                    continue
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(zf.read(info.filename))
+            extracted.append(str(Path(target_path) / rel_path) if target_path else rel_path)
 
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_bytes(zf.read(info.filename))
-                extracted.append(str(Path(target_path) / rel_path) if target_path else rel_path)
+        from app.services.skill_map import invalidate_cache
+        invalidate_cache(agent_id)
 
-            from app.services.skill_map import invalidate_cache
-            invalidate_cache(agent_id)
-
-            return {
-                "status": "ok",
-                "extracted": len(extracted),
-                "files": extracted[:50],
-            }
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Invalid zip file")
+        return {
+            "status": "ok",
+            "extracted": len(extracted),
+            "files": extracted[:50],
+        }
 
 
 # ─── Enterprise Knowledge Base ─────────────────────────────────

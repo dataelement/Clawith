@@ -24,13 +24,14 @@ router = APIRouter(tags=["websocket"])
 _SKILL_RE = re.compile(r"^/([a-z0-9_-]+(?::[a-z0-9_-]+)*)")
 
 
-def _resolve_skill_content(
+async def _resolve_skill_content(
     skill_key: str,
     agent_id: uuid.UUID,
 ) -> tuple[str | None, str | None, str | None]:
     """Resolve skill content by colon key lookup.
     Returns (content, display_name, emoji) or (None, None, None) if not found.
     """
+    import asyncio
     from app.services.skill_map import get_skill_map
     from app.services.agent_context import TOOL_WORKSPACE, PERSISTENT_DATA
 
@@ -51,7 +52,9 @@ def _resolve_skill_content(
         if not str(file_path).startswith(str(skills_root)):
             continue
         if file_path.exists():
-            content = file_path.read_text(encoding="utf-8", errors="replace")
+            content = await asyncio.to_thread(
+                file_path.read_text, encoding="utf-8", errors="replace"
+            )
             return content, entry.get("name", skill_key), entry.get("emoji", "")
 
     return None, None, None
@@ -64,7 +67,7 @@ async def _inject_skill_if_matched(content, agent_id, user_id, conv_id, db, conv
         return
 
     skill_key = match.group(1)
-    skill_content, display_name, emoji = _resolve_skill_content(skill_key, agent_id)
+    skill_content, display_name, emoji = await _resolve_skill_content(skill_key, agent_id)
     if skill_content:
         await _persist_and_inject_skill(skill_content, agent_id, user_id, conv_id, db, conversation, websocket)
         await websocket.send_json({"type": "skill_loaded", "name": display_name, "emoji": emoji or ""})
