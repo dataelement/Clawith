@@ -1,0 +1,90 @@
+{
+  "name": "@soimy/dingtalk",
+  "version": "3.3.0",
+  "description": "DingTalk (钉钉) channel plugin for OpenClaw",
+  "keywords": [
+    "bot",
+    "channel",
+    "clawdbot",
+    "dingtalk",
+    "openclaw",
+    "stream",
+    "钉钉"
+  ],
+  "homepage": "https://github.com/soimy/openclaw-channel-dingtalk",
+  "license": "MIT",
+  "author": "YM Shen <soimy@163.com> (http://github.com/soimy)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soimy/openclaw-channel-dingtalk.git"
+  },
+  "files": [
+    "index.ts",
+    "src/*.ts",
+    "openclaw.plugin.json",
+    "clawbot.plugin.json"
+  ],
+  "type": "module",
+  "main": "index.ts",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "format": "oxfmt --write package.json tsconfig.json index.ts src/*.ts",
+    "format:check": "oxfmt --check package.json tsconfig.json index.ts src/*.ts",
+    "lint": "oxlint --type-aware index.ts src",
+    "lint:fix": "oxlint --type-aware --fix index.ts src && pnpm format",
+    "monitor:stream": "node scripts/dingtalk-stream-monitor.mjs",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "type-check": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dingtalk-stream": "^2.1.4",
+    "form-data": "^4.0.0",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "oxfmt": "0.34.0",
+    "oxlint": "^1.49.0",
+    "oxlint-tsgolint": "^0.15.0",
+    "typescript": "^5.3.0",
+    "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.2.13"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channels": [
+      "dingtalk"
+    ],
+    "installDependencies": true,
+    "channel": {
+      "id": "dingtalk",
+      "label": "DingTalk",
+      "selectionLabel": "DingTalk (钉钉)",
+      "docsPath": "/channels/dingtalk",
+      "docsLabel": "dingtalk",
+      "blurb": "钉钉企业内部机器人，使用 Stream 模式，无需公网 IP。",
+      "order": 70,
+      "aliases": [
+        "dd",
+        "ding"
+      ]
+    },
+    "install": {
+      "npmSpec": "@soimy/dingtalk",
+      "localPath": ".",
+      "defaultChoice": "npm"
+    }
+  }
+}

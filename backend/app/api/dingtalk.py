@@ -132,6 +132,7 @@ async def process_dingtalk_message(
     image_base64_list: list[str] | None = None,
     saved_file_paths: list[str] | None = None,
     sender_nick: str = "",
+    message_id: str = "",
 ):
     """Process an incoming DingTalk bot message and reply via session webhook.
 
@@ -333,6 +334,16 @@ async def process_dingtalk_message(
             # Reset ContextVar
             if _cfs_token is not None:
                 _cfs.reset(_cfs_token)
+            # Recall thinking reaction (before sending reply)
+            if message_id and _dt_app_key:
+                try:
+                    from app.services.dingtalk_reaction import recall_thinking_reaction
+                    await recall_thinking_reaction(
+                        _dt_app_key, _dt_app_secret,
+                        message_id, conversation_id,
+                    )
+                except Exception as _recall_err:
+                    logger.warning(f"[DingTalk] Failed to recall thinking reaction: {_recall_err}")
 
         has_media = bool(image_base64_list or saved_file_paths)
         logger.info(

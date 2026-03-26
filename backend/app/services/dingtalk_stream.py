@@ -503,6 +503,7 @@ class DingTalkStreamManager:
                     msgtype = msg_data.get("msgtype", "text")
                     sender_staff_id = incoming.sender_staff_id or incoming.sender_id or ""
                     sender_nick = incoming.sender_nick or ""
+                    message_id = incoming.message_id or ""
                     conversation_id = incoming.conversation_id or ""
                     conversation_type = incoming.conversation_type or "1"
                     session_webhook = incoming.session_webhook or ""
@@ -525,6 +526,12 @@ class DingTalkStreamManager:
                         from app.api.dingtalk import process_dingtalk_message
 
                         if main_loop and main_loop.is_running():
+                            # Add thinking reaction immediately
+                            from app.services.dingtalk_reaction import add_thinking_reaction
+                            asyncio.run_coroutine_threadsafe(
+                                add_thinking_reaction(app_key, app_secret, message_id, conversation_id),
+                                main_loop,
+                            )
                             future = asyncio.run_coroutine_threadsafe(
                                 process_dingtalk_message(
                                     agent_id=agent_id,
@@ -534,6 +541,7 @@ class DingTalkStreamManager:
                                     conversation_type=conversation_type,
                                     session_webhook=session_webhook,
                                     sender_nick=sender_nick,
+                                    message_id=message_id,
                                 ),
                                 main_loop,
                             )
@@ -551,6 +559,12 @@ class DingTalkStreamManager:
                         from app.api.dingtalk import process_dingtalk_message
 
                         if main_loop and main_loop.is_running():
+                            # Add thinking reaction immediately
+                            from app.services.dingtalk_reaction import add_thinking_reaction
+                            asyncio.run_coroutine_threadsafe(
+                                add_thinking_reaction(app_key, app_secret, message_id, conversation_id),
+                                main_loop,
+                            )
                             # Process media (download + encode) in the main loop
                             future = asyncio.run_coroutine_threadsafe(
                                 self._handle_media_and_dispatch(
@@ -563,6 +577,7 @@ class DingTalkStreamManager:
                                     conversation_type=conversation_type,
                                     session_webhook=session_webhook,
                                     sender_nick=sender_nick,
+                                    message_id=message_id,
                                 ),
                                 main_loop,
                             )
@@ -593,6 +608,7 @@ class DingTalkStreamManager:
                 conversation_type: str,
                 session_webhook: str,
                 sender_nick: str = "",
+                message_id: str = "",
             ):
                 """Download media, then dispatch to process_dingtalk_message."""
                 from app.api.dingtalk import process_dingtalk_message
@@ -618,6 +634,7 @@ class DingTalkStreamManager:
                     image_base64_list=image_base64_list,
                     saved_file_paths=saved_file_paths,
                     sender_nick=sender_nick,
+                    message_id=message_id,
                 )
 
         while not stop_event.is_set() and retries <= MAX_RETRIES:
