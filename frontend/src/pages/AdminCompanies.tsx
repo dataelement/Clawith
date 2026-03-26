@@ -1,8 +1,9 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { adminApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor } from '../utils/theme';
+import { IconFilter } from '@tabler/icons-react';
 import PlatformDashboard from './PlatformDashboard';
 
 // Helper for authenticated JSON fetch
@@ -314,6 +315,18 @@ function CompaniesTab() {
 
     // Status filter
     const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'disabled'>('all');
+    const [showStatusDropdown, setShowStatusDropdown] = useState(false);
+    const statusDropdownRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const handleClick = (e: MouseEvent) => {
+            if (statusDropdownRef.current && !statusDropdownRef.current.contains(e.target as Node)) {
+                setShowStatusDropdown(false);
+            }
+        };
+        if (showStatusDropdown) document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+    }, [showStatusDropdown]);
 
     // Pagination
     const [page, setPage] = useState(0);
@@ -582,21 +595,46 @@ function CompaniesTab() {
                             {col.label}<SortArrow col={col.key} />
                         </div>
                     ))}
-                    <div>
-                        <select
-                            value={statusFilter}
-                            onChange={e => { setStatusFilter(e.target.value as any); setPage(0); }}
+                    <div ref={statusDropdownRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        {t('admin.status', 'Status')}
+                        <button
+                            onClick={() => setShowStatusDropdown(v => !v)}
                             style={{
-                                background: 'transparent', border: 'none', color: 'var(--text-tertiary)',
-                                fontSize: '11px', fontWeight: 600, textTransform: 'uppercase',
-                                letterSpacing: '0.05em', cursor: 'pointer', outline: 'none',
-                                padding: 0,
+                                background: 'none', border: 'none', padding: '2px', cursor: 'pointer',
+                                display: 'flex', alignItems: 'center', borderRadius: '4px',
+                                color: statusFilter !== 'all' ? 'var(--accent-primary)' : 'var(--text-tertiary)',
+                                transition: 'color 0.15s',
                             }}
+                            title={t('admin.filterStatus', 'Filter by status')}
                         >
-                            <option value="all">{t('admin.status', 'Status')}: {t('admin.all', 'All')}</option>
-                            <option value="active">{t('admin.active', 'Active')}</option>
-                            <option value="disabled">{t('admin.disabled', 'Disabled')}</option>
-                        </select>
+                            <IconFilter size={14} stroke={statusFilter !== 'all' ? 2.5 : 1.8} />
+                        </button>
+                        {showStatusDropdown && (
+                            <div style={{
+                                position: 'absolute', top: '100%', left: 0, marginTop: '4px',
+                                background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
+                                borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                                zIndex: 100, minWidth: '120px', padding: '4px', overflow: 'hidden',
+                            }}>
+                                {(['all', 'active', 'disabled'] as const).map(val => (
+                                    <div
+                                        key={val}
+                                        onClick={() => { setStatusFilter(val); setPage(0); setShowStatusDropdown(false); }}
+                                        style={{
+                                            padding: '6px 10px', fontSize: '12px', cursor: 'pointer',
+                                            borderRadius: '6px', transition: 'background 0.1s',
+                                            color: statusFilter === val ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                                            fontWeight: statusFilter === val ? 600 : 400,
+                                            background: statusFilter === val ? 'var(--bg-secondary)' : 'transparent',
+                                        }}
+                                        onMouseEnter={e => { if (statusFilter !== val) (e.currentTarget.style.background = 'var(--bg-secondary)'); }}
+                                        onMouseLeave={e => { if (statusFilter !== val) (e.currentTarget.style.background = 'transparent'); }}
+                                    >
+                                        {val === 'all' ? t('admin.all', 'All') : val === 'active' ? t('admin.active', 'Active') : t('admin.disabled', 'Disabled')}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                     <div>{t('admin.action', 'Action')}</div>
                 </div>
