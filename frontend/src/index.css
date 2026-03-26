@@ -1342,10 +1342,12 @@ select:focus {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 100px);
+  overflow: hidden;
 }
 
 .chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-4) 0;
 }
