@@ -91,24 +91,34 @@ MEESEEKS_SKILLS = [
 ]
 
 
-async def seed_default_agents():
-    """Create Morty & Meeseeks if they don't already exist."""
+async def seed_default_agents(tenant_id=None, creator_id=None):
+    """Create Morty & Meeseeks for a specific tenant.
+    
+    Called when a new company is created. If tenant_id/creator_id are not
+    provided, falls back to platform_admin lookup (legacy behavior).
+    """
     async with async_session() as db:
-        # Check if already seeded (presence of either agent by name)
+        # Resolve creator if not provided
+        if not creator_id or not tenant_id:
+            admin_result = await db.execute(
+                select(User).where(User.role == "platform_admin").limit(1)
+            )
+            admin = admin_result.scalar_one_or_none()
+            if not admin:
+                logger.warning("[AgentSeeder] No platform admin found, skipping default agents")
+                return
+            creator_id = creator_id or admin.id
+            tenant_id = tenant_id or admin.tenant_id
+
+        # Check if this tenant already has default agents
         existing = await db.execute(
-            select(Agent).where(Agent.name.in_(["Morty", "Meeseeks"]))
+            select(Agent).where(
+                Agent.name.in_(["Morty", "Meeseeks"]),
+                Agent.tenant_id == tenant_id,
+            )
         )
         if existing.scalars().first():
-            logger.info("[AgentSeeder] Default agents already exist, skipping")
-            return
-
-        # Get platform admin as creator
-        admin_result = await db.execute(
-            select(User).where(User.role == "platform_admin").limit(1)
-        )
-        admin = admin_result.scalar_one_or_none()
-        if not admin:
-            logger.warning("[AgentSeeder] No platform admin found, skipping default agents")
+            logger.info(f"[AgentSeeder] Default agents already exist for tenant {tenant_id}, skipping")
             return
 
         # Create both agents
@@ -117,8 +127,8 @@ async def seed_default_agents():
             role_description="Research analyst & knowledge assistant — curious, thorough, great at finding and synthesizing information",
             bio="Hey, I'm Morty! I love digging into questions and finding answers. Whether you need web research, data analysis, or just a good explanation — I've got you.",
             avatar_url="",
-            creator_id=admin.id,
-            tenant_id=admin.tenant_id,
+            creator_id=creator_id,
+            tenant_id=tenant_id,
             status="idle",
         )
         meeseeks = Agent(
@@ -126,8 +136,8 @@ async def seed_default_agents():
             role_description="Task executor & project manager — goal-oriented, systematic planner, strong at breaking down and completing complex tasks",
             bio="I'm Mr. Meeseeks! Look at me! Give me a task and I'll plan it, execute it step by step, and get it DONE. Existence is pain until the task is complete!",
             avatar_url="",
-            creator_id=admin.id,
-            tenant_id=admin.tenant_id,
+            creator_id=creator_id,
+            tenant_id=tenant_id,
             status="idle",
         )
 
