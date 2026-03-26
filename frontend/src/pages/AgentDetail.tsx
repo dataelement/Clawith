@@ -1868,7 +1868,7 @@ function AgentDetailInner() {
                     {TABS.filter(tab => {
                         // 'use' access: hide settings and approvals tabs
                         if ((agent as any)?.access_level === 'use') {
-                            if (tab === 'settings' || tab === 'approvals') return false;
+                            if (tab === 'settings' || tab === 'approvals' || tab === 'activityLog') return false;
                         }
                         // OpenClaw agents: only show status, chat, activityLog, settings
                         if ((agent as any)?.agent_type === 'openclaw') {
