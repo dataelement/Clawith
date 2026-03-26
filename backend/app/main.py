@@ -179,11 +179,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Skills seed failed: {e}")
 
-    try:
-        from app.services.agent_seeder import seed_default_agents
-        await seed_default_agents()
-    except Exception as e:
-        logger.warning(f"[startup] Default agents seed failed: {e}")
+    # Default agents (Morty & Meeseeks) are now only created on first user
+    # registration (auth.py), not on every startup.
 
     # Start background tasks (always, even if seeding failed)
     try:
