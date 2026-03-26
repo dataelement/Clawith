@@ -13,7 +13,7 @@ import OpenClawSettings from './OpenClawSettings';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAuthStore } from '../stores';
 
-const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+const TABS = ['chat', 'status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'activityLog', 'approvals', 'settings'] as const;
 
 // Format large token numbers with K/M suffixes
 const formatTokens = (n: number) => {
@@ -707,7 +707,7 @@ function AgentDetailInner() {
     const location = useLocation();
     const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'];
     const hashTab = location.hash?.replace('#', '');
-    const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
+    const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'chat');
 
     // Sync URL hash when tab changes
     const setActiveTab = (tab: string) => {
