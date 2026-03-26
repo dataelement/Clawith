@@ -4,15 +4,12 @@ import re
 from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
-# Field names that should be fully masked
+# Field names whose values should be completely hidden (replaced with "******")
 SENSITIVE_FIELD_NAMES = {
     "password", "secret", "token", "api_key", "apikey", "api_secret",
     "access_token", "refresh_token", "private_key", "secret_key",
     "authorization", "credentials", "auth",
-}
-
-# Field names that contain connection URIs (need special parsing)
-CONNECTION_URI_FIELDS = {
+    # Connection/credential strings — hide entirely, not partially
     "connection_string", "database_url", "db_url", "dsn", "uri",
     "connection_uri", "jdbc_url", "mongo_uri", "redis_url",
 }
@@ -22,7 +19,7 @@ def sanitize_tool_args(args: dict | None) -> dict | None:
     """Return a sanitized copy of tool call arguments.
 
     - Fields matching SENSITIVE_FIELD_NAMES are replaced with "******"
-    - Fields matching CONNECTION_URI_FIELDS have passwords masked in the URI
+    - Values that look like connection URIs are also replaced with "******"
     - Original dict is NOT modified (returns a deep copy)
     """
     if not args:
@@ -33,21 +30,14 @@ def sanitize_tool_args(args: dict | None) -> dict | None:
     for key in list(sanitized.keys()):
         key_lower = key.lower()
 
-        # Fully mask sensitive fields
+        # Fully mask sensitive fields by name
         if key_lower in SENSITIVE_FIELD_NAMES:
             sanitized[key] = "******"
             continue
 
-        # Mask password in connection URI fields
-        if key_lower in CONNECTION_URI_FIELDS:
-            sanitized[key] = _mask_uri_password(str(sanitized[key]))
-            continue
-
-        # Check if value looks like a connection URI even if field name doesn't match
-        if isinstance(sanitized[key], str):
-            val = sanitized[key]
-            if _looks_like_connection_uri(val):
-                sanitized[key] = _mask_uri_password(val)
+        # Fully mask values that look like connection URIs regardless of field name
+        if isinstance(sanitized[key], str) and _looks_like_connection_uri(sanitized[key]):
+            sanitized[key] = "******"
 
     return sanitized
 
