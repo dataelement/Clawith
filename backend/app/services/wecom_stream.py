@@ -15,6 +15,47 @@ from app.database import async_session
 from app.models.channel_config import ChannelConfig
 
 
+def _disable_wecom_sdk_proxy() -> None:
+    """Force the WeCom SDK websocket path to bypass system proxies."""
+    import wecom_aibot_sdk.ws as sdk_ws
+
+    if getattr(sdk_ws.websockets.connect, "__clawith_no_proxy_patch__", False):
+        return
+
+    original_connect = sdk_ws.websockets.connect
+
+    def connect_no_proxy(*args, **kwargs):
+        kwargs.setdefault("proxy", None)
+        return original_connect(*args, **kwargs)
+
+    connect_no_proxy.__clawith_no_proxy_patch__ = True
+    sdk_ws.websockets.connect = connect_no_proxy
+
+
+def _extract_wecom_sender_id(body: dict) -> str:
+    sender = body.get("from")
+    if isinstance(sender, dict):
+        sender_id = sender.get("user_id") or sender.get("userid")
+        if sender_id:
+            return str(sender_id).strip()
+    return str(body.get("from_userid") or body.get("userid") or "").strip()
+
+
+def _extract_wecom_chat_type(body: dict) -> str:
+    return str(body.get("chattype") or body.get("chat_type") or "single").strip().lower()
+
+
+def _extract_wecom_chat_id(body: dict) -> str:
+    return str(body.get("chatid") or body.get("chat_id") or "").strip()
+
+
+def _build_wecom_conv_id(sender_id: str, chat_id: str, chat_type: str) -> str:
+    normalized_type = (chat_type or "single").strip().lower()
+    if normalized_type in {"group", "groupchat", "group_chat"} and chat_id:
+        return f"wecom_group_{chat_id}"
+    return f"wecom_p2p_{sender_id}"
+
+
 class WeComStreamManager:
     """Manages WeCom AI Bot WebSocket clients for all agents."""
 
@@ -63,6 +104,7 @@ class WeComStreamManager:
             return
 
         try:
+            _disable_wecom_sdk_proxy()
             client = WSClient({
                 "bot_id": bot_id,
                 "secret": bot_secret,
@@ -80,13 +122,25 @@ class WeComStreamManager:
                     if not user_text:
                         return
 
-                    sender = body.get("from", {})
-                    sender_id = sender.get("user_id", "") or sender.get("userid", "")
-                    chat_id = body.get("chatid", "")
-                    chat_type = body.get("chat_type", "single")
+                    sender_id = _extract_wecom_sender_id(body)
+                    chat_id = _extract_wecom_chat_id(body)
+                    chat_type = _extract_wecom_chat_type(body)
+                    msg_id = str(body.get("msgid", "")).strip()
+
+                    if not sender_id:
+                        logger.error(
+                            "[WeCom Stream] Missing sender_id, skip message",
+                            extra={
+                                "msgid": msg_id,
+                                "chat_type": chat_type,
+                                "chat_id": chat_id,
+                                "body_keys": sorted(body.keys()),
+                            },
+                        )
+                        return
 
                     logger.info(
-                        f"[WeCom Stream] Text from {sender_id}: {user_text[:80]}"
+                        f"[WeCom Stream] Text from {sender_id} ({chat_type}, chat_id={chat_id or '-'})"
                     )
 
                     # Process message and get reply
@@ -121,8 +175,7 @@ class WeComStreamManager:
             async def on_image(frame):
                 try:
                     body = frame.body or {}
-                    sender = body.get("from", {})
-                    sender_id = sender.get("user_id", "") or sender.get("userid", "")
+                    sender_id = _extract_wecom_sender_id(body)
                     logger.info(f"[WeCom Stream] Image message from {sender_id} (not yet handled)")
                     stream_id = generate_req_id("stream")
                     await client.reply_stream(
@@ -137,8 +190,7 @@ class WeComStreamManager:
             async def on_file(frame):
                 try:
                     body = frame.body or {}
-                    sender = body.get("from", {})
-                    sender_id = sender.get("user_id", "") or sender.get("userid", "")
+                    sender_id = _extract_wecom_sender_id(body)
                     logger.info(f"[WeCom Stream] File message from {sender_id} (not yet handled)")
                     stream_id = generate_req_id("stream")
                     await client.reply_stream(
@@ -216,7 +268,7 @@ class WeComStreamManager:
         async with async_session() as db:
             result = await db.execute(
                 select(ChannelConfig).where(
-                    ChannelConfig.is_configured == True,
+                    ChannelConfig.is_configured,
                     ChannelConfig.channel_type == "wecom",
                 )
             )
@@ -274,11 +326,7 @@ async def _process_wecom_stream_message(
             return "Agent not found"
         ctx_size = agent_obj.context_window_size or 20
 
-        # Conversation ID: differentiate single chat vs group chat
-        if chat_type == "group" and chat_id:
-            conv_id = f"wecom_group_{chat_id}"
-        else:
-            conv_id = f"wecom_p2p_{sender_id}"
+        conv_id = _build_wecom_conv_id(sender_id, chat_id, chat_type)
 
         # Find or create platform user
         wc_username = f"wecom_{sender_id}"

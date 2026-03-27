@@ -5,14 +5,11 @@ Provides Config CRUD and webhook-based message handling with AES encryption.
 
 import base64
 import hashlib
-import re
-import socket
 import struct
-import time
 import uuid
 import xml.etree.ElementTree as ET
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -138,6 +135,7 @@ async def configure_wecom_channel(
         existing.verification_token = token
         existing.extra_config = extra_config
         existing.is_configured = True
+        existing.is_connected = False
         await db.flush()
         config_out = ChannelConfigOut.model_validate(existing)
     else:
@@ -150,22 +148,26 @@ async def configure_wecom_channel(
             verification_token=token,
             extra_config=extra_config,
             is_configured=True,
+            is_connected=False,
         )
         db.add(config)
         await db.flush()
         config_out = ChannelConfigOut.model_validate(config)
 
-    # Auto-start WebSocket client if bot credentials provided
-    if has_ws_mode:
-        try:
-            from app.services.wecom_stream import wecom_stream_manager
-            import asyncio
+    try:
+        from app.services.wecom_stream import wecom_stream_manager
+        import asyncio
+
+        if has_ws_mode:
             asyncio.create_task(
                 wecom_stream_manager.start_client(agent_id, bot_id, bot_secret)
             )
             logger.info(f"[WeCom] WebSocket client start triggered for agent {agent_id}")
-        except Exception as e:
-            logger.error(f"[WeCom] Failed to start WebSocket client: {e}")
+        else:
+            asyncio.create_task(wecom_stream_manager.stop_client(agent_id))
+            logger.info(f"[WeCom] WebSocket client stop triggered for agent {agent_id}")
+    except Exception as e:
+        logger.error(f"[WeCom] Failed to update WebSocket client state: {e}")
 
     return config_out
 
@@ -186,7 +188,15 @@ async def get_wecom_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="WeCom not configured")
-    return ChannelConfigOut.model_validate(config)
+
+    config_out = ChannelConfigOut.model_validate(config)
+    if (config.extra_config or {}).get("connection_mode") == "websocket":
+        from app.services.wecom_stream import wecom_stream_manager
+
+        config_out.is_connected = wecom_stream_manager.status().get(str(agent_id), False)
+    else:
+        config_out.is_connected = False
+    return config_out
 
 
 @router.get("/agents/{agent_id}/wecom-channel/webhook-url")
@@ -227,6 +237,9 @@ async def delete_wecom_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="WeCom not configured")
+    from app.services.wecom_stream import wecom_stream_manager
+
+    await wecom_stream_manager.stop_client(agent_id)
     await db.delete(config)
 
 
@@ -300,8 +313,6 @@ async def wecom_event_webhook(
 
     token = config.verification_token or ""
     encoding_aes_key = config.encrypt_key or ""
-    corp_id = config.app_id or ""
-
     # Parse encrypted XML body
     try:
         root = ET.fromstring(body_bytes)
@@ -457,7 +468,6 @@ async def _process_wecom_text(
     kf_msg_id: str = None,
 ):
     """Process an incoming WeCom text message and reply."""
-    import json
     import httpx
     from datetime import datetime, timezone
     from sqlalchemy import select as _select
@@ -476,7 +486,6 @@ async def _process_wecom_text(
         if not agent_obj:
             logger.warning(f"[WeCom] Agent {agent_id} not found")
             return
-        creator_id = agent_obj.creator_id
         ctx_size = agent_obj.context_window_size if agent_obj else 20
 
         conv_id = f"wecom_p2p_{from_user}"
