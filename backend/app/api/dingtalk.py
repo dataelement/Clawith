@@ -220,10 +220,24 @@ async def process_dingtalk_message(
         )
         history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
-        # Save user message
+        # Save user message — use display-friendly format for DB (no base64)
+        # Build saved_content: [file:name] prefix for each saved file + clean text
+        import re as _re_dt
+        _clean_text = _re_dt.sub(
+            r'\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]',
+            "", user_text,
+        ).strip()
+        if saved_file_paths:
+            from pathlib import Path as _PathDT
+            _file_prefixes = "\n".join(
+                f"[file:{_PathDT(p).name}]" for p in saved_file_paths
+            )
+            saved_content = f"{_file_prefixes}\n{_clean_text}".strip() if _clean_text else _file_prefixes
+        else:
+            saved_content = _clean_text or user_text
         db.add(ChatMessage(
             agent_id=agent_id, user_id=platform_user_id,
-            role="user", content=user_text,
+            role="user", content=saved_content,
             conversation_id=session_conv_id,
         ))
         sess.last_message_at = datetime.now(timezone.utc)
