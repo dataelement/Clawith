@@ -581,6 +581,10 @@ async def websocket_chat(
                 entry["thinking"] = msg.thinking
             conversation.append(entry)
 
+    # Re-hydrate historical images for multi-turn LLM context
+    from app.services.image_context import rehydrate_image_messages
+    conversation = rehydrate_image_messages(conversation, agent_id, max_images=3)
+
     try:
         # Send welcome message on new session (no history)
         if welcome_message and not history_messages:

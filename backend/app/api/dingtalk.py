@@ -220,6 +220,10 @@ async def process_dingtalk_message(
         )
         history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
+        # Re-hydrate historical images for multi-turn LLM context
+        from app.services.image_context import rehydrate_image_messages
+        history = rehydrate_image_messages(history, agent_id, max_images=3)
+
         # Save user message — use display-friendly format for DB (no base64)
         # Build saved_content: [file:name] prefix for each saved file + clean text
         import re as _re_dt

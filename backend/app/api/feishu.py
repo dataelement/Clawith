@@ -353,6 +353,10 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             history_msgs = history_result.scalars().all()
             history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
 
+            # Re-hydrate historical images for multi-turn LLM context
+            from app.services.image_context import rehydrate_image_messages
+            history = rehydrate_image_messages(history, agent_id, max_images=3)
+
             # --- Resolve Feishu sender identity & find/create platform user ---
             import uuid as _uuid
             import httpx as _httpx
@@ -891,6 +895,10 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
             .limit(ctx_size)
         )
         _history = [{"role": m.role, "content": m.content} for m in reversed(_hist_r.scalars().all())]
+
+        # Re-hydrate historical images for multi-turn LLM context
+        from app.services.image_context import rehydrate_image_messages
+        _history = rehydrate_image_messages(_history, agent_id, max_images=3)
 
         await db.commit()
 
