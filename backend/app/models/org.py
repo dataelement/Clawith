@@ -1,4 +1,4 @@
-"""Organization structure models — departments and members synced from Feishu."""
+"""Organization structure models cached from external directory providers."""
 
 import uuid
 from datetime import datetime
@@ -8,15 +8,18 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.tenant import Tenant  # noqa: F401
 
 
 class OrgDepartment(Base):
-    """Department from Feishu org structure."""
+    """Department synced from an external directory provider."""
 
     __tablename__ = "org_departments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     feishu_id: Mapped[str | None] = mapped_column(String(100), unique=True)
+    wecom_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    sync_provider: Mapped[str] = mapped_column(String(20), default="feishu", server_default="feishu", nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     parent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("org_departments.id"))
     path: Mapped[str] = mapped_column(String(500), default="")
@@ -28,13 +31,15 @@ class OrgDepartment(Base):
 
 
 class OrgMember(Base):
-    """Person from Feishu org structure."""
+    """Person synced from an external directory provider."""
 
     __tablename__ = "org_members"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     feishu_open_id: Mapped[str | None] = mapped_column(String(100), unique=True)
     feishu_user_id: Mapped[str | None] = mapped_column(String(100))
+    wecom_user_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    sync_provider: Mapped[str] = mapped_column(String(20), default="feishu", server_default="feishu", nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     name_translit_full: Mapped[str | None] = mapped_column(String(255), index=True)
     name_translit_initial: Mapped[str | None] = mapped_column(String(50), index=True)

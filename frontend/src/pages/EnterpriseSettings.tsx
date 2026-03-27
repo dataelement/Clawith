@@ -59,35 +59,111 @@ const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
 
 
 // ─── Department Tree ───────────────────────────────
-function DeptTree({ departments, parentId, selectedDept, onSelect, level }: {
-    departments: any[]; parentId: string | null; selectedDept: string | null;
-    onSelect: (id: string | null) => void; level: number;
+interface OrgDepartmentNode {
+    id: string;
+    provider: string;
+    feishu_id?: string | null;
+    wecom_id?: string | null;
+    name: string;
+    parent_id: string | null;
+    path: string;
+    member_count: number;
+}
+
+interface OrgMemberEntry {
+    id: string;
+    provider: string;
+    name: string;
+    email: string;
+    title: string;
+    department_path: string;
+    avatar_url?: string | null;
+}
+
+interface OrgSyncProviderConfig {
+    app_id?: string;
+    app_secret?: string;
+    corp_id?: string;
+    corp_secret?: string;
+    has_secret?: boolean;
+    last_synced_at?: string | null;
+}
+
+interface OrgSyncConfigResponse {
+    provider: 'feishu' | 'wecom';
+    feishu?: OrgSyncProviderConfig;
+    wecom?: OrgSyncProviderConfig;
+}
+
+function DeptTree({ childrenByParent, parentId, selectedDept, expandedDeptIds, onSelect, onToggle, level }: {
+    childrenByParent: Map<string | null, OrgDepartmentNode[]>;
+    parentId: string | null;
+    selectedDept: string | null;
+    expandedDeptIds: Record<string, boolean>;
+    onSelect: (id: string | null) => void;
+    onToggle: (id: string) => void;
+    level: number;
 }) {
-    const children = departments.filter((d: any) =>
-        parentId === null ? !d.parent_id : d.parent_id === parentId
-    );
+    const children = childrenByParent.get(parentId) || [];
     if (children.length === 0) return null;
     return (
         <>
-            {children.map((d: any) => (
+            {children.map((d) => {
+                const hasChildren = (childrenByParent.get(d.id) || []).length > 0;
+                const isExpanded = !!expandedDeptIds[d.id];
+                return (
                 <div key={d.id}>
                     <div
                         style={{
-                            padding: '5px 8px', paddingLeft: `${8 + level * 16}px`, borderRadius: '4px',
-                            cursor: 'pointer', fontSize: '13px', marginBottom: '1px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            padding: '6px 8px',
+                            paddingLeft: `${10 + level * 16}px`,
+                            borderRadius: '8px',
+                            cursor: 'pointer',
+                            fontSize: '13px',
+                            marginBottom: '2px',
                             background: selectedDept === d.id ? 'rgba(224,238,238,0.12)' : 'transparent',
                         }}
                         onClick={() => onSelect(d.id)}
                     >
-                        <span style={{ color: 'var(--text-tertiary)', marginRight: '4px', fontSize: '11px' }}>
-                            {departments.some((c: any) => c.parent_id === d.id) ? '▸' : '·'}
-                        </span>
-                        {d.name}
-                        {d.member_count > 0 && <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: '4px' }}>({d.member_count})</span>}
+                        <button
+                            type="button"
+                            aria-label={isExpanded ? 'Collapse department' : 'Expand department'}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                if (hasChildren) onToggle(d.id);
+                            }}
+                            style={{
+                                border: 'none',
+                                background: 'transparent',
+                                color: 'var(--text-tertiary)',
+                                cursor: hasChildren ? 'pointer' : 'default',
+                                width: '16px',
+                                padding: 0,
+                                fontSize: '11px',
+                            }}
+                        >
+                            {hasChildren ? (isExpanded ? '▾' : '▸') : '·'}
+                        </button>
+                        <span style={{ flex: 1, minWidth: 0 }}>{d.name}</span>
+                        {d.member_count > 0 && <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>({d.member_count})</span>}
                     </div>
-                    <DeptTree departments={departments} parentId={d.id} selectedDept={selectedDept} onSelect={onSelect} level={level + 1} />
+                    {(!hasChildren || isExpanded) && (
+                        <DeptTree
+                            childrenByParent={childrenByParent}
+                            parentId={d.id}
+                            selectedDept={selectedDept}
+                            expandedDeptIds={expandedDeptIds}
+                            onSelect={onSelect}
+                            onToggle={onToggle}
+                            level={level + 1}
+                        />
+                    )}
                 </div>
-            ))}
+                );
+            })}
         </>
     );
 }
@@ -96,29 +172,45 @@ function DeptTree({ departments, parentId, selectedDept, onSelect, level }: {
 function OrgTab() {
     const { t } = useTranslation();
     const qc = useQueryClient();
-    const [syncForm, setSyncForm] = useState({ app_id: '', app_secret: '' });
+    const [syncForm, setSyncForm] = useState({
+        provider: 'feishu',
+        feishu: { app_id: '', app_secret: '' },
+        wecom: { corp_id: '', corp_secret: '' },
+    });
     const [syncing, setSyncing] = useState(false);
     const [syncResult, setSyncResult] = useState<any>(null);
     const [memberSearch, setMemberSearch] = useState('');
     const [selectedDept, setSelectedDept] = useState<string | null>(null);
+    const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
+    const [expandedDeptIds, setExpandedDeptIds] = useState<Record<string, boolean>>({});
+    const [showSyncConfig, setShowSyncConfig] = useState(true);
 
-    const { data: config } = useQuery({
-        queryKey: ['system-settings', 'feishu_org_sync'],
-        queryFn: () => fetchJson<any>('/enterprise/system-settings/feishu_org_sync'),
+    const { data: config } = useQuery<{ value: OrgSyncConfigResponse }>({
+        queryKey: ['system-settings', 'org_sync'],
+        queryFn: () => fetchJson<any>('/enterprise/system-settings/org_sync'),
     });
 
     useEffect(() => {
-        if (config?.value?.app_id) {
-            setSyncForm({ app_id: config.value.app_id, app_secret: '' });
-        }
+        if (!config?.value) return;
+        setSyncForm({
+            provider: config.value.provider || 'feishu',
+            feishu: {
+                app_id: config.value.feishu?.app_id || '',
+                app_secret: '',
+            },
+            wecom: {
+                corp_id: config.value.wecom?.corp_id || '',
+                corp_secret: '',
+            },
+        });
     }, [config]);
 
     const currentTenantId = localStorage.getItem('current_tenant_id') || '';
-    const { data: departments = [] } = useQuery({
+    const { data: departments = [] } = useQuery<OrgDepartmentNode[]>({
         queryKey: ['org-departments', currentTenantId],
         queryFn: () => fetchJson<any[]>(`/enterprise/org/departments${currentTenantId ? `?tenant_id=${currentTenantId}` : ''}`),
     });
-    const { data: members = [] } = useQuery({
+    const { data: members = [] } = useQuery<OrgMemberEntry[]>({
         queryKey: ['org-members', selectedDept, memberSearch, currentTenantId],
         queryFn: () => {
             const params = new URLSearchParams();
@@ -129,54 +221,205 @@ function OrgTab() {
         },
     });
 
-    const saveConfig = async () => {
-        await fetchJson('/enterprise/system-settings/feishu_org_sync', {
-            method: 'PUT',
-            body: JSON.stringify({ value: { app_id: syncForm.app_id, app_secret: syncForm.app_secret } }),
+    const childrenByParent = useMemo(() => {
+        const tree = new Map<string | null, OrgDepartmentNode[]>();
+        for (const department of departments) {
+            const key = department.parent_id || null;
+            const siblings = tree.get(key) || [];
+            siblings.push(department);
+            tree.set(key, siblings);
+        }
+        for (const siblings of tree.values()) {
+            siblings.sort((a, b) => a.name.localeCompare(b.name));
+        }
+        return tree;
+    }, [departments]);
+
+    const selectedDepartment = useMemo(
+        () => departments.find((department) => department.id === selectedDept) || null,
+        [departments, selectedDept],
+    );
+
+    const selectedMember = useMemo(
+        () => members.find((member) => member.id === selectedMemberId) || null,
+        [members, selectedMemberId],
+    );
+
+    useEffect(() => {
+        if (departments.length === 0) return;
+        setExpandedDeptIds((prev) => {
+            const next = { ...prev };
+            let changed = false;
+            for (const department of departments) {
+                if (!department.parent_id && next[department.id] === undefined) {
+                    next[department.id] = true;
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
         });
-        qc.invalidateQueries({ queryKey: ['system-settings', 'feishu_org_sync'] });
+    }, [departments]);
+
+    useEffect(() => {
+        if (members.length === 0) {
+            setSelectedMemberId(null);
+            return;
+        }
+        if (!selectedMemberId || !members.some((member) => member.id === selectedMemberId)) {
+            setSelectedMemberId(members[0].id);
+        }
+    }, [members, selectedMemberId]);
+
+    const saveConfig = async () => {
+        await fetchJson('/enterprise/system-settings/org_sync', {
+            method: 'PUT',
+            body: JSON.stringify({
+                value: {
+                    provider: syncForm.provider,
+                    feishu: syncForm.feishu,
+                    wecom: syncForm.wecom,
+                },
+            }),
+        });
+        qc.invalidateQueries({ queryKey: ['system-settings', 'org_sync'] });
     };
 
     const triggerSync = async () => {
+        if (!canSync) {
+            setSyncResult({
+                error: activeProvider === 'wecom'
+                    ? t('enterprise.org.wecomConfigIncomplete')
+                    : t('enterprise.org.feishuConfigIncomplete'),
+            });
+            return;
+        }
+
         setSyncing(true);
         setSyncResult(null);
         try {
-            if (syncForm.app_secret) await saveConfig();
+            await saveConfig();
             const result = await fetchJson<any>('/enterprise/org/sync', { method: 'POST' });
             setSyncResult(result);
             qc.invalidateQueries({ queryKey: ['org-departments'] });
             qc.invalidateQueries({ queryKey: ['org-members'] });
+            qc.invalidateQueries({ queryKey: ['system-settings', 'org_sync'] });
         } catch (e: any) {
             setSyncResult({ error: e.message });
         }
         setSyncing(false);
     };
 
+    const activeProvider = syncForm.provider;
+    const activeLastSyncedAt = activeProvider === 'wecom'
+        ? config?.value?.wecom?.last_synced_at
+        : config?.value?.feishu?.last_synced_at;
+    const activeIdentifier = activeProvider === 'wecom'
+        ? syncForm.wecom.corp_id
+        : syncForm.feishu.app_id;
+    const activeSecret = activeProvider === 'wecom'
+        ? syncForm.wecom.corp_secret
+        : syncForm.feishu.app_secret;
+    const storedActiveConfig = activeProvider === 'wecom'
+        ? config?.value?.wecom
+        : config?.value?.feishu;
+    const storedActiveIdentifier = activeProvider === 'wecom'
+        ? storedActiveConfig?.corp_id
+        : storedActiveConfig?.app_id;
+    const hasStoredSecretForCurrentIdentifier = Boolean(
+        storedActiveConfig?.has_secret && storedActiveIdentifier === activeIdentifier,
+    );
+    const canSync = Boolean(activeIdentifier && (activeSecret || hasStoredSecretForCurrentIdentifier));
+
+    const toggleDepartment = (id: string) => {
+        setExpandedDeptIds((prev) => ({ ...prev, [id]: !prev[id] }));
+    };
+
     return (
         <div>
             {/* Sync Config */}
             <div className="card" style={{ marginBottom: '16px' }}>
-                <h4 style={{ marginBottom: '12px' }}>{t('enterprise.org.feishuSync')}</h4>
-                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                    {t('enterprise.org.feishuSync')}
-                </p>
-                <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
-                    <div style={{ flex: 1 }}>
-                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App ID</label>
-                        <input className="input" value={syncForm.app_id} onChange={e => setSyncForm({ ...syncForm, app_id: e.target.value })} placeholder="cli_xxxxxxxx" />
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: showSyncConfig ? '12px' : 0 }}>
+                    <div style={{ minWidth: 0 }}>
+                        <h4 style={{ marginBottom: '4px' }}>{t('enterprise.org.directorySync')}</h4>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                            <span>{activeProvider === 'wecom' ? t('enterprise.org.providerWecom') : t('enterprise.org.providerFeishu')}</span>
+                            {activeLastSyncedAt && <span>{t('enterprise.org.lastSync', { time: new Date(activeLastSyncedAt).toLocaleString() })}</span>}
+                        </div>
                     </div>
-                    <div style={{ flex: 1 }}>
-                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App Secret</label>
-                        <input className="input" type="password" value={syncForm.app_secret} onChange={e => setSyncForm({ ...syncForm, app_secret: e.target.value })} placeholder={config?.value?.app_id ? '' : ''} />
-                    </div>
+                    <button className="btn btn-ghost" type="button" onClick={() => setShowSyncConfig((prev) => !prev)}>
+                        {showSyncConfig ? t('enterprise.org.hideConfig') : t('enterprise.org.showConfig')}
+                    </button>
                 </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <button className="btn btn-primary" onClick={triggerSync} disabled={syncing || !syncForm.app_id}>
+                {showSyncConfig && (
+                    <>
+                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                            {activeProvider === 'wecom' ? t('enterprise.org.wecomDescription') : t('enterprise.org.feishuDescription')}
+                        </p>
+                        <div style={{ marginBottom: '12px' }}>
+                            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>{t('enterprise.org.provider')}</label>
+                            <select
+                                className="input"
+                                value={syncForm.provider}
+                                onChange={e => setSyncForm(prev => ({ ...prev, provider: e.target.value }))}
+                            >
+                                <option value="feishu">{t('enterprise.org.providerFeishu')}</option>
+                                <option value="wecom">{t('enterprise.org.providerWecom')}</option>
+                            </select>
+                        </div>
+                        <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
+                            {activeProvider === 'wecom' ? (
+                                <>
+                                    <div style={{ flex: 1 }}>
+                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>{t('enterprise.org.corpId')}</label>
+                                        <input
+                                            className="input"
+                                            value={syncForm.wecom.corp_id}
+                                            onChange={e => setSyncForm(prev => ({ ...prev, wecom: { ...prev.wecom, corp_id: e.target.value } }))}
+                                            placeholder="wwxxxxxxxxxxxxxxxx"
+                                        />
+                                    </div>
+                                    <div style={{ flex: 1 }}>
+                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>{t('enterprise.org.corpSecret')}</label>
+                                        <input
+                                            className="input"
+                                            type="password"
+                                            value={syncForm.wecom.corp_secret}
+                                            onChange={e => setSyncForm(prev => ({ ...prev, wecom: { ...prev.wecom, corp_secret: e.target.value } }))}
+                                        />
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div style={{ flex: 1 }}>
+                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>{t('enterprise.org.appId')}</label>
+                                        <input
+                                            className="input"
+                                            value={syncForm.feishu.app_id}
+                                            onChange={e => setSyncForm(prev => ({ ...prev, feishu: { ...prev.feishu, app_id: e.target.value } }))}
+                                            placeholder="cli_xxxxxxxx"
+                                        />
+                                    </div>
+                                    <div style={{ flex: 1 }}>
+                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>{t('enterprise.org.appSecret')}</label>
+                                        <input
+                                            className="input"
+                                            type="password"
+                                            value={syncForm.feishu.app_secret}
+                                            onChange={e => setSyncForm(prev => ({ ...prev, feishu: { ...prev.feishu, app_secret: e.target.value } }))}
+                                        />
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </>
+                )}
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button className="btn btn-primary" onClick={triggerSync} disabled={syncing || !canSync}>
                         {syncing ? t('enterprise.org.syncing') : t('enterprise.org.syncNow')}
                     </button>
-                    {config?.value?.last_synced_at && (
+                    {!showSyncConfig && (
                         <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                            Last sync: {new Date(config.value.last_synced_at).toLocaleString()}
+                            {activeProvider === 'wecom' ? syncForm.wecom.corp_id : syncForm.feishu.app_id}
                         </span>
                     )}
                 </div>
@@ -194,33 +437,106 @@ function OrgTab() {
                     <div style={{ width: '260px', borderRight: '1px solid var(--border-subtle)', paddingRight: '16px', maxHeight: '500px', overflowY: 'auto' }}>
                         <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>{t('enterprise.org.allDepartments')}</div>
                         <div
-                            style={{ padding: '6px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', marginBottom: '2px', background: !selectedDept ? 'rgba(224,238,238,0.1)' : 'transparent' }}
+                            style={{ padding: '6px 8px', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', marginBottom: '2px', background: !selectedDept ? 'rgba(224,238,238,0.1)' : 'transparent' }}
                             onClick={() => setSelectedDept(null)}
                         >
                             {t('common.all')}
                         </div>
-                        <DeptTree departments={departments} parentId={null} selectedDept={selectedDept} onSelect={setSelectedDept} level={0} />
+                        <DeptTree
+                            childrenByParent={childrenByParent}
+                            parentId={null}
+                            selectedDept={selectedDept}
+                            expandedDeptIds={expandedDeptIds}
+                            onSelect={setSelectedDept}
+                            onToggle={toggleDepartment}
+                            level={0}
+                        />
                         {departments.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px' }}>{t('common.noData')}</div>}
                     </div>
 
-                    <div style={{ flex: 1 }}>
-                        <input className="input" placeholder={t("enterprise.org.searchMembers")} value={memberSearch} onChange={e => setMemberSearch(e.target.value)} style={{ marginBottom: '12px', fontSize: '13px' }} />
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '400px', overflowY: 'auto' }}>
-                            {members.map((m: any) => (
-                                <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
-                                    <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 600 }}>
-                                        {m.name?.[0] || '?'}
-                                    </div>
-                                    <div>
-                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{m.name}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                            {m.title || '-'} · {m.department_path || '-'}
-                                            {m.email && ` · ${m.email}`}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                            <input className="input" placeholder={t("enterprise.org.searchMembers")} value={memberSearch} onChange={e => setMemberSearch(e.target.value)} style={{ flex: 1, minWidth: '220px', fontSize: '13px' }} />
+                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                {selectedDepartment ? t('enterprise.org.selectedDepartment', { name: selectedDepartment.name }) : t('enterprise.org.allDepartments')}
+                            </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(260px, 0.9fr)', gap: '16px', alignItems: 'start' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
+                                {members.map((m) => (
+                                    <button
+                                        type="button"
+                                        key={m.id}
+                                        onClick={() => setSelectedMemberId(m.id)}
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '10px',
+                                            padding: '10px',
+                                            borderRadius: '10px',
+                                            border: selectedMemberId === m.id ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                                            background: selectedMemberId === m.id ? 'rgba(224,238,238,0.08)' : 'var(--bg-primary)',
+                                            cursor: 'pointer',
+                                            textAlign: 'left',
+                                            width: '100%',
+                                        }}
+                                    >
+                                        <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 600, flexShrink: 0 }}>
+                                            {m.name?.[0] || '?'}
                                         </div>
-                                    </div>
+                                        <div style={{ minWidth: 0 }}>
+                                            <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '2px' }}>{m.name}</div>
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                {m.title || t('enterprise.org.noTitle')}
+                                            </div>
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                {m.department_path || '-'}
+                                            </div>
+                                        </div>
+                                    </button>
+                                ))}
+                                {members.length === 0 && <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('enterprise.org.noMembers')}</div>}
+                            </div>
+                            <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '12px', padding: '14px', background: 'var(--bg-secondary)', minHeight: '220px' }}>
+                                <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                                    {t('enterprise.org.memberDetails')}
                                 </div>
-                            ))}
-                            {members.length === 0 && <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('enterprise.org.noMembers')}</div>}
+                                {selectedMember ? (
+                                    <>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                                            <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', fontWeight: 700, flexShrink: 0 }}>
+                                                {selectedMember.name?.[0] || '?'}
+                                            </div>
+                                            <div style={{ minWidth: 0 }}>
+                                                <div style={{ fontSize: '15px', fontWeight: 700 }}>{selectedMember.name}</div>
+                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{selectedMember.title || t('enterprise.org.noTitle')}</div>
+                                            </div>
+                                        </div>
+                                        <div style={{ display: 'grid', gap: '10px', fontSize: '12px' }}>
+                                            <div>
+                                                <div style={{ color: 'var(--text-tertiary)', marginBottom: '2px' }}>{t('enterprise.org.departmentLabel')}</div>
+                                                <div>{selectedMember.department_path || '-'}</div>
+                                            </div>
+                                            <div>
+                                                <div style={{ color: 'var(--text-tertiary)', marginBottom: '2px' }}>{t('enterprise.org.emailLabel')}</div>
+                                                <div>{selectedMember.email || '-'}</div>
+                                            </div>
+                                            <div>
+                                                <div style={{ color: 'var(--text-tertiary)', marginBottom: '2px' }}>{t('enterprise.org.titleLabel')}</div>
+                                                <div>{selectedMember.title || t('enterprise.org.noTitle')}</div>
+                                            </div>
+                                            <div>
+                                                <div style={{ color: 'var(--text-tertiary)', marginBottom: '2px' }}>{t('enterprise.org.provider')}</div>
+                                                <div>{selectedMember.provider === 'wecom' ? t('enterprise.org.providerWecom') : t('enterprise.org.providerFeishu')}</div>
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div style={{ color: 'var(--text-tertiary)', fontSize: '13px', lineHeight: 1.6 }}>
+                                        {t('enterprise.org.selectMemberHint')}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
