@@ -364,6 +364,7 @@ async def process_dingtalk_message(
             reply_text = await _call_agent_llm(
                 db, agent_id, user_text,
                 history=history, user_id=platform_user_id,
+                context_size=ctx_size,
             )
         finally:
             # Reset ContextVar

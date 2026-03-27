@@ -679,6 +679,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             reply_text = await _call_agent_llm(
                 db, agent_id, llm_user_text, history=history, user_id=platform_user_id,
                 on_chunk=_ws_on_chunk, on_thinking=_ws_on_thinking,
+                context_size=agent_obj.context_window_size if agent_obj else 20,
             )
             _cfs.reset(_cfs_token)
             _cfso.reset(_cfso_token)
@@ -968,6 +969,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
             reply_text = await _call_agent_llm(
                 _db_img, agent_id, user_msg_content, history=_history,
                 user_id=platform_user_id, on_chunk=_img_on_chunk,
+                context_size=agent_obj.context_window_size if agent_obj else 20,
             )
 
         logger.info(f"[Feishu] Image LLM reply: {reply_text[:100]}")
@@ -1048,7 +1050,7 @@ async def _download_post_images(agent_id, config, message_id, image_keys):
                 logger.error(f"[Feishu] Failed to download post image {ik}: {e}")
 
 
-async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str, history: list[dict] | None = None, user_id=None, on_chunk=None, on_thinking=None) -> str:
+async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str, history: list[dict] | None = None, user_id=None, on_chunk=None, on_thinking=None, context_size: int = 20) -> str:
     """Call the agent's configured LLM model with conversation history.
     
     Reuses the same call_llm function as the WebSocket chat endpoint so that
@@ -1091,7 +1093,7 @@ async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str,
     # Build conversation messages (without system prompt — call_llm adds it)
     messages: list[dict] = []
     if history:
-        messages.extend(history[-10:])
+        messages.extend(history[-context_size:])
     messages.append({"role": "user", "content": user_text})
 
     # Use actual user_id so the system prompt knows who it's chatting with
