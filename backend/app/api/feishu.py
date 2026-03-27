@@ -230,6 +230,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
         logger.info(f"[Feishu] Received {msg_type} message, chat_type={chat_type}, from={sender_open_id}")
 
         # ── Normalize post (rich text) → extract text + schedule image downloads ──
+        _post_saved_filenames = []  # Collect filenames of images saved from post messages
         if msg_type == "post":
             import json as _json_post
             _post_body = _json_post.loads(message.get("content", "{}"))
@@ -263,6 +264,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             _extracted_text = "\n".join(_text_parts).strip()
             # Download images and embed as base64 for vision-capable models
             _image_markers = []
+            _post_saved_filenames = []
             if _post_image_keys:
                 import base64 as _b64
                 _msg_id = message.get("message_id", "")
@@ -279,6 +281,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         # Save to workspace
                         _save_path = _upload_dir / f"image_{_ik[-8:]}.jpg"
                         _save_path.write_bytes(_img_bytes)
+                        _post_saved_filenames.append(_save_path.name)
                         logger.info(f"[Feishu] Saved post image to {_save_path} ({len(_img_bytes)} bytes)")
                         # Embed as base64 marker for vision models
                         _b64_data = _b64.b64encode(_img_bytes).decode("ascii")
@@ -493,7 +496,17 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             session_conv_id = str(_sess.id)
 
             # Save user message
-            db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
+            # Strip base64 image data from DB content, use [file:xxx] for persistence
+            import re as _re_db
+            _db_content = _re_db.sub(
+                r'\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]',
+                '', user_text,
+            ).strip()
+            # Prepend [file:xxx] markers for post images saved to disk
+            if _post_saved_filenames:
+                _file_markers = " ".join(f"[file:{_fn}]" for _fn in _post_saved_filenames)
+                _db_content = f"{_file_markers} {_db_content}" if _db_content else _file_markers
+            db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=_db_content, conversation_id=session_conv_id))
             _sess.last_message_at = _dt.now(_tz.utc)
             await db.commit()
 
