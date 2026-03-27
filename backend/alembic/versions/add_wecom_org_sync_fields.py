@@ -1,13 +1,13 @@
 """Add provider-aware org sync fields.
 
 Revision ID: add_wecom_org_sync_fields
-Revises: add_daily_token_usage
+Revises: be48e94fa052
 """
 
 from alembic import op
 
 revision = "add_wecom_org_sync_fields"
-down_revision = "add_daily_token_usage"
+down_revision = "be48e94fa052"
 branch_labels = None
 depends_on = None
 
