@@ -263,7 +263,7 @@ export default function Chat() {
             }
 
             const data = await resp.json();
-            setAttachedFile({ name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined });
+            setAttachedFile({ name: data.saved_filename || data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined });
         } catch (err) {
             alert(t('agent.upload.failed') + ': ' + (err as Error).message);
         } finally {

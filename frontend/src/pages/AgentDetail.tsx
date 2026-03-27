@@ -1477,7 +1477,7 @@ function AgentDetailInner() {
             });
             const results = await Promise.all(uploadPromises);
             const newAttached = results.map(data => ({
-                name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
+                name: data.saved_filename || data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
             }));
             setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
         } catch (err: any) {
@@ -1526,7 +1526,7 @@ function AgentDetailInner() {
             });
             const results = await Promise.all(uploadPromises);
             const newAttached = results.map(data => ({
-                name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
+                name: data.saved_filename || data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
             }));
             setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
         } catch (err: any) {
