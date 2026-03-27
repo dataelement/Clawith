@@ -3342,12 +3342,22 @@ function AgentDetailInner() {
                                                                                 </div>
                                                                             </details>
                                                                         )}
-                                                                        {pm.fileName && (
-                                                                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'var(--bg-elevated)', borderRadius: '6px', padding: '4px 8px', marginBottom: pm.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
-                                                                                <span>{fi}</span>
-                                                                                <span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pm.fileName}</span>
-                                                                            </div>
-                                                                        )}
+                                                                        {pm.fileName && (() => {
+                                                                            const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
+                                                                            if (isImage && pm.imageUrl) {
+                                                                                return (
+                                                                                    <div style={{ marginBottom: '4px' }}>
+                                                                                        <img src={pm.imageUrl} alt={pm.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} />
+                                                                                    </div>
+                                                                                );
+                                                                            }
+                                                                            return (
+                                                                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'var(--bg-elevated)', borderRadius: '6px', padding: '4px 8px', marginBottom: pm.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                                                    <span>{fi}</span>
+                                                                                    <span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pm.fileName}</span>
+                                                                                </div>
+                                                                            );
+                                                                        })()}
                                                                         {pm.content ? (m.role === 'assistant' ? <MarkdownRenderer content={pm.content} /> : <div style={{ whiteSpace: 'pre-wrap' }}>{pm.content}</div>) : null}
                                                                     </>
                                                                 );
