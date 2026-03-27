@@ -319,8 +319,16 @@ async def call_llm(
             logger.info(f"[LLM] Raw arguments for {tool_name} (len={len(raw_args)}): {repr(raw_args[:300])}")
             try:
                 args = json.loads(raw_args) if raw_args else {}
-            except json.JSONDecodeError:
-                args = {}
+            except json.JSONDecodeError as e:
+                logger.warning(f"[LLM] JSON parse error for {tool_name} arguments: {e}. Raw: {repr(raw_args[:500])}")
+                # Try to salvage: strip trailing commas / fix common LLM JSON errors
+                try:
+                    import re
+                    cleaned = re.sub(r',\s*}', '}', re.sub(r',\s*]', ']', raw_args))
+                    args = json.loads(cleaned)
+                    logger.info(f"[LLM] Recovered arguments for {tool_name} after cleanup: {args}")
+                except (json.JSONDecodeError, Exception):
+                    args = {}
 
             # Guard: if a tool that requires arguments received empty args,
             # return an error to LLM instead of executing (Claude sometimes
