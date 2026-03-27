@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 
+import { Pencil } from "lucide-react";
 interface UserInfo {
     id: string;
     username: string;
