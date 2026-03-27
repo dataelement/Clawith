@@ -15,6 +15,73 @@ from app.models.user import User
 router = APIRouter(prefix="/tools", tags=["tools"])
 
 
+# Sensitive field keys that should be encrypted when stored
+SENSITIVE_FIELD_KEYS = {"api_key", "private_key", "auth_code", "password", "secret"}
+
+
+def _encrypt_sensitive_fields(config: dict) -> dict:
+    """Encrypt sensitive fields in config dict.
+
+    Args:
+        config: Tool config dict
+
+    Returns:
+        Config dict with sensitive fields encrypted
+    """
+    from app.core.security import encrypt_data
+    from app.config import get_settings
+
+    if not config:
+        return config
+
+    settings = get_settings()
+    result = dict(config)
+
+    for key in SENSITIVE_FIELD_KEYS:
+        if key in result and result[key]:
+            # Only encrypt if not already encrypted (check if it looks like base64)
+            value = result[key]
+            if isinstance(value, str) and value:
+                try:
+                    result[key] = encrypt_data(value, settings.SECRET_KEY)
+                except Exception:
+                    # If encryption fails, keep the value as-is
+                    pass
+
+    return result
+
+
+def _decrypt_sensitive_fields(config: dict) -> dict:
+    """Decrypt sensitive fields in config dict.
+
+    Args:
+        config: Tool config dict
+
+    Returns:
+        Config dict with sensitive fields decrypted
+    """
+    from app.core.security import decrypt_data
+    from app.config import get_settings
+
+    if not config:
+        return config
+
+    settings = get_settings()
+    result = dict(config)
+
+    for key in SENSITIVE_FIELD_KEYS:
+        if key in result and result[key]:
+            value = result[key]
+            if isinstance(value, str) and value:
+                try:
+                    result[key] = decrypt_data(value, settings.SECRET_KEY)
+                except Exception:
+                    # If decryption fails, assume it's plaintext
+                    pass
+
+    return result
+
+
 # ─── Schemas ────────────────────────────────────────────────
 class ToolCreate(BaseModel):
     name: str
@@ -45,6 +112,10 @@ class ToolUpdate(BaseModel):
 class AgentToolUpdate(BaseModel):
     tool_id: str
     enabled: bool
+
+
+class CategoryConfigUpdate(BaseModel):
+    config: dict
 
 
 # ─── Global Tool CRUD ──────────────────────────────────────
@@ -142,7 +213,12 @@ async def update_tool(
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
 
-    for field, value in data.model_dump(exclude_unset=True).items():
+    update_data = data.model_dump(exclude_unset=True)
+    # Encrypt sensitive fields in config
+    if "config" in update_data and update_data["config"]:
+        update_data["config"] = _encrypt_sensitive_fields(update_data["config"])
+
+    for field, value in update_data.items():
         setattr(tool, field, value)
     await db.commit()
     return {"ok": True}
@@ -366,15 +442,26 @@ async def update_agent_tool_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Save per-agent config override for a tool."""
+    # Check permission: only platform_admin and org_admin can modify allow_network
+    if "allow_network" in data.config:
+        if current_user.role not in ("platform_admin", "org_admin"):
+            raise HTTPException(
+                status_code=403,
+                detail="Only platform admin or organization admin can modify network access settings"
+            )
+
+    # Encrypt sensitive fields
+    encrypted_config = _encrypt_sensitive_fields(data.config)
+
     at_r = await db.execute(
         select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
     )
     at = at_r.scalar_one_or_none()
     if at:
-        at.config = data.config
+        at.config = encrypted_config
     else:
         # Create assignment if not exists
-        db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True, config=data.config))
+        db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True, config=encrypted_config))
     await db.commit()
     return {"ok": True}
 
@@ -461,4 +548,159 @@ async def get_email_providers(
         }
         for key, p in EMAIL_PROVIDERS.items()
     }
+# ─── Tool Category Sharing Config (Generic ChannelConfig) ───
 
+@router.get("/agents/{agent_id}/category-config/{category}")
+async def get_category_config(
+    agent_id: uuid.UUID,
+    category: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get shared configuration for a tool category (stored in ChannelConfig)."""
+    from app.core.permissions import check_agent_access
+    from app.models.channel_config import ChannelConfig
+
+    await check_agent_access(db, current_user, agent_id)
+    result = await db.execute(
+        select(ChannelConfig).where(
+            ChannelConfig.agent_id == agent_id,
+            ChannelConfig.channel_type == category,
+        )
+    )
+    config = result.scalar_one_or_none()
+    
+    config_id = None
+    is_configured = False
+    decrypted_config = {}
+    
+    if config:
+        config_id = str(config.id)
+        is_configured = config.is_configured
+        
+        # If it's encrypted, decrypt it for the UI
+        full_config = {
+            "api_key": config.app_secret,
+            **(config.extra_config or {})
+        }
+        decrypted_config = _decrypt_sensitive_fields(full_config)
+    else:
+        # Fallback to global Tool.config for this category (Company Settings)
+        from app.models.tool import Tool
+        tool_result = await db.execute(
+            select(Tool).where(
+                Tool.category == category,
+                Tool.enabled == True,
+            ).limit(1)
+        )
+        global_tool = tool_result.scalar_one_or_none()
+        if global_tool and global_tool.config:
+            decrypted_config = _decrypt_sensitive_fields(global_tool.config)
+
+    return {
+        "id": config_id,
+        "agent_id": str(agent_id),
+        "category": category,
+        "is_configured": is_configured,
+        "config": decrypted_config
+    }
+
+
+@router.post("/agents/{agent_id}/category-config/{category}")
+async def update_category_config(
+    agent_id: uuid.UUID,
+    category: str,
+    data: CategoryConfigUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update or create shared configuration for a tool category."""
+    from app.core.permissions import check_agent_access, is_agent_creator
+    from app.models.channel_config import ChannelConfig
+
+    agent, _ = await check_agent_access(db, current_user, agent_id)
+    if not is_agent_creator(current_user, agent):
+        raise HTTPException(status_code=403, detail="Only creator can configure category")
+
+    # Encrypt sensitive fields
+    encrypted_config = _encrypt_sensitive_fields(data.config)
+    app_secret = encrypted_config.get("api_key") or encrypted_config.get("api_secret") or encrypted_config.get("app_secret")
+    extra = {k: v for k, v in encrypted_config.items() if k not in ("api_key", "api_secret", "app_secret")}
+
+    result = await db.execute(
+        select(ChannelConfig).where(
+            ChannelConfig.agent_id == agent_id,
+            ChannelConfig.channel_type == category,
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        if app_secret:
+            existing.app_secret = app_secret
+        # Merge extra config (note: extra is already encrypted)
+        existing.extra_config = {**(existing.extra_config or {}), **extra}
+        existing.is_configured = True
+    else:
+        config = ChannelConfig(
+            agent_id=agent_id,
+            channel_type=category,
+            app_id=category,
+            app_secret=app_secret,
+            extra_config=extra,
+            is_configured=True,
+        )
+        db.add(config)
+
+    await db.commit()
+
+    # Special logic for Atlassian: trigger sync
+    if category == "atlassian":
+        from app.api.atlassian import _sync_atlassian_tools_for_agent
+        import asyncio
+        # Need plaintext key for sync
+        plaintext_key = data.config.get("api_key") or data.config.get("api_secret") or data.config.get("app_secret")
+        asyncio.create_task(_sync_atlassian_tools_for_agent(agent_id, plaintext_key))
+
+    return {"ok": True}
+
+
+@router.delete("/agents/{agent_id}/category-config/{category}", status_code=204)
+async def delete_category_config(
+    agent_id: uuid.UUID,
+    category: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove shared configuration for a tool category."""
+    from app.core.permissions import check_agent_access, is_agent_creator
+    from app.models.channel_config import ChannelConfig
+
+    agent, _ = await check_agent_access(db, current_user, agent_id)
+    if not is_agent_creator(current_user, agent):
+        raise HTTPException(status_code=403, detail="Only creator can remove config")
+
+    await db.execute(
+        delete(ChannelConfig).where(
+            ChannelConfig.agent_id == agent_id,
+            ChannelConfig.channel_type == category,
+        )
+    )
+    await db.commit()
+
+
+@router.post("/agents/{agent_id}/category-config/{category}/test")
+async def test_category_config(
+    agent_id: uuid.UUID,
+    category: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Test connectivity for a tool category."""
+    if category == "atlassian":
+        from app.api.atlassian import test_atlassian_channel
+        return await test_atlassian_channel(agent_id, current_user, db)
+    elif category == "agentbay":
+        from app.services.agentbay_client import test_agentbay_channel
+        return await test_agentbay_channel(agent_id, current_user, db)
+
+    return {"ok": True, "message": f"Settings for {category} saved."}

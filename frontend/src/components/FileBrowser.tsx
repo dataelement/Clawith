@@ -57,6 +57,13 @@ function isTextFile(name: string): boolean {
     return !base.includes('.') || base.startsWith('.');
 }
 
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico'];
+
+function isImage(name: string): boolean {
+    const n = name.toLowerCase();
+    return IMAGE_EXTS.some(ext => n.endsWith(ext));
+}
+
 // ─── Component ─────────────────────────────────────────
 
 export default function FileBrowser({
@@ -65,7 +72,7 @@ export default function FileBrowser({
     features = {},
     fileFilter,
     singleFile,
-    uploadAccept = '.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.xml,.yaml,.yml,.js,.ts,.py,.html,.css,.sh,.log',
+    uploadAccept = '.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.xml,.yaml,.yml,.js,.ts,.py,.html,.css,.sh,.log,.png,.jpg,.jpeg,.gif,.svg,.webp',
     title,
     readOnly = false,
     onRefresh,
@@ -427,6 +434,18 @@ export default function FileBrowser({
                                 {content || t('common.noData', 'No content yet')}
                             </pre>
                         )
+                    ) : isImage(viewing) ? (
+                        <div style={{ textAlign: 'center', padding: '20px', background: 'var(--bg-tertiary)', borderRadius: '8px' }}>
+                            {api.downloadUrl ? (
+                                <img 
+                                    src={api.downloadUrl(viewing)} 
+                                    alt={viewing.split('/').pop()} 
+                                    style={{ maxWidth: '100%', maxHeight: '600px', objectFit: 'contain', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
+                                />
+                            ) : (
+                                <div style={{ padding: '20px', color: 'var(--text-tertiary)' }}>Cannot preview image without download URL</div>
+                            )}
+                        </div>
                     ) : (
                         <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
                             <div style={{ fontSize: '48px', marginBottom: '12px' }}>⌇</div>
@@ -540,7 +559,7 @@ export default function FileBrowser({
                                         ⬇
                                     </a>
                                 )}
-                                {canDelete && !f.is_dir && (
+                                {canDelete && (
                                     <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                                         onClick={(e) => { e.stopPropagation(); setDeleteTarget({ path: f.path || `${currentPath}/${f.name}`, name: f.name }); }}>
                                         ×

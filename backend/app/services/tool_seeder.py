@@ -449,11 +449,74 @@ BUILTIN_TOOLS = [
             },
             "required": ["language", "code"],
         },
-        "config": {"default_timeout": 30, "max_timeout": 60},
+        "config": {
+            "sandbox_type": "subprocess",
+            "api_key": "",
+            "api_url": "",
+            "cpu_limit": "0.5",
+            "memory_limit": "256m",
+            "allow_network": False,
+            "default_timeout": 30,
+            "max_timeout": 60,
+        },
         "config_schema": {
             "fields": [
-                {"key": "default_timeout", "label": "Default Timeout (seconds)", "type": "number", "default": 30, "min": 5, "max": 120},
-                {"key": "max_timeout", "label": "Max Timeout (seconds)", "type": "number", "default": 60, "min": 10, "max": 120},
+                {
+                    "key": "sandbox_type",
+                    "label": "Sandbox Type",
+                    "type": "select",
+                    "options": [
+                        {"value": "subprocess", "label": "Local (subprocess)"},
+                        {"value": "e2b", "label": "E2B (cloud)"},
+                    ],
+                    "default": "subprocess",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Required for cloud/API sandboxes",
+                    "depends_on": {"sandbox_type": ["e2b"]},
+                },
+                {
+                    "key": "cpu_limit",
+                    "label": "CPU Limit",
+                    "type": "text",
+                    "default": "0.5",
+                    "placeholder": "e.g., 0.5, 1.0, 2.0",
+                },
+                {
+                    "key": "memory_limit",
+                    "label": "Memory Limit",
+                    "type": "text",
+                    "default": "256m",
+                    "placeholder": "e.g., 256m, 512m, 1g",
+                },
+                {
+                    "key": "allow_network",
+                    "label": "Allow Network Access",
+                    "type": "checkbox",
+                    "default": False,
+                    "depends_on": {"sandbox_type": ["subprocess"]},
+                    "read_only_for_roles": ["agent_admin", "member"],
+                },
+                {
+                    "key": "default_timeout",
+                    "label": "Default Timeout (seconds)",
+                    "type": "number",
+                    "default": 30,
+                    "min": 5,
+                    "max": 300,
+                },
+                {
+                    "key": "max_timeout",
+                    "label": "Max Timeout (seconds)",
+                    "type": "number",
+                    "default": 60,
+                    "min": 10,
+                    "max": 300,
+                },
             ]
         },
     },
@@ -951,6 +1014,360 @@ BUILTIN_TOOLS = [
     },
 ]
 
+# ── AgentBay Tools ──────────────────────────────────────────────────────────
+
+AGENTBAY_TOOLS = [
+    {
+        "name": "agentbay_browser_navigate",
+        "display_name": "AgentBay: 浏览器访问",
+        "description": "使用 AgentBay 浏览器环境访问指定 URL，可获取页面内容或截图。需要先配置 AgentBay 通道。Tip: after navigating, use browser_observe to identify interactive elements, then use browser_type/browser_click to interact.",
+        "category": "agentbay",
+        "icon": "🌐",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "要访问的网址"},
+                "wait_for": {"type": "string", "description": "等待元素选择器（可选）"},
+                "screenshot": {"type": "boolean", "description": "是否截图", "default": False},
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "从阿里云 AgentBay 控制台获取",
+                },
+            ],
+        },
+    },
+    {
+        "name": "agentbay_browser_click",
+        "display_name": "AgentBay: 浏览器点击",
+        "description": "在 AgentBay 浏览器环境中点击指定元素。selector 可以是 CSS 选择器（如 #btn）或自然语言描述（如 'the Send button' 或 '发送验证码按钮'）。",
+        "category": "agentbay",
+        "icon": "🖱️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector (e.g. #button) or natural language description of the element (e.g. 'the blue Submit button')"},
+            },
+            "required": ["selector"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_browser_type",
+        "display_name": "AgentBay: 浏览器输入",
+        "description": "在 AgentBay 浏览器环境的指定元素中输入文本。selector 可以是 CSS 选择器或自然语言描述（如 'phone number input' 或 '手机号输入框'）。",
+        "category": "agentbay",
+        "icon": "⌨️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector or natural language description of the input field (e.g. 'the phone number input' or 'input[type=tel]')"},
+                "text": {"type": "string", "description": "要输入的文本"},
+            },
+            "required": ["selector", "text"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_code_execute",
+        "display_name": "AgentBay: 代码执行",
+        "description": "在 AgentBay 代码空间中执行代码（Python、Bash、Node.js）。需要先配置 AgentBay 通道。",
+        "category": "agentbay",
+        "icon": "💻",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "编程语言"},
+                "code": {"type": "string", "description": "要执行的代码"},
+                "timeout": {"type": "integer", "description": "超时时间（秒）", "default": 30},
+            },
+            "required": ["language", "code"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # ── Browser: Extract & Observe ────────────────────────────────────────
+    {
+        "name": "agentbay_browser_extract",
+        "display_name": "AgentBay: Browser Extract",
+        "description": "Extract structured data from the current browser page using a natural language instruction. More efficient than taking a screenshot and parsing with vision.",
+        "category": "agentbay",
+        "icon": "📊",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "Natural language description of what data to extract, e.g. 'extract all product names and prices'"},
+                "selector": {"type": "string", "description": "Optional CSS selector to scope the extraction to a specific element"},
+            },
+            "required": ["instruction"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_browser_observe",
+        "display_name": "AgentBay: Browser Observe",
+        "description": "Observe the current browser page state and return a list of interactive elements. Helps the agent understand what can be clicked/interacted with on the page.",
+        "category": "agentbay",
+        "icon": "👁️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "Natural language description of what to observe, e.g. 'find the login button' or 'list all navigation links'"},
+                "selector": {"type": "string", "description": "Optional CSS selector to scope observation"},
+            },
+            "required": ["instruction"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # ── Command (Shell) ───────────────────────────────────────────────────
+    {
+        "name": "agentbay_command_exec",
+        "display_name": "AgentBay: Shell Command",
+        "description": "Execute a shell command in the AgentBay cloud environment. Returns stdout, stderr, and exit code. Useful for system operations, package installation, and file manipulation.",
+        "category": "agentbay",
+        "icon": "🖥️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to execute, e.g. 'ls -la' or 'pip install pandas'"},
+                "timeout_ms": {"type": "integer", "description": "Timeout in milliseconds (default 50000)", "default": 50000},
+                "cwd": {"type": "string", "description": "Working directory for the command (optional)"},
+            },
+            "required": ["command"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # ── Computer Use ──────────────────────────────────────────────────────
+    {
+        "name": "agentbay_computer_screenshot",
+        "display_name": "AgentBay: Desktop Screenshot",
+        "description": "Take a screenshot of the AgentBay cloud desktop. Essential for understanding the current desktop state before performing GUI operations.",
+        "category": "agentbay",
+        "icon": "📸",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_click",
+        "display_name": "AgentBay: Mouse Click",
+        "description": "Click the mouse at specific screen coordinates on the AgentBay cloud desktop. Take a screenshot first to identify the target position.",
+        "category": "agentbay",
+        "icon": "🖱️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate to click"},
+                "y": {"type": "integer", "description": "Y coordinate to click"},
+                "button": {"type": "string", "enum": ["left", "right", "middle", "double_left"], "description": "Mouse button (default: left)", "default": "left"},
+            },
+            "required": ["x", "y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_input_text",
+        "display_name": "AgentBay: Keyboard Input",
+        "description": "Type text at the current cursor position on the AgentBay cloud desktop. Click on the target input field first.",
+        "category": "agentbay",
+        "icon": "⌨️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to type"},
+            },
+            "required": ["text"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_press_keys",
+        "display_name": "AgentBay: Keyboard Shortcut",
+        "description": "Press keyboard keys or shortcuts on the AgentBay cloud desktop. For example ['ctrl', 'c'] for copy, ['alt', 'tab'] for window switch, ['enter'] to confirm.",
+        "category": "agentbay",
+        "icon": "⌨️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "keys": {"type": "array", "items": {"type": "string"}, "description": "List of keys to press simultaneously, e.g. ['ctrl', 'c']"},
+                "hold": {"type": "boolean", "description": "If true, hold keys down", "default": False},
+            },
+            "required": ["keys"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_scroll",
+        "display_name": "AgentBay: Scroll",
+        "description": "Scroll the screen at a specific position on the AgentBay cloud desktop.",
+        "category": "agentbay",
+        "icon": "🔃",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate of scroll position"},
+                "y": {"type": "integer", "description": "Y coordinate of scroll position"},
+                "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction (default: down)", "default": "down"},
+                "amount": {"type": "integer", "description": "Scroll amount in steps (default: 1)", "default": 1},
+            },
+            "required": ["x", "y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_move_mouse",
+        "display_name": "AgentBay: Mouse Move",
+        "description": "Move the mouse to coordinates without clicking. Useful for triggering hover effects, tooltips, or dropdown menus.",
+        "category": "agentbay",
+        "icon": "🖱️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Target X coordinate"},
+                "y": {"type": "integer", "description": "Target Y coordinate"},
+            },
+            "required": ["x", "y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_drag_mouse",
+        "display_name": "AgentBay: Mouse Drag",
+        "description": "Drag the mouse from one position to another. Useful for selecting text, moving files, resizing windows.",
+        "category": "agentbay",
+        "icon": "🖱️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "from_x": {"type": "integer", "description": "Start X coordinate"},
+                "from_y": {"type": "integer", "description": "Start Y coordinate"},
+                "to_x": {"type": "integer", "description": "End X coordinate"},
+                "to_y": {"type": "integer", "description": "End Y coordinate"},
+                "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button (default: left)", "default": "left"},
+            },
+            "required": ["from_x", "from_y", "to_x", "to_y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_get_screen_size",
+        "display_name": "AgentBay: Get Screen Size",
+        "description": "Get the screen resolution of the AgentBay cloud desktop. Useful for calculating click coordinates.",
+        "category": "agentbay",
+        "icon": "📐",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_start_app",
+        "display_name": "AgentBay: Start Application",
+        "description": "Start an application on the AgentBay cloud desktop by its launch command (e.g. 'firefox', 'libreoffice --calc').",
+        "category": "agentbay",
+        "icon": "🚀",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "cmd": {"type": "string", "description": "Application launch command, e.g. 'firefox' or 'libreoffice --calc'"},
+                "work_dir": {"type": "string", "description": "Working directory for the application (optional)"},
+            },
+            "required": ["cmd"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_get_cursor_position",
+        "display_name": "AgentBay: Get Cursor Position",
+        "description": "Get the current mouse cursor position on the AgentBay cloud desktop.",
+        "category": "agentbay",
+        "icon": "📍",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_get_active_window",
+        "display_name": "AgentBay: Get Active Window",
+        "description": "Get information about the currently focused window, including window ID, title, and position.",
+        "category": "agentbay",
+        "icon": "🪟",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_activate_window",
+        "display_name": "AgentBay: Activate Window",
+        "description": "Bring a specific window to the foreground by its window ID. Use get_active_window or list_visible_apps to find window IDs.",
+        "category": "agentbay",
+        "icon": "🪟",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "window_id": {"type": "integer", "description": "Window ID to activate"},
+            },
+            "required": ["window_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_list_visible_apps",
+        "display_name": "AgentBay: List Running Apps",
+        "description": "List all currently visible/running applications on the AgentBay cloud desktop with their process info and window IDs.",
+        "category": "agentbay",
+        "icon": "📋",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+]
+
+BUILTIN_TOOLS = [
+    *BUILTIN_TOOLS,
+    # ── AgentBay Tools ──  
+    *AGENTBAY_TOOLS,
+]
 
 async def seed_builtin_tools():
     """Insert or update builtin tools in the database."""
@@ -998,6 +1415,10 @@ async def seed_builtin_tools():
                 if t.get("config_schema") and existing.config_schema != t["config_schema"]:
                     existing.config_schema = t["config_schema"]
                     updated_fields.append("config_schema")
+                    # Merge new config defaults when config_schema changes
+                    if t.get("config"):
+                        existing.config = {**t["config"], **(existing.config or {})}
+                        updated_fields.append("config")
                 if not existing.config and t.get("config"):
                     existing.config = t["config"]
                     updated_fields.append("config")
@@ -1024,7 +1445,6 @@ async def seed_builtin_tools():
                         db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True))
             logger.info(f"[ToolSeeder] Auto-assigned {len(new_tool_ids)} new tools to {len(agent_ids)} agents")
 
-        # Remove obsolete tools that have been replaced
         OBSOLETE_TOOLS = ["bing_search", "read_webpage", "manage_tasks"]
         for obsolete_name in OBSOLETE_TOOLS:
             result = await db.execute(select(Tool).where(Tool.name == obsolete_name))
@@ -1036,6 +1456,37 @@ async def seed_builtin_tools():
         await db.commit()
         logger.info("[ToolSeeder] Builtin tools seeded")
 
+
+async def clean_orphaned_mcp_tools():
+    """Clean up orphan MCP tools that lost all their AgentTool assignments.
+    
+    This happens when an Agent is deleted (cascade deletes AgentTool) but the
+    shared Tool record remains. We run this periodically/on-startup to prevent
+    the database from filling up with abandoned tool records.
+    """
+    from app.models.tool import AgentTool
+    from sqlalchemy import and_, delete
+    
+    async with async_session() as db:
+        # 1. Get all currently assigned tool IDs
+        all_assigned_r = await db.execute(select(AgentTool.tool_id).distinct())
+        assigned_ids = [row[0] for row in all_assigned_r.fetchall()]
+        
+        # 2. Delete MCP tools that have NO tenant_id AND are NOT in the assigned list
+        # tenant_id == None ensures we don't delete Global Tools manually added by company admins
+        stmt = delete(Tool).where(
+            and_(
+                Tool.type == "mcp",
+                Tool.tenant_id == None,
+                ~Tool.id.in_(assigned_ids) if assigned_ids else True
+            )
+        )
+        result = await db.execute(stmt)
+        deleted_count = result.rowcount
+        await db.commit()
+        
+        if deleted_count > 0:
+            logger.info(f"[ToolSeeder] Cleaned up {deleted_count} orphaned MCP tools")
 
 # ── Atlassian Rovo MCP Server Integration ──────────────────────────────────
 

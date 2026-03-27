@@ -9,6 +9,56 @@ import ChannelConfig from '../components/ChannelConfig';
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
 const OPENCLAW_STEPS = ['basicInfo', 'permissions'] as const;
 
+/**
+ * Generic parser for soul_template markdown format.
+ * Extracts content from sections by header names (## Header Name).
+ * 
+ * @param soulTemplate - The markdown template string
+ * @param sectionNames - Array of section names to extract (e.g., ['Personality', 'Boundaries'])
+ * @returns Object with extracted section contents (lowercase keys)
+ * 
+ * @example
+ * const sections = parseSoulTemplate(markdown, ['Personality', 'Boundaries', 'Identity']);
+ * // Returns: { personality: '...', boundaries: '...', identity: '...' }
+ */
+function parseSoulTemplate(soulTemplate: string, sectionNames: string[] = []): Record<string, string> {
+    if (!soulTemplate) {
+        const empty: Record<string, string> = {};
+        sectionNames.forEach(name => {
+            empty[name.toLowerCase()] = '';
+        });
+        return empty;
+    }
+
+    const result: Record<string, string> = {};
+    
+    // Initialize all requested sections as empty
+    sectionNames.forEach(name => {
+        result[name.toLowerCase()] = '';
+    });
+
+    // Split by markdown ## headers
+    const sections = soulTemplate.split(/^##\s+/m);
+
+    for (let i = 0; i < sections.length; i++) {
+        const section = sections[i].trim();
+        const firstLineEnd = section.indexOf('\n');
+        const headerName = firstLineEnd > 0 ? section.slice(0, firstLineEnd).trim() : section.trim();
+        const content = firstLineEnd > 0 ? section.slice(firstLineEnd + 1).trim() : '';
+
+        // If this header matches one of our requested sections
+        const matchedSection = sectionNames.find(name => 
+            name.toLowerCase() === headerName.toLowerCase()
+        );
+        
+        if (matchedSection) {
+            result[matchedSection.toLowerCase()] = content;
+        }
+    }
+
+    return result;
+}
+
 export default function AgentCreate() {
     const { t } = useTranslation();
     const navigate = useNavigate();
@@ -481,23 +531,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                 ))}
             </div>
 
-            {/* Navigation — sticky between stepper and card */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', maxWidth: '640px', marginBottom: '16px', position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)', paddingTop: '4px', paddingBottom: '4px' }}>
-                <button className="btn btn-secondary" onClick={() => step > 0 ? setStep(step - 1) : navigate('/')}
-                    disabled={createMutation.isPending}>
-                    {step === 0 ? t('common.cancel') : t('wizard.prev')}
-                </button>
-                {step < STEPS.length - 1 ? (
-                    <button className="btn btn-primary" onClick={handleNext}>
-                        {t('wizard.next')} →
-                    </button>
-                ) : (
-                    <button className="btn btn-primary" onClick={handleFinish}
-                        disabled={createMutation.isPending}>
-                        {createMutation.isPending ? t('common.loading') : t('wizard.finish')}
-                    </button>
-                )}
-            </div>
+            {/* Removed top navigation, moved to bottom */}
 
             {error && (
                 <div style={{ background: 'var(--error-subtle)', color: 'var(--error)', padding: '8px 12px', borderRadius: '6px', fontSize: '13px', marginBottom: '16px' }}>
@@ -530,7 +564,17 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                     {templates.map((tmpl: any) => (
                                         <div
                                             key={tmpl.id}
-                                            onClick={() => setForm({ ...form, template_id: tmpl.id, role_description: tmpl.description })}
+                                            onClick={() => {
+                                                // Parse soul_template to extract personality and boundaries
+                                                const sections = parseSoulTemplate(tmpl.soul_template, ['Personality', 'Boundaries']);
+                                                setForm({
+                                                    ...form,
+                                                    template_id: tmpl.id,
+                                                    role_description: tmpl.description,
+                                                    personality: sections.personality || '',
+                                                    boundaries: sections.boundaries || '',
+                                                });
+                                            }}
                                             style={{
                                                 padding: '12px', borderRadius: '8px', cursor: 'pointer', textAlign: 'center',
                                                 border: `1px solid ${form.template_id === tmpl.id ? 'var(--accent-primary)' : 'var(--border-default)'}`,
@@ -785,11 +829,38 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
 
             {/* Summary sidebar */}
             {selectedModel && (
-                <div style={{ marginTop: '16px', padding: '12px', background: 'var(--bg-elevated)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', maxWidth: '640px' }}>
+                <div style={{ marginTop: '16px', padding: '12px', background: 'var(--bg-elevated)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', maxWidth: '640px', marginBottom: '80px' }}>
                     <strong>{form.name || t('wizard.summary.unnamed')}</strong> · {t('wizard.summary.model')}: {selectedModel.label}
                     {form.max_tokens_per_day && ` · ${t('wizard.summary.dailyLimit')}: ${Number(form.max_tokens_per_day).toLocaleString()}`}
                 </div>
             )}
+            {!selectedModel && <div style={{ marginBottom: '80px' }}></div>}
+
+            {/* Navigation — sticky footer at the bottom */}
+            <div style={{
+                position: 'fixed', bottom: 0, left: 'var(--sidebar-width)', right: 0,
+                background: 'var(--bg-primary)', borderTop: '1px solid var(--border-subtle)',
+                padding: '16px 32px', zIndex: 100,
+                display: 'flex', justifyContent: 'flex-start',
+                transition: 'left var(--transition-default)'
+            }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', maxWidth: '640px' }}>
+                    <button className="btn btn-secondary" onClick={() => step > 0 ? setStep(step - 1) : navigate('/')}
+                        disabled={createMutation.isPending}>
+                        {step === 0 ? t('common.cancel') : t('wizard.prev')}
+                    </button>
+                    {step < STEPS.length - 1 ? (
+                        <button className="btn btn-primary" onClick={handleNext}>
+                            {t('wizard.next')} →
+                        </button>
+                    ) : (
+                        <button className="btn btn-primary" onClick={handleFinish}
+                            disabled={createMutation.isPending}>
+                            {createMutation.isPending ? t('common.loading') : t('wizard.finish')}
+                        </button>
+                    )}
+                </div>
+            </div>
         </div>
     );
 }

@@ -456,7 +456,12 @@ async def websocket_chat(
                     select(LLMModel).where(LLMModel.id == agent.primary_model_id)
                 )
                 llm_model = model_result.scalar_one_or_none()
-                logger.info(f"[WS] Primary model loaded: {llm_model.model if llm_model else 'None'}")
+                # Treat disabled models as unavailable at runtime
+                if llm_model and not llm_model.enabled:
+                    logger.info(f"[WS] Primary model {llm_model.model} is disabled, skipping")
+                    llm_model = None
+                else:
+                    logger.info(f"[WS] Primary model loaded: {llm_model.model if llm_model else 'None'}")
 
             # Load fallback model
             if agent.fallback_model_id:
@@ -464,7 +469,11 @@ async def websocket_chat(
                     select(LLMModel).where(LLMModel.id == agent.fallback_model_id)
                 )
                 fallback_llm_model = fb_result.scalar_one_or_none()
-                if fallback_llm_model:
+                # Treat disabled fallback models as unavailable
+                if fallback_llm_model and not fallback_llm_model.enabled:
+                    logger.info(f"[WS] Fallback model {fallback_llm_model.model} is disabled, skipping")
+                    fallback_llm_model = None
+                elif fallback_llm_model:
                     logger.info(f"[WS] Fallback model loaded: {fallback_llm_model.model}")
 
             # Config-level fallback: primary missing -> use fallback

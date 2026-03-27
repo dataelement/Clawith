@@ -37,6 +37,7 @@ const getCategoryLabels = (t: any): Record<string, string> => ({
     feishu: t('agent.toolCategories.feishu', 'Feishu / Lark'),
     custom: t('agent.toolCategories.custom'),
     general: t('agent.toolCategories.general'),
+    agentbay: t('agent.toolCategories.agentbay', 'AgentBay'),
 });
 
 function ToolsManager({ agentId, canManage = false }: { agentId: string; canManage?: boolean }) {
@@ -49,6 +50,23 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const [configSaving, setConfigSaving] = useState(false);
     const [toolTab, setToolTab] = useState<'platform' | 'installed'>('platform');
     const [deletingToolId, setDeletingToolId] = useState<string | null>(null);
+    const [configCategory, setConfigCategory] = useState<string | null>(null);
+
+    const CATEGORY_CONFIG_SCHEMAS: Record<string, any> = {
+        agentbay: {
+            title: 'AgentBay Settings',
+            fields: [
+                { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' }
+            ]
+        },
+        atlassian: {
+            title: 'Atlassian Connectivity Settings',
+            fields: [
+                { key: 'api_key', label: 'API Key (Atlassian API Token)', type: 'password', placeholder: 'Enter your Atlassian API key' },
+                { key: 'cloud_id', label: 'Cloud ID (Optional)', type: 'text', placeholder: 'e.g. bcc01-abc-123' }
+            ]
+        }
+    };
 
     const loadTools = async () => {
         try {
@@ -87,19 +105,45 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         setConfigJson(JSON.stringify(tool.agent_config || {}, null, 2));
     };
 
-    const saveConfig = async () => {
-        if (!configTool) return;
+    const openCategoryConfig = async (category: string) => {
+        setConfigCategory(category);
+        setConfigData({});
         setConfigSaving(true);
         try {
             const token = localStorage.getItem('token');
-            const hasSchema = configTool.config_schema?.fields?.length > 0;
-            const payload = hasSchema ? configData : JSON.parse(configJson || '{}');
-            await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                body: JSON.stringify({ config: payload }),
+            const res = await fetch(`/api/tools/agents/${agentId}/category-config/${category}`, {
+                headers: { Authorization: `Bearer ${token}` },
             });
-            setConfigTool(null);
+            if (res.ok) {
+                const data = await res.json();
+                setConfigData(data.config || {});
+            }
+        } catch (e) { console.error(e); }
+        setConfigSaving(false);
+    };
+
+    const saveConfig = async () => {
+        if (!configTool && !configCategory) return;
+        setConfigSaving(true);
+        try {
+            const token = localStorage.getItem('token');
+            if (configCategory) {
+               await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ config: configData }),
+               });
+               setConfigCategory(null);
+            } else {
+                const hasSchema = configTool.config_schema?.fields?.length > 0;
+                const payload = hasSchema ? configData : JSON.parse(configJson || '{}');
+                await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ config: payload }),
+                });
+                setConfigTool(null);
+            }
             loadTools();
         } catch (e) { alert('Save failed: ' + e); }
         setConfigSaving(false);
@@ -121,13 +165,23 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const renderToolGroup = (groupedTools: Record<string, any[]>) =>
         Object.entries(groupedTools).map(([category, catTools]) => (
             <div key={category}>
-                <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    {getCategoryLabels(t)[category] || category}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        {getCategoryLabels(t)[category] || category}
+                    </div>
+                    {CATEGORY_CONFIG_SCHEMAS[category] && canManage && (
+                        <button
+                            onClick={() => openCategoryConfig(category)}
+                            style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                            title={`Configure ${category}`}
+                        >⚙️ Config</button>
+                    )}
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {(catTools as any[]).map((tool: any) => {
                         const hasConfig = tool.config_schema?.fields?.length > 0 || tool.type === 'mcp';
                         const hasAgentOverride = tool.agent_config && Object.keys(tool.agent_config).length > 0;
+                        const isGlobalCategoryConfig = category === 'agentbay' && tool.name === 'agentbay_browser_navigate';
                         return (
                             <div key={tool.id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
@@ -152,7 +206,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                                    {canManage && hasConfig && (
+                                    {canManage && hasConfig && !isGlobalCategoryConfig && (
                                         <button
                                             onClick={() => openConfig(tool)}
                                             style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
@@ -262,21 +316,26 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
             )}
 
             {/* Tool Config Modal */}
-            {configTool && (
+            {(configTool || configCategory) && (() => {
+                const target = configTool || CATEGORY_CONFIG_SCHEMAS[configCategory!];
+                const fields = configTool ? (configTool.config_schema?.fields || []) : (target.fields || []);
+                const title = configTool ? configTool.display_name : target.title;
+                const isCat = !!configCategory;
+                return (
                 <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                    onClick={() => setConfigTool(null)}>
+                    onClick={() => { setConfigTool(null); setConfigCategory(null); }}>
                     <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                             <div>
-                                <h3 style={{ margin: 0 }}><Settings size={14} /> {configTool.display_name}</h3>
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>Per-agent configuration (overrides global defaults)</div>
+                                <h3 style={{ margin: 0 }}>⚙️ {title}</h3>
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{isCat ? 'Shared category configuration (affects all tools in this category)' : 'Per-agent configuration (overrides global defaults)'}</div>
                             </div>
-                            <button onClick={() => setConfigTool(null)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}><X size={14} /></button>
+                            <button onClick={() => { setConfigTool(null); setConfigCategory(null); }} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
                         </div>
 
-                        {configTool.config_schema?.fields?.length > 0 ? (
+                        {fields.length > 0 ? (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                {configTool.config_schema.fields
+                                {fields
                                     .filter((field: any) => {
                                         // Handle depends_on: hide fields unless dependency is met
                                         if (!field.depends_on) return true;
@@ -284,113 +343,162 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                             (depVals as string[]).includes(configData[depKey] ?? '')
                                         );
                                     })
-                                    .map((field: any) => (
-                                        <div key={field.key}>
-                                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>
-                                                {field.label}
-                                                {configTool.global_config?.[field.key] && (
-                                                    <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '4px' }}>
-                                                        (global: {String(configTool.global_config[field.key]).slice(0, 20)}{String(configTool.global_config[field.key]).length > 20 ? '…' : ''})
-                                                    </span>
-                                                )}
-                                            </label>
-                                            {field.type === 'password' ? (
-                                                <>
-                                                <input type="password" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
-                                                {/* Per-provider help text for auth_code */}
-                                                {field.key === 'auth_code' && (() => {
-                                                    const providerField = configTool.config_schema?.fields?.find((f: any) => f.key === 'email_provider');
-                                                    const selectedProvider = configData['email_provider'] || providerField?.default || '';
-                                                    const providerOption = providerField?.options?.find((o: any) => o.value === selectedProvider);
-                                                    if (!providerOption?.help_text) return null;
-                                                    return (
-                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', lineHeight: '1.5' }}>
-                                                            {providerOption.help_text}
-                                                            {providerOption.help_url && (
-                                                                <> &middot; <a href={providerOption.help_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>Setup guide</a></>
-                                                            )}
-                                                        </div>
-                                                    );
-                                                })()}
-                                                </>
-                                            ) : field.type === 'select' ? (
-                                                <select className="form-input" value={configData[field.key] ?? field.default ?? ''} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}>
-                                                    {(field.options || []).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                                                </select>
-                                            ) : field.type === 'number' ? (
-                                                <input type="number" className="form-input" value={configData[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''} min={field.min} max={field.max} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value ? Number(e.target.value) : '' }))} />
-                                            ) : (
-                                                <input type="text" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
-                                            )}
+                                    .map((field: any) => {
+                                        // Get user role from store directly in the map function
+                                        const userFromStore = useAuthStore.getState().user;
+                                        const currentUserRole = userFromStore?.role;
+                                        const isReadOnly = field.read_only_for_roles?.includes(currentUserRole);
+                                        return (
+                                                <div key={field.key}>
+                                                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>
+                                                        {field.label}
+                                                        {isReadOnly && <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '4px' }}>(Admin only)</span>}
+                                                        {configTool?.global_config?.[field.key] && (
+                                                            <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '4px' }}>
+                                                                (global: {String(configTool.global_config[field.key]).slice(0, 20)}{String(configTool.global_config[field.key]).length > 20 ? '…' : ''})
+                                                            </span>
+                                                        )}
+                                                    </label>
+                                                    {field.type === 'checkbox' ? (
+                                                        <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: isReadOnly ? 'not-allowed' : 'pointer' }}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={configData[field.key] ?? field.default ?? false}
+                                                                disabled={isReadOnly}
+                                                                onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.checked }))}
+                                                                style={{ opacity: 0, width: 0, height: 0 }}
+                                                            />
+                                                            <span style={{
+                                                                position: 'absolute', inset: 0,
+                                                                background: (configData[field.key] ?? field.default) ? '#22c55e' : 'var(--bg-tertiary)',
+                                                                borderRadius: '11px', transition: 'background 0.2s', opacity: isReadOnly ? 0.6 : 1,
+                                                            }}>
+                                                                <span style={{
+                                                                    position: 'absolute', left: (configData[field.key] ?? field.default) ? '20px' : '2px', top: '2px',
+                                                                    width: '18px', height: '18px', background: '#fff',
+                                                                    borderRadius: '50%', transition: 'left 0.2s',
+                                                                }} />
+                                                            </span>
+                                                        </label>
+                                                    ) : field.type === 'password' ? (
+                                                        <>
+                                                        <input type="password" autoComplete="new-password" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                        {/* Per-provider help text for auth_code */}
+                                                        {field.key === 'auth_code' && (() => {
+                                                            const providerField = configTool?.config_schema?.fields?.find((f: any) => f.key === 'email_provider');
+                                                            const selectedProvider = configData['email_provider'] || providerField?.default || '';
+                                                            const providerOption = providerField?.options?.find((o: any) => o.value === selectedProvider);
+                                                            if (!providerOption?.help_text) return null;
+                                                            return (
+                                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', lineHeight: '1.5' }}>
+                                                                    {providerOption.help_text}
+                                                                    {providerOption.help_url && (
+                                                                        <> &middot; <a href={providerOption.help_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>Setup guide</a></>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        })()}
+                                                        </>
+                                                    ) : field.type === 'select' ? (
+                                                        <select className="form-input" value={configData[field.key] ?? field.default ?? ''} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}>
+                                                            {(field.options || []).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                                        </select>
+                                                    ) : field.type === 'number' ? (
+                                                        <input type="number" className="form-input" value={configData[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''} min={field.min} max={field.max} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value ? Number(e.target.value) : '' }))} />
+                                                    ) : (
+                                                        <input type="text" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                    )}
+                                                </div>
+                                            );})}
+                                        {/* Email tool: test connection button + help text */}
+                                        {configTool?.category === 'email' && (
+                                            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                <button
+                                                    className="btn btn-secondary"
+                                                    style={{ alignSelf: 'flex-start' }}
+                                                    onClick={async () => {
+                                                        const btn = document.getElementById('email-test-btn');
+                                                        const status = document.getElementById('email-test-status');
+                                                        if (btn) btn.textContent = 'Testing...';
+                                                        if (btn) (btn as HTMLButtonElement).disabled = true;
+                                                        try {
+                                                            const token = localStorage.getItem('token');
+                                                            const res = await fetch('/api/tools/test-email', {
+                                                                method: 'POST',
+                                                                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                                body: JSON.stringify({ config: configData }),
+                                                            });
+                                                            const data = await res.json();
+                                                            if (status) {
+                                                                status.textContent = data.ok
+                                                                    ? `${data.imap}\n${data.smtp}`
+                                                                    : `${data.imap || ''}\n${data.smtp || ''}\n${data.error || ''}`;
+                                                                status.style.color = data.ok ? 'var(--success)' : 'var(--error)';
+                                                            }
+                                                        } catch (e: any) {
+                                                            if (status) { status.textContent = `Error: ${e.message}`; status.style.color = 'var(--error)'; }
+                                                        } finally {
+                                                            if (btn) { btn.textContent = 'Test Connection'; (btn as HTMLButtonElement).disabled = false; }
+                                                        }
+                                                    }}
+                                                    id="email-test-btn"
+                                                >Test Connection</button>
+                                                <div id="email-test-status" style={{ fontSize: '11px', whiteSpace: 'pre-line', minHeight: '16px' }}></div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>Config JSON (Agent Override)</label>
+                                        <textarea
+                                            className="form-input"
+                                            value={configJson}
+                                            onChange={e => setConfigJson(e.target.value)}
+                                            style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', minHeight: '120px', resize: 'vertical' }}
+                                            placeholder='{}'
+                                        />
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                            Global default: <code style={{ fontSize: '10px' }}>{JSON.stringify(configTool?.global_config || {}).slice(0, 80)}</code>
                                         </div>
-                                    ))}
-                                {/* Email tool: test connection button + help text */}
-                                {configTool.category === 'email' && (
-                                    <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                        <button
-                                            className="btn btn-secondary"
-                                            style={{ alignSelf: 'flex-start' }}
-                                            onClick={async () => {
-                                                const btn = document.getElementById('email-test-btn');
-                                                const status = document.getElementById('email-test-status');
-                                                if (btn) btn.textContent = 'Testing...';
-                                                if (btn) (btn as HTMLButtonElement).disabled = true;
-                                                try {
-                                                    const token = localStorage.getItem('token');
-                                                    const res = await fetch('/api/tools/test-email', {
-                                                        method: 'POST',
-                                                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                        body: JSON.stringify({ config: configData }),
-                                                    });
-                                                    const data = await res.json();
-                                                    if (status) {
-                                                        status.textContent = data.ok
-                                                            ? `${data.imap}\n${data.smtp}`
-                                                            : `${data.imap || ''}\n${data.smtp || ''}\n${data.error || ''}`;
-                                                        status.style.color = data.ok ? 'var(--success)' : 'var(--error)';
-                                                    }
-                                                } catch (e: any) {
-                                                    if (status) { status.textContent = `Error: ${e.message}`; status.style.color = 'var(--error)'; }
-                                                } finally {
-                                                    if (btn) { btn.textContent = 'Test Connection'; (btn as HTMLButtonElement).disabled = false; }
-                                                }
-                                            }}
-                                            id="email-test-btn"
-                                        >Test Connection</button>
-                                        <div id="email-test-status" style={{ fontSize: '11px', whiteSpace: 'pre-line', minHeight: '16px' }}></div>
                                     </div>
                                 )}
-                            </div>
-                        ) : (
-                            <div>
-                                <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>Config JSON (Agent Override)</label>
-                                <textarea
-                                    className="form-input"
-                                    value={configJson}
-                                    onChange={e => setConfigJson(e.target.value)}
-                                    style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', minHeight: '120px', resize: 'vertical' }}
-                                    placeholder='{}'
-                                />
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                                    Global default: <code style={{ fontSize: '10px' }}>{JSON.stringify(configTool.global_config || {}).slice(0, 80)}</code>
+
+                                <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
+                                    {configTool && configTool.agent_config && Object.keys(configTool.agent_config || {}).length > 0 && (
+                                        <button className="btn btn-ghost" style={{ color: 'var(--error)', marginRight: 'auto' }} onClick={async () => {
+                                            const token = localStorage.getItem('token');
+                                            await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ config: {} }) });
+                                            setConfigTool(null); loadTools();
+                                        }}>Reset to Global</button>
+                                    )}
+                                    {isCat && (
+                                        <button
+                                            className="btn btn-secondary"
+                                            style={{ marginRight: 'auto' }}
+                                            onClick={async () => {
+                                                const btn = document.getElementById('cat-test-btn');
+                                                if (btn) btn.textContent = 'Testing...';
+                                                try {
+                                                    const token = localStorage.getItem('token');
+                                                    const res = await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}/test`, {
+                                                        method: 'POST',
+                                                        headers: { Authorization: `Bearer ${token}` }
+                                                    });
+                                                    const data = await res.json();
+                                                    alert(data.message || (data.ok ? '✅ Test successful' : '❌ Test failed: ' + data.error));
+                                                } catch (e: any) { alert('Test failed: ' + e.message); }
+                                                finally { if (btn) btn.textContent = 'Test Connection'; }
+                                            }}
+                                            id="cat-test-btn"
+                                        >Test Connection</button>
+                                    )}
+                                    <button className="btn btn-secondary" onClick={() => { setConfigTool(null); setConfigCategory(null); }}>Cancel</button>
+                                    <button className="btn btn-primary" onClick={saveConfig} disabled={configSaving}>{configSaving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}</button>
                                 </div>
                             </div>
-                        )}
-
-                        <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
-                            {Object.keys(configTool.agent_config || {}).length > 0 && (
-                                <button className="btn btn-ghost" style={{ color: 'var(--error)', marginRight: 'auto' }} onClick={async () => {
-                                    const token = localStorage.getItem('token');
-                                    await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ config: {} }) });
-                                    setConfigTool(null); loadTools();
-                                }}>Reset to Global</button>
-                            )}
-                            <button className="btn btn-secondary" onClick={() => setConfigTool(null)}>Cancel</button>
-                            <button className="btn btn-primary" onClick={saveConfig} disabled={configSaving}>{configSaving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}</button>
                         </div>
-                    </div>
-                </div>
-            )}
+                );
+            })()}
         </>
     );
 }
@@ -941,15 +1049,18 @@ function AgentDetailInner() {
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sess.id) return;
             const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
+            const preParsed = msgs.map((m: any) => parseChatMsg({
+                role: m.role, content: m.content || '',
+                ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult }),
+                ...(m.thinking && { thinking: m.thinking }),
+                ...(m.created_at && { timestamp: m.created_at }),
+                ...(m.id && { id: m.id }),
+            }));
+            
             if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
-                setChatMessages(msgs.map((m: any) => parseChatMsg({
-                    role: m.role, content: m.content,
-                    ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult }),
-                    ...(m.thinking && { thinking: m.thinking }),
-                    ...(m.created_at && { timestamp: m.created_at }),
-                })));
+                setChatMessages(preParsed);
             } else {
-                setHistoryMsgs(msgs);
+                setHistoryMsgs(preParsed);
             }
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
@@ -1282,8 +1393,8 @@ function AgentDetailInner() {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
                     const thinking = (last && last.role === 'assistant' && (last as any)._streaming) ? last.thinking : undefined;
-                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), { role: 'assistant', content: d.content, thinking, timestamp: new Date().toISOString() }];
-                    return [...prev, { role: d.role, content: d.content, timestamp: new Date().toISOString() }];
+                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), parseChatMsg({ role: 'assistant', content: d.content, thinking, timestamp: new Date().toISOString() })];
+                    return [...prev, parseChatMsg({ role: d.role, content: d.content, timestamp: new Date().toISOString() })];
                 });
                 fetchMySessions(true, agentId);
             } else if (d.type === 'error' || d.type === 'quota_exceeded') {
@@ -1291,17 +1402,17 @@ function AgentDetailInner() {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
                     if (last && last.role === 'assistant' && last.content === `⚠️ ${msg}`) return prev;
-                    return [...prev, { role: 'assistant', content: `⚠️ ${msg}` }];
+                    return [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })];
                 });
                 if (msg.includes('expired') || msg.includes('Setup failed') || msg.includes('no LLM model') || msg.includes('No model')) {
                     reconnectDisabledRef.current[key] = true;
                     if (msg.includes('expired')) setAgentExpired(true);
                 }
             } else if (d.type === 'trigger_notification') {
-                setChatMessages(prev => [...prev, { role: 'assistant', content: d.content }]);
+                setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: d.content })]);
                 fetchMySessions(true, agentId);
             } else {
-                setChatMessages(prev => [...prev, { role: d.role, content: d.content }]);
+                setChatMessages(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
             }
         };
     };
@@ -1363,6 +1474,64 @@ function AgentDetailInner() {
         }, 100);
         return () => clearTimeout(timer);
     }, [historyMsgs, activeSession?.id]);
+    // Memoized component for each chat message to avoid re-renders while typing
+    const ChatMessageItem = React.useMemo(() => React.memo(({ msg, i, isLeft, t }: { msg: any, i: number, isLeft: boolean, t: any }) => {
+        const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
+        const fi = fe === 'pdf' ? '📄' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '📊' : (fe === 'docx' || fe === 'doc') ? '📝' : '📎';
+        const isImage = msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
+        
+        const timestampHtml = msg.timestamp ? (() => {
+            const d = new Date(msg.timestamp);
+            const now = new Date();
+            const diffMs = now.getTime() - d.getTime();
+            const isToday = d.toDateString() === now.toDateString();
+            let timeStr = '';
+            if (isToday) timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            else if (diffMs < 7 * 86400000) timeStr = d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            else timeStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            return (
+                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.6, display: 'flex', alignItems: 'center', justifyContent: isLeft ? 'flex-start' : 'flex-end' }}>
+                    {timeStr}
+                    {msg.content && <CopyMessageButton text={msg.content} />}
+                </div>
+            );
+        })() : null;
+
+        return (
+            <div key={i} style={{ display: 'flex', flexDirection: isLeft ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
+                <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{isLeft ? (msg.sender_name ? msg.sender_name[0] : 'A') : 'U'}</div>
+                <div style={{ maxWidth: '75%', padding: '8px 12px', borderRadius: '12px', background: isLeft ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.1)', fontSize: '13px', lineHeight: '1.5', wordBreak: 'break-word' }}>
+                    {isLeft && msg.sender_name && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600 }}>🤖 {msg.sender_name}</div>}
+                    {isImage ? (
+                        <div style={{ marginBottom: '4px' }}>
+                            <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} loading="lazy" />
+                        </div>
+                    ) : (msg.fileName && (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: isLeft ? 'rgba(0,0,0,0.05)' : 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                            <span>{fi}</span>
+                            <span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span>
+                        </div>
+                    ))}
+                    {msg.thinking && (
+                        <details style={{ marginBottom: '8px', fontSize: '12px', background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px', border: '1px solid rgba(147, 130, 220, 0.15)' }}>
+                            <summary style={{ padding: '6px 10px', cursor: 'pointer', color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500, userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px' }}>💭 Thinking</summary>
+                            <div style={{ padding: '4px 10px 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '300px', overflow: 'auto' }}>{msg.thinking}</div>
+                        </details>
+                    )}
+                    {msg.role === 'assistant' ? (
+                        (msg as any)._streaming && !msg.content ? (
+                            <div className="thinking-indicator">
+                                <div className="thinking-dots"><span /><span /><span /></div>
+                                <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
+                            </div>
+                        ) : <MarkdownRenderer content={msg.content} />
+                    ) : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
+                    {timestampHtml}
+                </div>
+            </div>
+        );
+    }), [t]);
+
     const handleChatScroll = () => {
         const el = chatContainerRef.current;
         if (!el) return;
@@ -1438,13 +1607,13 @@ function AgentDetailInner() {
         setIsWaiting(true);
         setIsStreaming(false);
         setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
-        setChatMessages(prev => [...prev, { 
+        setChatMessages(prev => [...prev, parseChatMsg({ 
             role: 'user', 
             content: userMsg, 
             fileName: attachedFiles.map(f => f.name).join(', '), 
             imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined, 
             timestamp: new Date().toISOString() 
-        }]);
+        })]);
         activeSocket.send(JSON.stringify({
             content: contentForLLM, 
             display_content: userMsg, 
@@ -3308,63 +3477,7 @@ function AgentDetailInner() {
                                                     return null;
                                                 }
                                                 return (
-                                                    <div key={i} style={{ display: 'flex', flexDirection: isLeft ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
-                                                        <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{m.sender_name ? m.sender_name[0] : (isLeft ? 'A' : 'U')}</div>
-                                                        <div style={{ maxWidth: '70%', padding: '8px 12px', borderRadius: '12px', background: isLeft ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.1)', fontSize: '13px', lineHeight: '1.5', wordBreak: 'break-word' }}>
-                                                            {m.sender_name && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '3px' }}><Bot size={14} /> {m.sender_name}</div>}
-                                                            {(() => {
-                                                                const pm = parseChatMsg({ role: m.role as ChatMsg['role'], content: m.content || '' });
-                                                                const fe = pm.fileName?.split('.').pop()?.toLowerCase() ?? '';
-                                                                const fi = fe === 'pdf' ? <FileText size={13} /> : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? <BarChart3 size={13} /> : (fe === 'docx' || fe === 'doc') ? <FileEdit size={13} /> : <Paperclip size={13} />;
-                                                                return (
-                                                                    <>
-                                                                        {m.thinking && (
-                                                                            <details style={{
-                                                                                marginBottom: '8px', fontSize: '12px',
-                                                                                background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
-                                                                                border: '1px solid rgba(147, 130, 220, 0.15)',
-                                                                            }}>
-                                                                                <summary style={{
-                                                                                    padding: '6px 10px', cursor: 'pointer',
-                                                                                    color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
-                                                                                    userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
-                                                                                }}>
-                                                                                    <Brain size={13} /> Thinking
-                                                                                </summary>
-                                                                                <div style={{
-                                                                                    padding: '4px 10px 8px',
-                                                                                    fontSize: '12px', lineHeight: '1.6',
-                                                                                    color: 'var(--text-secondary)',
-                                                                                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                                                                    maxHeight: '300px', overflow: 'auto',
-                                                                                }}>
-                                                                                    {m.thinking}
-                                                                                </div>
-                                                                            </details>
-                                                                        )}
-                                                                        {pm.fileName && (() => {
-                                                                            const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
-                                                                            if (isImage && pm.imageUrl) {
-                                                                                return (
-                                                                                    <div style={{ marginBottom: '4px' }}>
-                                                                                        <img src={pm.imageUrl} alt={pm.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} />
-                                                                                    </div>
-                                                                                );
-                                                                            }
-                                                                            return (
-                                                                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'var(--bg-elevated)', borderRadius: '6px', padding: '4px 8px', marginBottom: pm.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
-                                                                                    <span>{fi}</span>
-                                                                                    <span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pm.fileName}</span>
-                                                                                </div>
-                                                                            );
-                                                                        })()}
-                                                                        {pm.content ? (m.role === 'assistant' ? <MarkdownRenderer content={pm.content} /> : <div style={{ whiteSpace: 'pre-wrap' }}>{pm.content}</div>) : null}
-                                                                    </>
-                                                                );
-                                                            })()}
-                                                            {m.created_at && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.6, display: 'flex', alignItems: 'center' }}>{(() => { const d = new Date(m.created_at); const now = new Date(); const diffMs = now.getTime() - d.getTime(); const isToday = d.toDateString() === now.toDateString(); if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); if (diffMs < 7 * 86400000) return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); })()}{m.content && <CopyMessageButton text={m.content} />}</div>}
-                                                        </div>
-                                                    </div>
+                                                    <ChatMessageItem key={i} msg={m} i={i} isLeft={isLeft} t={t} />
                                                 );
                                             });
                                             })()}
@@ -3429,57 +3542,7 @@ function AgentDetailInner() {
                                                     return null;
                                                 }
                                                 return (
-                                                    <div key={i} style={{ display: 'flex', flexDirection: msg.role === 'assistant' ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
-                                                        <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: msg.role === 'assistant' ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{msg.role === 'user' ? 'U' : 'A'}</div>
-                                                        <div style={{ maxWidth: '70%', padding: '8px 12px', borderRadius: '12px', background: msg.role === 'assistant' ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.1)', fontSize: '13px', lineHeight: '1.5', wordBreak: 'break-word' }}>
-                                                            {msg.fileName && (() => {
-                                                                const fe = msg.fileName!.split('.').pop()?.toLowerCase() ?? '';
-                                                                const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
-                                                                if (isImage && msg.imageUrl) {
-                                                                    return (<div style={{ marginBottom: '4px' }}>
-                                                                        <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} />
-                                                                    </div>);
-                                                                }
-                                                                const fi = fe === 'pdf' ? <FileText size={13} /> : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? <BarChart3 size={13} /> : (fe === 'docx' || fe === 'doc') ? <FileEdit size={13} /> : <Paperclip size={13} />;
-                                                                return (<div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}><span>{fi}</span><span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span></div>);
-                                                            })()}
-                                                            {msg.thinking && (
-                                                                <details style={{
-                                                                    marginBottom: '8px', fontSize: '12px',
-                                                                    background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
-                                                                    border: '1px solid rgba(147, 130, 220, 0.15)',
-                                                                }}>
-                                                                    <summary style={{
-                                                                        padding: '6px 10px', cursor: 'pointer',
-                                                                        color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
-                                                                        userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
-                                                                    }}>
-                                                                        <Brain size={13} /> Thinking
-                                                                    </summary>
-                                                                    <div style={{
-                                                                        padding: '4px 10px 8px',
-                                                                        fontSize: '12px', lineHeight: '1.6',
-                                                                        color: 'var(--text-secondary)',
-                                                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                                                        maxHeight: '300px', overflow: 'auto',
-                                                                    }}>
-                                                                        {msg.thinking}
-                                                                    </div>
-                                                                </details>
-                                                            )}
-                                                            {msg.role === 'assistant' ? (
-                                                                (msg as any)._streaming && !msg.content ? (
-                                                                    <div className="thinking-indicator">
-                                                                        <div className="thinking-dots">
-                                                                            <span /><span /><span />
-                                                                        </div>
-                                                                        <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
-                                                                    </div>
-                                                                ) : <MarkdownRenderer content={msg.content} />
-                                                            ) : msg.content ? <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div> : null}
-                                                            {msg.timestamp && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.6, display: 'flex', alignItems: 'center', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>{(() => { const d = new Date(msg.timestamp); const now = new Date(); const diffMs = now.getTime() - d.getTime(); const isToday = d.toDateString() === now.toDateString(); if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); if (diffMs < 7 * 86400000) return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); })()}{msg.content && <CopyMessageButton text={msg.content} />}</div>}
-                                                        </div>
-                                                    </div>
+                                                    <ChatMessageItem key={i} msg={msg} i={i} isLeft={msg.role === 'assistant'} t={t} />
                                                 );
                                             })}
                                             {isWaiting && (
@@ -3915,10 +3978,18 @@ function AgentDetailInner() {
                                                 onChange={(e) => setSettingsForm(f => ({ ...f, primary_model_id: e.target.value }))}
                                             >
                                                 <option value="">--</option>
-                                                {llmModels.map((m: any) => (
-                                                    <option key={m.id} value={m.id}>{m.label} ({m.provider}/{m.model})</option>
+                                                {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.primary_model_id).map((m: any) => (
+                                                    <option key={m.id} value={m.id}>
+                                                        {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
+                                                    </option>
                                                 ))}
                                             </select>
+                                            {/* Warning if selected model is disabled */}
+                                            {settingsForm.primary_model_id && llmModels.some((m: any) => m.id === settingsForm.primary_model_id && !m.enabled) && (
+                                                <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                                                    {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
+                                                </div>
+                                            )}
                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.primaryModel')}</div>
                                         </div>
                                         <div>
@@ -3929,10 +4000,18 @@ function AgentDetailInner() {
                                                 onChange={(e) => setSettingsForm(f => ({ ...f, fallback_model_id: e.target.value }))}
                                             >
                                                 <option value="">--</option>
-                                                {llmModels.map((m: any) => (
-                                                    <option key={m.id} value={m.id}>{m.label} ({m.provider}/{m.model})</option>
+                                                {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.fallback_model_id).map((m: any) => (
+                                                    <option key={m.id} value={m.id}>
+                                                        {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
+                                                    </option>
                                                 ))}
                                             </select>
+                                            {/* Warning if selected fallback model is disabled */}
+                                            {settingsForm.fallback_model_id && llmModels.some((m: any) => m.id === settingsForm.fallback_model_id && !m.enabled) && (
+                                                <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                                                    {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
+                                                </div>
+                                            )}
                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.fallbackModel')}</div>
                                         </div>
                                     </div>

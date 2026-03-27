@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { adminApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor } from '../utils/theme';
+import { IconFilter } from '@tabler/icons-react';
+import PlatformDashboard from './PlatformDashboard';
 
 // Helper for authenticated JSON fetch
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -34,7 +36,7 @@ function formatDate(dt: string | null | undefined): string {
     return new Date(dt).toLocaleDateString(undefined, { year: 'numeric', month: '2-digit', day: '2-digit' });
 }
 
-type SortKey = 'name' | 'user_count' | 'agent_count' | 'total_tokens' | 'created_at' | 'is_active';
+type SortKey = 'name' | 'org_admin_email' | 'user_count' | 'agent_count' | 'total_tokens' | 'created_at';
 type SortDir = 'asc' | 'desc';
 
 const PAGE_SIZE = 15;
@@ -43,7 +45,7 @@ const PAGE_SIZE = 15;
 export default function AdminCompanies() {
     const { t } = useTranslation();
     const user = useAuthStore((s) => s.user);
-    const [activeTab, setActiveTab] = useState<'platform' | 'companies'>('platform');
+    const [activeTab, setActiveTab] = useState<'dashboard' | 'platform' | 'companies'>('dashboard');
 
     // Guard: only platform_admin
     if (user?.role !== 'platform_admin') {
@@ -55,46 +57,39 @@ export default function AdminCompanies() {
     }
 
     const tabs = [
+        { key: 'dashboard' as const, label: t('admin.tab.dashboard', 'Dashboard') },
         { key: 'platform' as const, label: t('admin.tab.platform', 'Platform') },
         { key: 'companies' as const, label: t('admin.tab.companies', 'Companies') },
     ];
 
     return (
-        <div style={{ maxWidth: '1040px', margin: '0 auto', padding: '32px 24px' }}>
-            {/* Header */}
-            <div style={{ marginBottom: '24px' }}>
-                <h1 style={{ fontSize: '20px', fontWeight: 600, marginBottom: '4px' }}>
-                    {t('admin.platformSettings', 'Platform Settings')}
-                </h1>
-                <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>
-                    {t('admin.platformSettingsDesc', 'Manage platform-wide settings and company tenants.')}
-                </p>
+        <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)' }}>
+            <div className="page-header">
+                <div>
+                    <h1 className="page-title">{t('admin.platformSettings', 'Platform Settings')}</h1>
+                    <p className="page-subtitle">
+                        {t('admin.platformSettingsDesc', 'Manage platform-wide settings and company tenants.')}
+                    </p>
+                </div>
             </div>
 
-            {/* Tabs */}
-            <div style={{
-                display: 'flex', gap: '0', borderBottom: '1px solid var(--border-subtle)',
-                marginBottom: '24px',
-            }}>
+            <div className="tabs">
                 {tabs.map(tab => (
-                    <button
+                    <div
                         key={tab.key}
+                        className={`tab ${activeTab === tab.key ? 'active' : ''}`}
                         onClick={() => setActiveTab(tab.key)}
-                        style={{
-                            padding: '8px 16px', fontSize: '13px', fontWeight: 500,
-                            background: 'none', border: 'none', cursor: 'pointer',
-                            color: activeTab === tab.key ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                            borderBottom: activeTab === tab.key ? '2px solid var(--accent-primary)' : '2px solid transparent',
-                            marginBottom: '-1px', transition: 'all 0.15s',
-                        }}
                     >
                         {tab.label}
-                    </button>
+                    </div>
                 ))}
             </div>
 
-            {activeTab === 'platform' && <PlatformTab />}
-            {activeTab === 'companies' && <CompaniesTab />}
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                {activeTab === 'dashboard' && <PlatformDashboard />}
+                {activeTab === 'platform' && <PlatformTab />}
+                {activeTab === 'companies' && <CompaniesTab />}
+            </div>
         </div>
     );
 }
@@ -188,6 +183,21 @@ function PlatformTab() {
         setUrlSaving(false);
     };
 
+    const switchStyle = (checked: boolean, disabled?: boolean): React.CSSProperties => ({
+        position: 'relative', display: 'inline-block', width: '40px', height: '22px',
+        cursor: disabled ? 'not-allowed' : 'pointer', flexShrink: 0,
+    });
+    const switchTrack = (checked: boolean): React.CSSProperties => ({
+        position: 'absolute', inset: 0,
+        background: checked ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+        borderRadius: '11px', transition: 'background 0.2s',
+    });
+    const switchThumb = (checked: boolean): React.CSSProperties => ({
+        position: 'absolute', left: checked ? '20px' : '2px', top: '2px',
+        width: '18px', height: '18px', background: '#fff',
+        borderRadius: '50%', transition: 'left 0.2s',
+    });
+
     return (
         <>
             {toast && (
@@ -209,11 +219,11 @@ function PlatformTab() {
                                 <div style={{ fontSize: '13px', fontWeight: 500 }}>{s.label}</div>
                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{s.desc}</div>
                             </div>
-                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: settingsLoading ? 'not-allowed' : 'pointer', flexShrink: 0 }}>
+                            <label style={switchStyle(!!settings[s.key], settingsLoading)}>
                                 <input type="checkbox" checked={!!settings[s.key]} onChange={(e) => handleToggleSetting(s.key, e.target.checked)} disabled={settingsLoading}
                                     style={{ opacity: 0, width: 0, height: 0 }} />
-                                <span style={{ position: 'absolute', inset: 0, background: settings[s.key] ? '#22c55e' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
-                                    <span style={{ position: 'absolute', left: settings[s.key] ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                <span style={switchTrack(!!settings[s.key])}>
+                                    <span style={switchThumb(!!settings[s.key])} />
                                 </span>
                             </label>
                         </div>
@@ -223,38 +233,45 @@ function PlatformTab() {
 
             {/* Notification Bar */}
             <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
-                    {t('enterprise.notificationBar.title', 'Notification Bar')}
-                </div>
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                    {t('enterprise.notificationBar.description', 'Display a notification bar at the top of the page, visible to all users.')}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}>
-                        <input
-                            type="checkbox"
-                            checked={nbEnabled}
-                            onChange={e => setNbEnabled(e.target.checked)}
-                            style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-                        />
-                        {t('enterprise.notificationBar.enabled', 'Enable notification bar')}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div>
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                            {t('enterprise.notificationBar.title', 'Notification Bar')}
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                            {t('enterprise.notificationBar.description', 'Display a notification bar at the top of the page, visible to all users.')}
+                        </div>
+                    </div>
+                    <label style={switchStyle(nbEnabled)}>
+                        <input type="checkbox" checked={nbEnabled} onChange={e => setNbEnabled(e.target.checked)}
+                            style={{ opacity: 0, width: 0, height: 0 }} />
+                        <span style={switchTrack(nbEnabled)}>
+                            <span style={switchThumb(nbEnabled)} />
+                        </span>
                     </label>
                 </div>
-                <div style={{ marginBottom: '12px' }}>
-                    <label className="form-label">{t('enterprise.notificationBar.text', 'Notification text')}</label>
-                    <input
-                        className="form-input"
-                        value={nbText}
-                        onChange={e => setNbText(e.target.value)}
-                        placeholder={t('enterprise.notificationBar.textPlaceholder', 'e.g. v2.1 released with new features!')}
-                        style={{ fontSize: '13px' }}
-                    />
-                </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <button className="btn btn-primary" onClick={saveNotificationBar} disabled={nbSaving}>
-                        {nbSaving ? t('common.loading') : t('common.save', 'Save')}
-                    </button>
-                    {nbSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('enterprise.config.saved', 'Saved')}</span>}
+                <div style={{
+                    maxHeight: nbEnabled ? '200px' : '0',
+                    opacity: nbEnabled ? 1 : 0,
+                    overflow: 'hidden',
+                    transition: 'max-height 0.3s ease, opacity 0.25s ease',
+                }}>
+                    <div style={{ marginBottom: '12px', paddingTop: '16px' }}>
+                        <label className="form-label">{t('enterprise.notificationBar.text', 'Notification text')}</label>
+                        <input
+                            className="form-input"
+                            value={nbText}
+                            onChange={e => setNbText(e.target.value)}
+                            placeholder={t('enterprise.notificationBar.textPlaceholder', 'e.g. v2.1 released with new features!')}
+                            style={{ fontSize: '13px' }}
+                        />
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button className="btn btn-primary" onClick={saveNotificationBar} disabled={nbSaving}>
+                            {nbSaving ? t('common.loading') : t('common.save', 'Save')}
+                        </button>
+                        {nbSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('enterprise.config.saved', 'Saved')}</span>}
+                    </div>
                 </div>
             </div>
 
@@ -297,6 +314,21 @@ function CompaniesTab() {
     // Sorting
     const [sortKey, setSortKey] = useState<SortKey>('created_at');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+    // Status filter
+    const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'disabled'>('all');
+    const [showStatusDropdown, setShowStatusDropdown] = useState(false);
+    const statusDropdownRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const handleClick = (e: MouseEvent) => {
+            if (statusDropdownRef.current && !statusDropdownRef.current.contains(e.target as Node)) {
+                setShowStatusDropdown(false);
+            }
+        };
+        if (showStatusDropdown) document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+    }, [showStatusDropdown]);
 
     // Pagination
     const [page, setPage] = useState(0);
@@ -343,10 +375,12 @@ function CompaniesTab() {
     };
 
     const sorted = useMemo(() => {
-        const list = [...companies];
+        let list = [...companies];
+        if (statusFilter === 'active') list = list.filter(c => c.is_active);
+        else if (statusFilter === 'disabled') list = list.filter(c => !c.is_active);
         list.sort((a, b) => {
             let av = a[sortKey], bv = b[sortKey];
-            if (sortKey === 'name') {
+            if (sortKey === 'name' || sortKey === 'org_admin_email') {
                 av = (av || '').toLowerCase();
                 bv = (bv || '').toLowerCase();
             }
@@ -354,16 +388,12 @@ function CompaniesTab() {
                 av = av ? new Date(av).getTime() : 0;
                 bv = bv ? new Date(bv).getTime() : 0;
             }
-            if (sortKey === 'is_active') {
-                av = av ? 1 : 0;
-                bv = bv ? 1 : 0;
-            }
             if (av < bv) return sortDir === 'asc' ? -1 : 1;
             if (av > bv) return sortDir === 'asc' ? 1 : -1;
             return 0;
         });
         return list;
-    }, [companies, sortKey, sortDir]);
+    }, [companies, sortKey, sortDir, statusFilter]);
 
     // Pagination
     const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
@@ -418,17 +448,19 @@ function CompaniesTab() {
 
     const columns: { key: SortKey; label: string; flex: string }[] = [
         { key: 'name', label: t('admin.company', 'Company'), flex: '2fr' },
+        { key: 'org_admin_email', label: t('admin.orgAdmin', 'Admin Email'), flex: '1.5fr' },
         { key: 'user_count', label: t('admin.users', 'Users'), flex: '80px' },
         { key: 'agent_count', label: t('admin.agents', 'Agents'), flex: '80px' },
         { key: 'total_tokens', label: t('admin.tokens', 'Token Usage'), flex: '100px' },
         { key: 'created_at', label: t('admin.createdAt', 'Created'), flex: '100px' },
-        { key: 'is_active', label: t('admin.status', 'Status'), flex: '120px' },
     ];
+    const statusColFlex = '80px';
+    const actionColFlex = '80px';
 
-    const gridCols = columns.map(c => c.flex).join(' ');
+    const gridCols = columns.map(c => c.flex).join(' ') + ' ' + statusColFlex + ' ' + actionColFlex;
 
     return (
-        <>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
             {toast && (
                 <div style={{
                     position: 'fixed', top: '20px', right: '20px', padding: '10px 20px',
@@ -552,21 +584,66 @@ function CompaniesTab() {
             )}
 
             {/* Company List */}
-            <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+            <div className="card" style={{ padding: '0', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'visible' }}>
                 {/* Table Header */}
                 <div style={{
                     display: 'grid', gridTemplateColumns: gridCols,
                     gap: '12px', padding: '10px 16px', fontSize: '11px', fontWeight: 600,
                     color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em',
                     borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)',
+                    borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0', flexShrink: 0, position: 'relative', zIndex: 10,
                 }}>
                     {columns.map(col => (
                         <div key={col.key} style={thStyle} onClick={() => handleSort(col.key)}>
                             {col.label}<SortArrow col={col.key} />
                         </div>
                     ))}
+                    <div ref={statusDropdownRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        {t('admin.status', 'Status')}
+                        <button
+                            onClick={() => setShowStatusDropdown(v => !v)}
+                            style={{
+                                background: 'none', border: 'none', padding: '2px', cursor: 'pointer',
+                                display: 'flex', alignItems: 'center', borderRadius: '4px',
+                                color: statusFilter !== 'all' ? 'var(--accent-primary)' : 'var(--text-tertiary)',
+                                transition: 'color 0.15s',
+                            }}
+                            title={t('admin.filterStatus', 'Filter by status')}
+                        >
+                            <IconFilter size={14} stroke={statusFilter !== 'all' ? 2.5 : 1.8} />
+                        </button>
+                        {showStatusDropdown && (
+                            <div style={{
+                                position: 'absolute', top: '100%', left: 0, marginTop: '4px',
+                                background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
+                                borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                                zIndex: 100, minWidth: '120px', padding: '4px', overflow: 'hidden',
+                            }}>
+                                {(['all', 'active', 'disabled'] as const).map(val => (
+                                    <div
+                                        key={val}
+                                        onClick={() => { setStatusFilter(val); setPage(0); setShowStatusDropdown(false); }}
+                                        style={{
+                                            padding: '6px 10px', fontSize: '12px', cursor: 'pointer',
+                                            borderRadius: '6px', transition: 'background 0.1s',
+                                            color: statusFilter === val ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                                            fontWeight: statusFilter === val ? 600 : 400,
+                                            background: statusFilter === val ? 'var(--bg-secondary)' : 'transparent',
+                                        }}
+                                        onMouseEnter={e => { if (statusFilter !== val) (e.currentTarget.style.background = 'var(--bg-secondary)'); }}
+                                        onMouseLeave={e => { if (statusFilter !== val) (e.currentTarget.style.background = 'transparent'); }}
+                                    >
+                                        {val === 'all' ? t('admin.all', 'All') : val === 'active' ? t('admin.active', 'Active') : t('admin.disabled', 'Disabled')}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div>{t('admin.action', 'Action')}</div>
                 </div>
 
+                {/* Scrollable table body */}
+                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
                 {loading && (
                     <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
                         {t('common.loading', 'Loading...')}
@@ -590,6 +667,9 @@ function CompaniesTab() {
                             <div style={{ fontWeight: 500 }}>{c.name}</div>
                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>{c.slug}</div>
                         </div>
+                        <div style={{ fontSize: '12px', color: c.org_admin_email ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
+                            {c.org_admin_email || '-'}
+                        </div>
                         <div>{c.user_count ?? '-'}</div>
                         <div>{c.agent_count ?? '-'}</div>
                         <div style={{ fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
@@ -598,14 +678,16 @@ function CompaniesTab() {
                         <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                             {formatDate(c.created_at)}
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div>
                             <span className={`badge ${c.is_active ? 'badge-success' : 'badge-error'}`} style={{ fontSize: '10px' }}>
                                 {c.is_active ? t('admin.active', 'Active') : t('admin.disabled', 'Disabled')}
                             </span>
+                        </div>
+                        <div>
                             <button
                                 className="btn btn-ghost"
                                 style={{
-                                    padding: '2px 6px', fontSize: '10px',
+                                    padding: '2px 8px', fontSize: '11px', height: '24px',
                                     color: c.slug === 'default' ? 'var(--text-tertiary)' : c.is_active ? 'var(--error)' : 'var(--success)',
                                     cursor: c.slug === 'default' ? 'not-allowed' : 'pointer',
                                     opacity: c.slug === 'default' ? 0.5 : 1,
@@ -620,11 +702,14 @@ function CompaniesTab() {
                     </div>
                 ))}
 
-                {!loading && companies.length === 0 && !error && (
+                {!loading && paged.length === 0 && !error && (
                     <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                        {t('common.noData', 'No data')}
+                        {statusFilter !== 'all'
+                            ? t('admin.noFilterResults', 'No companies match the current filter.')
+                            : t('common.noData', 'No data')}
                     </div>
                 )}
+                </div>
 
                 {/* Pagination */}
                 {!loading && totalPages > 1 && (
@@ -632,6 +717,7 @@ function CompaniesTab() {
                         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                         padding: '10px 16px', borderTop: '1px solid var(--border-subtle)',
                         fontSize: '12px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)',
+                        flexShrink: 0, borderRadius: '0 0 var(--radius-lg) var(--radius-lg)',
                     }}>
                         <span>
                             {t('admin.showing', '{{start}}-{{end}} of {{total}}', {
@@ -653,6 +739,6 @@ function CompaniesTab() {
                     </div>
                 )}
             </div>
-        </>
+        </div>
     );
 }

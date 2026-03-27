@@ -56,6 +56,23 @@ async def record_token_usage(agent_id: uuid.UUID, tokens: int) -> None:
                 agent.tokens_used_today = (agent.tokens_used_today or 0) + tokens
                 agent.tokens_used_month = (agent.tokens_used_month or 0) + tokens
                 agent.tokens_used_total = (agent.tokens_used_total or 0) + tokens
+
+                from datetime import datetime, timezone
+                from sqlalchemy.dialects.postgresql import insert
+                from app.models.activity_log import DailyTokenUsage
+
+                today_date = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                stmt = insert(DailyTokenUsage).values(
+                    tenant_id=agent.tenant_id,
+                    agent_id=agent.id,
+                    date=today_date,
+                    tokens_used=tokens
+                ).on_conflict_do_update(
+                    index_elements=["agent_id", "date"],
+                    set_=dict(tokens_used=DailyTokenUsage.tokens_used + tokens)
+                )
+                await db.execute(stmt)
+
                 await db.commit()
                 logger.debug(f"Recorded {tokens:,} tokens for agent {agent.name}")
     except Exception as e:

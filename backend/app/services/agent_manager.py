@@ -5,7 +5,6 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from string import Template
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -75,10 +74,39 @@ class AgentManager:
             soul_content = soul_content.replace("{{creator_name}}", creator_name)
             soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
-        if personality:
-            soul_content += f"\n\n## Personality\n{personality}\n"
-        if boundaries:
-            soul_content += f"\n## Boundaries\n{boundaries}\n"
+        # Helper function to replace or append sections
+        def replace_or_append_section(content: str, section_name: str, section_content: str) -> str:
+            """Replace existing ## SectionName or append if not found."""
+            if not section_content:
+                return content
+            
+            # Pattern to match existing section (case-insensitive header)
+            import re
+            pattern = rf"^##\s+{re.escape(section_name)}\s*$"
+            lines = content.split('\n')
+            
+            # Find the section header
+            for i, line in enumerate(lines):
+                if re.match(pattern, line.strip(), re.IGNORECASE):
+                    # Found existing section - replace until next ## header or end
+                    section_start = i
+                    section_end = len(lines)
+                    for j in range(i + 1, len(lines)):
+                        if lines[j].strip().startswith('## '):
+                            section_end = j
+                            break
+                    
+                    # Replace the section content (with trailing newline for proper spacing)
+                    new_section = f"## {section_name}\n{section_content}\n"
+                    lines = lines[:section_start] + [new_section] + lines[section_end:]
+                    return '\n'.join(lines)
+            
+            # Section not found - append at the end
+            return content + f"\n## {section_name}\n{section_content}\n"
+
+        # Use the helper to replace or append Personality and Boundaries
+        soul_content = replace_or_append_section(soul_content, "Personality", personality)
+        soul_content = replace_or_append_section(soul_content, "Boundaries", boundaries)
 
         soul_path.write_text(soul_content, encoding="utf-8")
 
@@ -107,7 +135,7 @@ class AgentManager:
             state = json.loads(state_path.read_text())
             state["agent_id"] = str(agent.id)
             state["name"] = agent.name
-            state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+            state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
         logger.info(f"Initialized agent files at {agent_dir}")
 
@@ -154,7 +182,7 @@ class AgentManager:
         config = self._generate_openclaw_config(agent, model)
         config_dir = agent_dir / ".openclaw"
         config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / "openclaw.json").write_text(json.dumps(config, indent=2))
+        (config_dir / "openclaw.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
 
         # Create workspace symlink
         workspace_dir = config_dir / "workspace"
@@ -237,16 +265,19 @@ class AgentManager:
             logger.error(f"Failed to remove container: {e}")
             return False
 
-    async def archive_agent_files(self, agent_id: uuid.UUID) -> None:
-        """Archive (move) agent files to a backup location."""
+    async def archive_agent_files(self, agent_id: uuid.UUID) -> Path:
+        """Archive agent files to a backup location and return the archive directory."""
         agent_dir = self._agent_dir(agent_id)
+        archive_dir = Path(settings.AGENT_DATA_DIR) / "_archived"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dest = archive_dir / f"{agent_id}_{timestamp}"
         if agent_dir.exists():
-            archive_dir = Path(settings.AGENT_DATA_DIR) / "_archived"
-            archive_dir.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            dest = archive_dir / f"{agent_id}_{timestamp}"
             shutil.move(str(agent_dir), str(dest))
             logger.info(f"Archived agent files to {dest}")
+        else:
+            dest.mkdir(parents=True, exist_ok=True)
+        return dest
 
     def get_container_status(self, agent: Agent) -> dict:
         """Get real-time container status."""

@@ -11,9 +11,12 @@ from app.config import get_settings
 
 settings = get_settings()
 
-# Two workspace roots exist — tool workspace and persistent data
-TOOL_WORKSPACE = Path("/tmp/clawith_workspaces")
 PERSISTENT_DATA = Path(settings.AGENT_DATA_DIR)
+
+
+def _agent_workspace(agent_id: uuid.UUID) -> Path:
+    """Return the canonical persistent workspace path for an agent."""
+    return PERSISTENT_DATA / str(agent_id)
 
 
 def _read_file_safe(path: Path, max_chars: int = 3000) -> str:
@@ -84,11 +87,10 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
     prompt. The model is instructed to call read_file to load full content
     when a skill is relevant.
     """
+    ws_root = _agent_workspace(agent_id)
     skills: list[tuple[str, str, str]] = []  # (name, description, path_relative_to_skills)
-    for ws_root in [TOOL_WORKSPACE / str(agent_id), PERSISTENT_DATA / str(agent_id)]:
-        skills_dir = ws_root / "skills"
-        if not skills_dir.exists():
-            continue
+    skills_dir = ws_root / "skills"
+    if skills_dir.exists():
         for entry in sorted(skills_dir.iterdir()):
             if entry.name.startswith("."):
                 continue
@@ -156,17 +158,16 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     - skills/ → skill names + summaries
     - relationships.md → relationship descriptions
     """
-    tool_ws = TOOL_WORKSPACE / str(agent_id)
-    data_ws = PERSISTENT_DATA / str(agent_id)
+    ws_root = _agent_workspace(agent_id)
 
     # --- Soul ---
-    soul = _read_file_safe(tool_ws / "soul.md", 2000) or _read_file_safe(data_ws / "soul.md", 2000)
+    soul = _read_file_safe(ws_root / "soul.md", 2000)
     # Strip markdown heading if present
     if soul.startswith("# "):
         soul = "\n".join(soul.split("\n")[1:]).strip()
 
     # --- Memory ---
-    memory = _read_file_safe(tool_ws / "memory" / "memory.md", 2000) or _read_file_safe(tool_ws / "memory.md", 2000)
+    memory = _read_file_safe(ws_root / "memory" / "memory.md", 2000) or _read_file_safe(ws_root / "memory.md", 2000)
     if memory.startswith("# "):
         memory = "\n".join(memory.split("\n")[1:]).strip()
 
@@ -174,7 +175,7 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     skills_text = _load_skills_index(agent_id)
 
     # --- Relationships ---
-    relationships = _read_file_safe(data_ws / "relationships.md", 2000)
+    relationships = _read_file_safe(ws_root / "relationships.md", 2000)
     if relationships.startswith("# "):
         relationships = "\n".join(relationships.split("\n")[1:]).strip()
 
@@ -392,11 +393,9 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
 
     # --- Focus (working memory) ---
     focus = (
-        _read_file_safe(tool_ws / "focus.md", 3000)
-        or _read_file_safe(data_ws / "focus.md", 3000)
+        _read_file_safe(ws_root / "focus.md", 3000)
         # Backward compat: also check old name
-        or _read_file_safe(tool_ws / "agenda.md", 3000)
-        or _read_file_safe(data_ws / "agenda.md", 3000)
+        or _read_file_safe(ws_root / "agenda.md", 3000)
     )
     if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
         if focus.startswith("# "):

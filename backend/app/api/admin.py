@@ -36,6 +36,7 @@ class CompanyStats(BaseModel):
     agent_count: int = 0
     agent_running_count: int = 0
     total_tokens: int = 0
+    org_admin_email: str | None = None
 
 
 class CompanyCreateRequest(BaseModel):
@@ -99,6 +100,12 @@ async def list_companies(
         )
         total_tokens = tc.scalar() or 0
 
+        # Org Admin Email (first found if multiple)
+        admin_q = await db.execute(
+            select(User.email).where(User.tenant_id == tid, User.role == "org_admin").order_by(User.created_at.asc()).limit(1)
+        )
+        org_admin_email = admin_q.scalar()
+
         result.append(CompanyStats(
             id=tenant.id,
             name=tenant.name,
@@ -109,6 +116,7 @@ async def list_companies(
             agent_count=agent_count,
             agent_running_count=agent_running,
             total_tokens=total_tokens,
+            org_admin_email=org_admin_email,
         ))
 
     return result
@@ -180,6 +188,125 @@ async def toggle_company(
 
     await db.flush()
     return {"ok": True, "is_active": new_state}
+
+
+# ─── Platform Metrics Dashboard ─────────────────────────
+
+from typing import Any
+from fastapi import Query
+
+@router.get("/metrics/timeseries", response_model=list[dict[str, Any]])
+async def get_platform_timeseries(
+    start_date: datetime,
+    end_date: datetime,
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get daily new companies, users, and tokens consumed within a date range."""
+    # Ensure naive datetimes are treated as UTC or passed as aware
+    # Group by DATE(created_at)
+    from app.models.activity_log import DailyTokenUsage
+    from sqlalchemy import cast, Date
+
+    # 1. New Companies per day
+    companies_q = await db.execute(
+        select(
+            cast(Tenant.created_at, Date).label('d'),
+            sqla_func.count().label('c')
+        ).where(
+            Tenant.created_at >= start_date,
+            Tenant.created_at <= end_date
+        ).group_by('d')
+    )
+    companies_by_day = {row.d: row.c for row in companies_q.all()}
+
+    # 2. New Users per day
+    users_q = await db.execute(
+        select(
+            cast(User.created_at, Date).label('d'),
+            sqla_func.count().label('c')
+        ).where(
+            User.created_at >= start_date,
+            User.created_at <= end_date
+        ).group_by('d')
+    )
+    users_by_day = {row.d: row.c for row in users_q.all()}
+
+    # 3. Tokens consumed per day
+    tokens_q = await db.execute(
+        select(
+            cast(DailyTokenUsage.date, Date).label('d'),
+            sqla_func.sum(DailyTokenUsage.tokens_used).label('c')
+        ).where(
+            DailyTokenUsage.date >= start_date,
+            DailyTokenUsage.date <= end_date
+        ).group_by('d')
+    )
+    tokens_by_day = {row.d: row.c for row in tokens_q.all()}
+
+    # Generate date range list
+    from datetime import timedelta
+    result = []
+    current_d = start_date.date()
+    end_d = end_date.date()
+    
+    # Calculate cumulative totals up to start_date
+    total_companies = (await db.execute(select(sqla_func.count()).select_from(Tenant).where(Tenant.created_at < start_date))).scalar() or 0
+    total_users = (await db.execute(select(sqla_func.count()).select_from(User).where(User.created_at < start_date))).scalar() or 0
+    total_tokens = (await db.execute(select(sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0)).where(Agent.created_at < start_date))).scalar() or 0
+
+    while current_d <= end_d:
+        nc = companies_by_day.get(current_d, 0)
+        nu = users_by_day.get(current_d, 0)
+        nt = tokens_by_day.get(current_d, 0)
+        
+        total_companies += nc
+        total_users += nu
+        total_tokens += nt
+        
+        result.append({
+            "date": current_d.isoformat(),
+            "new_companies": nc,
+            "total_companies": total_companies,
+            "new_users": nu,
+            "total_users": total_users,
+            "new_tokens": nt,
+            "total_tokens": total_tokens,
+        })
+        current_d += timedelta(days=1)
+        
+    return result
+
+
+@router.get("/metrics/leaderboards")
+async def get_platform_leaderboards(
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get Top 20 token consuming companies and agents."""
+    # Top 20 Companies by total tokens
+    top_companies_q = await db.execute(
+        select(Tenant.name, sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).label('total'))
+        .join(Agent, Agent.tenant_id == Tenant.id)
+        .group_by(Tenant.id)
+        .order_by(sqla_func.sum(Agent.tokens_used_total).desc())
+        .limit(20)
+    )
+    top_companies = [{"name": row.name, "tokens": row.total} for row in top_companies_q.all()]
+
+    # Top 20 Agents by total tokens
+    top_agents_q = await db.execute(
+        select(Agent.name, Tenant.name.label('tenant_name'), Agent.tokens_used_total)
+        .join(Tenant, Tenant.id == Agent.tenant_id)
+        .order_by(Agent.tokens_used_total.desc())
+        .limit(20)
+    )
+    top_agents = [{"name": row.name, "company": row.tenant_name, "tokens": row.tokens_used_total} for row in top_agents_q.all()]
+
+    return {
+        "top_companies": top_companies,
+        "top_agents": top_agents
+    }
 
 
 # ─── Platform Settings ─────────────────────────────────

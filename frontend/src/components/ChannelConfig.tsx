@@ -80,6 +80,8 @@ const DingTalkIcon = <img src="/dingtalk.png" alt="DingTalk" width="20" height="
 
 const AtlassianIcon = <img src="/atlassian.png" alt="Atlassian" width="20" height="20" style={{ borderRadius: '4px' }} />;
 
+const AgentBayIcon = <span style={{ fontSize: '16px' }}>🌩️</span>;
+
 // Eye icons for password toggle
 const EyeOpen = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
 const EyeClosed = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg>;
@@ -203,6 +205,21 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         ],
         guide: { prefix: 'channelGuide.atlassian', steps: 5 },
     },
+    {
+        id: 'agentbay',
+        icon: AgentBayIcon,
+        nameKey: 'common.channels.agentbay',
+        nameFallback: 'AgentBay',
+        desc: 'Browser & Code Execution (阿里云)',
+        apiSlug: 'agentbay-channel',
+        hasTestConnection: true,
+        editOnly: true,
+        fields: [
+            { key: 'api_key', label: 'API Key', type: 'password', required: true },
+            { key: 'base_url', label: 'Base URL', placeholder: 'https://agentbay.aliyuncs.com/api/v1' },
+        ],
+        guide: { prefix: 'channelGuide.agentbay', steps: 3 },
+    },
 ];
 
 // ─── Feishu Permission JSON ─────────────────────────────
@@ -271,6 +288,10 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [atlassianTesting, setAtlassianTesting] = useState(false);
     const [atlassianTestResult, setAtlassianTestResult] = useState<{ ok: boolean; message?: string; tool_count?: number; error?: string } | null>(null);
 
+    // AgentBay test connection state
+    const [agentbayTesting, setAgentbayTesting] = useState(false);
+    const [agentbayTestResult, setAgentbayTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null);
+
     // ─── Edit mode: queries for each channel ────────────
     const enabled = mode === 'edit' && !!agentId;
 
@@ -334,6 +355,11 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         queryFn: () => fetchAuth<any>(`/agents/${agentId}/atlassian-channel`).catch(() => null),
         enabled: enabled,
     });
+    const { data: agentbayConfig } = useQuery({
+        queryKey: ['agentbay-channel', agentId],
+        queryFn: () => fetchAuth<any>(`/agents/${agentId}/agentbay-channel`).catch(() => null),
+        enabled: enabled,
+    });
 
     // Helper: get config data for a channel
     const getConfig = (id: string): any => {
@@ -345,6 +371,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             case 'dingtalk': return dingtalkConfig;
             case 'wecom': return wecomConfig;
             case 'atlassian': return atlassianConfig;
+            case 'agentbay': return agentbayConfig;
             default: return null;
         }
     };
@@ -393,6 +420,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 : [[`${ch.apiSlug}`, agentId]];
             keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
             if (ch.id === 'atlassian') setAtlassianTestResult(null);
+            if (ch.id === 'agentbay') setAgentbayTestResult(null);
         },
     });
 
@@ -406,6 +434,18 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             setAtlassianTestResult({ ok: false, error: String(e) });
         }
         setAtlassianTesting(false);
+    };
+
+    const testAgentBay = async () => {
+        setAgentbayTesting(true);
+        setAgentbayTestResult(null);
+        try {
+            const res = await fetchAuth<any>(`/agents/${agentId}/agentbay-channel/test`, { method: 'POST' });
+            setAgentbayTestResult(res);
+        } catch (e: any) {
+            setAgentbayTestResult({ ok: false, error: String(e) });
+        }
+        setAgentbayTesting(false);
     };
 
     // ─── Build save payload for a channel ───────────────
@@ -736,14 +776,35 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     </div>
                                 )}
 
+                                {/* AgentBay status */}
+                                {ch.id === 'agentbay' && (
+                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
+                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>Status</div>
+                                        <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>API Key configured — Browser & Code tools available</div>
+                                        {config.base_url && <div style={{ color: 'var(--text-tertiary)', marginTop: '4px', fontSize: '11px' }}>Base URL: <code>{config.base_url}</code></div>}
+                                    </div>
+                                )}
+                                {ch.id === 'agentbay' && agentbayTestResult && (
+                                    <div style={{ padding: '8px 12px', borderRadius: '6px', fontSize: '12px', marginBottom: '10px', background: agentbayTestResult.ok ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${agentbayTestResult.ok ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`, color: agentbayTestResult.ok ? 'rgb(5,150,105)' : 'rgb(220,38,38)' }}>
+                                        {agentbayTestResult.ok
+                                            ? `${agentbayTestResult.message || 'Connected to AgentBay'}`
+                                            : `${agentbayTestResult.error}`}
+                                    </div>
+                                )}
+
                                 {/* Setup guide in configured view */}
                                 {renderGuide(ch.guide, !!(ch.connectionMode && configConnMode === 'websocket'), ch)}
 
                                 {/* Action buttons */}
                                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                                    {ch.hasTestConnection && (
+                                    {ch.hasTestConnection && ch.id === 'atlassian' && (
                                         <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAtlassian} disabled={atlassianTesting}>
                                             {atlassianTesting ? 'Testing...' : 'Test Connection'}
+                                        </button>
+                                    )}
+                                    {ch.hasTestConnection && ch.id === 'agentbay' && (
+                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAgentBay} disabled={agentbayTesting}>
+                                            {agentbayTesting ? 'Testing...' : 'Test Connection'}
                                         </button>
                                     )}
                                     <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }}
@@ -791,6 +852,9 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             } else if (ch.id === 'atlassian') {
                                                 prefill.api_key = '';
                                                 prefill.cloud_id = config.cloud_id || '';
+                                            } else if (ch.id === 'agentbay') {
+                                                prefill.api_key = '';
+                                                prefill.base_url = config.base_url || '';
                                             }
                                             setForms(prev => ({ ...prev, [ch.id]: prefill }));
                                             setEditing(ch.id, true);
@@ -835,6 +899,16 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             Service account key starts with <code>ATSTT</code>. Personal API token: base64-encode <code>email:token</code> and prefix with <code>Basic </code>
                                         </div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Required for multi-site setups. Find it at <code>your-site.atlassian.net/_edge/tenant_info</code></div>
+                                    </>
+                                )}
+
+                                {/* AgentBay extra hints */}
+                                {ch.id === 'agentbay' && (
+                                    <>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '-4px' }}>
+                                            Get your API key from <a href="https://www.aliyun.com/product/agentbay" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary-color)' }}>Aliyun AgentBay Console</a>
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Leave Base URL empty to use the default endpoint</div>
                                     </>
                                 )}
 

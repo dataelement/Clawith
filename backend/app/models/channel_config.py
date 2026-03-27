@@ -18,7 +18,7 @@ class ChannelConfig(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
     channel_type: Mapped[str] = mapped_column(
-        Enum("feishu", "wecom", "dingtalk", "slack", "discord","atlassian", "microsoft_teams", name="channel_type_enum"),
+        Enum("feishu", "wecom", "dingtalk", "slack", "discord","atlassian", "microsoft_teams", "agentbay", name="channel_type_enum"),
         default="feishu",
         nullable=False,
     )

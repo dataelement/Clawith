@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import async_session
 from app.models.skill import Skill, SkillFile
-from app.core.security import require_role, get_current_user
+from app.core.security import get_current_admin, get_current_user, require_role
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,30 @@ def _parse_github_url(url: str) -> dict | None:
     return None
 
 
+def _apply_skill_scope(query, current_user: User):
+    """Scope skill queries for tenant admins while leaving platform admins unrestricted."""
+    from sqlalchemy import or_ as _or
+
+    if current_user.role == "platform_admin" or not current_user.tenant_id:
+        return query
+    return query.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == current_user.tenant_id))
+
+
+def _ensure_skill_write_access(skill: Skill, current_user: User):
+    """Allow platform admins to edit everything; tenant admins can edit
+    tenant-owned skills AND builtin (preset) skills visible to their tenant.
+    Builtin skills are treated as presets -- placed during company init,
+    but fully manageable by org_admin afterwards.
+    """
+    if current_user.role == "platform_admin":
+        return
+    if not current_user.tenant_id:
+        raise HTTPException(403, "Cannot modify skills without a tenant")
+    # Allow org_admin to manage: their own tenant skills OR builtin (preset) skills
+    if skill.tenant_id is not None and skill.tenant_id != current_user.tenant_id:
+        raise HTTPException(403, "Cannot modify other-tenant skills")
+
+
 async def _fetch_github_directory(
     owner: str, repo: str, path: str, branch: str = "main",
     token: str = "",
@@ -227,7 +251,7 @@ async def _save_skill_to_db(
         if tenant_id:
             conflict_q = conflict_q.where(Skill.tenant_id == _uuid.UUID(tenant_id))
         else:
-            conflict_q = conflict_q.where(Skill.tenant_id == None)
+            conflict_q = conflict_q.where(Skill.tenant_id.is_(None))
         existing = await db.execute(conflict_q)
         if existing.scalar_one_or_none():
             raise HTTPException(
@@ -494,7 +518,7 @@ async def list_skills(current_user: User = Depends(get_current_user)):
         query = select(Skill).order_by(Skill.name)
         # Scope by tenant: show builtin (tenant_id is NULL) + tenant-specific skills
         if tenant_id:
-            query = query.where(_or(Skill.tenant_id == None, Skill.tenant_id == _uuid.UUID(tenant_id)))
+            query = query.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
         result = await db.execute(query)
         skills = result.scalars().all()
         return [
@@ -514,12 +538,11 @@ async def list_skills(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/{skill_id}")
-async def get_skill(skill_id: str):
+async def get_skill(skill_id: str, current_user: User = Depends(get_current_user)):
     """Get a skill with its files."""
     async with async_session() as db:
-        result = await db.execute(
-            select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
-        )
+        query = select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
+        result = await db.execute(_apply_skill_scope(query, current_user))
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
@@ -539,7 +562,7 @@ async def get_skill(skill_id: str):
 
 
 @router.post("/")
-async def create_skill(body: SkillCreateIn, _=Depends(require_role("platform_admin"))):
+async def create_skill(body: SkillCreateIn, current_user: User = Depends(get_current_admin)):
     """Create a custom skill."""
     async with async_session() as db:
         skill = Skill(
@@ -549,6 +572,7 @@ async def create_skill(body: SkillCreateIn, _=Depends(require_role("platform_adm
             icon=body.icon,
             folder_name=body.folder_name,
             is_builtin=False,
+            tenant_id=current_user.tenant_id,
         )
         db.add(skill)
         await db.flush()
@@ -577,15 +601,15 @@ class SkillUpdateIn(BaseModel):
 
 
 @router.put("/{skill_id}")
-async def update_skill(skill_id: str, body: SkillUpdateIn, _=Depends(require_role("platform_admin"))):
+async def update_skill(skill_id: str, body: SkillUpdateIn, current_user: User = Depends(get_current_admin)):
     """Update a skill's metadata and/or files."""
     async with async_session() as db:
-        result = await db.execute(
-            select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
-        )
+        query = select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
+        result = await db.execute(_apply_skill_scope(query, current_user))
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
+        _ensure_skill_write_access(skill, current_user)
 
         if body.name is not None:
             skill.name = body.name
@@ -609,15 +633,15 @@ async def update_skill(skill_id: str, body: SkillUpdateIn, _=Depends(require_rol
 
 
 @router.delete("/{skill_id}")
-async def delete_skill(skill_id: str, _=Depends(require_role("platform_admin"))):
+async def delete_skill(skill_id: str, current_user: User = Depends(get_current_admin)):
     """Delete a skill (not builtin)."""
     async with async_session() as db:
-        result = await db.execute(select(Skill).where(Skill.id == skill_id))
+        query = select(Skill).where(Skill.id == skill_id)
+        result = await db.execute(_apply_skill_scope(query, current_user))
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
-        if skill.is_builtin:
-            raise HTTPException(400, "Cannot delete builtin skill")
+        _ensure_skill_write_access(skill, current_user)
         await db.delete(skill)
         await db.commit()
         return {"ok": True}
@@ -706,7 +730,7 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
             # Root: list all skill folders (scoped by tenant)
             query = select(Skill).order_by(Skill.name)
             if tenant_id:
-                query = query.where(_or(Skill.tenant_id == None, Skill.tenant_id == _uuid.UUID(tenant_id)))
+                query = query.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
             result = await db.execute(query)
             skills = result.scalars().all()
             return [
@@ -720,7 +744,7 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
         # Resolve skill folder scoped by tenant
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
         if tenant_id:
-            skill_q = skill_q.where(_or(Skill.tenant_id == None, Skill.tenant_id == _uuid.UUID(tenant_id)))
+            skill_q = skill_q.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
         result = await db.execute(skill_q)
         skill = result.scalar_one_or_none()
         if not skill:
@@ -768,7 +792,7 @@ async def browse_read(path: str, current_user: User = Depends(get_current_user))
     async with async_session() as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
         if tenant_id:
-            skill_q = skill_q.where(_or(Skill.tenant_id == None, Skill.tenant_id == _uuid.UUID(tenant_id)))
+            skill_q = skill_q.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
         result = await db.execute(skill_q)
         skill = result.scalar_one_or_none()
         if not skill:
@@ -785,21 +809,17 @@ class BrowseWriteIn(BaseModel):
 
 
 @router.put("/browse/write")
-async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require_role("platform_admin"))):
+async def browse_write(body: BrowseWriteIn, current_user: User = Depends(get_current_admin)):
     """Write a file in a skill folder. Creates the skill if the folder doesn't exist."""
-    import uuid as _uuid
-    from sqlalchemy import or_ as _or
-    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     parts = body.path.strip("/").split("/", 1)
     if len(parts) < 2:
         raise HTTPException(400, "Path must include folder and file")
     folder, file_path = parts
     async with async_session() as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
-        if tenant_id:
-            skill_q = skill_q.where(_or(Skill.tenant_id == None, Skill.tenant_id == _uuid.UUID(tenant_id)))
-        result = await db.execute(skill_q)
+        result = await db.execute(_apply_skill_scope(skill_q, current_user))
         skill = result.scalar_one_or_none()
+        created_new_skill = False
         if not skill:
             # Auto-create skill from folder name, scoped to tenant
             skill = Skill(
@@ -813,13 +833,17 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require
             )
             db.add(skill)
             await db.flush()
+            created_new_skill = True
+        else:
+            _ensure_skill_write_access(skill, current_user)
 
         # Upsert file
         existing = None
-        for f in skill.files:
-            if f.path == file_path:
-                existing = f
-                break
+        if not created_new_skill:
+            for f in skill.files:
+                if f.path == file_path:
+                    existing = f
+                    break
         if existing:
             existing.content = body.content
         else:
@@ -829,23 +853,17 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require
 
 
 @router.delete("/browse/delete")
-async def browse_delete(path: str, current_user: User = Depends(require_role("platform_admin"))):
+async def browse_delete(path: str, current_user: User = Depends(get_current_admin)):
     """Delete a file or an entire skill folder."""
-    import uuid as _uuid
-    from sqlalchemy import or_ as _or
-    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     parts = path.strip("/").split("/", 1)
     folder = parts[0]
     async with async_session() as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
-        if tenant_id:
-            skill_q = skill_q.where(_or(Skill.tenant_id == None, Skill.tenant_id == _uuid.UUID(tenant_id)))
-        result = await db.execute(skill_q)
+        result = await db.execute(_apply_skill_scope(skill_q, current_user))
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
-        if skill.is_builtin and len(parts) == 1:
-            raise HTTPException(400, "Cannot delete builtin skill")
+        _ensure_skill_write_access(skill, current_user)
 
         if len(parts) == 1:
             # Delete entire skill

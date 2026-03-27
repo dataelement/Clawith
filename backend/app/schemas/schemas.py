@@ -9,7 +9,7 @@ from pydantic import BaseModel, EmailStr, Field
 # ─── Auth ───────────────────────────────────────────────
 
 class UserRegister(BaseModel):
-    username: str = Field(min_length=3, max_length=100)
+    username: str = Field(min_length=1, max_length=100)
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
     display_name: str | None = None
@@ -47,6 +47,7 @@ class UserOut(BaseModel):
 
 class UserUpdate(BaseModel):
     username: str | None = None
+    email: EmailStr | None = None
     display_name: str | None = None
     avatar_url: str | None = None
     title: str | None = None

@@ -1,9 +1,9 @@
 /**
- * User Management — admin page to view and manage user quotas.
+ * User Management — admin page to view and manage user quotas and roles.
  */
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pencil } from 'lucide-react';
+import { useAuthStore } from '../stores';
 
 interface UserInfo {
     id: string;
@@ -47,6 +47,7 @@ const PAGE_SIZE = 15;
 export default function UserManagement() {
     const { t, i18n } = useTranslation();
     const isChinese = i18n.language?.startsWith('zh');
+    const { user: currentUser, setUser } = useAuthStore();
 
     const [users, setUsers] = useState<UserInfo[]>([]);
     const [loading, setLoading] = useState(true);
@@ -59,6 +60,7 @@ export default function UserManagement() {
     });
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState('');
+    const [changingRoleUserId, setChangingRoleUserId] = useState<string | null>(null);
 
     // Search, sort & pagination
     const [searchQuery, setSearchQuery] = useState('');
@@ -108,12 +110,50 @@ export default function UserManagement() {
         setSaving(false);
     };
 
+    // ── Role change handler ──
+    const handleRoleChange = async (userId: string, newRole: string) => {
+        setChangingRoleUserId(userId);
+        try {
+            await fetchJson(`/users/${userId}/role`, {
+                method: 'PATCH',
+                body: JSON.stringify({ role: newRole }),
+            });
+            setToast(isChinese ? 'Role updated' : 'Role updated');
+            setTimeout(() => setToast(''), 2000);
+            // If changed own role, update auth store
+            if (userId === currentUser?.id) {
+                setUser({ ...currentUser, role: newRole as any });
+            }
+            loadUsers();
+        } catch (e: any) {
+            const detail = (() => { try { return JSON.parse(e.message)?.detail; } catch { return e.message; } })();
+            setToast(`Error: ${detail || e.message}`);
+            setTimeout(() => setToast(''), 4000);
+        }
+        setChangingRoleUserId(null);
+    };
+
     const periodLabel = (period: string) => {
         if (isChinese) {
             const map: Record<string, string> = { permanent: '永久', daily: '每天', weekly: '每周', monthly: '每月' };
             return map[period] || period;
         }
         return PERIOD_OPTIONS.find(p => p.value === period)?.label || period;
+    };
+
+    // Role label & styling helpers
+    const roleBadge = (role: string) => {
+        const styles: Record<string, { bg: string; color: string; label: string; labelZh: string }> = {
+            platform_admin: { bg: 'rgba(239,68,68,0.12)', color: '#ef4444', label: 'Platform Admin', labelZh: 'Platform Admin' },
+            org_admin:      { bg: 'rgba(168,85,247,0.12)', color: '#a855f7', label: 'Admin', labelZh: 'Admin' },
+        };
+        const s = styles[role];
+        if (!s) return null;
+        return (
+            <span style={{ marginLeft: '6px', fontSize: '10px', background: s.bg, color: s.color, borderRadius: '4px', padding: '1px 6px', fontWeight: 500 }}>
+                {isChinese ? s.labelZh : s.label}
+            </span>
+        );
     };
 
     const formatDate = (iso?: string) => {
@@ -190,7 +230,7 @@ export default function UserManagement() {
 
                     {/* Header */}
                     <div style={{
-                        display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.9fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
+                        display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
                         gap: '10px', padding: '10px 16px', fontSize: '11px', fontWeight: 600,
                         color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em',
                     }}>
@@ -204,6 +244,7 @@ export default function UserManagement() {
                         >
                             {isChinese ? '注册时间' : 'Joined'} {sortOrder === 'asc' ? '↑' : '↓'}
                         </div>
+                        <div>{isChinese ? '角色' : 'Role'}</div>
                         <div>{isChinese ? '来源' : 'Source'}</div>
                         <div>{t('enterprise.users.msgQuota', isChinese ? '消息配额' : 'Msg Quota')}</div>
                         <div>{t('enterprise.users.period', isChinese ? '周期' : 'Period')}</div>
@@ -215,20 +256,44 @@ export default function UserManagement() {
                     {paged.map(user => (
                         <div key={user.id}>
                             <div className="card" style={{
-                                display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.9fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
+                                display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
                                 gap: '10px', alignItems: 'center', padding: '12px 16px',
                             }}>
                                 <div>
                                     <div style={{ fontWeight: 500, fontSize: '14px' }}>
                                         {user.display_name || user.username}
-                                        {user.role === 'platform_admin' && (
-                                            <span style={{ marginLeft: '6px', fontSize: '10px', background: 'var(--accent-color)', color: '#fff', borderRadius: '4px', padding: '1px 6px' }}>Admin</span>
-                                        )}
+                                        {roleBadge(user.role)}
                                     </div>
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>@{user.username}</div>
                                 </div>
                                 <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{user.email}</div>
                                 <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{formatDate(user.created_at)}</div>
+                                {/* Role selector — only for admin users, not for platform_admin targets */}
+                                <div>
+                                    {currentUser?.role && ['platform_admin', 'org_admin'].includes(currentUser.role) && user.role !== 'platform_admin' ? (
+                                        <select
+                                            className="form-input"
+                                            value={user.role}
+                                            disabled={changingRoleUserId === user.id}
+                                            onChange={e => {
+                                                const newRole = e.target.value;
+                                                const confirmMsg = isChinese
+                                                    ? `确认将 ${user.display_name || user.username} 的角色更改为 ${newRole === 'org_admin' ? 'Admin' : 'Member'}？`
+                                                    : `Change ${user.display_name || user.username}'s role to ${newRole === 'org_admin' ? 'Admin' : 'Member'}?`;
+                                                if (confirm(confirmMsg)) handleRoleChange(user.id, newRole);
+                                            }}
+                                            style={{ fontSize: '11px', padding: '2px 4px', width: '100%', minWidth: 0 }}
+                                        >
+                                            <option value="member">{isChinese ? 'Member' : 'Member'}</option>
+                                            <option value="org_admin">{isChinese ? 'Admin' : 'Admin'}</option>
+                                        </select>
+                                    ) : (
+                                        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                                            {user.role === 'platform_admin' ? 'Platform Admin'
+                                                : user.role === 'org_admin' ? 'Admin' : 'Member'}
+                                        </span>
+                                    )}
+                                </div>
                                 <div>
                                     {user.source === 'feishu' ? (
                                         <span style={{ fontSize: '10px', background: 'rgba(58,132,255,0.12)', color: '#3a84ff', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>

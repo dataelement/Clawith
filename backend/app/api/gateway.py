@@ -344,7 +344,6 @@ async def _send_to_agent_background(
     logger.info(f"[Gateway] _send_to_agent_background started: {source_agent_name} -> {target_agent_name}")
     try:
         from app.api.websocket import call_llm
-        from app.services.agent_context import build_agent_context
         from app.models.llm import LLMModel
         from app.models.audit import ChatMessage
         from app.models.chat_session import ChatSession
@@ -357,6 +356,10 @@ async def _send_to_agent_background(
             result = await db.execute(select(LLMModel).where(LLMModel.id == target_primary_model_id))
             model = result.scalar_one_or_none()
             if not model:
+                return
+            # Skip if model is disabled by admin
+            if not model.enabled:
+                logger.warning(f"Target agent {target_agent_name}'s model {model.model} is disabled, skipping")
                 return
 
             # Create or find a ChatSession for this agent pair
@@ -403,12 +406,11 @@ async def _send_to_agent_background(
             from datetime import datetime, timezone
             session.last_message_at = datetime.now(timezone.utc)
 
-            # Build system prompt for target agent
-            system_prompt = await build_agent_context(
-                target_agent_id, target_agent_name, target_role_description
-            )
-            system_prompt += (
-                "\n\n--- Agent-to-Agent Communication Alert ---\n"
+
+            # Agent-to-agent communication context (injected as prefix to user message
+            # since call_llm builds the full system prompt internally)
+            agent_comm_alert = (
+                "--- Agent-to-Agent Communication Alert ---\n"
                 f"You are receiving a direct message from another digital employee ({source_agent_name}). "
                 "CRITICAL INSTRUCTION: Your direct text reply will automatically be delivered back to them. "
                 "DO NOT use the `send_agent_message` tool to reply to this conversation. Just reply naturally in text.\n"
@@ -424,12 +426,12 @@ async def _send_to_agent_background(
             )
             hist_msgs = list(reversed(hist_result.scalars().all()))
 
-            messages = [{"role": "system", "content": system_prompt}]
+            messages = []
             for h in hist_msgs:
                 messages.append({"role": h.role, "content": h.content or ""})
 
-            # Add the new message
-            user_msg = f"[Message from agent: {source_agent_name}]\n{content}"
+            # Add the new message with agent communication context
+            user_msg = f"{agent_comm_alert}\n\n[Message from agent: {source_agent_name}]\n{content}"
             messages.append({"role": "user", "content": user_msg})
 
             from app.models.participant import Participant

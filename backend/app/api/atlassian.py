@@ -47,6 +47,10 @@ async def configure_atlassian_channel(
 
     cloud_id = (data.get("cloud_id") or "").strip()
 
+    from app.core.security import encrypt_data
+    from app.config import get_settings
+    encrypted_key = encrypt_data(api_key, get_settings().SECRET_KEY)
+
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -55,7 +59,7 @@ async def configure_atlassian_channel(
     )
     existing = result.scalar_one_or_none()
     if existing:
-        existing.app_secret = api_key
+        existing.app_secret = encrypted_key
         existing.is_configured = True
         existing.extra_config = {**(existing.extra_config or {}), "cloud_id": cloud_id}
         await db.commit()
@@ -68,7 +72,7 @@ async def configure_atlassian_channel(
         agent_id=agent_id,
         channel_type="atlassian",
         app_id="atlassian",
-        app_secret=api_key,
+        app_secret=encrypted_key,
         is_configured=True,
         extra_config={"cloud_id": cloud_id},
     )
@@ -273,6 +277,8 @@ async def get_atlassian_api_key_for_agent(agent_id: uuid.UUID, db=None) -> str |
     from app.database import async_session
 
     async def _fetch(session):
+        from app.core.security import decrypt_data
+        from app.config import get_settings
         result = await session.execute(
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
@@ -281,7 +287,13 @@ async def get_atlassian_api_key_for_agent(agent_id: uuid.UUID, db=None) -> str |
             )
         )
         config = result.scalar_one_or_none()
-        return config.app_secret if config else None
+        if not config or not config.app_secret:
+            return None
+        
+        try:
+            return decrypt_data(config.app_secret, get_settings().SECRET_KEY)
+        except Exception:
+            return config.app_secret
 
     if db is not None:
         return await _fetch(db)

@@ -91,6 +91,58 @@ Para garantizar que todos los contribuidores puedan participar de manera efectiv
 
 لضمان مشاركة جميع المساهمين بفعالية، يرجى استخدام **اللغة الإنجليزية** في الـ Issues وطلبات السحب وتعليقات الكود.
 
+## Windows Development
+
+Clawith is primarily developed on Linux/macOS, but can run on Windows with a few adjustments.
+
+### Prerequisites
+
+- **Python 3.11+** — Install from [python.org](https://www.python.org/downloads/) (check "Add to PATH")
+- **Node.js 18+** — Install from [nodejs.org](https://nodejs.org/)
+- **Docker Desktop** — For PostgreSQL and Redis (recommended over native installs)
+
+### Database & Redis via Docker
+
+```powershell
+docker run -d --name clawith-postgres -p 5432:5432 -e POSTGRES_PASSWORD=yourpass -e POSTGRES_DB=clawith postgres:15
+docker run -d --name clawith-redis -p 6379:6379 redis:7
+```
+
+### Backend Setup
+
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+# Create .env (copy from .env.example and adjust DATABASE_URL / REDIS_URL)
+# Run database migrations
+alembic upgrade head
+
+# Start the server
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+### Frontend Setup
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+### Common Windows Issues
+
+| Issue | Solution |
+|-------|----------|
+| `UnicodeEncodeError` / GBK encoding | Set `PYTHONUTF8=1` in environment variables, or run `chcp 65001` before starting |
+| System proxy intercepting LLM API calls | Set `NO_PROXY=*` or unset `HTTP_PROXY` / `HTTPS_PROXY` in your terminal |
+| `uvicorn --reload` crashes with watchfiles | Remove `--reload` flag, or install `watchfiles`: `pip install watchfiles` |
+| File path errors with backslashes | Use `pathlib.Path` — the codebase already does this in most places |
+
+> **Note**: The recommended deployment method is Docker (`docker compose up -d`), which works identically on Windows, macOS, and Linux. The instructions above are for local development without Docker.
+
 ## Getting Help
 
 Stuck? Open a [Discussion](https://github.com/dataelement/Clawith/discussions) or ask in the related issue. We're happy to help! 🙌

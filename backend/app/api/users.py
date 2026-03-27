@@ -150,3 +150,71 @@ async def update_user_quota(
         quota_agent_ttl_hours=user.quota_agent_ttl_hours,
         agents_count=agents_count,
     )
+
+
+# ─── Role Management ───────────────────────────────────
+
+class RoleUpdate(BaseModel):
+    role: str
+
+
+@router.patch("/{user_id}/role")
+async def update_user_role(
+    user_id: uuid.UUID,
+    data: RoleUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change a user's role within the same company.
+
+    Permissions:
+    - org_admin: can set roles to org_admin / member within own tenant.
+      Cannot assign platform_admin.
+    - platform_admin: can set any valid role.
+
+    Safety:
+    - If the target is the ONLY remaining org_admin in the company,
+      demoting them is blocked to prevent orphaned companies.
+    """
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Validate target role value
+    allowed_roles = ("org_admin", "member")
+    if current_user.role == "platform_admin":
+        allowed_roles = ("platform_admin", "org_admin", "member")
+    if data.role not in allowed_roles:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Allowed: {', '.join(allowed_roles)}")
+
+    # Find target user
+    result = await db.execute(select(User).where(User.id == user_id))
+    target_user = result.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # org_admin can only modify users in the same tenant
+    if current_user.role == "org_admin" and target_user.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot modify users outside your organization")
+
+    # No-op shortcut
+    if target_user.role == data.role:
+        return {"status": "ok", "user_id": str(user_id), "role": data.role}
+
+    # Last-admin protection: if demoting an org_admin, check they are not the only one
+    if target_user.role in ("org_admin", "platform_admin") and data.role not in ("org_admin", "platform_admin"):
+        admin_count_result = await db.execute(
+            select(func.count()).select_from(User).where(
+                User.tenant_id == target_user.tenant_id,
+                User.role.in_(["org_admin", "platform_admin"]),
+            )
+        )
+        admin_count = admin_count_result.scalar() or 0
+        if admin_count <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot demote the only administrator. Promote another user first."
+            )
+
+    target_user.role = data.role
+    await db.commit()
+    return {"status": "ok", "user_id": str(user_id), "role": data.role}

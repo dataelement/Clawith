@@ -386,6 +386,10 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             model = result.scalar_one_or_none()
             if not model:
                 return
+            # Skip invocation if model is disabled by admin
+            if not model.enabled:
+                logger.warning(f"Agent {agent.name}'s model {model.model} is disabled, skipping trigger invocation")
+                return
 
             # Build trigger context
             context_parts = []
@@ -433,12 +437,8 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             await db.flush()
             session_id = session.id
 
-            # Build system prompt
-            system_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "")
-
-            # Messages: system + trigger context
+            # Messages: trigger context only (call_llm builds system prompt internally)
             messages = [
-                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": trigger_context},
             ]
 
