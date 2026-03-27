@@ -170,7 +170,8 @@ async def update_me(
 
     for field, value in update_data.items():
         setattr(current_user, field, value)
-    await db.flush()
+    await db.commit()
+    await db.refresh(current_user)
     return UserOut.model_validate(current_user)
 
 
