@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next';
 
 /* ── Types ── */
 export interface LivePreviewState {
-    desktop?: { screenshot: string };
-    browser?: { screenshot: string };
+    desktop?: { screenshotUrl: string };
+    browser?: { screenshotUrl: string };
     code?: { output: string };
 }
 
@@ -124,7 +124,7 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle }: Prop
                 {activeTab === 'desktop' && liveState.desktop && (
                     <div className="live-panel-browser">
                         <img
-                            src={liveState.desktop.screenshot}
+                            src={liveState.desktop.screenshotUrl}
                             alt="Desktop preview"
                             className="live-panel-screenshot"
                         />
@@ -138,7 +138,7 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle }: Prop
                 {activeTab === 'browser' && liveState.browser && (
                     <div className="live-panel-browser">
                         <img
-                            src={liveState.browser.screenshot}
+                            src={liveState.browser.screenshotUrl}
                             alt="Browser preview"
                             className="live-panel-screenshot"
                         />

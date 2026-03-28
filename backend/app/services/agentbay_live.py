@@ -34,9 +34,10 @@ async def get_desktop_screenshot(agent_id: uuid.UUID) -> Optional[str]:
                 cache_key = key
                 break
         else:
-            logger.debug(f"[LivePreview] No computer session for agent {agent_id}")
+            logger.info(f"[AgentBay_DEBUG] No computer session for agent {agent_id}. Keys available: {list(_agentbay_sessions.keys())}")
             return None
 
+    logger.info(f"[AgentBay_DEBUG] Found computer session for {agent_id}!")
     client, _last_used = _agentbay_sessions[cache_key]
     return await client.get_desktop_snapshot_base64()
 
@@ -57,9 +58,10 @@ async def get_browser_snapshot(agent_id: uuid.UUID) -> Optional[str]:
                 cache_key = key
                 break
         else:
-            logger.debug(f"[LivePreview] No browser session for agent {agent_id}")
+            logger.info(f"[AgentBay_DEBUG] No browser session for agent {agent_id} (searchstr: {str(agent_id)}). Keys available: {list(_agentbay_sessions.keys())}")
             return None
 
+    logger.info(f"[AgentBay_DEBUG] Found browser session for {agent_id}! Calling get_browser_snapshot_base64...")
     client, _last_used = _agentbay_sessions[cache_key]
     return await client.get_browser_snapshot_base64()
 

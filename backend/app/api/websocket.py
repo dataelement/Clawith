@@ -728,7 +728,34 @@ async def websocket_chat(
 
                     async def tool_call_to_ws(data: dict):
                         """Send tool call info to client and persist completed ones."""
+                        # ── AgentBay live preview: embed screenshot URL in tool_call message ──
+                        # We embed live preview data directly in the tool_call payload
+                        # because separate WebSocket messages get silently dropped by nginx.
+                        if data.get("status") == "done":
+                            try:
+                                from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
+                                import re as _re_live
+                                tool_name = data.get("name", "")
+                                env = detect_agentbay_env(tool_name)
+                                if env:
+                                    tool_result = data.get("result", "") or ""
+                                    if env == "desktop":
+                                        b64_url = await get_desktop_screenshot(agent_id)
+                                        if b64_url:
+                                            data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                            logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                    elif env == "browser":
+                                        b64_url = await get_browser_snapshot(agent_id)
+                                        if b64_url:
+                                            data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                            logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                    elif env == "code":
+                                        data["live_preview"] = {"env": "code", "output": tool_result[:5000]}
+                            except Exception as _lp_err:
+                                logger.warning(f"[WS][LivePreview] Embed failed: {_lp_err}")
+
                         await websocket.send_json({"type": "tool_call", **data})
+
                         # Save completed tool calls to DB so they persist in chat history
                         if data.get("status") == "done":
                             try:
@@ -751,56 +778,6 @@ async def websocket_chat(
                                     await _tc_db.commit()
                             except Exception as _tc_err:
                                 logger.warning(f"[WS] Failed to save tool_call: {_tc_err}")
-
-                            # ── AgentBay live preview push ──
-                            # Push real-time screenshots when AgentBay tools are used.
-                            # Note: get_link() (VNC) requires premium; we use screenshots instead.
-                            try:
-                                from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
-                                tool_name = data.get("name", "")
-                                logger.info(f"[WS][LivePreview] Checking tool: {tool_name}")
-                                env = detect_agentbay_env(tool_name)
-                                logger.info(f"[WS][LivePreview] Detected env: {env}")
-                                if env:
-                                    if env == "desktop":
-                                        # Send desktop screenshot after each computer action
-                                        logger.info(f"[WS][LivePreview] Getting desktop screenshot for agent {agent_id}")
-                                        snapshot = await get_desktop_screenshot(agent_id)
-                                        logger.info(f"[WS][LivePreview] Desktop snapshot result: {'got data (' + str(len(snapshot)) + ' chars)' if snapshot else 'None'}")
-                                        if snapshot:
-                                            await websocket.send_json({
-                                                "type": "agentbay_live",
-                                                "env": "desktop",
-                                                "screenshot": snapshot,
-                                            })
-                                            _sent_live_envs.add("desktop")
-                                            logger.info("[WS][LivePreview] Desktop screenshot sent!")
-
-                                    elif env == "browser":
-                                        # Send browser screenshot after each browser action
-                                        logger.info(f"[WS][LivePreview] Getting browser snapshot for agent {agent_id}")
-                                        snapshot = await get_browser_snapshot(agent_id)
-                                        logger.info(f"[WS][LivePreview] Browser snapshot result: {'got data' if snapshot else 'None'}")
-                                        if snapshot:
-                                            await websocket.send_json({
-                                                "type": "agentbay_live",
-                                                "env": "browser",
-                                                "screenshot": snapshot,
-                                            })
-                                            _sent_live_envs.add("browser")
-
-                                    elif env == "code":
-                                        # Send code output (already in tool result)
-                                        result_text = data.get("result", "")
-                                        if result_text:
-                                            await websocket.send_json({
-                                                "type": "agentbay_live",
-                                                "env": "code",
-                                                "output": result_text[:5000],
-                                            })
-                                            _sent_live_envs.add("code")
-                            except Exception as _live_err:
-                                logger.warning(f"[WS][LivePreview] Push FAILED: {_live_err}", exc_info=True)
                     
                     # Track thinking content for storage
                     thinking_content = []

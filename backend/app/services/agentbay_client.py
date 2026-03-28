@@ -94,7 +94,7 @@ class AgentBayClient:
 
     async def browser_navigate(self, url: str, wait_for: str = "", screenshot: bool = False) -> dict:
         """Navigate browser to URL using SDK."""
-        if not self._session or self._image_type != "browser":
+        if not self._session or self._image_type not in ("browser", "browser_latest"):
             await self.create_session("browser_latest")
 
         await self._ensure_browser_initialized()
@@ -213,7 +213,7 @@ class AgentBayClient:
         }
         sdk_lang = lang_map.get(language.lower(), "python")
 
-        if not self._session or self._image_type != "code":
+        if not self._session or self._image_type not in ("code", "code_latest"):
             await self.create_session("code_latest")
 
         result = await asyncio.to_thread(self._session.code.run_code, code, sdk_lang)
@@ -508,13 +508,19 @@ class AgentBayClient:
         the snapshot to reflect the current state immediately.
         Returns data:image/jpeg;base64,... or None on failure.
         """
-        if not self._session or not getattr(self, "_browser_initialized", False):
+        if not self._session:
+            logger.info("[AgentBay] Browser snapshot skipped: No active session")
             return None
+        if not getattr(self, "_browser_initialized", False):
+            logger.info("[AgentBay] Browser snapshot skipped: Browser not initialized")
+            return None
+        
         try:
             screenshot_data = await asyncio.to_thread(
                 self._session.browser.operator.screenshot, full_page=False
             )
             if not screenshot_data:
+                logger.info("[AgentBay] Browser snapshot returned empty data")
                 return None
 
             # Compress screenshot to JPEG base64 for efficient transfer

@@ -41,8 +41,12 @@ interface AppStore {
 }
 
 export const useAppStore = create<AppStore>((set) => ({
-    sidebarCollapsed: false,
-    toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+    sidebarCollapsed: localStorage.getItem('sidebar_collapsed') === 'true',
+    toggleSidebar: () => set((s) => {
+        const newState = !s.sidebarCollapsed;
+        localStorage.setItem('sidebar_collapsed', String(newState));
+        return { sidebarCollapsed: newState };
+    }),
     selectedAgentId: null,
     setSelectedAgent: (id) => set({ selectedAgentId: id }),
 }));

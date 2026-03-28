@@ -175,13 +175,14 @@ export default function Chat() {
 
                 // ── AgentBay live preview events ──
                 if (data.type === 'agentbay_live') {
-                    console.log('[LivePreview] Received:', data.env, 'screenshot:', !!data.screenshot, 'len:', data.screenshot?.length || 0);
+                    console.log('[LivePreview] Received:', data.env, 'url:', data.screenshot_url?.substring(0, 60));
                     setLiveState(prev => {
                         const next = { ...prev };
-                        if (data.env === 'desktop' && data.screenshot) {
-                            next.desktop = { screenshot: data.screenshot };
-                        } else if (data.env === 'browser' && data.screenshot) {
-                            next.browser = { screenshot: data.screenshot };
+                        if ((data.env === 'desktop' || data.env === 'browser') && data.screenshot_url) {
+                            // Use URL-based approach: append cache-busting timestamp
+                            const imgUrl = data.screenshot_url + '&_t=' + Date.now();
+                            if (data.env === 'desktop') next.desktop = { screenshotUrl: imgUrl };
+                            else next.browser = { screenshotUrl: imgUrl };
                         } else if (data.env === 'code' && data.output) {
                             // Append code output
                             const existing = prev.code?.output || '';
@@ -220,8 +221,29 @@ export default function Chat() {
                         return [...prev, { role: 'assistant', content: streamContent.current, timestamp: new Date().toISOString() }];
                     });
                 } else if (data.type === 'tool_call') {
+                    // Debug: log all tool_call events to verify frontend code is current
+                    console.log('[ToolCall]', data.name, data.status, 'keys:', Object.keys(data).join(','));
                     if (data.status === 'done') {
                         pendingToolCalls.current.push({ name: data.name, args: data.args, result: data.result });
+
+                        // ── AgentBay live preview (embedded in tool_call) ──
+                        if (data.live_preview) {
+                            const lp = data.live_preview;
+                            console.log('[LivePreview] Got from tool_call:', lp.env, lp.screenshot_url?.substring(0, 60));
+                            setLiveState(prev => {
+                                const next = { ...prev };
+                                if ((lp.env === 'desktop' || lp.env === 'browser') && lp.screenshot_url) {
+                                    const imgUrl = lp.screenshot_url + '&_t=' + Date.now();
+                                    if (lp.env === 'desktop') next.desktop = { screenshotUrl: imgUrl };
+                                    else next.browser = { screenshotUrl: imgUrl };
+                                } else if (lp.env === 'code' && lp.output) {
+                                    const existing = prev.code?.output || '';
+                                    next.code = { output: existing + (existing ? '\n---\n' : '') + lp.output };
+                                }
+                                return next;
+                            });
+                            setLivePanelVisible(true);
+                        }
                     }
                 } else if (data.type === 'done') {
                     // Final response — replace streaming message with final + tool calls

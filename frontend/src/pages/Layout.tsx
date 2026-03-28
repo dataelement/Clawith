@@ -25,6 +25,7 @@ import {
     IconBuilding,
     IconChevronUp
 } from '@tabler/icons-react';
+import { useAppStore } from '../stores';
 
 /* ────── Tabler Icons ────── */
 const SidebarIcons = {
@@ -221,17 +222,8 @@ export default function Layout() {
     const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
     // Sidebar collapse state
-    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
-        return localStorage.getItem('sidebar_collapsed') === 'true';
-    });
-
-    const toggleSidebar = () => {
-        setIsSidebarCollapsed(prev => {
-            const newState = !prev;
-            localStorage.setItem('sidebar_collapsed', String(newState));
-            return newState;
-        });
-    };
+    const isSidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
+    const toggleSidebar = useAppStore(s => s.toggleSidebar);
 
     // Sidebar agent search & pin
     const [sidebarSearch, setSidebarSearch] = useState('');
