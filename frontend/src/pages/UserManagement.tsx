@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 
+import { Pencil } from "lucide-react";
 interface UserInfo {
     id: string;
     username: string;
@@ -99,12 +100,12 @@ export default function UserManagement() {
                 method: 'PATCH',
                 body: JSON.stringify(editForm),
             });
-            setToast(isChinese ? '✅ 配额已更新' : '✅ Quota updated');
+            setToast(isChinese ? '配额已更新' : 'Quota updated');
             setTimeout(() => setToast(''), 2000);
             setEditingUserId(null);
             loadUsers();
         } catch (e: any) {
-            setToast(`❌ ${e.message}`);
+            setToast(`Error: ${e.message}`);
             setTimeout(() => setToast(''), 3000);
         }
         setSaving(false);
@@ -193,7 +194,7 @@ export default function UserManagement() {
             {toast && (
                 <div style={{
                     position: 'fixed', top: '20px', right: '20px', padding: '10px 20px',
-                    borderRadius: '8px', background: toast.startsWith('✅') ? 'var(--success)' : 'var(--error)',
+                    borderRadius: '8px', background: !toast.startsWith('Error:') ? 'var(--success)' : 'var(--error)',
                     color: '#fff', fontSize: '13px', zIndex: 9999, transition: 'all 0.3s',
                 }}>
                     {toast}
@@ -323,7 +324,7 @@ export default function UserManagement() {
                                         style={{ padding: '4px 10px', fontSize: '11px' }}
                                         onClick={() => editingUserId === user.id ? setEditingUserId(null) : startEdit(user)}
                                     >
-                                        {editingUserId === user.id ? t('common.cancel') : `✏️ ${t('common.edit')}`}
+                                        {editingUserId === user.id ? t('common.cancel') : <><Pencil size={14} /> {t('common.edit')}</>}
                                     </button>
                                 </div>
                             </div>

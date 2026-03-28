@@ -302,6 +302,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
         logger.info(f"[Feishu] Received {msg_type} message, chat_type={chat_type}, from={sender_open_id}")
 
         # ── Normalize post (rich text) → extract text + schedule image downloads ──
+        _post_saved_filenames = []  # Collect filenames of images saved from post messages
         if msg_type == "post":
             import json as _json_post
             _post_body = _json_post.loads(message.get("content", "{}"))
@@ -335,6 +336,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             _extracted_text = "\n".join(_text_parts).strip()
             # Download images and embed as base64 for vision-capable models
             _image_markers = []
+            _post_saved_filenames = []
             if _post_image_keys:
                 import base64 as _b64
                 _msg_id = message.get("message_id", "")
@@ -351,6 +353,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         # Save to workspace
                         _save_path = _upload_dir / f"image_{_ik[-8:]}.jpg"
                         _save_path.write_bytes(_img_bytes)
+                        _post_saved_filenames.append(_save_path.name)
                         logger.info(f"[Feishu] Saved post image to {_save_path} ({len(_img_bytes)} bytes)")
                         # Embed as base64 marker for vision models
                         _b64_data = _b64.b64encode(_img_bytes).decode("ascii")
@@ -407,6 +410,24 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             creator_id = agent_obj.creator_id if agent_obj else agent_id
             ctx_size = agent_obj.context_window_size if agent_obj else 100
 
+            # Check for channel commands (/new, /reset)
+            from app.services.channel_commands import is_channel_command, handle_channel_command
+            if is_channel_command(user_text):
+                # Need platform_user_id - use creator_id as fallback for command handling
+                _cmd_result = await handle_channel_command(
+                    db=db, command=user_text, agent_id=agent_id,
+                    user_id=creator_id, external_conv_id=conv_id,
+                    source_channel="feishu",
+                )
+                await db.commit()
+                import json as _j_cmd
+                _cmd_reply = _j_cmd.dumps({"text": _cmd_result["message"]})
+                if chat_type == "group" and chat_id:
+                    await feishu_service.send_message(config.app_id, config.app_secret, chat_id, "text", _cmd_reply, receive_id_type="chat_id")
+                else:
+                    await feishu_service.send_message(config.app_id, config.app_secret, sender_open_id, "text", _cmd_reply)
+                return {"code": 0, "msg": "command handled"}
+
             # Pre-resolve session so history lookup uses the UUID  (session created later if new)
             _pre_sess_r = await db.execute(
                 select(__import__('app.models.chat_session', fromlist=['ChatSession']).ChatSession).where(
@@ -424,6 +445,10 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             )
             history_msgs = history_result.scalars().all()
             history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
+
+            # Re-hydrate historical images for multi-turn LLM context
+            from app.services.image_context import rehydrate_image_messages
+            history = rehydrate_image_messages(history, agent_id, max_images=3)
 
             # --- Resolve Feishu sender identity & find/create platform user ---
             import uuid as _uuid
@@ -542,6 +567,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     external_id=sender_user_id_feishu,
                     feishu_user_id=sender_user_id_feishu or None,
                     tenant_id=agent_obj.tenant_id if agent_obj else None,
+                    source="feishu",
                 )
                 db.add(new_user)
                 await db.flush()
@@ -591,7 +617,17 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             session_conv_id = str(_sess.id)
 
             # Save user message
-            db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
+            # Strip base64 image data from DB content, use [file:xxx] for persistence
+            import re as _re_db
+            _db_content = _re_db.sub(
+                r'\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]',
+                '', user_text,
+            ).strip()
+            # Prepend [file:xxx] markers for post images saved to disk
+            if _post_saved_filenames:
+                _file_markers = " ".join(f"[file:{_fn}]" for _fn in _post_saved_filenames)
+                _db_content = f"{_file_markers} {_db_content}" if _db_content else _file_markers
+            db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=_db_content, conversation_id=session_conv_id))
             _sess.last_message_at = _dt.now(_tz.utc)
             await db.commit()
 
@@ -777,6 +813,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             reply_text = await _call_agent_llm(
                 db, agent_id, llm_user_text, history=history, user_id=platform_user_id,
                 on_chunk=_ws_on_chunk, on_thinking=_ws_on_thinking,
+                context_size=agent_obj.context_window_size if agent_obj else 20,
             )
             _cfs.reset(_cfs_token)
             _cfso.reset(_cfso_token)
@@ -993,6 +1030,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
                 external_id=sender_user_id_feishu,
                 feishu_user_id=sender_user_id_feishu or None,
                 tenant_id=agent_obj.tenant_id if agent_obj else None,
+                source="feishu",
             )
             db.add(_pu)
             await db.flush()
@@ -1044,6 +1082,10 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         )
         _history = [{"role": m.role, "content": m.content} for m in reversed(_hist_r.scalars().all())]
 
+        # Re-hydrate historical images for multi-turn LLM context
+        from app.services.image_context import rehydrate_image_messages
+        _history = rehydrate_image_messages(_history, agent_id, max_images=3)
+
         await db.commit()
 
     # For images: call LLM so vision models can actually see the image
@@ -1094,6 +1136,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
             reply_text = await _call_agent_llm(
                 _db_img, agent_id, user_msg_content, history=_history,
                 user_id=platform_user_id, on_chunk=_img_on_chunk,
+                context_size=agent_obj.context_window_size if agent_obj else 20,
             )
 
         logger.info(f"[Feishu] Image LLM reply: {reply_text[:100]}")
@@ -1174,7 +1217,7 @@ async def _download_post_images(agent_id, config, message_id, image_keys):
                 logger.error(f"[Feishu] Failed to download post image {ik}: {e}")
 
 
-async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str, history: list[dict] | None = None, user_id=None, on_chunk=None, on_thinking=None) -> str:
+async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str, history: list[dict] | None = None, user_id=None, on_chunk=None, on_thinking=None, context_size: int = 20) -> str:
     """Call the agent's configured LLM model with conversation history.
     
     Reuses the same call_llm function as the WebSocket chat endpoint so that
@@ -1223,7 +1266,7 @@ async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str,
     # Build conversation messages (without system prompt — call_llm adds it)
     messages: list[dict] = []
     if history:
-        messages.extend(history[-10:])
+        messages.extend(history[-context_size:])
     messages.append({"role": "user", "content": user_text})
 
     # Use actual user_id so the system prompt knows who it's chatting with

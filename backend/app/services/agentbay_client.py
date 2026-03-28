@@ -528,20 +528,6 @@ class AgentBayClient:
             from io import BytesIO
             from PIL import Image
 
-            if isinstance(screenshot_data, str):
-                # The AgentBay SDK may return a raw base64 string without proper
-                # padding. Normalize by stripping whitespace and adding padding chars.
-                screenshot_data = screenshot_data.strip()
-                # Remove data URI prefix if present (e.g., "data:image/png;base64,")
-                if "," in screenshot_data:
-                    screenshot_data = screenshot_data.split(",", 1)[1]
-                # Add base64 padding if missing
-                missing_padding = len(screenshot_data) % 4
-                if missing_padding:
-                    screenshot_data += "=" * (4 - missing_padding)
-                screenshot_data = base64.b64decode(screenshot_data)
-
-
             img = Image.open(BytesIO(screenshot_data))
             # Resize to max 1280px wide for live preview
             if img.width > 1280:

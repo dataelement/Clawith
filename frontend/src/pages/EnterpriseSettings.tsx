@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { Check, Globe, Eye, Pencil, Settings, User, Lightbulb, Plug, Bot, Trash2, RefreshCw, ChevronDown } from 'lucide-react';
 import { enterpriseApi, skillApi } from '../services/api';
 import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
@@ -326,7 +327,7 @@ function OrgTab({ tenant }: { tenant: any }) {
     };
 
     const IDP_TYPES = [
-        { type: 'feishu', name: 'Feishu', desc: 'Feishu / Lark Integration', icon: <img src="/feishu.png" width="20" height="20" alt="Feishu"/> },
+        { type: 'feishu', name: 'Feishu', desc: 'Feishu / Lark Integration', icon: <img src="/feishu.svg" width="20" height="20" alt="Feishu"/> },
         { type: 'wecom', name: 'WeCom', desc: 'WeChat Work Integration', icon: <img src="/wecom.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="WeCom"/> },
         { type: 'dingtalk', name: 'DingTalk', desc: 'DingTalk App Integration', icon: <img src="/dingtalk.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="DingTalk"/> },
         { type: 'oauth2', name: 'OAuth2', desc: 'Generic OIDC Provider', icon: <div style={{width: 20, height: 20, background: 'var(--accent-primary)', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 700}}>O</div> }
@@ -367,7 +368,7 @@ function OrgTab({ tenant }: { tenant: any }) {
             <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
                     <div className="form-group">
-                        <label className="form-label">{t('enterprise.identity.name')}</label>
+                        <label className="form-label">{t('identity.name')}</label>
                         <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
                     </div>
                 </div>
@@ -391,7 +392,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
-                                {t('enterprise.identity.providerHints.wecom')}
+                                {t('identity.providerHints.wecom')}
                             </div>
                         </div>
                         <div className="form-group">
@@ -419,7 +420,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                 ) : type === 'dingtalk' ? (
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('enterprise.identity.providerHints.dingtalk')}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('identity.providerHints.dingtalk')}</div>
                         </div>
                         <div className="form-group">
                             <label className="form-label">App Key</label>
@@ -433,7 +434,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                 ) : type === 'feishu' ? (
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('enterprise.identity.providerHints.feishu')}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('identity.providerHints.feishu')}</div>
                         </div>
                         <div className="form-group">
                             <label className="form-label">App ID</label>
@@ -465,7 +466,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                     <div style={{ fontWeight: 500, fontSize: '14px' }}>{t('enterprise.org.orgBrowser', 'Organization Browser')}</div>
                     {['feishu', 'dingtalk', 'wecom'].includes(p.provider_type) && (
                         <button className="btn btn-secondary btn-sm" style={{ fontSize: '12px' }} onClick={() => triggerSync(p.id)} disabled={!!syncing}>
-                            {syncing === p.id ? 'Syncing...' : '🔄 Sync Directory'}
+                            {syncing === p.id ? 'Syncing...' : <><RefreshCw size={12} style={{display:'inline',verticalAlign:'middle',marginRight:'4px'}} />Sync Directory</>}
                         </button>
                     )}
                 </div>
@@ -510,7 +511,7 @@ function OrgTab({ tenant }: { tenant: any }) {
             <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
                 <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
                     <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>
-                        {t('enterprise.identity.title', 'Organization & Directory Sync')}
+                        {t('identity.title', 'Account Sync / Identity Providers')}
                     </h3>
                     <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
                         Configure enterprise directory synchronization and Identity Provider settings.
@@ -549,7 +550,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                             <span className="badge badge-secondary" style={{ fontSize: '10px' }}>Not configured</span>
                                         )}
                                         <div style={{ color: 'var(--text-tertiary)', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', fontSize: '12px' }}>
-                                            ▼
+                                            <ChevronDown size={12} />
                                         </div>
                                     </div>
                                 </div>
@@ -1192,7 +1193,7 @@ function CompanyNameEditor() {
                 <button className="btn btn-primary" onClick={handleSave} disabled={saving || !name.trim()}>
                     {saving ? t('common.loading') : t('common.save', 'Save')}
                 </button>
-                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅</span>}
+                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}><Check size={12} /></span>}
             </div>
         </div>
     );
@@ -1253,7 +1254,7 @@ function CompanyTimezoneEditor() {
         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                 <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '4px' }}>🌐 {t('enterprise.timezone.title', 'Company Timezone')}</div>
+                    <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '4px' }}><Globe size={14} /> {t('enterprise.timezone.title', 'Company Timezone')}</div>
                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                         {t('enterprise.timezone.description', 'Default timezone for all agents. Agents can override individually.')}
                     </div>
@@ -1269,7 +1270,7 @@ function CompanyTimezoneEditor() {
                         <option key={tz} value={tz}>{tz}</option>
                     ))}
                 </select>
-                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅</span>}
+                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}><Check size={12} /></span>}
             </div>
         </div>
     );
@@ -1908,7 +1909,7 @@ export default function EnterpriseSettings() {
                                                     setEditingModelId(m.id);
                                                     setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
                                                     setShowAddModel(true);
-                                                }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
+                                                }} style={{ fontSize: '12px' }}><Pencil size={12} /> {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
                                             </div>
                                         </div>
@@ -1989,7 +1990,7 @@ export default function EnterpriseSettings() {
                                             padding: '1px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 500,
                                             background: isBg ? 'rgba(99,102,241,0.12)' : 'rgba(34,197,94,0.12)',
                                             color: isBg ? 'var(--accent-color)' : 'rgb(34,197,94)',
-                                        }}>{isBg ? '⚙️' : '👤'}</span>
+                                        }}>{isBg ? <Settings size={12} /> : <User size={12} />}</span>
                                         <span style={{ flex: 1, fontWeight: 500 }}>{log.action}</span>
                                         <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>{log.agent_id?.slice(0, 8) || '-'}</span>
                                     </div>
@@ -2039,9 +2040,9 @@ export default function EnterpriseSettings() {
                                 <button className="btn btn-primary" onClick={saveCompanyIntro} disabled={companyIntroSaving}>
                                     {companyIntroSaving ? t('common.loading') : t('common.save', 'Save')}
                                 </button>
-                                {companyIntroSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
+                                {companyIntroSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}><Check size={12} /> {t('enterprise.config.saved', 'Saved')}</span>}
                                 <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
-                                    💡 {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
+                                    <Lightbulb size={14} /> {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
                                 </span>
                             </div>
                         </div>
@@ -2193,7 +2194,7 @@ export default function EnterpriseSettings() {
                                 <button className="btn btn-primary" onClick={saveQuotas} disabled={quotaSaving}>
                                     {quotaSaving ? t('common.loading') : t('common.save', 'Save')}
                                 </button>
-                                {quotaSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ Saved</span>}
+                                {quotaSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}><Check size={12} /> Saved</span>}
                             </div>
                         </div>
                     </div>
@@ -2231,11 +2232,11 @@ export default function EnterpriseSettings() {
                                             <div key={row.agent_tool_id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px' }}>
                                                 <div style={{ flex: 1, minWidth: 0 }}>
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                        <span style={{ fontWeight: 500, fontSize: '13px' }}>🔌 {row.tool_display_name}</span>
+                                                        <span style={{ fontWeight: 500, fontSize: '13px' }}><Plug size={13} /> {row.tool_display_name}</span>
                                                         {row.mcp_server_name && <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>}
                                                     </div>
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                        🤖 {row.installed_by_agent_name || 'Unknown Agent'}
+                                                        <Bot size={13} /> {row.installed_by_agent_name || 'Unknown Agent'}
                                                         {row.installed_at && <span> · {new Date(row.installed_at).toLocaleString()}</span>}
                                                     </div>
                                                 </div>
@@ -2247,7 +2248,7 @@ export default function EnterpriseSettings() {
                                                         // Already deleted (e.g. removed via Global Tools) — just refresh
                                                     }
                                                     loadAgentInstalledTools();
-                                                }}>🗑️ {t('enterprise.tools.delete')}</button>
+                                                }}><Trash2 size={12} /> {t('enterprise.tools.delete')}</button>
                                             </div>
                                         ))}
                                     </div>

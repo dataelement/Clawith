@@ -21,8 +21,11 @@ async def get_agent_activity(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get recent activity logs for an agent."""
-    await check_agent_access(db, current_user, agent_id)
+    """Get recent activity logs for an agent. Only the agent creator can view."""
+    from app.core.permissions import is_agent_creator
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if not is_agent_creator(current_user, agent):
+        return []
 
     result = await db.execute(
         select(AgentActivityLog)

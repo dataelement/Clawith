@@ -4,6 +4,7 @@ import { adminApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor } from '../utils/theme';
 import { IconFilter } from '@tabler/icons-react';
+import { ShieldCheck } from 'lucide-react';
 import PlatformDashboard from './PlatformDashboard';
 
 // Helper for authenticated JSON fetch
@@ -684,7 +685,7 @@ function CompaniesTab() {
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
                             {c.sso_enabled ? (
                                 <>
-                                    <span style={{ color: 'var(--accent-primary)', fontSize: '14px' }} title="SSO Enabled">🛡️</span>
+                                    <span style={{ color: 'var(--accent-primary)', fontSize: '14px' }} title="SSO Enabled"><ShieldCheck size={14} /></span>
                                     {c.sso_domain && (
                                         <span style={{ 
                                             fontSize: '9px', background: 'rgba(59,130,246,0.1)', 

@@ -190,11 +190,11 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     await db.flush()
 
     # Seed default agents after first user (platform admin) registration
-    if is_first_user:
+    if is_first_user and user.tenant_id:
         await db.commit()  # commit user first so seeder can find the admin
         try:
             from app.services.agent_seeder import seed_default_agents
-            await seed_default_agents()
+            await seed_default_agents(tenant_id=user.tenant_id, creator_id=user.id)
         except Exception as e:
             logger.warning(f"Failed to seed default agents: {e}")
 

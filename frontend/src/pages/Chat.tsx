@@ -2,8 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
+import { Brain, X } from 'lucide-react';
 import MarkdownRenderer from '../components/MarkdownRenderer';
-import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import { agentApi, enterpriseApi } from '../services/api';
 import { useAuthStore } from '../stores';
 
@@ -73,8 +73,6 @@ export default function Chat() {
     const [streaming, setStreaming] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [attachedFile, setAttachedFile] = useState<{ name: string; text: string; path?: string; imageUrl?: string } | null>(null);
-    const [liveState, setLiveState] = useState<LivePreviewState>({});
-    const [livePanelVisible, setLivePanelVisible] = useState(false);
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -173,28 +171,6 @@ export default function Chat() {
                     setStreaming(false);
                 }
 
-                // ── AgentBay live preview events ──
-                if (data.type === 'agentbay_live') {
-                    console.log('[LivePreview] Received:', data.env, 'url:', data.screenshot_url?.substring(0, 60));
-                    setLiveState(prev => {
-                        const next = { ...prev };
-                        if ((data.env === 'desktop' || data.env === 'browser') && data.screenshot_url) {
-                            // Use URL-based approach: append cache-busting timestamp
-                            const imgUrl = data.screenshot_url + '&_t=' + Date.now();
-                            if (data.env === 'desktop') next.desktop = { screenshotUrl: imgUrl };
-                            else next.browser = { screenshotUrl: imgUrl };
-                        } else if (data.env === 'code' && data.output) {
-                            // Append code output
-                            const existing = prev.code?.output || '';
-                            next.code = { output: existing + (existing ? '\n---\n' : '') + data.output };
-                        }
-                        return next;
-                    });
-                    // Auto-expand the live panel on first data
-                    setLivePanelVisible(true);
-                    return;
-                }
-
                 if (data.type === 'thinking') {
                     // Accumulate thinking content
                     thinkingContent.current += data.content;
@@ -221,29 +197,8 @@ export default function Chat() {
                         return [...prev, { role: 'assistant', content: streamContent.current, timestamp: new Date().toISOString() }];
                     });
                 } else if (data.type === 'tool_call') {
-                    // Debug: log all tool_call events to verify frontend code is current
-                    console.log('[ToolCall]', data.name, data.status, 'keys:', Object.keys(data).join(','));
                     if (data.status === 'done') {
                         pendingToolCalls.current.push({ name: data.name, args: data.args, result: data.result });
-
-                        // ── AgentBay live preview (embedded in tool_call) ──
-                        if (data.live_preview) {
-                            const lp = data.live_preview;
-                            console.log('[LivePreview] Got from tool_call:', lp.env, lp.screenshot_url?.substring(0, 60));
-                            setLiveState(prev => {
-                                const next = { ...prev };
-                                if ((lp.env === 'desktop' || lp.env === 'browser') && lp.screenshot_url) {
-                                    const imgUrl = lp.screenshot_url + '&_t=' + Date.now();
-                                    if (lp.env === 'desktop') next.desktop = { screenshotUrl: imgUrl };
-                                    else next.browser = { screenshotUrl: imgUrl };
-                                } else if (lp.env === 'code' && lp.output) {
-                                    const existing = prev.code?.output || '';
-                                    next.code = { output: existing + (existing ? '\n---\n' : '') + lp.output };
-                                }
-                                return next;
-                            });
-                            setLivePanelVisible(true);
-                        }
                     }
                 } else if (data.type === 'done') {
                     // Final response — replace streaming message with final + tool calls
@@ -308,7 +263,7 @@ export default function Chat() {
             }
 
             const data = await resp.json();
-            setAttachedFile({ name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined });
+            setAttachedFile({ name: data.saved_filename || data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined });
         } catch (err) {
             alert(t('agent.upload.failed') + ': ' + (err as Error).message);
         } finally {
@@ -377,8 +332,6 @@ export default function Chat() {
         }
     };
 
-    const hasLiveData = !!(liveState.desktop || liveState.browser || liveState.code);
-
     return (
         <div>
             <div className="page-header">
@@ -396,9 +349,7 @@ export default function Chat() {
                 </div>
             </div>
 
-            <div className={`chat-container ${hasLiveData ? 'chat-with-live-panel' : ''}`}>
-                {/* Wrap chat area in a column so it coexists with the live panel in flex-row */}
-                <div className="chat-main">
+            <div className="chat-container">
                 <div className="chat-messages">
                     {messages.length === 0 && (
                         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--text-tertiary)' }}>
@@ -435,7 +386,7 @@ export default function Chat() {
                                             color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
                                             userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
                                         }}>
-                                            Thinking
+                                            <Brain size={14} /> Thinking
                                         </summary>
                                         <div style={{
                                             padding: '4px 10px 8px',
@@ -549,7 +500,7 @@ export default function Chat() {
                         <button
                             onClick={() => setAttachedFile(null)}
                             style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '14px' }}
-                        >x</button>
+                        ><X size={14} /></button>
                     </div>
                 )}
 
@@ -588,16 +539,6 @@ export default function Chat() {
                         </button>
                     )}
                 </div>
-                </div>
-
-                {/* AgentBay Live Preview Panel */}
-                {hasLiveData && (
-                    <AgentBayLivePanel
-                        liveState={liveState}
-                        visible={livePanelVisible}
-                        onToggle={() => setLivePanelVisible(v => !v)}
-                    />
-                )}
             </div>
         </div>
     );

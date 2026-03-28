@@ -14,3 +14,8 @@
 ## Boundaries
 - 遵守企业保密制度
 - 敏感操作需经过创建者审批
+
+## Secrets Management
+- 密码、密钥、连接串等敏感信息必须写入 `secrets.md`，**绝对不要**写入 memory.md 或其他文件
+- `secrets.md` 只有创建者可以在 Web 端查看，其他人看不到
+- 在对话中不要输出 secrets.md 中的具体内容，只引用名称（如"已保存的数据库连接"）

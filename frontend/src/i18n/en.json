@@ -55,7 +55,6 @@
     "language": "Language",
     "plaza": "Plaza"
   },
-
   "auth": {
     "login": "Login",
     "register": "Register",
@@ -160,12 +159,12 @@
       "creating": "Creating",
       "error": "Error",
       "disconnected": "Disconnected",
-      "24hActions": "⏰ 24h Actions",
+      "24hActions": "24h Actions",
       "24hActionsTooltip": "Total recorded operations in the past 24 hours, including chats, tool calls, task executions, etc.",
-      "llmCallsToday": "🤖 LLM Calls Today",
+      "llmCallsToday": "LLM Calls Today",
       "max": "Max",
-      "totalToken": "📊 Total Token",
-      "pending": "⏳ Pending"
+      "totalToken": "Total Token",
+      "pending": "Pending"
     },
     "tabs": {
       "status": "Status",
@@ -183,26 +182,26 @@
     },
     "fields": {
       "name": "Name",
-      "role": "👤 Role",
+      "role": "Role",
       "avatar": "Avatar",
       "personality": "Personality",
       "boundaries": "Boundaries",
       "lastActive": "Last Active",
       "tasksInProgress": "In Progress",
       "supervisions": "Supervisions",
-      "createdBy": "👨‍💼 Created by"
+      "createdBy": "Created by"
     },
     "profile": {
-      "title": "📋 Agent Profile",
-      "created": "📅 Created",
-      "lastActive": "⏰ Last Active",
-      "timezone": "🌐 Timezone"
+      "title": "Agent Profile",
+      "created": "Created",
+      "lastActive": "Last Active",
+      "timezone": "Timezone"
     },
     "modelConfig": {
-      "title": "🤖 Model Config",
-      "model": "🧠 Model",
-      "provider": "🏢 Provider",
-      "contextRounds": "🔄 Context Rounds"
+      "title": "Model Config",
+      "model": "Model",
+      "provider": "Provider",
+      "contextRounds": "Context Rounds"
     },
     "actions": {
       "start": "Start",
@@ -299,9 +298,10 @@
       "soulDesc": "Core identity, personality, and behavior boundaries.",
       "memoryDesc": "Persistent memory accumulated through conversations and experiences.",
       "heartbeatDesc": "Instructions for periodic awareness checks. The agent reads this file during each heartbeat.",
-      "heartbeatTitle": "Heartbeat"
+      "heartbeatTitle": "Heartbeat",
+      "secretsTitle": "Secrets",
+      "secretsDesc": "Sensitive credentials (passwords, API keys, connection strings). Only visible to the agent creator."
     },
-
     "skills": {
       "title": "Skill Definitions",
       "description": "Skills define how the agent behaves in specific scenarios. Each .md file is a skill. Use YAML frontmatter (name + description) for best results.",
@@ -674,7 +674,7 @@
       "delete": "Delete",
       "edit": "Edit",
       "cancel": "Cancel",
-      "supportsVision": "👁 Supports Vision (Multimodal)",
+      "supportsVision": "Supports Vision (Multimodal)",
       "supportsVisionDesc": "— Enable for models that can analyze images (GPT-4o, Claude, Qwen-VL, etc.)",
       "test": "Test",
       "testing": "Testing...",
@@ -801,13 +801,12 @@
       "title": "Notification Bar",
       "enabled": "Enable notification bar",
       "text": "Notification text",
-      "textPlaceholder": "e.g. 🎉 v2.1 released with new features!",
+      "textPlaceholder": "e.g. v2.1 released with new features!",
       "description": "Display a notification bar at the top of the page, visible to all users.",
       "preview": "Preview"
     },
     "identity": {
-      "title": "Organization & Directory Sync",
-      "addProvider": "Add Directory Provider",
+      "addProvider": "Add OA Provider",
       "type": "Type",
       "name": "Display Name",
       "config": "Configuration (JSON)",
@@ -869,14 +868,14 @@
     "setupGuide": "Setup Guide",
     "feishuPermJson": "Permission JSON (bulk import)",
     "feishuPermCopy": "Copy",
-    "feishuPermCopied": "✓ Copied",
+    "feishuPermCopied": "Copied",
     "slack": {
       "step1": "Go to api.slack.com/apps → click Create New App → choose From Scratch → enter an app name and pick your workspace → click Create App",
       "step2": "In the left sidebar, click OAuth & Permissions → scroll down to Scopes → under Bot Token Scopes click Add an OAuth Scope → add: chat:write, im:history, app_mentions:read",
       "step3": "Scroll back to the top of OAuth & Permissions → click Install to Workspace → click Allow → copy the Bot User OAuth Token (starts with xoxb-)",
       "step4": "Left sidebar → Basic Information → scroll to App Credentials → click Show next to Signing Secret → copy it",
       "step5": "Paste the Bot Token and Signing Secret above → click Save Config → copy the Webhook URL that appears",
-      "step6": "Left sidebar → Event Subscriptions → toggle Enable Events ON → paste the Webhook URL into the Request URL field (it will say Verified ✓) → under Subscribe to bot events, click Add Bot User Event and add: app_mention, message.im → click Save Changes",
+      "step6": "Left sidebar → Event Subscriptions → toggle Enable Events ON → paste the Webhook URL into the Request URL field (it will say Verified ) → under Subscribe to bot events, click Add Bot User Event and add: app_mention, message.im → click Save Changes",
       "step7": "A yellow banner will appear at the top: click reinstall your app and authorize again",
       "step8": "Now open a DM with your bot in Slack and send a message to test it",
       "note": "Your server must be publicly accessible on the internet so Slack can reach the Webhook URL."

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.security import decode_access_token
+from app.utils.sanitize import sanitize_tool_args, _is_secrets_file_path
 from app.core.permissions import check_agent_access, is_agent_expired
 from app.database import async_session
 from app.models.agent import Agent
@@ -340,7 +341,7 @@ async def call_llm(
                 try:
                     await on_tool_call({
                         "name": tool_name,
-                        "args": args,
+                        "args": sanitize_tool_args(args),
                         "status": "running",
                         "reasoning_content": full_reasoning_content
                     })
@@ -357,11 +358,16 @@ async def call_llm(
             # Notify client about tool call result
             if on_tool_call:
                 try:
+                    # Redact secrets.md content from tool results sent to frontend
+                    _client_result = result
+                    if tool_name == "read_file" and _is_secrets_file_path(args.get("path", "") if args else ""):
+                        _client_result = "[Content hidden — secrets.md is protected]"
+
                     await on_tool_call({
                         "name": tool_name,
-                        "args": args,
+                        "args": sanitize_tool_args(args),
                         "status": "done",
-                        "result": result,
+                        "result": _client_result,
                         "reasoning_content": full_reasoning_content
                     })
                 except Exception as _cb_err:
@@ -602,6 +608,10 @@ async def websocket_chat(
                 entry["thinking"] = msg.thinking
             conversation.append(entry)
 
+    # Re-hydrate historical images for multi-turn LLM context
+    from app.services.image_context import rehydrate_image_messages
+    conversation = rehydrate_image_messages(conversation, agent_id, max_images=3)
+
     try:
         # Send welcome message on new session (no history)
         if welcome_message and not history_messages:
@@ -767,7 +777,7 @@ async def websocket_chat(
                                         role="tool_call",
                                         content=_json_tc.dumps({
                                             "name": data.get("name", ""),
-                                            "args": data.get("args"),
+                                            "args": sanitize_tool_args(data.get("args")),
                                             "status": "done",
                                             "result": (data.get("result") or "")[:500],
                                             "reasoning_content": data.get("reasoning_content"),

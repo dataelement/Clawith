@@ -166,12 +166,12 @@
       "creating": "创建中",
       "error": "异常",
       "disconnected": "已断开",
-      "24hActions": "⏰ 24h 活动",
+      "24hActions": "24h 活动",
       "24hActionsTooltip": "过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等",
-      "llmCallsToday": "🤖 今日 LLM 调用",
+      "llmCallsToday": "今日 LLM 调用",
       "max": "上限",
-      "totalToken": "📊 总 Token",
-      "pending": "⏳ 待处理"
+      "totalToken": "总 Token",
+      "pending": "待处理"
     },
     "tabs": {
       "status": "状态",
@@ -189,26 +189,26 @@
     },
     "fields": {
       "name": "名称",
-      "role": "👤 角色",
+      "role": "角色",
       "avatar": "头像",
       "personality": "人格设定",
       "boundaries": "行为边界",
       "lastActive": "最后活跃",
       "tasksInProgress": "进行中",
       "supervisions": "督办",
-      "createdBy": "👨‍💼 创建者"
+      "createdBy": "创建者"
     },
     "profile": {
-      "title": "📋 Agent 档案",
-      "created": "📅 创建时间",
-      "lastActive": "⏰ 最后活跃",
-      "timezone": "🌐 时区"
+      "title": "Agent 档案",
+      "created": "创建时间",
+      "lastActive": "最后活跃",
+      "timezone": "时区"
     },
     "modelConfig": {
-      "title": "🤖 模型配置",
-      "model": "🧠 模型",
-      "provider": "🏢 提供商",
-      "contextRounds": "🔄 上下文轮次"
+      "title": "模型配置",
+      "model": "模型",
+      "provider": "提供商",
+      "contextRounds": "上下文轮次"
     },
     "actions": {
       "start": "启动",
@@ -305,9 +305,10 @@
       "soulDesc": "核心身份、人格和行为边界。",
       "memoryDesc": "通过对话和经验积累的持久记忆。",
       "heartbeatDesc": "定期感知检查的指令。Agent 在每次心跳时读取此文件。",
-      "heartbeatTitle": "心跳"
+      "heartbeatTitle": "心跳",
+      "secretsTitle": "机密信息",
+      "secretsDesc": "敏感凭据（密码、API 密钥、连接字符串等）。仅创建者可查看。"
     },
-
     "skills": {
       "title": "技能定义",
       "description": "技能定义了数字员工在特定场景下的行为方式。每个.md文件是一个技能。建议使用YAML frontmatter（name + description）来定义技能元数据。",
@@ -448,7 +449,7 @@
         "saving": "保存中..."
       },
       "timezone": {
-        "title": "🌐 时区",
+        "title": "时区",
         "description": "此数字员工的调度、活跃时间和时间感知使用的时区。如果未设置，默认为公司时区。",
         "current": "数字员工时区",
         "override": "此数字员工的自定义时区",
@@ -713,7 +714,6 @@
       "disable": "禁用",
       "exportCsv": "导出 CSV"
     },
-
     "stats": {
       "users": "{{count}} 用户",
       "runningAgents": "{{running}}/{{total}} 运行中"
@@ -739,7 +739,7 @@
       "delete": "删除",
       "edit": "编辑",
       "cancel": "取消",
-      "supportsVision": "👁 支持视觉（多模态）",
+      "supportsVision": "支持视觉（多模态）",
       "supportsVisionDesc": "— 为能够分析图像的模型启用（GPT-4o、Claude、Qwen-VL 等）",
       "test": "测试",
       "testing": "测试中...",
@@ -877,7 +877,7 @@
       "title": "顶部通知条",
       "enabled": "启用通知条",
       "text": "通知文案",
-      "textPlaceholder": "输入通知条文案，如：🎉 v2.1 已发布！",
+      "textPlaceholder": "输入通知条文案，如： v2.1 已发布！",
       "description": "在页面顶部显示一行通知条，所有用户（含未登录用户）可见。",
       "preview": "预览"
     }
@@ -1013,14 +1013,14 @@
     "setupGuide": "配置说明",
     "feishuPermJson": "权限批量导入 JSON",
     "feishuPermCopy": "复制",
-    "feishuPermCopied": "✓ 已复制",
+    "feishuPermCopied": "已复制",
     "slack": {
       "step1": "打开 api.slack.com/apps → 点击 Create New App → 选择 From Scratch → 填写应用名称并选择你的 Workspace → 点击 Create App",
       "step2": "左侧菜单点击 OAuth & Permissions → 向下滚动到 Scopes → 在 Bot Token Scopes 下点击 Add an OAuth Scope → 依次添加：chat:write、im:history、app_mentions:read",
       "step3": "回到 OAuth & Permissions 顶部 → 点击 Install to Workspace → 点击 Allow → 复制 Bot User OAuth Token（以 xoxb- 开头）",
       "step4": "左侧菜单 → Basic Information → 滚动到 App Credentials → 点击 Signing Secret 旁的 Show → 复制",
       "step5": "将 Bot Token 和 Signing Secret 填入上方 → 点击保存配置 → 复制出现的 Webhook URL",
-      "step6": "左侧菜单 → Event Subscriptions → 打开 Enable Events 开关 → 将 Webhook URL 粘贴到 Request URL 框中（显示 Verified ✓ 后继续）→ 在 Subscribe to bot events 下点击 Add Bot User Event，依次添加：app_mention、message.im → 点击 Save Changes",
+      "step6": "左侧菜单 → Event Subscriptions → 打开 Enable Events 开关 → 将 Webhook URL 粘贴到 Request URL 框中（显示 Verified 后继续）→ 在 Subscribe to bot events 下点击 Add Bot User Event，依次添加：app_mention、message.im → 点击 Save Changes",
       "step7": "页面顶部会出现黄色横幅：点击 reinstall your app 并重新授权",
       "step8": "在 Slack 中找到你的 Bot，发一条私信测试是否正常回复",
       "note": "服务器必须能被公网访问，Slack 才能将消息推送到 Webhook URL。"
@@ -1098,8 +1098,8 @@
     }
   },
   "identity": {
-    "title": "组织架构与账号同步",
-    "addProvider": "添加同步源",
+    "title": "账号同步 / 身份源",
+    "addProvider": "添加 OA 账号源",
     "type": "类型",
     "name": "显示名称",
     "config": "配置 (JSON)",

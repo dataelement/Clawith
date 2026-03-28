@@ -1486,35 +1486,14 @@ select:focus {
 
 /* ─── AgentBay Live Preview Panel ───────────────── */
 .live-panel {
-  /* Width is now controlled via inline style from the component (resizable). */
-  min-width: 300px;
-  max-width: 65vw;
+  width: 420px;
+  min-width: 360px;
+  max-width: 50vw;
   display: flex;
   flex-direction: column;
-  position: relative;
   border-left: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
   animation: livePanelSlideIn 250ms ease;
-}
-
-/* Drag handle on the left edge of the live panel */
-.live-panel-resize-handle {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 5px;
-  cursor: col-resize;
-  z-index: 10;
-  /* Show a subtle visual indicator */
-  background: transparent;
-  transition: background 150ms ease;
-}
-
-.live-panel-resize-handle:hover,
-.live-panel-resize-handle:active {
-  background: var(--accent-primary);
-  opacity: 0.35;
 }
 
 @keyframes livePanelSlideIn {

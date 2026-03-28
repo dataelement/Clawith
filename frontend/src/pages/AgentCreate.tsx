@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Eye, Settings } from 'lucide-react';
 import { agentApi, channelApi, enterpriseApi, skillApi } from '../services/api';
 import ChannelConfig from '../components/ChannelConfig';
 
@@ -781,10 +782,10 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                     {t('wizard.step4.accessLevel', 'Default Access Level')}
                                 </label>
                                 <div style={{ display: 'flex', gap: '8px' }}>
-                                    {[
-                                        { value: 'use', icon: '👁️', label: t('wizard.step4.useLevel', 'Use'), desc: t('wizard.step4.useDesc', 'Can use Task, Chat, Tools, Skills, Workspace') },
-                                        { value: 'manage', icon: '⚙️', label: t('wizard.step4.manageLevel', 'Manage'), desc: t('wizard.step4.manageDesc', 'Full access including Settings, Mind, Relationships') },
-                                    ].map((lvl) => (
+                                    {([
+                                        { value: 'use', icon: <Eye size={14} />, label: t('wizard.step4.useLevel', 'Use'), desc: t('wizard.step4.useDesc', 'Can use Task, Chat, Tools, Skills, Workspace') },
+                                        { value: 'manage', icon: <Settings size={14} />, label: t('wizard.step4.manageLevel', 'Manage'), desc: t('wizard.step4.manageDesc', 'Full access including Settings, Mind, Relationships') },
+                                    ] as const).map((lvl) => (
                                         <label key={lvl.value} style={{
                                             flex: 1, display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '12px',
                                             background: form.permission_access_level === lvl.value ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
