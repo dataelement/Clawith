@@ -2862,7 +2862,25 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 if resp.get("code") == 0:
                     await _save_outgoing_to_feishu_session(target_member.external_id or target_member.open_id)
                     return f"✅ Successfully sent message to {member_name}"
-                logger.info(f"❌ Failed to send message to {target_member.external_id} via Feishu: {resp}")
+                logger.info(f"❌ Failed to send message to {target_member.external_id} via Feishu (user_id): {resp}")
+                
+                # Fallback to open_id if user_id fails (e.g., due to missing employee_id:readonly permission)
+                if target_member.open_id:
+                    resp_open = await _try_send(config.app_id, config.app_secret, target_member.open_id, "open_id")
+                    if resp_open.get("code") == 0:
+                        await _save_outgoing_to_feishu_session(target_member.open_id)
+                        return f"✅ Successfully sent message to {member_name}"
+                    logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp_open}")
+                    return f"发送失败 (user_id: {resp.get('code')}, open_id: {resp_open.get('code')}): {resp_open.get('msg')}"
+                return f"发送失败 {resp}"
+            
+            # Step 2: If no external_id, try open_id directly
+            elif target_member.open_id:
+                resp = await _try_send(config.app_id, config.app_secret, target_member.open_id, "open_id")
+                if resp.get("code") == 0:
+                    await _save_outgoing_to_feishu_session(target_member.open_id)
+                    return f"✅ Successfully sent message to {member_name}"
+                logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp}")
                 return f"发送失败 {resp}"
     except Exception as e:
         return f"❌ Message send error: {str(e)[:200]}"
