@@ -1,11 +1,9 @@
 """Sandbox configuration models."""
 
-import logging
+from loguru import logger
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
-
-logger = logging.getLogger(__name__)
 
 
 class SandboxType(str, Enum):

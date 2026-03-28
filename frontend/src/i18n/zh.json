@@ -90,7 +90,16 @@
     "invalidCredentials": "用户名或密码错误。",
     "accountDisabled": "你的账号已被停用。",
     "serverStarting": "服务正在启动或遇到问题，请稍后重试。",
-    "serverUnreachable": "无法连接服务器，请检查服务是否正在运行。"
+    "serverUnreachable": "无法连接服务器，请检查服务是否正在运行。",
+    "qrLogin": "扫码登录",
+    "unifiedSSO": "统一扫码登录",
+    "scanWithPlatform": "请使用 飞书 / 钉钉 / 企业微信 扫码",
+    "qrExpired": "二维码已过期",
+    "qrSuccess": "登录成功，正在跳转...",
+    "refresh": "刷新二维码",
+    "loginWithSSO": "使用企业 SSO 登录",
+    "ssoNotice": "此域名已启用企业单点登录 (SSO)。",
+    "standardLogin": "标准登录"
   },
   "roles": {
     "platformAdmin": "超级管理员",
@@ -675,7 +684,7 @@
     "tabs": {
       "llm": "模型池",
       "tools": "工具",
-      "org": "组织架构",
+      "org": "组织管理",
       "info": "公司信息",
       "audit": "审计日志",
       "config": "平台配置",
@@ -684,7 +693,8 @@
       "skills": "技能管理",
       "quotas": "配额",
       "users": "用户",
-      "invites": "邀请码"
+      "invites": "邀请码",
+      "identity": "OA管理"
     },
     "invites": {
       "pageTitle": "邀请码",
@@ -930,9 +940,33 @@
     "active": "正常",
     "disabled": "已停用",
     "disable": "停用",
-    "enable": "启用",
+    "editCompany": "编辑公司",
+    "ssoConfigTitle": "SSO 与域名配置",
+    "ssoConfigDesc": "为公司开启 SSO 登录并设置专属访问域名。开启后，用户访问该域名将自动进入该公司的 SSO 流程。",
+    "ssoEnabled": "启用 SSO",
+    "ssoDomain": "专属访问域名",
+    "ssoDomainPlaceholder": "例如: acme.clawith.com",
     "confirmDisable": "停用此公司？所有用户和数字员工将被暂停。",
+    "cannotDisableDefault": "无法禁用默认公司 — 平台管理员将被锁定",
+    "company": "公司",
+    "users": "用户",
+    "agents": "数字员工",
+    "tokens": "Token 消耗",
     "createdAt": "创建时间",
+    "status": "状态",
+    "active": "已启用",
+    "disabled": "已停用",
+    "enable": "启用",
+    "disable": "停用",
+    "createCompany": "创建公司",
+    "companyNamePlaceholder": "公司名称",
+    "companyCreated": "公司已创建",
+    "companyCreatedDesc": "已成功创建。",
+    "inviteCodeLabel": "管理员邀请码",
+    "inviteCodeHowTo": "如何使用此代码：",
+    "inviteCodeExplain": "将此代码发送给将管理该公司的人员。他们应在平台上注册新账号，然后输入此代码加入。第一个使用它的人将自动成为该公司的组织管理员。此代码为一次性使用。",
+    "copyCode": "复制邀请码",
+    "copied": "已复制",
     "showing": "{{start}}-{{end}} / {{total}}",
     "prev": "上一页",
     "next": "下一页"
@@ -1062,5 +1096,21 @@
       "ws_step6": "在企业微信中找到机器人，发送消息测试",
       "ws_note": "WebSocket 长连接模式无需公网 IP、回调地址或域名备案（ICP），连接由系统自动管理。"
     }
+  },
+  "identity": {
+    "title": "账号同步 / 身份源",
+    "addProvider": "添加 OA 账号源",
+    "type": "类型",
+    "name": "显示名称",
+    "config": "配置 (JSON)",
+    "configExample": "配置示例",
+    "deleteConfirm": "确定删除此 OA 账号源吗？",
+    "providerHints": {
+      "feishu": "飞书：需填写 app_id, app_secret（可选：encrypt_key, verification_token）",
+      "dingtalk": "钉钉：需填写 app_key, app_secret",
+      "wecom": "企业微信：传统模式需 corp_id, secret, agent_id；智能机器人模式需 bot_id, bot_secret",
+      "oauth2": "OAuth2：填写 App ID、App Secret、授权地址、Token地址、用户信息地址",
+      "saml": "SAML：需填写 entry_point, issuer, cert (公钥)",
+      "microsoft_teams": "Microsoft Teams：需填写 client_id, client_secret, tenant_id"    }
   }
 }

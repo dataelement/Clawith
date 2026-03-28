@@ -98,6 +98,7 @@ async def lifespan(app: FastAPI):
         import app.models.trigger        # noqa
         import app.models.notification   # noqa
         import app.models.gateway_message # noqa
+        import app.models.identity       # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("[startup] Database tables ready")
@@ -247,6 +248,7 @@ from app.api.tasks import router as tasks_router
 from app.api.files import router as files_router
 from app.api.websocket import router as ws_router
 from app.api.feishu import router as feishu_router
+from app.api.sso import router as sso_router
 from app.api.organization import router as org_router
 from app.api.enterprise import router as enterprise_router
 from app.api.advanced import router as advanced_router
@@ -282,6 +284,7 @@ app.include_router(agents_router, prefix=settings.API_PREFIX)
 app.include_router(tasks_router, prefix=settings.API_PREFIX)
 app.include_router(files_router, prefix=settings.API_PREFIX)
 app.include_router(feishu_router, prefix=settings.API_PREFIX)
+app.include_router(sso_router, prefix=settings.API_PREFIX)
 app.include_router(org_router, prefix=settings.API_PREFIX)
 app.include_router(enterprise_router, prefix=settings.API_PREFIX)
 app.include_router(advanced_router, prefix=settings.API_PREFIX)

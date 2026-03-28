@@ -370,13 +370,31 @@ async def call_llm(
                         "result": _client_result,
                         "reasoning_content": full_reasoning_content
                     })
-                except Exception:
-                    pass
+                except Exception as _cb_err:
+                    logger.warning(f"[LLM] on_tool_call callback error: {_cb_err}")
+
+            # ── Vision injection for screenshot tools ──
+            # If the model supports vision, try to inject the actual screenshot
+            # image into the tool result so the LLM can SEE what's on screen.
+            # Without this, the LLM only gets text like "Screenshot saved to ..."
+            # and blindly guesses the page content.
+            tool_content: str | list = str(result)
+            if supports_vision and agent_id:
+                try:
+                    from app.services.vision_inject import try_inject_screenshot_vision
+                    from app.services.agent_tools import WORKSPACE_ROOT
+                    ws_path = WORKSPACE_ROOT / str(agent_id)
+                    vision_content = try_inject_screenshot_vision(tool_name, str(result), ws_path)
+                    if vision_content:
+                        tool_content = vision_content
+                        logger.info(f"[LLM] Injected screenshot vision for {tool_name}")
+                except Exception as e:
+                    logger.warning(f"[LLM] Vision injection failed for {tool_name}: {e}")
 
             api_messages.append(LLMMessage(
                 role="tool",
                 tool_call_id=tc["id"],
-                content=str(result),
+                content=tool_content,
             ))
 
     # Record tokens even on "too many rounds" exit
@@ -602,6 +620,13 @@ async def websocket_chat(
         while True:
             logger.info(f"[WS] Waiting for message from {agent_name}...")
             data = await websocket.receive_json()
+
+            # Set a unique trace ID for this specific message processing
+            from app.core.logging_config import set_trace_id
+            import uuid as _trace_uuid
+            trace_id = str(_trace_uuid.uuid4())[:12]
+            set_trace_id(trace_id)
+
             content = data.get("content", "")
             display_content = data.get("display_content", "")  # User-facing display text
             file_name = data.get("file_name", "")  # Original file name for attachment display
@@ -708,9 +733,39 @@ async def websocket_chat(
                         partial_chunks.append(text)
                         await websocket.send_json({"type": "chunk", "content": text})
                     
+                    # Track which agentbay live URLs have been sent to avoid redundant pushes
+                    _sent_live_envs: set[str] = set()
+
                     async def tool_call_to_ws(data: dict):
                         """Send tool call info to client and persist completed ones."""
+                        # ── AgentBay live preview: embed screenshot URL in tool_call message ──
+                        # We embed live preview data directly in the tool_call payload
+                        # because separate WebSocket messages get silently dropped by nginx.
+                        if data.get("status") == "done":
+                            try:
+                                from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
+                                import re as _re_live
+                                tool_name = data.get("name", "")
+                                env = detect_agentbay_env(tool_name)
+                                if env:
+                                    tool_result = data.get("result", "") or ""
+                                    if env == "desktop":
+                                        b64_url = await get_desktop_screenshot(agent_id)
+                                        if b64_url:
+                                            data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                            logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                    elif env == "browser":
+                                        b64_url = await get_browser_snapshot(agent_id)
+                                        if b64_url:
+                                            data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                            logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                    elif env == "code":
+                                        data["live_preview"] = {"env": "code", "output": tool_result[:5000]}
+                            except Exception as _lp_err:
+                                logger.warning(f"[WS][LivePreview] Embed failed: {_lp_err}")
+
                         await websocket.send_json({"type": "tool_call", **data})
+
                         # Save completed tool calls to DB so they persist in chat history
                         if data.get("status") == "done":
                             try:

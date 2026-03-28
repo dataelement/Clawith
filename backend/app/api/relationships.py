@@ -70,13 +70,15 @@ async def get_relationships(
     db: AsyncSession = Depends(get_db),
 ):
     """Get all human relationships for this agent."""
-    await check_agent_access(db, current_user, agent_id)
+    from app.models.identity import IdentityProvider
     result = await db.execute(
-        select(AgentRelationship)
+        select(AgentRelationship, IdentityProvider.name.label("provider_name"))
+        .outerjoin(OrgMember, AgentRelationship.member_id == OrgMember.id)
+        .outerjoin(IdentityProvider, OrgMember.provider_id == IdentityProvider.id)
         .where(AgentRelationship.agent_id == agent_id)
         .options(selectinload(AgentRelationship.member))
     )
-    rels = result.scalars().all()
+    rows = result.all()
     return [
         {
             "id": str(r.id),
@@ -90,9 +92,10 @@ async def get_relationships(
                 "department_path": r.member.department_path,
                 "avatar_url": r.member.avatar_url,
                 "email": r.member.email,
+                "provider_name": provider_name,
             } if r.member else None,
         }
-        for r in rels
+        for r, provider_name in rows
     ]
 
 
@@ -242,13 +245,16 @@ async def delete_agent_relationship(
 
 async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
     """Regenerate relationships.md with both human and agent relationships."""
-    # Load human relationships
+    from app.models.identity import IdentityProvider
+    # Load human relationships with provider name
     h_result = await db.execute(
-        select(AgentRelationship)
+        select(AgentRelationship, IdentityProvider.name.label("provider_name"))
+        .outerjoin(OrgMember, AgentRelationship.member_id == OrgMember.id)
+        .outerjoin(IdentityProvider, OrgMember.provider_id == IdentityProvider.id)
         .where(AgentRelationship.agent_id == agent_id)
         .options(selectinload(AgentRelationship.member))
     )
-    human_rels = h_result.scalars().all()
+    human_rows = h_result.all()
 
     # Load agent relationships
     a_result = await db.execute(
@@ -261,24 +267,26 @@ async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
     ws = Path(settings.AGENT_DATA_DIR) / str(agent_id)
     ws.mkdir(parents=True, exist_ok=True)
 
-    if not human_rels and not agent_rels:
+    if not human_rows and not agent_rels:
         (ws / "relationships.md").write_text("# 关系网络\n\n_暂无配置的关系。_\n", encoding="utf-8")
         return
 
     lines = ["# 关系网络\n"]
 
     # Human relationships
-    if human_rels:
+    if human_rows:
         lines.append("## 👤 人类同事\n")
-        for r in human_rels:
+        for r, provider_name in human_rows:
             m = r.member
             if not m:
                 continue
             label = RELATION_LABELS.get(r.relation, r.relation)
-            lines.append(f"### {m.name} — {m.title or '未设置职位'}（{m.department_path or '未设置部门'}）")
+            source = f"（通过 {provider_name} 同步）" if provider_name else ""
+            lines.append(f"### {m.name} — {m.title or '未设置职位'}{source}")
+            lines.append(f"- 部门：{m.department_path or '未设置'}")
             lines.append(f"- 关系：{label}")
-            if m.feishu_open_id:
-                lines.append(f"- 飞书ID：{m.feishu_open_id}")
+            if m.open_id:
+                lines.append(f"- OpenID：{m.open_id}")
             if m.email:
                 lines.append(f"- 邮箱：{m.email}")
             if r.description:

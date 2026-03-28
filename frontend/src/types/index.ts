@@ -8,7 +8,6 @@ export interface User {
     avatar_url?: string;
     role: 'platform_admin' | 'org_admin' | 'agent_admin' | 'member';
     tenant_id?: string;
-    department_id?: string;
     title?: string;
     feishu_open_id?: string;
     is_active: boolean;

@@ -169,10 +169,6 @@ async def list_agents(
         .where(
             (AgentPermission.scope_type == "company")
             | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
-            | (
-                (AgentPermission.scope_type == "department")
-                & (AgentPermission.scope_id == current_user.department_id)
-            )
         )
     )
     permitted = select(Agent).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
@@ -274,6 +270,8 @@ async def create_agent(
 
     # Set permissions
     access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
+    if data.permission_scope_type not in ("company", "user"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported permission_scope_type")
     if data.permission_scope_type == "company":
         db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level=access_level))
     elif data.permission_scope_type == "user":
@@ -431,6 +429,8 @@ async def update_agent_permissions(
     access_level = data.get("access_level", "use")
     if access_level not in ("use", "manage"):
         access_level = "use"
+    if scope_type not in ("company", "user"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported scope_type")
 
     # Delete existing permissions
     from sqlalchemy import delete as sql_delete
@@ -593,6 +593,7 @@ async def delete_agent(
         "gateway_messages",
         "published_pages",
         "notifications",
+        "daily_token_usage",
     ]
 
     for table in cleanup_tables:

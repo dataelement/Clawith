@@ -4,7 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access, is_agent_creator, is_agent_expired
@@ -12,6 +12,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
+from app.models.identity import IdentityProvider
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.feishu_service import feishu_service
 
@@ -20,27 +21,98 @@ router = APIRouter(tags=["feishu"])
 
 # ─── OAuth ──────────────────────────────────────────────
 
+from fastapi.responses import HTMLResponse, Response
+
+@router.get("/auth/feishu/callback")
 @router.post("/auth/feishu/callback", response_model=TokenResponse)
-async def feishu_oauth_callback(code: str, db: AsyncSession = Depends(get_db)):
+async def feishu_oauth_callback(
+    code: str, 
+    state: str = None, 
+    db: AsyncSession = Depends(get_db)
+):
     """Handle Feishu OAuth callback — exchange code for user session."""
+    # Parse state if it's a UUID (session ID) or other context
+    from app.models.identity import SSOScanSession
+    tenant_id = None
+    if state:
+        try:
+            sid = uuid.UUID(state)
+            s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+            session = s_res.scalar_one_or_none()
+            if session:
+                tenant_id = session.tenant_id
+        except (ValueError, AttributeError):
+            pass
+
     try:
-        feishu_user = await feishu_service.exchange_code_for_user(code)
+        # Use FeishuAuthProvider instead of legacy feishu_service
+        from app.services.auth_provider import FeishuAuthProvider
+        from app.models.identity import IdentityProvider
+        from app.config import get_settings
+
+        # Get Feishu credentials from settings
+        settings = get_settings()
+        feishu_config = {
+            "app_id": settings.FEISHU_APP_ID,
+            "app_secret": settings.FEISHU_APP_SECRET,
+        }
+
+        # Get or create provider via auth provider
+        provider = None
+        if tenant_id:
+            result = await db.execute(
+                select(IdentityProvider).where(
+                    IdentityProvider.provider_type == "feishu",
+                    IdentityProvider.tenant_id == tenant_id
+                )
+            )
+            provider = result.scalar_one_or_none()
+
+        auth_provider = FeishuAuthProvider(provider=provider, config=feishu_config)
+
+        # Ensure provider exists (will create if not)
+        await auth_provider._ensure_provider(db, tenant_id)
+        provider = auth_provider.provider
+
+        # Exchange code for user info
+        token_data = await auth_provider.exchange_code_for_token(code)
+        access_token = token_data.get("access_token", "")
+        user_info = await auth_provider.get_user_info(access_token)
+
+        # Find or create user
+        user, is_new = await auth_provider.find_or_create_user(db, user_info, tenant_id=tenant_id)
+
+        # Generate JWT token
+        from app.core.security import create_access_token
+        token = create_access_token(str(user.id), user.role)
+
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Feishu auth failed: {e}")
 
-    user, token = await feishu_service.login_or_register(db, feishu_user)
+    # If this is an SSO session, store result and redirect to frontend completion
+    if state:
+        try:
+            sid = uuid.UUID(state)
+            s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+            session = s_res.scalar_one_or_none()
+            if session:
+                session.status = "authorized"
+                session.provider_type = "feishu"
+                session.user_id = user.id
+                session.access_token = token
+                session.error_msg = None
+                await db.commit()
+                return HTMLResponse(
+                    f"""<html><head><meta charset="utf-8" /></head>
+                    <body style="font-family: sans-serif; padding: 24px;">
+                        <div>SSO login successful. Redirecting...</div>
+                        <script>window.location.href = "/sso/entry?sid={sid}&complete=1";</script>
+                    </body></html>"""
+                )
+        except Exception as e:
+            logger.exception("Failed to update SSO session (feishu) %s", e)
+
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
-
-
-@router.post("/auth/feishu/bind")
-async def bind_feishu_account(
-    code: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Bind Feishu account to existing user."""
-    user = await feishu_service.bind_feishu(db, current_user, code)
-    return UserOut.model_validate(user)
 
 
 # ─── Channel Config (per-agent Feishu bot) ──────────────
@@ -443,25 +515,44 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             except Exception as e:
                 logger.error(f"[Feishu] Failed to resolve sender: {e}")
 
-            # Look up platform user by feishu_user_id or feishu_open_id
-            if sender_user_id_feishu:
-                u_result = await db.execute(
-                    select(User).where(User.feishu_user_id == sender_user_id_feishu)
+            # --- Get or Create Feishu Identity Provider ---
+            # Use tenant scoping
+            provider_query = select(IdentityProvider).where(
+                IdentityProvider.provider_type == "feishu",
+                IdentityProvider.tenant_id == (agent_obj.tenant_id if agent_obj else None)
+            )
+            provider_result = await db.execute(provider_query)
+            provider = provider_result.scalar_one_or_none()
+            
+            if not provider:
+                provider = IdentityProvider(
+                    provider_type="feishu",
+                    name="Feishu",
+                    is_active=True,
+                    config={"app_id": config.app_id, "app_secret": config.app_secret},
+                    tenant_id=agent_obj.tenant_id if agent_obj else None
                 )
-                found_user = u_result.scalar_one_or_none()
-                if found_user:
-                    platform_user_id = found_user.id
-                    logger.info(f"[Feishu] Matched user by feishu_user_id: {found_user.username}")
+                db.add(provider)
+                await db.flush()
 
-            if platform_user_id == creator_id and sender_open_id:
-                # Try by feishu_open_id (if same app ID was used for SSO)
-                u_result2 = await db.execute(
-                    select(User).where(User.feishu_open_id == sender_open_id)
+            # Look up platform user by OrgMember
+            from app.models.org import OrgMember
+            if sender_user_id_feishu or sender_open_id:
+                member_query = select(OrgMember).where(
+                    OrgMember.provider_id == provider.id,
+                    OrgMember.tenant_id == agent_obj.tenant_id if agent_obj else None,
+                    OrgMember.status == "active",
+                    or_(
+                        OrgMember.external_id == sender_user_id_feishu if sender_user_id_feishu else False,
+                        OrgMember.open_id == sender_open_id if sender_open_id else False,
+                        OrgMember.external_id == sender_open_id if sender_open_id else False
+                    )
                 )
-                found_user2 = u_result2.scalar_one_or_none()
-                if found_user2:
-                    platform_user_id = found_user2.id
-                    logger.info(f"[Feishu] Matched user by feishu_open_id: {found_user2.username}")
+                member_result = await db.execute(member_query)
+                member = member_result.scalar_one_or_none()
+                if member and member.user_id:
+                    platform_user_id = member.user_id
+                    logger.info(f"[Feishu] Matched user via OrgMember: {platform_user_id}")
 
             # Auto-create user if not found and we have sender info
             if platform_user_id == creator_id and sender_name:
@@ -473,7 +564,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     password_hash=hash_password(_uuid.uuid4().hex),  # random password
                     display_name=sender_name,
                     role="member",
-                    feishu_open_id=sender_open_id,
+                    external_id=sender_user_id_feishu,
                     feishu_user_id=sender_user_id_feishu or None,
                     tenant_id=agent_obj.tenant_id if agent_obj else None,
                     source="feishu",
@@ -482,16 +573,46 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 await db.flush()
                 platform_user_id = new_user.id
                 logger.info(f"[Feishu] Auto-created user: {sender_name} -> {new_username}")
+            # Ensure OrgMember exists and is linked
+            member_check = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.provider_id == provider.id,
+                    OrgMember.tenant_id == agent_obj.tenant_id if agent_obj else None,
+                    OrgMember.status == "active",
+                    or_(
+                        OrgMember.external_id == sender_user_id_feishu if sender_user_id_feishu else False,
+                        OrgMember.open_id == sender_open_id if sender_open_id else False
+                    )
+                )
+            )
+            member = member_check.scalar_one_or_none()
+            if not member:
+                member = OrgMember(
+                    name=sender_name or f"Feishu User {sender_open_id[:8]}",
+                    open_id=sender_open_id,
+                    external_id=sender_user_id_feishu,
+                    provider_id=provider.id,
+                    user_id=platform_user_id,
+                    tenant_id=agent_obj.tenant_id if agent_obj else None
+                )
+                db.add(member)
+            elif not member.user_id:
+                member.user_id = platform_user_id
+            
+            await db.flush()
 
             # ── Find-or-create a ChatSession via external_conv_id (DB-based, no cache needed) ──
             from datetime import datetime as _dt, timezone as _tz
+            _is_group = (chat_type == "group")
             _sess = await find_or_create_channel_session(
                 db=db,
                 agent_id=agent_id,
-                user_id=platform_user_id,
+                user_id=platform_user_id if not _is_group else creator_id,
                 external_conv_id=conv_id,
                 source_channel="feishu",
                 first_message_title=user_text,
+                is_group=_is_group,
+                group_name=f"Feishu Group {chat_id[:8]}" if _is_group else None,
             )
             session_conv_id = str(_sess.id)
 
@@ -864,13 +985,36 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         except Exception:
             pass
 
-        # Find platform user: prefer user_id, then open_id, then username
+        # Find platform user: prefer OrgMember linkage, then feishu_user_id, then username
         _pu = None
+        if agent_obj:
+            from app.models.identity import IdentityProvider as IdentityProviderModel
+            from app.models.org import OrgMember as OrgMemberModel
+            _pr = await db.execute(
+                _select(IdentityProviderModel).where(
+                    IdentityProviderModel.provider_type == "feishu",
+                    IdentityProviderModel.tenant_id == agent_obj.tenant_id,
+                )
+            )
+            _provider = _pr.scalar_one_or_none()
+            if _provider and (sender_user_id_feishu or sender_open_id):
+                _mr = await db.execute(
+                    _select(OrgMemberModel).where(
+                        OrgMemberModel.provider_id == _provider.id,
+                        OrgMemberModel.tenant_id == agent_obj.tenant_id,
+                        OrgMemberModel.status == "active",
+                        or_(
+                            OrgMemberModel.external_id == sender_user_id_feishu if sender_user_id_feishu else False,
+                            OrgMemberModel.open_id == sender_open_id if sender_open_id else False,
+                        )
+                    )
+                )
+                _member = _mr.scalar_one_or_none()
+                if _member and _member.user_id:
+                    _ur = await db.execute(_select(UserModel).where(UserModel.id == _member.user_id))
+                    _pu = _ur.scalar_one_or_none()
         if sender_user_id_feishu:
             _ur = await db.execute(_select(UserModel).where(UserModel.feishu_user_id == sender_user_id_feishu))
-            _pu = _ur.scalar_one_or_none()
-        if not _pu and sender_open_id:
-            _ur = await db.execute(_select(UserModel).where(UserModel.feishu_open_id == sender_open_id))
             _pu = _ur.scalar_one_or_none()
         if not _pu:
             _un = f"feishu_{sender_user_id_feishu or sender_open_id[:16]}"
@@ -882,7 +1026,8 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
                 username=_un, email=f"{_un}@feishu.local",
                 password_hash=hash_password(_uuid.uuid4().hex),
                 display_name=f"Feishu {sender_open_id[:8]}",
-                role="member", feishu_open_id=sender_open_id,
+                role="member",
+                external_id=sender_user_id_feishu,
                 feishu_user_id=sender_user_id_feishu or None,
                 tenant_id=agent_obj.tenant_id if agent_obj else None,
                 source="feishu",
@@ -898,10 +1043,19 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
             conv_id = f"feishu_p2p_{sender_user_id_feishu or sender_open_id}"
 
         # Find-or-create session
+        _is_group_file = (chat_type == "group")
+        # For group file sessions, use agent creator as placeholder user_id
+        _file_user_id = platform_user_id
+        if _is_group_file:
+            _ag_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
+            _ag_obj = _ag_r.scalar_one_or_none()
+            _file_user_id = _ag_obj.creator_id if _ag_obj else platform_user_id
         _sess = await find_or_create_channel_session(
-            db=db, agent_id=agent_id, user_id=platform_user_id,
+            db=db, agent_id=agent_id, user_id=_file_user_id,
             external_conv_id=conv_id, source_channel="feishu",
             first_message_title=f"[文件] {filename}",
+            is_group=_is_group_file,
+            group_name=f"Feishu Group {chat_id[:8]}" if _is_group_file else None,
         )
         session_conv_id = str(_sess.id)
 
@@ -1156,5 +1310,3 @@ async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str,
                 traceback.print_exc()
                 return f"⚠️ 调用模型出错: Primary: {str(e)[:80]} | Fallback: {str(e2)[:80]}"
         return f"⚠️ 调用模型出错: {error_msg[:150]}"
-
-

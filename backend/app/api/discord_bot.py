@@ -279,7 +279,9 @@ async def discord_interaction_webhook(
         application_id = config.app_id or ""
         sender_id = body.get("member", {}).get("user", {}).get("id") or body.get("user", {}).get("id", "")
         channel_id = body.get("channel_id", "")
-        conv_id = f"discord_{channel_id}_{sender_id}" if channel_id else f"discord_dm_{sender_id}"
+        # Discord: guild interactions are group chats, DM interactions are P2P
+        _is_group_discord = bool(body.get("guild_id"))
+        conv_id = f"discord_{channel_id}" if channel_id else f"discord_dm_{sender_id}"
 
         logger.info(f"[Discord] /{command_name} from {sender_id}: {user_text[:80]}")
 
@@ -326,10 +328,12 @@ async def discord_interaction_webhook(
                 sess = await find_or_create_channel_session(
                     db=bg_db,
                     agent_id=agent_id,
-                    user_id=platform_user_id,
+                    user_id=creator_id if _is_group_discord else platform_user_id,
                     external_conv_id=conv_id,
                     source_channel="discord",
                     first_message_title=user_text,
+                    is_group=_is_group_discord,
+                    group_name=f"Discord Channel {channel_id[:8]}" if _is_group_discord else None,
                 )
                 session_conv_id = str(sess.id)
 

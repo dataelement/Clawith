@@ -225,7 +225,9 @@ async def slack_event_webhook(
 
     channel_id = event.get("channel", "")
     sender_id = event.get("user", "")
-    conv_id = f"slack_{channel_id}_{sender_id}" if channel_id else f"slack_dm_{sender_id}"
+    # Slack channel_id starting with 'D' = DM, 'C'/'G' = group/channel
+    _is_group_slack = bool(channel_id) and not channel_id.startswith("D")
+    conv_id = f"slack_{channel_id}" if channel_id else f"slack_dm_{sender_id}"
 
     logger.info(f"[Slack] Message from={sender_id}, channel={channel_id}: {user_text[:80]}")
 
@@ -291,10 +293,12 @@ async def slack_event_webhook(
     sess = await find_or_create_channel_session(
         db=db,
         agent_id=agent_id,
-        user_id=platform_user_id,
+        user_id=creator_id if _is_group_slack else platform_user_id,
         external_conv_id=conv_id,
         source_channel="slack",
         first_message_title=user_text,
+        is_group=_is_group_slack,
+        group_name=f"Slack Channel {channel_id[:8]}" if _is_group_slack else None,
     )
     session_conv_id = str(sess.id)
 

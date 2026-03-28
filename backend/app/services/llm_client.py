@@ -26,7 +26,7 @@ class LLMMessage:
     """Unified message format."""
 
     role: Literal["system", "user", "assistant", "tool"]
-    content: str | None = None
+    content: str | list | None = None
     tool_calls: list[dict] | None = None
     tool_call_id: str | None = None
     reasoning_content: str | None = None
@@ -54,13 +54,39 @@ class LLMMessage:
         
         # Tool response (from user to assistant)
         if role == "tool":
+            # Build tool_result content: support both string and vision array formats
+            if isinstance(self.content, list):
+                # Vision content array: extract text parts and image parts
+                # Anthropic tool_result content supports [{type: "text", text: ...}, {type: "image", source: ...}]
+                tool_content_blocks = []
+                for part in self.content:
+                    if part.get("type") == "text":
+                        tool_content_blocks.append({"type": "text", "text": part.get("text", "")})
+                    elif part.get("type") == "image_url":
+                        # Convert OpenAI image_url format to Anthropic image source format
+                        img_url = part.get("image_url", {}).get("url", "")
+                        if img_url.startswith("data:image/"):
+                            # Parse data URL: data:image/jpeg;base64,xxxxx
+                            header, b64_data = img_url.split(",", 1)
+                            media_type = header.split(":")[1].split(";")[0]  # e.g. image/jpeg
+                            tool_content_blocks.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64_data,
+                                }
+                            })
+                result_content = tool_content_blocks if tool_content_blocks else (self.content or "")
+            else:
+                result_content = self.content or ""
             return {
                 "role": "user",
                 "content": [
                     {
                         "type": "tool_result",
                         "tool_use_id": self.tool_call_id,
-                        "content": self.content or ""
+                        "content": result_content,
                     }
                 ]
             }

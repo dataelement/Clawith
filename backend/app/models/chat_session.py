@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, ForeignKey, func, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, String, ForeignKey, func, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,6 +16,9 @@ class ChatSession(Base):
     source_channel: 'web' | 'feishu' | 'discord' | 'slack'
     external_conv_id: original channel conversation ID (e.g. 'feishu_p2p_ou_xxx').
                       Unique per agent — used for reliable find-or-create without in-process caching.
+    is_group: True for group chat sessions (Feishu group, WeCom group, Slack channel, etc.).
+              Group sessions have user_id=NULL and only appear in the 'all sessions' view.
+    group_name: Display name for group chat sessions (e.g. the group/channel name from IM platform).
     """
 
     __tablename__ = "chat_sessions"
@@ -25,10 +28,14 @@ class ChatSession(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    # user_id: for P2P sessions this is the user; for group sessions this is the agent creator (placeholder)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="New Session")
     source_channel: Mapped[str] = mapped_column(String(20), nullable=False, default="web")
     external_conv_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Group chat support: group sessions have user_id=NULL and show group_name instead
+    is_group: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    group_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # Participant identity (unified User/Agent identity)
     participant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=True)
     # For agent-to-agent sessions: the other agent in the conversation

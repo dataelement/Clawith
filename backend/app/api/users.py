@@ -38,7 +38,6 @@ class UserOut(BaseModel):
     # Computed
     agents_count: int = 0
     # Source info
-    feishu_open_id: str | None = None
     created_at: str | None = None
     source: str = 'registered'  # 'registered' | 'feishu'
 
@@ -90,9 +89,8 @@ async def list_users(
             "quota_max_agents": u.quota_max_agents,
             "quota_agent_ttl_hours": u.quota_agent_ttl_hours,
             "agents_count": agents_count,
-            "feishu_open_id": getattr(u, 'feishu_open_id', None),
             "created_at": u.created_at.isoformat() if u.created_at else None,
-            "source": 'feishu' if getattr(u, 'feishu_open_id', None) else 'registered',
+            "source": (u.registration_source or 'registered'),
         }
         out.append(UserOut(**user_dict))
     return out

@@ -185,11 +185,14 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         nameFallback: 'DingTalk',
         desc: 'Stream Mode',
         apiSlug: 'dingtalk-channel',
+        connectionMode: true,
         fields: [
             { key: 'app_key', label: 'AppKey', type: 'password', required: true },
             { key: 'app_secret', label: 'AppSecret', type: 'password', required: true },
+            { key: 'agent_id', label: 'AgentId', type: 'text', placeholder: 'DingTalk应用AgentId(可选)', required: false },
         ],
         guide: { prefix: 'channelGuide.dingtalk', steps: 6 },
+        webhookLabel: 'Webhook URL',
     },
     {
         id: 'atlassian',
@@ -277,6 +280,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [connectionModes, setConnectionModes] = useState<Record<string, string>>({
         feishu: 'websocket',
         wecom: 'websocket',
+        dingtalk: 'websocket',
         discord: 'gateway',
     });
 
@@ -472,6 +476,15 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 return { bot_token: form.bot_token, connection_mode: 'gateway' };
             }
             return { ...form, connection_mode: 'webhook' };
+        }
+        if (ch.id === 'dingtalk') {
+            return {
+                ...form,
+                extra_config: {
+                    connection_mode: connectionModes.dingtalk || 'websocket',
+                    agent_id: form.agent_id || '',
+                },
+            };
         }
         // Generic channels
         return form;
@@ -753,10 +766,20 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     </div>
                                 )}
 
-                                {/* DingTalk stream mode hint */}
-                                {ch.id === 'dingtalk' && (
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px', padding: '8px 10px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                        Stream mode active. No webhook URL needed.
+                                {/* DingTalk stream mode status */}
+                                {ch.id === 'dingtalk' && configConnMode === 'websocket' && (
+                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#007FFF', display: 'inline-block' }}></span>
+                                            <span style={{ color: 'var(--text-secondary)' }}>Connected via Stream (No callback URL needed)</span>
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>App Key: <code>{config.app_id}</code></div>
+                                    </div>
+                                )}
+                                {ch.id === 'dingtalk' && configConnMode !== 'websocket' && (
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                        <div style={{ marginBottom: '4px' }}>Mode: <strong>Webhook</strong></div>
+                                        <div>App Key: <code>{config.app_id}</code></div>
                                     </div>
                                 )}
 
@@ -849,6 +872,8 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             } else if (ch.id === 'dingtalk') {
                                                 prefill.app_key = config.app_id || '';
                                                 prefill.app_secret = config.app_secret || '';
+                                                prefill.agent_id = config.extra_config?.agent_id || '';
+                                                setConnectionModes(prev => ({ ...prev, dingtalk: config.extra_config?.connection_mode || 'websocket' }));
                                             } else if (ch.id === 'atlassian') {
                                                 prefill.api_key = '';
                                                 prefill.cloud_id = config.cloud_id || '';

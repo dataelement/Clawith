@@ -10,13 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user, require_role
 from app.database import get_db
-from app.models.agent import Agent
-from app.models.audit import ApprovalRequest, AuditLog, EnterpriseInfo
-from app.models.llm import LLMModel
+from app.models.org import OrgDepartment, OrgMember
+from app.models.identity import IdentityProvider
 from app.models.user import User
+from app.models.agent import Agent
+from app.models.llm import LLMModel
+from app.models.audit import AuditLog, ApprovalRequest, EnterpriseInfo
 from app.schemas.schemas import (
     ApprovalAction, ApprovalRequestOut, AuditLogOut, EnterpriseInfoOut,
-    EnterpriseInfoUpdate, LLMModelCreate, LLMModelOut, LLMModelUpdate
+    EnterpriseInfoUpdate, LLMModelCreate, LLMModelOut, LLMModelUpdate,
+    IdentityProviderOut
 )
 from app.services.autonomy_service import autonomy_service
 from app.services.enterprise_sync import enterprise_sync_service
@@ -93,6 +96,11 @@ async def list_llm_models(
     db: AsyncSession = Depends(get_db),
 ):
     """List LLM models scoped to the selected tenant."""
+    # Authorization: non-platform admins can only see their own tenant's models
+    if tenant_id and current_user.role != "platform_admin":
+        if str(current_user.tenant_id) != tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot access other tenant's models")
+
     tid = tenant_id or str(current_user.tenant_id) if current_user.tenant_id else None
     query = select(LLMModel).order_by(LLMModel.created_at.desc())
     if tid:
@@ -336,19 +344,32 @@ async def get_enterprise_stats(
 ):
     """Get enterprise dashboard statistics, optionally scoped to a tenant."""
     # Determine which tenant to filter by
-    tid = tenant_id or str(current_user.tenant_id)
+    tid = tenant_id
+    if tid and isinstance(tid, str):
+        tid = uuid.UUID(tid)
+    elif not tid:
+        tid = current_user.tenant_id
 
-    total_agents = await db.execute(
-        select(func.count(Agent.id)).where(Agent.tenant_id == tid)
-    )
+    # Base queries
+    agent_q = select(func.count(Agent.id))
+    user_q = select(func.count(User.id)).where(User.is_active == True)
+    approval_q = select(func.count(ApprovalRequest.id))
+
+    if tid:
+        agent_q = agent_q.where(Agent.tenant_id == tid)
+        user_q = user_q.where(User.tenant_id == tid)
+        # For approvals, we only see requests for agents in this tenant
+        approval_q = approval_q.where(ApprovalRequest.agent_id.in_(
+            select(Agent.id).where(Agent.tenant_id == tid)
+        ))
+
+    total_agents = await db.execute(agent_q)
     running_agents = await db.execute(
-        select(func.count(Agent.id)).where(Agent.tenant_id == tid, Agent.status == "running")
+        agent_q.where(Agent.status == "running")
     )
-    total_users = await db.execute(
-        select(func.count(User.id)).where(User.tenant_id == tid, User.is_active == True)
-    )
+    total_users = await db.execute(user_q)
     pending_approvals = await db.execute(
-        select(func.count(ApprovalRequest.id)).where(ApprovalRequest.status == "pending")
+        approval_q.where(ApprovalRequest.status == "pending")
     )
 
     return {
@@ -513,6 +534,373 @@ async def update_system_setting(
     return {"key": setting.key, "value": setting.value}
 
 
+# ─── Identity Providers ─────────────────────────────────
+
+@router.get("/identity-providers", response_model=list[IdentityProviderOut])
+async def list_identity_providers(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List identity providers configured for the tenant."""
+    # Authorization: non-platform admins can only see their own tenant's providers
+    if tenant_id and current_user.role != "platform_admin":
+        if str(current_user.tenant_id) != tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot access other tenant's providers")
+
+    query = select(IdentityProvider).order_by(IdentityProvider.created_at.desc())
+    tid = tenant_id or (str(current_user.tenant_id) if current_user.tenant_id else None)
+
+    # Require tenant context
+    if not tid:
+        if current_user.role == "platform_admin":
+            # Admin without tenant_id filter sees all
+            pass
+        else:
+            raise HTTPException(status_code=400, detail="tenant_id is required for identity providers")
+    else:
+        import uuid as _uuid
+        query = query.where(IdentityProvider.tenant_id == _uuid.UUID(tid))
+
+    result = await db.execute(query)
+    providers = []
+    for p in result.scalars().all():
+        data = IdentityProviderOut.model_validate(p).model_dump()
+        data["last_synced_at"] = (p.config or {}).get("last_synced_at")
+        providers.append(data)
+    return providers
+
+
+class IdentityProviderCreate(BaseModel):
+    provider_type: str
+    name: str
+    is_active: bool = True
+    config: dict = {}
+    tenant_id: uuid.UUID | None = None
+
+
+class OAuth2Config(BaseModel):
+    """OAuth2 provider configuration with friendly field names."""
+    app_id: str | None = None          # Alias for client_id
+    app_secret: str | None = None       # Alias for client_secret
+    authorize_url: str | None = None    # OAuth2 authorize endpoint
+    token_url: str | None = None        # OAuth2 token endpoint
+    user_info_url: str | None = None    # OAuth2 user info endpoint
+    scope: str | None = "openid profile email"
+
+    def to_config_dict(self) -> dict:
+        """Convert to config dict with both naming conventions for compatibility."""
+        config = {}
+        if self.app_id:
+            config["app_id"] = self.app_id
+            config["client_id"] = self.app_id
+        if self.app_secret:
+            config["app_secret"] = self.app_secret
+            config["client_secret"] = self.app_secret
+        if self.authorize_url:
+            config["authorize_url"] = self.authorize_url
+        if self.token_url:
+            config["token_url"] = self.token_url
+        if self.user_info_url:
+            config["user_info_url"] = self.user_info_url
+        if self.scope:
+            config["scope"] = self.scope
+        return config
+
+    @classmethod
+    def from_config_dict(cls, config: dict) -> "OAuth2Config":
+        """Create from config dict, supporting both naming conventions."""
+        return cls(
+            app_id=config.get("app_id") or config.get("client_id"),
+            app_secret=config.get("app_secret") or config.get("client_secret"),
+            authorize_url=config.get("authorize_url"),
+            token_url=config.get("token_url"),
+            user_info_url=config.get("user_info_url"),
+            scope=config.get("scope"),
+        )
+
+
+class IdentityProviderOAuth2Create(BaseModel):
+    """Simplified OAuth2 provider creation with dedicated fields."""
+    provider_type: str = "oauth2"
+    name: str
+    is_active: bool = True
+    app_id: str
+    app_secret: str
+    authorize_url: str
+    token_url: str
+    user_info_url: str
+    scope: str | None = "openid profile email"
+    tenant_id: uuid.UUID | None = None
+
+
+def normalize_oauth2_config(config: dict) -> dict:
+    """Normalize OAuth2 config to use both naming conventions for compatibility."""
+    if "app_id" in config or "app_secret" in config or "authorize_url" in config:
+        # Mix of naming conventions - normalize
+        normalized = {}
+        if "app_id" in config:
+            normalized["app_id"] = config["app_id"]
+            normalized["client_id"] = config["app_id"]
+        elif "client_id" in config:
+            normalized["app_id"] = config["client_id"]
+            normalized["client_id"] = config["client_id"]
+
+        if "app_secret" in config:
+            normalized["app_secret"] = config["app_secret"]
+            normalized["client_secret"] = config["app_secret"]
+        elif "client_secret" in config:
+            normalized["app_secret"] = config["client_secret"]
+            normalized["client_secret"] = config["client_secret"]
+
+        # Copy URLs if present
+        for key in ["authorize_url", "token_url", "user_info_url", "scope"]:
+            if key in config:
+                normalized[key] = config[key]
+
+        return normalized
+    return config
+
+def validate_provider_config(provider_type: str, config: dict):
+    """Validate identity provider config. Specific field checks are handled by the frontend."""
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=422, detail="Configuration must be a JSON object")
+    return
+
+
+@router.post("/identity-providers", response_model=IdentityProviderOut)
+async def create_identity_provider(
+    data: IdentityProviderCreate,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new identity provider (Admin only)."""
+    # Validate config
+    validate_provider_config(data.provider_type, data.config)
+    
+    # Validate and determine tenant_id
+    tid = data.tenant_id
+    if current_user.role == "platform_admin":
+        # Platform admins can use any tenant_id (including None for global providers)
+        pass
+    else:
+        # Non-platform admins: use request tenant_id if provided, else fall back to user's tenant
+        if tid is None:
+            tid = current_user.tenant_id
+        elif str(tid) != str(current_user.tenant_id):
+            # Validate they can only manage their own tenant
+            raise HTTPException(status_code=403, detail="Can only create providers for your own tenant")
+
+    if not tid:
+        raise HTTPException(status_code=400, detail="tenant_id is required to create an identity provider")
+        
+    provider = IdentityProvider(
+        provider_type=data.provider_type,
+        name=data.name,
+        is_active=data.is_active,
+        config=data.config,
+        tenant_id=tid
+    )
+    db.add(provider)
+    await db.commit()
+    await db.refresh(provider)
+    return IdentityProviderOut.model_validate(provider)
+
+
+@router.post("/identity-providers/oauth2", response_model=IdentityProviderOut)
+async def create_oauth2_provider(
+    data: IdentityProviderOAuth2Create,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new OAuth2 identity provider with simplified fields (app_id, app_secret, authorize_url, etc.)."""
+    # Convert to config dict
+    oauth_config = OAuth2Config(
+        app_id=data.app_id,
+        app_secret=data.app_secret,
+        authorize_url=data.authorize_url,
+        token_url=data.token_url,
+        user_info_url=data.user_info_url,
+        scope=data.scope,
+    )
+    config = oauth_config.to_config_dict()
+
+    # Validate
+    validate_provider_config("oauth2", config)
+
+    # Validate and determine tenant_id
+    tid = data.tenant_id
+    if current_user.role == "platform_admin":
+        # Platform admins can use any tenant_id (including None for global providers)
+        pass
+    else:
+        # Non-platform admins: use request tenant_id if provided, else fall back to user's tenant
+        if tid is None:
+            tid = current_user.tenant_id
+        elif str(tid) != str(current_user.tenant_id):
+            # Validate they can only manage their own tenant
+            raise HTTPException(status_code=403, detail="Can only create providers for your own tenant")
+
+    if not tid:
+        raise HTTPException(status_code=400, detail="tenant_id is required to create an identity provider")
+
+    provider = IdentityProvider(
+        provider_type="oauth2",
+        name=data.name,
+        is_active=data.is_active,
+        config=config,
+        tenant_id=tid
+    )
+    db.add(provider)
+    await db.commit()
+    await db.refresh(provider)
+    return IdentityProviderOut.model_validate(provider)
+
+
+class OAuth2ConfigUpdate(BaseModel):
+    """OAuth2 provider configuration update with dedicated fields."""
+    name: str | None = None
+    is_active: bool | None = None
+    app_id: str | None = None
+    app_secret: str | None = None  # Set to None to keep existing, empty to clear
+    authorize_url: str | None = None
+    token_url: str | None = None
+    user_info_url: str | None = None
+    scope: str | None = None
+
+
+@router.patch("/identity-providers/{provider_id}/oauth2", response_model=IdentityProviderOut)
+async def update_oauth2_provider(
+    provider_id: uuid.UUID,
+    data: OAuth2ConfigUpdate,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an OAuth2 identity provider with simplified fields."""
+    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    if provider.provider_type != "oauth2":
+        raise HTTPException(status_code=400, detail="Provider is not an OAuth2 provider")
+
+    if current_user.role != "platform_admin" and provider.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this provider")
+
+    # Update name and is_active
+    if data.name is not None:
+        provider.name = data.name
+    if data.is_active is not None:
+        provider.is_active = data.is_active
+
+    # Update config fields
+    if any([data.app_id, data.app_secret is not None, data.authorize_url, data.token_url, data.user_info_url, data.scope]):
+        current_config = provider.config.copy()
+
+        if data.app_id is not None:
+            current_config["app_id"] = data.app_id
+            current_config["client_id"] = data.app_id
+        if data.app_secret is not None:
+            # Only update if explicitly set (not None) - allows clearing
+            if data.app_secret:
+                current_config["app_secret"] = data.app_secret
+                current_config["client_secret"] = data.app_secret
+            else:
+                current_config.pop("app_secret", None)
+                current_config.pop("client_secret", None)
+        if data.authorize_url is not None:
+            current_config["authorize_url"] = data.authorize_url
+        if data.token_url is not None:
+            current_config["token_url"] = data.token_url
+        if data.user_info_url is not None:
+            current_config["user_info_url"] = data.user_info_url
+        if data.scope is not None:
+            current_config["scope"] = data.scope
+
+        # Validate the updated config
+        validate_provider_config("oauth2", current_config)
+        provider.config = current_config
+
+    await db.commit()
+    await db.refresh(provider)
+    return IdentityProviderOut.model_validate(provider)
+
+
+class IdentityProviderUpdate(BaseModel):
+    name: str | None = None
+    is_active: bool | None = None
+    config: dict | None = None
+
+
+@router.put("/identity-providers/{provider_id}", response_model=IdentityProviderOut)
+async def update_identity_provider(
+    provider_id: uuid.UUID,
+    data: IdentityProviderUpdate,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an existing identity provider."""
+    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+        
+    if current_user.role != "platform_admin" and provider.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this provider")
+        
+    if data.name is not None:
+        provider.name = data.name
+    if data.is_active is not None:
+        provider.is_active = data.is_active
+    if data.config is not None:
+        # Merge config
+        new_config = provider.config.copy()
+        new_config.update(data.config)
+        
+        # Validate merged config
+        validate_provider_config(provider.provider_type, new_config)
+        
+        provider.config = new_config
+        
+    await db.commit()
+    await db.refresh(provider)
+    return IdentityProviderOut.model_validate(provider)
+
+
+@router.delete("/identity-providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_identity_provider(
+    provider_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an identity provider."""
+    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+        
+    if current_user.role != "platform_admin" and provider.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this provider")
+        
+    try:
+        # Nullify references in synced org data before deleting the provider
+        from sqlalchemy import update
+        await db.execute(
+            update(OrgMember).where(OrgMember.provider_id == provider_id).values(provider_id=None)
+        )
+        await db.execute(
+            update(OrgDepartment).where(OrgDepartment.provider_id == provider_id).values(provider_id=None)
+        )
+        
+        await db.delete(provider)
+        await db.commit()
+    except SQLAlchemyError as e:
+        await db.rollback()
+        logger.error(f"Failed to delete identity provider {provider_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete identity provider due to database constraints")
+
+
 # ─── Org Structure ──────────────────────────────────────
 
 from app.models.org import OrgDepartment, OrgMember
@@ -521,47 +909,112 @@ from app.models.org import OrgDepartment, OrgMember
 @router.get("/org/departments")
 async def list_org_departments(
     tenant_id: str | None = None,
+    provider_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all departments, optionally filtered by tenant."""
-    query = select(OrgDepartment)
+    """List all departments, optionally filtered by tenant or provider."""
+    # Authorization: non-platform admins can only see their own tenant's data
+    if tenant_id and current_user.role != "platform_admin":
+        if str(current_user.tenant_id) != tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot access other tenant's data")
+
+    query = select(OrgDepartment, IdentityProvider.name.label("provider_name"), IdentityProvider.provider_type).outerjoin(
+        IdentityProvider, OrgDepartment.provider_id == IdentityProvider.id
+    ).where(OrgDepartment.status == "active")
     if tenant_id:
         query = query.where(OrgDepartment.tenant_id == uuid.UUID(tenant_id))
+    if provider_id:
+        query = query.where(OrgDepartment.provider_id == uuid.UUID(provider_id))
     result = await db.execute(query.order_by(OrgDepartment.name))
-    depts = result.scalars().all()
-    return [
-        {
-            "id": str(d.id),
-            "feishu_id": d.feishu_id,
-            "name": d.name,
-            "parent_id": str(d.parent_id) if d.parent_id else None,
-            "path": d.path,
-            "member_count": d.member_count,
-        }
-        for d in depts
-    ]
+    rows = result.all()
+    # Calculate total members for this scope (for the "All" entry in frontend)
+    total_q = select(func.count(OrgMember.id)).where(OrgMember.status == "active")
+    if tenant_id:
+        total_q = total_q.where(OrgMember.tenant_id == uuid.UUID(tenant_id))
+    if provider_id:
+        total_q = total_q.where(OrgMember.provider_id == uuid.UUID(provider_id))
+    total_result = await db.execute(total_q)
+    total_member = total_result.scalar() or 0
 
+    return {
+        "items": [
+            {
+                "id": str(d.id),
+                "external_id": d.external_id,
+                "provider_id": str(d.provider_id) if d.provider_id else None,
+                "provider_name": provider_name if d.provider_id else None,
+                "provider_type": provider_type if d.provider_id else None,
+                "name": d.name,
+                "parent_id": str(d.parent_id) if d.parent_id else None,
+                "path": d.path,
+                "member_count": d.member_count,
+            }
+            for d, provider_name, provider_type in rows
+        ],
+        "total_member": total_member,
+    }
+
+
+
+from sqlalchemy import or_
 
 @router.get("/org/members")
 async def list_org_members(
     department_id: str | None = None,
     search: str | None = None,
     tenant_id: str | None = None,
+    provider_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List org members, optionally filtered by department, search, or tenant."""
-    query = select(OrgMember).where(OrgMember.status == "active")
+    """List org members, optionally filtered by department, search, tenant, or provider."""
+    # Authorization: non-platform admins can only see their own tenant's data
+    if tenant_id and current_user.role != "platform_admin":
+        if str(current_user.tenant_id) != tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot access other tenant's data")
+
+    query = select(OrgMember, IdentityProvider.name.label("provider_name"), IdentityProvider.provider_type).outerjoin(
+        IdentityProvider, OrgMember.provider_id == IdentityProvider.id
+    ).where(OrgMember.status == "active")
     if tenant_id:
         query = query.where(OrgMember.tenant_id == uuid.UUID(tenant_id))
     if department_id:
-        query = query.where(OrgMember.department_id == uuid.UUID(department_id))
+        # Get the department to find its path and then include all sub-departments
+        dept_result = await db.execute(select(OrgDepartment).where(OrgDepartment.id == uuid.UUID(department_id)))
+        target_dept = dept_result.scalar_one_or_none()
+        if target_dept:
+            # Build sub-department query: the selected dept itself, plus any dept whose path
+            # starts with its path followed by a "/" (i.e., all descendants).
+            sub_dept_conditions = [OrgDepartment.id == target_dept.id]
+            if target_dept.path:
+                # Use SQL LIKE to find all descendants based on path prefix
+                sub_dept_conditions.append(OrgDepartment.path.like(f"{target_dept.path}/%"))
+            sub_depts_query = select(OrgDepartment.id).where(or_(*sub_dept_conditions))
+            sub_dept_ids_result = await db.execute(sub_depts_query)
+            sub_dept_ids = [row[0] for row in sub_dept_ids_result.all()]
+            query = query.where(OrgMember.department_id.in_(sub_dept_ids))
+        else:
+            # Fallback: exact match
+            query = query.where(OrgMember.department_id == uuid.UUID(department_id))
+    if provider_id:
+        query = query.where(
+            or_(
+                OrgMember.provider_id == uuid.UUID(provider_id),
+                OrgMember.provider_id.is_(None)
+            )
+        )
     if search:
-        query = query.where(OrgMember.name.ilike(f"%{search}%"))
+        query = query.where(
+            or_(
+                OrgMember.name.ilike(f"%{search}%"),
+                OrgMember.name_translit_full.ilike(f"%{search}%"),
+                OrgMember.name_translit_initial.ilike(f"%{search}%"),
+            )
+        )
     query = query.order_by(OrgMember.name).limit(100)
     result = await db.execute(query)
-    members = result.scalars().all()
+    rows = result.all()
     return [
         {
             "id": str(m.id),
@@ -570,19 +1023,44 @@ async def list_org_members(
             "title": m.title,
             "department_path": m.department_path,
             "avatar_url": m.avatar_url,
+            "external_id": m.external_id,
+            "provider_id": str(m.provider_id) if m.provider_id else None,
+            "provider_name": provider_name if m.provider_id else None,
+            "provider_type": provider_type if m.provider_id else None,
         }
-        for m in members
+        for m, provider_name, provider_type in rows
     ]
 
 
 @router.post("/org/sync")
 async def trigger_org_sync(
+    provider_id: str | None = None,
     current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Manually trigger org structure sync from Feishu."""
+    """Manually trigger org structure sync from a specific identity provider."""
     from app.services.org_sync_service import org_sync_service
-    result = await org_sync_service.full_sync()
-    return result
+
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="provider_id is required")
+
+    try:
+        pid = uuid.UUID(provider_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid provider_id")
+
+    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == pid))
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    if not provider.tenant_id:
+        raise HTTPException(status_code=400, detail="Provider must be bound to a tenant")
+
+    if current_user.role != "platform_admin" and provider.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot sync other tenant's provider")
+
+    return await org_sync_service.sync_provider(db, provider_id)
 
 
 # ─── Invitation Codes ───────────────────────────────────

@@ -40,6 +40,9 @@ class SessionOut(BaseModel):
     peer_agent_id: Optional[str] = None
     peer_agent_name: Optional[str] = None
     participant_type: str = "user"       # 'user' | 'agent'
+    # Group chat session fields
+    is_group: bool = False
+    group_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -108,7 +111,10 @@ async def list_sessions(
                 a1_name = a1_r.scalar_one_or_none() or "Agent"
                 a2_name = a2_r.scalar_one_or_none() or "Agent"
                 peer_agent_name = a2_name
-                display = f"🤖 {a1_name} ↔ {a2_name}"
+                display = f"Agent {a1_name} - {a2_name}"
+            elif session.is_group:
+                # Group chat session — display group name instead of username
+                display = session.group_name or session.title or "Group Chat"
             else:
                 # Human session — resolve username
                 user_r = await db.execute(
@@ -129,7 +135,9 @@ async def list_sessions(
                 message_count=count,
                 peer_agent_id=peer_agent_id,
                 peer_agent_name=peer_agent_name,
-                participant_type=participant_type,
+                participant_type="group" if session.is_group else participant_type,
+                is_group=session.is_group,
+                group_name=session.group_name,
             ))
         return out
 
@@ -139,6 +147,7 @@ async def list_sessions(
             .where(
                 ChatSession.agent_id == agent_id,
                 ChatSession.user_id == current_user.id,
+                ChatSession.is_group == False,  # Group sessions are not "mine"
                 ChatSession.source_channel.notin_(["agent", "trigger"]),  # Exclude agent-to-agent and reflection sessions
             )
             .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())

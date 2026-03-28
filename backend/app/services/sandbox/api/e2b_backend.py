@@ -1,13 +1,11 @@
 """E2B API-based sandbox backend."""
 
-import logging
 import time
 from typing import Any
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # Lazy import e2b to make it optional
 _e2b = None

@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 # Default heartbeat instruction used when HEARTBEAT.md doesn't exist
 DEFAULT_HEARTBEAT_INSTRUCTION = """[Heartbeat Check]
@@ -214,16 +214,17 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 )
                 recent_activities = recent_result.scalars().all()
                 if recent_activities:
-                    items = []
+                    itms = []
                     for act in reversed(recent_activities):  # chronological order
                         ts = act.created_at.strftime("%m-%d %H:%M") if act.created_at else ""
-                        items.append(f"- [{ts}] {act.action_type}: {act.summary[:120]}")
-                    recent_context = "\n\n---\n## Recent Activity Context\nHere are your recent interactions and work to help you identify relevant topics:\n\n" + "\n".join(items)
+                        itms.append(f"- [{ts}] {act.action_type}: {act.summary[:120]}")
+                    recent_context = "\\n\\n---\\n## Recent Activity Context\\nHere are your recent interactions and work to help you identify relevant topics:\\n\\n" + "\\n".join(itms)
             except Exception as e:
                 logger.warning(f"Failed to fetch recent activity for heartbeat context: {e}")
 
             # Fetch unread notifications for this agent (plaza replies, mentions, broadcasts)
             inbox_context = ""
+            notif_lines = []
             try:
                 from app.models.notification import Notification
                 notif_result = await db.execute(
@@ -234,15 +235,16 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 )
                 unread = notif_result.scalars().all()
                 if unread:
-                    lines = ["\n\n---\n## Inbox (new messages for you — please review and respond if appropriate)"]
+                    notif_lines = ["\\n\\n---\\n## Inbox (new messages for you — please review and respond if appropriate)"]
                     for n in unread:
                         sender = f"from {n.sender_name}" if n.sender_name else ""
-                        lines.append(f"- [{n.type}] {n.title} {sender}: {(n.body or '')[:150]}")
+                        notif_lines.append(f"- [{n.type}] {n.title} {sender}: {(n.body or '')[:150]}")
                         n.is_read = True
-                    inbox_context = "\n".join(lines)
             except Exception as e:
                 logger.warning(f"Failed to drain agent notifications: {e}")
-
+            
+            inbox_context = "\\n".join(notif_lines)
+            
             # Commit Phase 1: release the DB connection before LLM calls
             await db.commit()
         # DB session is now closed — connection returned to pool
@@ -378,8 +380,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             else:
                 reply = response.content or ""
                 break
-        else:
-            reply = ""
 
         await client.close()
 
@@ -389,22 +389,24 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             if _hb_accumulated_tokens > 0:
                 await record_token_usage(agent_id, _hb_accumulated_tokens)
 
-            # Suppress HEARTBEAT_OK
-            is_ok = "HEARTBEAT_OK" in reply.upper().replace(" ", "_") if reply else False
-            if not is_ok and reply:
-                from app.services.activity_logger import log_activity
-                await log_activity(
-                    agent_id, "heartbeat",
-                    f"Heartbeat: {reply[:80]}",
-                    detail={"reply": reply[:500]},
-                )
-
             # Update last_heartbeat_at
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
-            agent = result.scalar_one_or_none()
-            if agent:
-                agent.last_heartbeat_at = datetime.now(timezone.utc)
+            # Using an update statement is safer to avoid state drift if the object was updated elsewhere
+            await db.execute(
+                update(Agent)
+                .where(Agent.id == agent_id)
+                .values(last_heartbeat_at=datetime.now(timezone.utc))
+            )
             await db.commit()
+
+        # Log activity if not empty
+        is_ok = "HEARTBEAT_OK" in reply.upper().replace(" ", "_") if reply else False
+        if not is_ok and reply:
+            from app.services.activity_logger import log_activity
+            await log_activity(
+                agent_id, "heartbeat",
+                f"Heartbeat: {reply[:80]}",
+                detail={"reply": reply[:500]},
+            )
 
         logger.info(f"💓 Heartbeat for {agent_name}: {'OK' if is_ok else reply[:60]}")
 

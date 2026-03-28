@@ -9,7 +9,7 @@ from app.core.security import hash_password
 from app.database import Base, engine, async_session
 # Import ALL models so Base.metadata.create_all can resolve all FKs
 from app.models.tenant import Tenant  # noqa: F401 — must be before user
-from app.models.user import User, Department
+from app.models.user import User
 from app.models.agent import AgentTemplate  # noqa: F401
 from app.models.llm import LLMModel  # noqa: F401
 from app.models.task import Task  # noqa: F401
@@ -98,13 +98,7 @@ async def seed():
                 db.add(AgentTemplate(**tmpl))
                 print(f"✅ Template created: {tmpl['icon']} {tmpl['name']}")
 
-        # 3. Default department
-        existing_dept = await db.execute(select(Department).where(Department.name == "总部"))
-        if not existing_dept.scalar_one_or_none():
-            db.add(Department(name="总部"))
-            print("✅ Default department created: 总部")
-
-        # 4. Demo agents for platform admin (if admin has zero agents)
+        # 3. Demo agents for platform admin (if admin has zero agents)
         from app.models.agent import Agent
         admin_result = await db.execute(select(User).where(User.role == "platform_admin"))
         admin_user = admin_result.scalar_one_or_none()

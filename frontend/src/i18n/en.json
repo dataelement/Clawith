@@ -78,7 +78,21 @@
     "invitationHint": "Token consumption is significant, so invitation codes are required. We recommend deploying your own instance and configuring leading models for the best experience.",
     "usernamePlaceholder": "Enter username",
     "passwordPlaceholder": "Enter password",
-    "emailPlaceholder": "you@example.com"
+    "emailPlaceholder": "you@example.com",
+    "companyDisabled": "Your company has been disabled. Please contact the platform administrator.",
+    "invalidCredentials": "Invalid username or password.",
+    "accountDisabled": "Your account has been disabled.",
+    "serverStarting": "Service is starting up or experiencing issues. Please try again in a few seconds.",
+    "serverUnreachable": "Unable to reach server. Please check if the service is running and try again.",
+    "qrLogin": "QR Code Login",
+    "unifiedSSO": "Unified SSO Login",
+    "scanWithPlatform": "Please scan with Feishu, DingTalk, or WeCom",
+    "qrExpired": "QR code expired",
+    "qrSuccess": "Login success, redirecting...",
+    "refresh": "Refresh QR code",
+    "loginWithSSO": "Enterprise SSO Login",
+    "ssoNotice": "Enterprise SSO is enabled for this domain.",
+    "standardLogin": "Standard Login"
   },
   "roles": {
     "platformAdmin": "Platform Admin",
@@ -585,7 +599,8 @@
       "skills": "Skills",
       "quotas": "Quotas",
       "users": "Users",
-      "invites": "Invitation Codes"
+      "invites": "Invitation Codes",
+      "identity": "OA Management"
     },
     "invites": {
       "pageTitle": "Invitation Codes",
@@ -789,6 +804,22 @@
       "textPlaceholder": "e.g. v2.1 released with new features!",
       "description": "Display a notification bar at the top of the page, visible to all users.",
       "preview": "Preview"
+    },
+    "identity": {
+      "addProvider": "Add OA Provider",
+      "type": "Type",
+      "name": "Display Name",
+      "config": "Configuration (JSON)",
+      "configExample": "Configuration Example",
+      "deleteConfirm": "Are you sure you want to delete this OA provider?",
+      "providerHints": {
+        "feishu": "Feishu: Requires app_id, app_secret. Optional: encrypt_key, verification_token.",
+        "dingtalk": "DingTalk: Requires app_key, app_secret.",
+        "wecom": "WeCom: Requires corp_id, secret, agent_id.",
+        "oauth2": "OAuth2: Enter App ID, App Secret, Authorize URL, Token URL, User Info URL",
+        "saml": "SAML: Requires entry_point, issuer, cert (public key).",
+        "microsoft_teams": "Microsoft Teams: Requires client_id, client_secret, tenant_id."
+      }
     }
   },
   "common": {

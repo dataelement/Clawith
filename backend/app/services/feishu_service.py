@@ -1,12 +1,13 @@
 """Feishu (Lark) OAuth and API integration service."""
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.security import create_access_token, hash_password
 from app.models.user import User
+from app.models.identity import IdentityProvider
 
 settings = get_settings()
 
@@ -66,67 +67,121 @@ class FeishuService:
                 "avatar_url": info_data.get("avatar_url", ""),
             }
 
-    async def login_or_register(self, db: AsyncSession, feishu_user: dict) -> tuple[User, str]:
+    async def login_or_register(self, db: AsyncSession, feishu_user: dict, tenant_id: str | None = None) -> tuple[User, str]:
         """Login existing user or register new one via Feishu SSO.
 
+        Uses OrgMember as the identity anchor (synced from Feishu org directory).
         Returns (user, jwt_token)
         """
+        from app.models.org import OrgMember
+
         open_id = feishu_user["open_id"]
         user_id = feishu_user.get("user_id", "")
+        union_id = feishu_user.get("union_id")
+        fs_email = feishu_user.get("email", "")
+        fs_name = feishu_user.get("name", "")
+        fs_avatar = feishu_user.get("avatar_url", "")
 
-        # Prefer user_id (tenant-stable) for user lookup
+        # Resolve provider (needed for OrgMember.provider_id scoping)
+        provider_query = select(IdentityProvider).where(IdentityProvider.provider_type == "feishu")
+        provider_query = provider_query.where(IdentityProvider.tenant_id == tenant_id)
+        provider_result = await db.execute(provider_query)
+        provider = provider_result.scalar_one_or_none()
+        if not provider:
+            provider = IdentityProvider(
+                provider_type="feishu",
+                name="Feishu",
+                is_active=True,
+                config={"app_id": self.app_id, "app_secret": self.app_secret},
+                tenant_id=tenant_id,
+            )
+            db.add(provider)
+            await db.flush()
+
+        # 1. Look up OrgMember by open_id (primary) or external_id (user_id)
+        #    Also filter by tenant_id and provider_id for accuracy
+        member = None
+        if open_id:
+            member_r = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.open_id == open_id,
+                    OrgMember.provider_id == provider.id,
+                    OrgMember.status == "active",
+                )
+            )
+            member = member_r.scalar_one_or_none()
+        if not member and user_id:
+            member_r = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.external_id == user_id,
+                    OrgMember.provider_id == provider.id,
+                    OrgMember.status == "active",
+                )
+            )
+            member = member_r.scalar_one_or_none()
+
+        # 2. Resolve User from OrgMember
         user = None
-        if user_id:
-            result = await db.execute(select(User).where(User.feishu_user_id == user_id))
-            user = result.scalar_one_or_none()
-        if not user and open_id:
-            result = await db.execute(select(User).where(User.feishu_open_id == open_id))
+        if member and member.user_id:
+            u_result = await db.execute(select(User).where(User.id == member.user_id))
+            user = u_result.scalar_one_or_none()
+
+        # 3. Fallback: find by email or primary_mobile (new generic fields)
+        if not user and fs_email:
+            query = select(User).where(User.email == fs_email)
+            if tenant_id:
+                query = query.where(User.tenant_id == tenant_id)
+            result = await db.execute(query)
             user = result.scalar_one_or_none()
 
         if user:
-            # Existing user — update info
-            user.avatar_url = feishu_user.get("avatar_url") or user.avatar_url
-            # Always update IDs to latest values
-            if open_id:
-                user.feishu_open_id = open_id
+            # Existing user — sync latest profile from Feishu
+            if fs_avatar:
+                user.avatar_url = fs_avatar
+            if (not user.email or user.email.endswith("@feishu.local")) and fs_email:
+                user.email = fs_email
+            if fs_name:
+                user.display_name = fs_name
+            # Update identity fields (user_id only)
             if user_id:
+                user.external_id = user_id
                 user.feishu_user_id = user_id
-            token = create_access_token(str(user.id), user.role)
-            return user, token
+            # Link to OrgMember if not yet bound
+            if member and not member.user_id:
+                member.user_id = user.id
+        else:
+            # New user — create account
+            username = fs_email.split("@")[0] if fs_email else f"feishu_{open_id[:8]}"
+            email = fs_email or f"{username}@feishu.local"
 
-        # New user — create account
-        username = feishu_user.get("email", "").split("@")[0] or f"feishu_{open_id[:8]}"
-        email = feishu_user.get("email") or f"{username}@feishu.local"
+            # Ensure unique username
+            existing_r = await db.execute(select(User).where(User.username == username))
+            if existing_r.scalar_one_or_none():
+                username = f"{username}_{open_id[:6]}"
 
-        # Ensure unique username
-        existing = await db.execute(select(User).where(User.username == username))
-        if existing.scalar_one_or_none():
-            username = f"{username}_{open_id[:6]}"
+            user = User(
+                username=username,
+                email=email,
+                password_hash=hash_password(open_id),
+                display_name=fs_name or username,
+                avatar_url=fs_avatar or None,
+                external_id=user_id,
+                feishu_user_id=user_id,
+                registration_source="feishu",
+                tenant_id=tenant_id,
+            )
+            db.add(user)
+            await db.flush()
 
-        user = User(
-            username=username,
-            email=email,
-            password_hash=hash_password(open_id),  # placeholder password
-            display_name=feishu_user.get("name", username),
-            avatar_url=feishu_user.get("avatar_url"),
-            feishu_open_id=open_id,
-            feishu_union_id=feishu_user.get("union_id"),
-            feishu_user_id=feishu_user.get("user_id"),
-        )
-        db.add(user)
+            # Link back to OrgMember if found
+            if member:
+                member.user_id = user.id
+
         await db.flush()
 
         token = create_access_token(str(user.id), user.role)
         return user, token
 
-    async def bind_feishu(self, db: AsyncSession, user: User, code: str) -> User:
-        """Bind Feishu account to existing user."""
-        feishu_user = await self.exchange_code_for_user(code)
-        user.feishu_open_id = feishu_user["open_id"]
-        user.feishu_union_id = feishu_user.get("union_id")
-        user.feishu_user_id = feishu_user.get("user_id")
-        await db.flush()
-        return user
 
     async def send_message(self, app_id: str, app_secret: str, receive_id: str,
                            msg_type: str, content: str, receive_id_type: str = "open_id") -> dict:

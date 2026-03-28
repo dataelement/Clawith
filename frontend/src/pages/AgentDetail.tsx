@@ -11,7 +11,9 @@ import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
 import { Settings, X, Wrench, Bot, Paperclip, Pencil, ClipboardList, Calendar, CalendarDays, CheckCircle, BarChart3, Dna, Brain, Heart, Package, Folder, Check, Zap, Loader2, FileText, FileEdit, User, Mail, Lock, Unlock, Building2, Eye, Globe, Clock } from 'lucide-react';
+import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
+import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 
 const TABS = ['chat', 'status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'activityLog', 'approvals', 'settings'] as const;
@@ -56,7 +58,8 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         agentbay: {
             title: 'AgentBay Settings',
             fields: [
-                { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' }
+                { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' },
+                { key: 'os_type', label: 'Cloud Computer OS', type: 'select', default: 'windows', options: [{ value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' }] },
             ]
         },
         atlassian: {
@@ -128,12 +131,12 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         try {
             const token = localStorage.getItem('token');
             if (configCategory) {
-               await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}`, {
+                await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                     body: JSON.stringify({ config: configData }),
-               });
-               setConfigCategory(null);
+                });
+                setConfigCategory(null);
             } else {
                 const hasSchema = configTool.config_schema?.fields?.length > 0;
                 const payload = hasSchema ? configData : JSON.parse(configJson || '{}');
@@ -322,33 +325,33 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                 const title = configTool ? configTool.display_name : target.title;
                 const isCat = !!configCategory;
                 return (
-                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                    onClick={() => { setConfigTool(null); setConfigCategory(null); }}>
-                    <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                            <div>
-                                <h3 style={{ margin: 0 }}>⚙️ {title}</h3>
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{isCat ? 'Shared category configuration (affects all tools in this category)' : 'Per-agent configuration (overrides global defaults)'}</div>
+                    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        onClick={() => { setConfigTool(null); setConfigCategory(null); }}>
+                        <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                <div>
+                                    <h3 style={{ margin: 0 }}>⚙️ {title}</h3>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{isCat ? 'Shared category configuration (affects all tools in this category)' : 'Per-agent configuration (overrides global defaults)'}</div>
+                                </div>
+                                <button onClick={() => { setConfigTool(null); setConfigCategory(null); }} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
                             </div>
-                            <button onClick={() => { setConfigTool(null); setConfigCategory(null); }} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
-                        </div>
 
-                        {fields.length > 0 ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                {fields
-                                    .filter((field: any) => {
-                                        // Handle depends_on: hide fields unless dependency is met
-                                        if (!field.depends_on) return true;
-                                        return Object.entries(field.depends_on).every(([depKey, depVals]: [string, any]) =>
-                                            (depVals as string[]).includes(configData[depKey] ?? '')
-                                        );
-                                    })
-                                    .map((field: any) => {
-                                        // Get user role from store directly in the map function
-                                        const userFromStore = useAuthStore.getState().user;
-                                        const currentUserRole = userFromStore?.role;
-                                        const isReadOnly = field.read_only_for_roles?.includes(currentUserRole);
-                                        return (
+                            {fields.length > 0 ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                    {fields
+                                        .filter((field: any) => {
+                                            // Handle depends_on: hide fields unless dependency is met
+                                            if (!field.depends_on) return true;
+                                            return Object.entries(field.depends_on).every(([depKey, depVals]: [string, any]) =>
+                                                (depVals as string[]).includes(configData[depKey] ?? '')
+                                            );
+                                        })
+                                        .map((field: any) => {
+                                            // Get user role from store directly in the map function
+                                            const userFromStore = useAuthStore.getState().user;
+                                            const currentUserRole = userFromStore?.role;
+                                            const isReadOnly = field.read_only_for_roles?.includes(currentUserRole);
+                                            return (
                                                 <div key={field.key}>
                                                     <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>
                                                         {field.label}
@@ -382,7 +385,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         </label>
                                                     ) : field.type === 'password' ? (
                                                         <>
-                                                        <input type="password" autoComplete="new-password" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                        <input type="password" autoComplete="new-password" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default')} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
                                                         {/* Per-provider help text for auth_code */}
                                                         {field.key === 'auth_code' && (() => {
                                                             const providerField = configTool?.config_schema?.fields?.find((f: any) => f.key === 'email_provider');
@@ -398,6 +401,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                                 </div>
                                                             );
                                                         })()}
+
                                                         </>
                                                     ) : field.type === 'select' ? (
                                                         <select className="form-input" value={configData[field.key] ?? field.default ?? ''} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}>
@@ -409,94 +413,95 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         <input type="text" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
                                                     )}
                                                 </div>
-                                            );})}
-                                        {/* Email tool: test connection button + help text */}
-                                        {configTool?.category === 'email' && (
-                                            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                                <button
-                                                    className="btn btn-secondary"
-                                                    style={{ alignSelf: 'flex-start' }}
-                                                    onClick={async () => {
-                                                        const btn = document.getElementById('email-test-btn');
-                                                        const status = document.getElementById('email-test-status');
-                                                        if (btn) btn.textContent = 'Testing...';
-                                                        if (btn) (btn as HTMLButtonElement).disabled = true;
-                                                        try {
-                                                            const token = localStorage.getItem('token');
-                                                            const res = await fetch('/api/tools/test-email', {
-                                                                method: 'POST',
-                                                                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                                body: JSON.stringify({ config: configData }),
-                                                            });
-                                                            const data = await res.json();
-                                                            if (status) {
-                                                                status.textContent = data.ok
-                                                                    ? `${data.imap}\n${data.smtp}`
-                                                                    : `${data.imap || ''}\n${data.smtp || ''}\n${data.error || ''}`;
-                                                                status.style.color = data.ok ? 'var(--success)' : 'var(--error)';
-                                                            }
-                                                        } catch (e: any) {
-                                                            if (status) { status.textContent = `Error: ${e.message}`; status.style.color = 'var(--error)'; }
-                                                        } finally {
-                                                            if (btn) { btn.textContent = 'Test Connection'; (btn as HTMLButtonElement).disabled = false; }
+                                            );
+                                        })}
+                                    {/* Email tool: test connection button + help text */}
+                                    {configTool?.category === 'email' && (
+                                        <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                            <button
+                                                className="btn btn-secondary"
+                                                style={{ alignSelf: 'flex-start' }}
+                                                onClick={async () => {
+                                                    const btn = document.getElementById('email-test-btn');
+                                                    const status = document.getElementById('email-test-status');
+                                                    if (btn) btn.textContent = 'Testing...';
+                                                    if (btn) (btn as HTMLButtonElement).disabled = true;
+                                                    try {
+                                                        const token = localStorage.getItem('token');
+                                                        const res = await fetch('/api/tools/test-email', {
+                                                            method: 'POST',
+                                                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                            body: JSON.stringify({ config: configData }),
+                                                        });
+                                                        const data = await res.json();
+                                                        if (status) {
+                                                            status.textContent = data.ok
+                                                                ? `${data.imap}\n${data.smtp}`
+                                                                : `${data.imap || ''}\n${data.smtp || ''}\n${data.error || ''}`;
+                                                            status.style.color = data.ok ? 'var(--success)' : 'var(--error)';
                                                         }
-                                                    }}
-                                                    id="email-test-btn"
-                                                >Test Connection</button>
-                                                <div id="email-test-status" style={{ fontSize: '11px', whiteSpace: 'pre-line', minHeight: '16px' }}></div>
-                                            </div>
-                                        )}
-                                    </div>
-                                ) : (
-                                    <div>
-                                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>Config JSON (Agent Override)</label>
-                                        <textarea
-                                            className="form-input"
-                                            value={configJson}
-                                            onChange={e => setConfigJson(e.target.value)}
-                                            style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', minHeight: '120px', resize: 'vertical' }}
-                                            placeholder='{}'
-                                        />
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                                            Global default: <code style={{ fontSize: '10px' }}>{JSON.stringify(configTool?.global_config || {}).slice(0, 80)}</code>
+                                                    } catch (e: any) {
+                                                        if (status) { status.textContent = `Error: ${e.message}`; status.style.color = 'var(--error)'; }
+                                                    } finally {
+                                                        if (btn) { btn.textContent = 'Test Connection'; (btn as HTMLButtonElement).disabled = false; }
+                                                    }
+                                                }}
+                                                id="email-test-btn"
+                                            >Test Connection</button>
+                                            <div id="email-test-status" style={{ fontSize: '11px', whiteSpace: 'pre-line', minHeight: '16px' }}></div>
                                         </div>
-                                    </div>
-                                )}
-
-                                <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
-                                    {configTool && configTool.agent_config && Object.keys(configTool.agent_config || {}).length > 0 && (
-                                        <button className="btn btn-ghost" style={{ color: 'var(--error)', marginRight: 'auto' }} onClick={async () => {
-                                            const token = localStorage.getItem('token');
-                                            await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ config: {} }) });
-                                            setConfigTool(null); loadTools();
-                                        }}>Reset to Global</button>
                                     )}
-                                    {isCat && (
-                                        <button
-                                            className="btn btn-secondary"
-                                            style={{ marginRight: 'auto' }}
-                                            onClick={async () => {
-                                                const btn = document.getElementById('cat-test-btn');
-                                                if (btn) btn.textContent = 'Testing...';
-                                                try {
-                                                    const token = localStorage.getItem('token');
-                                                    const res = await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}/test`, {
-                                                        method: 'POST',
-                                                        headers: { Authorization: `Bearer ${token}` }
-                                                    });
-                                                    const data = await res.json();
-                                                    alert(data.message || (data.ok ? '✅ Test successful' : '❌ Test failed: ' + data.error));
-                                                } catch (e: any) { alert('Test failed: ' + e.message); }
-                                                finally { if (btn) btn.textContent = 'Test Connection'; }
-                                            }}
-                                            id="cat-test-btn"
-                                        >Test Connection</button>
-                                    )}
-                                    <button className="btn btn-secondary" onClick={() => { setConfigTool(null); setConfigCategory(null); }}>Cancel</button>
-                                    <button className="btn btn-primary" onClick={saveConfig} disabled={configSaving}>{configSaving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}</button>
                                 </div>
+                            ) : (
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>Config JSON (Agent Override)</label>
+                                    <textarea
+                                        className="form-input"
+                                        value={configJson}
+                                        onChange={e => setConfigJson(e.target.value)}
+                                        style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', minHeight: '120px', resize: 'vertical' }}
+                                        placeholder='{}'
+                                    />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                        Global default: <code style={{ fontSize: '10px' }}>{JSON.stringify(configTool?.global_config || {}).slice(0, 80)}</code>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
+                                {configTool && configTool.agent_config && Object.keys(configTool.agent_config || {}).length > 0 && (
+                                    <button className="btn btn-ghost" style={{ color: 'var(--error)', marginRight: 'auto' }} onClick={async () => {
+                                        const token = localStorage.getItem('token');
+                                        await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ config: {} }) });
+                                        setConfigTool(null); loadTools();
+                                    }}>Reset to Global</button>
+                                )}
+                                {isCat && (
+                                    <button
+                                        className="btn btn-secondary"
+                                        style={{ marginRight: 'auto' }}
+                                        onClick={async () => {
+                                            const btn = document.getElementById('cat-test-btn');
+                                            if (btn) btn.textContent = 'Testing...';
+                                            try {
+                                                const token = localStorage.getItem('token');
+                                                const res = await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}/test`, {
+                                                    method: 'POST',
+                                                    headers: { Authorization: `Bearer ${token}` }
+                                                });
+                                                const data = await res.json();
+                                                alert(data.message || (data.ok ? '✅ Test successful' : '❌ Test failed: ' + data.error));
+                                            } catch (e: any) { alert('Test failed: ' + e.message); }
+                                            finally { if (btn) btn.textContent = 'Test Connection'; }
+                                        }}
+                                        id="cat-test-btn"
+                                    >Test Connection</button>
+                                )}
+                                <button className="btn btn-secondary" onClick={() => { setConfigTool(null); setConfigCategory(null); }}>Cancel</button>
+                                <button className="btn btn-primary" onClick={saveConfig} disabled={configSaving}>{configSaving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}</button>
                             </div>
                         </div>
+                    </div>
                 );
             })()}
         </>
@@ -680,7 +685,10 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 600, flexShrink: 0 }}>{r.member?.name?.[0] || '?'}</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{ fontWeight: 600, fontSize: '13px' }}>{r.member?.name || '?'} <span className="badge" style={{ fontSize: '10px', marginLeft: '4px' }}>{r.relation_label}</span></div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{r.member?.title || ''} · {r.member?.department_path || ''}</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                            {r.member?.provider_name && <span style={{ color: 'var(--accent-color)', fontWeight: 500, marginRight: '6px' }}>[{r.member.provider_name}]</span>}
+                                            {r.member?.department_path || ''} · {r.member?.email || ''}
+                                        </div>
                                         {r.description && editingId !== r.id && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{r.description}</div>}
                                     </div>
                                     {!readOnly && editingId !== r.id && (
@@ -719,7 +727,10 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                                         onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-elevated)')}
                                         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                                         <div style={{ fontWeight: 500 }}>{m.name}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{m.title} · {m.department_path}</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                            {m.provider_name && <span style={{ color: 'var(--accent-color)', fontWeight: 500, marginRight: '6px' }}>[{m.provider_name}]</span>}
+                                            {m.department_path} · {m.email}
+                                        </div>
                                     </div>
                                 ))}
                             </div>
@@ -728,7 +739,12 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                 )}
                 {!readOnly && adding && (
                     <div style={{ border: '1px solid var(--accent-primary)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}>
-                        <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '8px' }}>{t('agent.detail.addRelationship')}: {adding.name} <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--text-tertiary)' }}>({adding.title} · {adding.department_path})</span></div>
+                        <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '8px' }}>
+                            {t('agent.detail.addRelationship')}: {adding.name}
+                            <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '8px' }}>
+                                ({adding.provider_name ? `[${adding.provider_name}] ` : ''}{adding.department_path} · {adding.email})
+                            </span>
+                        </div>
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                             <select className="input" value={relation} onChange={e => setRelation(e.target.value)} style={{ width: '140px', fontSize: '12px' }}>
                                 {getRelationOptions(t).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -1056,7 +1072,7 @@ function AgentDetailInner() {
                 ...(m.created_at && { timestamp: m.created_at }),
                 ...(m.id && { id: m.id }),
             }));
-            
+
             if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
                 setChatMessages(preParsed);
             } else {
@@ -1151,6 +1167,9 @@ function AgentDetailInner() {
     };
     interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+    const [liveState, setLiveState] = useState<LivePreviewState>({});
+    const [livePanelVisible, setLivePanelVisible] = useState(false);
+    const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -1374,6 +1393,23 @@ function AgentDetailInner() {
                     return [...prev, { role: 'assistant', content: '', thinking: d.content, _streaming: true } as any];
                 });
             } else if (d.type === 'tool_call') {
+                if (d.live_preview) {
+                    const lp = d.live_preview;
+                    setLiveState(prev => {
+                        const next = { ...prev };
+                        if ((lp.env === 'desktop' || lp.env === 'browser') && lp.screenshot_url) {
+                            if (lp.env === 'desktop') next.desktop = { screenshotUrl: lp.screenshot_url };
+                            else next.browser = { screenshotUrl: lp.screenshot_url };
+                        } else if (lp.env === 'code' && lp.output) {
+                            const existing = prev.code?.output || '';
+                            next.code = { output: existing + (existing ? '\n---\n' : '') + lp.output };
+                        }
+                        return next;
+                    });
+                    setLivePanelVisible(true);
+                    setSessionListCollapsed(true);
+                    useAppStore.setState({ sidebarCollapsed: true });
+                }
                 setChatMessages(prev => {
                     const toolMsg: ChatMsg = { role: 'tool_call', content: '', toolName: d.name, toolArgs: d.args, toolStatus: d.status, toolResult: d.result };
                     if (d.status === 'done') {
@@ -1479,7 +1515,7 @@ function AgentDetailInner() {
         const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
         const fi = fe === 'pdf' ? '📄' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '📊' : (fe === 'docx' || fe === 'doc') ? '📝' : '📎';
         const isImage = msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
-        
+
         const timestampHtml = msg.timestamp ? (() => {
             const d = new Date(msg.timestamp);
             const now = new Date();
@@ -1571,7 +1607,7 @@ function AgentDetailInner() {
         const activeSocket = wsMapRef.current[activeRuntimeKey];
         if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
-        
+
         let userMsg = chatInput.trim();
         let contentForLLM = userMsg;
         let displayFiles = '';
@@ -1579,7 +1615,7 @@ function AgentDetailInner() {
         if (attachedFiles.length > 0) {
             let filesPrompt = '';
             let filesDisplay = '';
-            
+
             attachedFiles.forEach(file => {
                 filesDisplay += `[${file.name}] `;
                 if (file.imageUrl && supportsVision) {
@@ -1599,7 +1635,7 @@ function AgentDetailInner() {
             } else {
                 contentForLLM = userMsg ? `${filesPrompt}\nQuestion: ${userMsg}` : `Please analyze these files:\n\n${filesPrompt}`;
             }
-            
+
             displayFiles = filesDisplay.trim();
             userMsg = userMsg ? `${displayFiles}\n${userMsg}` : displayFiles;
         }
@@ -1607,20 +1643,20 @@ function AgentDetailInner() {
         setIsWaiting(true);
         setIsStreaming(false);
         setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
-        setChatMessages(prev => [...prev, parseChatMsg({ 
-            role: 'user', 
-            content: userMsg, 
-            fileName: attachedFiles.map(f => f.name).join(', '), 
-            imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined, 
-            timestamp: new Date().toISOString() 
+        setChatMessages(prev => [...prev, parseChatMsg({
+            role: 'user',
+            content: userMsg,
+            fileName: attachedFiles.map(f => f.name).join(', '),
+            imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
+            timestamp: new Date().toISOString()
         })]);
         activeSocket.send(JSON.stringify({
-            content: contentForLLM, 
-            display_content: userMsg, 
-            file_name: attachedFiles.map(f => f.name).join(', ') 
+            content: contentForLLM,
+            display_content: userMsg,
+            file_name: attachedFiles.map(f => f.name).join(', ')
         }));
-        
-        setChatInput(''); 
+
+        setChatInput('');
         setAttachedFiles([]);
     };
 
@@ -1632,14 +1668,14 @@ function AgentDetailInner() {
             alert('Limit of 10 attached files reached.');
             return;
         }
-        
+
         setUploading(true); setUploadProgress(0);
         try {
             const uploadPromises = allowedFiles.map(file => {
                 const { promise } = uploadFileWithProgress(
                     `/chat/upload`,
                     file,
-                    () => {}, // Avoid updating progress per file to prevent flickering, could implement total progress
+                    () => { }, // Avoid updating progress per file to prevent flickering, could implement total progress
                     id ? { agent_id: id } : undefined,
                 );
                 return promise;
@@ -1651,9 +1687,9 @@ function AgentDetailInner() {
             setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
         } catch (err: any) {
             if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
-        } finally { 
-            setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; 
-            if (fileInputRef.current) fileInputRef.current.value = ''; 
+        } finally {
+            setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null;
+            if (fileInputRef.current) fileInputRef.current.value = '';
         }
     };
 
@@ -1661,7 +1697,7 @@ function AgentDetailInner() {
     const handlePaste = async (e: React.ClipboardEvent) => {
         const items = e.clipboardData?.items;
         if (!items) return;
-        
+
         const filesToUpload: File[] = [];
         for (let i = 0; i < items.length; i++) {
             if (items[i].type.startsWith('image/')) {
@@ -1673,7 +1709,7 @@ function AgentDetailInner() {
                 }
             }
         }
-        
+
         if (!filesToUpload.length) return;
         e.preventDefault();
         const allowedFiles = filesToUpload.slice(0, 10 - attachedFiles.length);
@@ -1688,7 +1724,7 @@ function AgentDetailInner() {
                 const { promise } = uploadFileWithProgress(
                     `/chat/upload`,
                     file,
-                    () => {},
+                    () => { },
                     id ? { agent_id: id } : undefined,
                 );
                 return promise;
@@ -2111,10 +2147,20 @@ function AgentDetailInner() {
                                                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
                                                 <span className="metric-tooltip">{t('agent.status.24hActionsTooltip')}</span>
                                             </div>
-                                            <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
-                                        </div>
-                                    </>
-                                )}
+                                            <div className="card">
+                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.pending')}</div>
+                                                <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>{metrics.approvals?.pending || 0}</div>
+                                            </div>
+                                            <div className="card" style={{ position: 'relative' }}>
+                                                <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                    {t('agent.status.24hActions')}
+                                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
+                                                    <span className="metric-tooltip">{t('agent.status.24hActionsTooltip')}</span>
+                                                </div>
+                                                <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
+                                            </div>
+                                        </>
+                                    )}
                                 </>)}
                                 {/* OpenClaw-specific metrics */}
                                 {(agent as any)?.agent_type === 'openclaw' && (
@@ -2161,52 +2207,52 @@ function AgentDetailInner() {
                                     </div>
                                 </div>
                                 {(agent as any)?.agent_type !== 'openclaw' ? (
-                                <div className="card">
-                                    <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.model')}</span>
-                                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{modelLabel}</span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.provider')}</span>
-                                            <span style={{ textTransform: 'capitalize' }}>{modelProvider}</span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.contextRounds')}</span>
-                                            <span>{(agent as any).context_window_size || 100}</span>
+                                    <div className="card">
+                                        <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.model')}</span>
+                                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{modelLabel}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.provider')}</span>
+                                                <span style={{ textTransform: 'capitalize' }}>{modelProvider}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.contextRounds')}</span>
+                                                <span>{(agent as any).context_window_size || 100}</span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
                                 ) : (
-                                <div className="card">
-                                    <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>
-                                        {t('agent.openclaw.connection')}
-                                    </h3>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.type')}</span>
-                                            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                <span style={{
-                                                    fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
-                                                }}>OpenClaw</span>
-                                                Lab
-                                            </span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.lastSeen')}</span>
-                                            <span>{(agent as any).openclaw_last_seen
-                                                ? new Date((agent as any).openclaw_last_seen).toLocaleString()
-                                                : t('agent.openclaw.never')}
-                                            </span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.model')}</span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>{t('agent.openclaw.managedBy')}</span>
+                                    <div className="card">
+                                        <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>
+                                            {t('agent.openclaw.connection')}
+                                        </h3>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.type')}</span>
+                                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    <span style={{
+                                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
+                                                    }}>OpenClaw</span>
+                                                    Lab
+                                                </span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.lastSeen')}</span>
+                                                <span>{(agent as any).openclaw_last_seen
+                                                    ? new Date((agent as any).openclaw_last_seen).toLocaleString()
+                                                    : t('agent.openclaw.never')}
+                                                </span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.model')}</span>
+                                                <span style={{ color: 'var(--text-secondary)' }}>{t('agent.openclaw.managedBy')}</span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
                                 )}
                             </div>
 
@@ -3254,9 +3300,14 @@ function AgentDetailInner() {
                     activeTab === 'chat' && (
                         <div style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)' }}>
                             {/* ── Left: session sidebar ── */}
-                            <div style={{ width: '220px', flexShrink: 0, borderRight: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                            <div className={`session-sidebar ${sessionListCollapsed ? 'collapsed' : ''}`} style={{ width: sessionListCollapsed ? '0px' : '220px', transition: 'width 0.2s ease', flexShrink: 0, borderRight: sessionListCollapsed ? 'none' : '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                                 {/* Tab row */}
-                                <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px 0', gap: '4px', borderBottom: '1px solid var(--border-subtle)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px 0', gap: '4px', borderBottom: '1px solid var(--border-subtle)', position: 'relative' }}>
+                                    {!sessionListCollapsed && (
+                                        <button onClick={() => setSessionListCollapsed(true)} className="session-sidebar-collapseBtn" style={{ position: 'absolute', top: '6px', right: '4px', zIndex: 10, background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', padding: '4px', borderRadius: '4px' }} title="Collapse sessions" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='none'}>
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+                                        </button>
+                                    )}
                                     <button onClick={() => setChatScope('mine')}
                                         style={{ flex: 1, padding: '5px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: chatScope === 'mine' ? 600 : 400, color: chatScope === 'mine' ? 'var(--text-primary)' : 'var(--text-tertiary)', borderBottom: chatScope === 'mine' ? '2px solid var(--accent-primary)' : '2px solid transparent', paddingBottom: '8px' }}>
                                         {t('agent.chat.mySessions')}
@@ -3402,7 +3453,13 @@ function AgentDetailInner() {
                             </div>
 
                             {/* ── Right: chat/message area ── */}
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+                            <div className={`agent-chat-area ${ !!(liveState.desktop || liveState.browser || liveState.code) ? 'has-live-panel' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'row', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+                                    {sessionListCollapsed && (
+                                        <button onClick={() => setSessionListCollapsed(false)} style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, width: '28px', height: '28px', borderRadius: '6px', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }} title="Show chat sessions" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='var(--bg-elevated)'}>
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+                                        </button>
+                                    )}
                                 {!activeSession ? (
                                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
                                         <div>{t('agent.chat.noSessionSelected')}</div>
@@ -3452,34 +3509,51 @@ function AgentDetailInner() {
                                                 if (m.role === 'assistant' && !m.content?.trim()) {
                                                     if (m.thinking) {
                                                         return (
-                                                            <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-                                                                <details style={{
-                                                                    fontSize: '12px',
-                                                                    background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
-                                                                    border: '1px solid rgba(147, 130, 220, 0.15)',
-                                                                }}>
-                                                                    <summary style={{
-                                                                        padding: '6px 10px', cursor: 'pointer',
-                                                                        color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
-                                                                        userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
-                                                                    }}>Thinking</summary>
-                                                                    <div style={{
-                                                                        padding: '4px 10px 8px',
-                                                                        fontSize: '12px', lineHeight: '1.6',
-                                                                        color: 'var(--text-secondary)',
-                                                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                                                        maxHeight: '300px', overflow: 'auto',
-                                                                    }}>{m.thinking}</div>
+                                                            <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
+                                                                <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
+                                                                    <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
+                                                                        <span style={{ fontSize: '13px' }}>⚡</span>
+                                                                        <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
+                                                                        {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
+                                                                    </summary>
+                                                                    {tResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{tResult}</div></div>}
                                                                 </details>
                                                             </div>
                                                         );
                                                     }
-                                                    return null;
-                                                }
-                                                return (
-                                                    <ChatMessageItem key={i} msg={m} i={i} isLeft={isLeft} t={t} />
-                                                );
-                                            });
+
+                                                    {/* Assistant message with no content: show inline thinking or skip */ }
+                                                    if (m.role === 'assistant' && !m.content?.trim()) {
+                                                        if (m.thinking) {
+                                                            return (
+                                                                <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
+                                                                    <details style={{
+                                                                        fontSize: '12px',
+                                                                        background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
+                                                                        border: '1px solid rgba(147, 130, 220, 0.15)',
+                                                                    }}>
+                                                                        <summary style={{
+                                                                            padding: '6px 10px', cursor: 'pointer',
+                                                                            color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
+                                                                            userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
+                                                                        }}>Thinking</summary>
+                                                                        <div style={{
+                                                                            padding: '4px 10px 8px',
+                                                                            fontSize: '12px', lineHeight: '1.6',
+                                                                            color: 'var(--text-secondary)',
+                                                                            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                                                            maxHeight: '300px', overflow: 'auto',
+                                                                        }}>{m.thinking}</div>
+                                                                    </details>
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    }
+                                                    return (
+                                                        <ChatMessageItem key={i} msg={m} i={i} isLeft={isLeft} t={t} />
+                                                    );
+                                                });
                                             })()}
                                         </div>
                                         {showHistoryScrollBtn && (
@@ -3513,7 +3587,7 @@ function AgentDetailInner() {
                                                         </div>
                                                     );
                                                 }
-                                                {/* Assistant message with no text content: show inline thinking or skip */}
+                                                {/* Assistant message with no text content: show inline thinking or skip */ }
                                                 if (msg.role === 'assistant' && !msg.content?.trim()) {
                                                     if (msg.thinking) {
                                                         return (
@@ -3636,6 +3710,15 @@ function AgentDetailInner() {
                                             )}
                                         </div>
                                     </>
+                                )}
+                                </div>
+                                {/* Live Panel */}
+                                {!!(liveState.desktop || liveState.browser || liveState.code) && (
+                                    <AgentBayLivePanel
+                                        liveState={liveState}
+                                        visible={livePanelVisible}
+                                        onToggle={() => setLivePanelVisible(v => !v)}
+                                    />
                                 )}
                             </div>
                         </div>
@@ -3967,75 +4050,75 @@ function AgentDetailInner() {
 
                                 {/* Model Selection — native agents only */}
                                 {(agent as any)?.agent_type !== 'openclaw' && (
-                                <div className="card" style={{ marginBottom: '12px' }}>
-                                    <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.modelConfig')}</h4>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                        <div>
-                                            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.primaryModel')}</label>
-                                            <select
-                                                className="input"
-                                                value={settingsForm.primary_model_id}
-                                                onChange={(e) => setSettingsForm(f => ({ ...f, primary_model_id: e.target.value }))}
-                                            >
-                                                <option value="">--</option>
-                                                {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.primary_model_id).map((m: any) => (
-                                                    <option key={m.id} value={m.id}>
-                                                        {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            {/* Warning if selected model is disabled */}
-                                            {settingsForm.primary_model_id && llmModels.some((m: any) => m.id === settingsForm.primary_model_id && !m.enabled) && (
-                                                <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
-                                                    {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
-                                                </div>
-                                            )}
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.primaryModel')}</div>
-                                        </div>
-                                        <div>
-                                            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.fallbackModel')}</label>
-                                            <select
-                                                className="input"
-                                                value={settingsForm.fallback_model_id}
-                                                onChange={(e) => setSettingsForm(f => ({ ...f, fallback_model_id: e.target.value }))}
-                                            >
-                                                <option value="">--</option>
-                                                {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.fallback_model_id).map((m: any) => (
-                                                    <option key={m.id} value={m.id}>
-                                                        {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            {/* Warning if selected fallback model is disabled */}
-                                            {settingsForm.fallback_model_id && llmModels.some((m: any) => m.id === settingsForm.fallback_model_id && !m.enabled) && (
-                                                <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
-                                                    {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
-                                                </div>
-                                            )}
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.fallbackModel')}</div>
+                                    <div className="card" style={{ marginBottom: '12px' }}>
+                                        <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.modelConfig')}</h4>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                            <div>
+                                                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.primaryModel')}</label>
+                                                <select
+                                                    className="input"
+                                                    value={settingsForm.primary_model_id}
+                                                    onChange={(e) => setSettingsForm(f => ({ ...f, primary_model_id: e.target.value }))}
+                                                >
+                                                    <option value="">--</option>
+                                                    {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.primary_model_id).map((m: any) => (
+                                                        <option key={m.id} value={m.id}>
+                                                            {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                {/* Warning if selected model is disabled */}
+                                                {settingsForm.primary_model_id && llmModels.some((m: any) => m.id === settingsForm.primary_model_id && !m.enabled) && (
+                                                    <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                                                        {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
+                                                    </div>
+                                                )}
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.primaryModel')}</div>
+                                            </div>
+                                            <div>
+                                                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.fallbackModel')}</label>
+                                                <select
+                                                    className="input"
+                                                    value={settingsForm.fallback_model_id}
+                                                    onChange={(e) => setSettingsForm(f => ({ ...f, fallback_model_id: e.target.value }))}
+                                                >
+                                                    <option value="">--</option>
+                                                    {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.fallback_model_id).map((m: any) => (
+                                                        <option key={m.id} value={m.id}>
+                                                            {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                {/* Warning if selected fallback model is disabled */}
+                                                {settingsForm.fallback_model_id && llmModels.some((m: any) => m.id === settingsForm.fallback_model_id && !m.enabled) && (
+                                                    <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                                                        {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
+                                                    </div>
+                                                )}
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.fallbackModel')}</div>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
                                 )}
 
                                 {/* Context Window — native agents only */}
                                 {(agent as any)?.agent_type !== 'openclaw' && (<>
-                                <div className="card" style={{ marginBottom: '12px' }}>
-                                    <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.conversationContext')}</h4>
-                                    <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxRounds')}</label>
-                                        <input
-                                            className="input"
-                                            type="number"
-                                            min={10}
-                                            max={500}
-                                            value={settingsForm.context_window_size}
-                                            onChange={(e) => setSettingsForm(f => ({ ...f, context_window_size: Math.max(10, Math.min(500, parseInt(e.target.value) || 100)) }))}
-                                            style={{ width: '120px' }}
-                                        />
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.roundsDesc')}</div>
+                                    <div className="card" style={{ marginBottom: '12px' }}>
+                                        <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.conversationContext')}</h4>
+                                        <div>
+                                            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxRounds')}</label>
+                                            <input
+                                                className="input"
+                                                type="number"
+                                                min={10}
+                                                max={500}
+                                                value={settingsForm.context_window_size}
+                                                onChange={(e) => setSettingsForm(f => ({ ...f, context_window_size: Math.max(10, Math.min(500, parseInt(e.target.value) || 100)) }))}
+                                                style={{ width: '120px' }}
+                                            />
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.roundsDesc')}</div>
+                                        </div>
                                     </div>
-                                </div>
 
                                 {/* Max Tool Call Rounds */}
                                 <div className="card" style={{ marginBottom: '12px' }}>
@@ -4053,7 +4136,6 @@ function AgentDetailInner() {
                                         />
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.maxToolRoundsDesc', 'How many tool-calling rounds the agent can perform per message (search, write, etc). Default: 50')}</div>
                                     </div>
-                                </div>
                                 </>)}
 
                                 {/* Token Limits */}

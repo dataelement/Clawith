@@ -47,6 +47,7 @@ class AgentBayClient:
             "browser_latest": "browser_latest",
             "code_latest": "linux_latest",
             "linux_latest": "linux_latest",
+            "windows_latest": "windows_latest",
         }
         image_id = image_id_map.get(image, image)
         self._image_type = image
@@ -93,7 +94,7 @@ class AgentBayClient:
 
     async def browser_navigate(self, url: str, wait_for: str = "", screenshot: bool = False) -> dict:
         """Navigate browser to URL using SDK."""
-        if not self._session or self._image_type != "browser":
+        if not self._session or self._image_type not in ("browser", "browser_latest"):
             await self.create_session("browser_latest")
 
         await self._ensure_browser_initialized()
@@ -104,12 +105,31 @@ class AgentBayClient:
         result = {"url": url, "success": True, "title": url}
 
         if screenshot:
+            # Wait for dynamic content and SPA rendering (React/Vue) before screenshotting
+            await asyncio.sleep(3)
             screenshot_data = await asyncio.to_thread(
                 self._session.browser.operator.screenshot, full_page=False
             )
             result["screenshot"] = screenshot_data
 
         return result
+
+    async def browser_screenshot(self) -> dict:
+        """Take a screenshot of the current browser page without navigating.
+
+        Use this after actions (click, type, form submit) to verify results
+        without refreshing the page. Never call browser_navigate just to screenshot.
+        """
+        await self._ensure_browser_initialized()
+        
+        # Wait for dynamic content and SPA rendering before screenshotting
+        await asyncio.sleep(3)
+        
+        screenshot_data = await asyncio.to_thread(
+            self._session.browser.operator.screenshot, full_page=False
+        )
+        return {"success": True, "screenshot": screenshot_data}
+
 
     async def browser_click(self, selector: str) -> dict:
         """Click element by CSS selector using SDK."""
@@ -124,10 +144,61 @@ class AgentBayClient:
         await self._ensure_browser_initialized()
 
         from agentbay import ActOptions
-        # Explicitly instruct the agent to click and use keyboard, to correctly trigger React/Vue events.
-        action_msg = f"Click on the element matching '{selector}' to focus it, then use the keyboard to type the text '{text}' character by character. This ensures modern web frameworks like React register the input."
+
+        # Detect OTP/PIN-style inputs: short digit-only strings (4-8 chars)
+        # These use segmented input boxes that auto-advance focus per digit,
+        # so character-by-character typing often fails. Use paste strategy instead.
+        is_otp = text.isdigit() and 4 <= len(text) <= 8
+
+        if is_otp:
+            action_msg = (
+                f"The text '{text}' appears to be a verification/OTP code. "
+                f"Find the verification code input area near '{selector}'. "
+                f"Click on the first input box, then paste or type the full code '{text}'. "
+                f"If the input is split into individual digit boxes, click the first box "
+                f"and type each digit one at a time: {', '.join(text)}. "
+                f"Each box should auto-advance to the next after entering a digit."
+            )
+        else:
+            # Standard input: click to focus, then type character by character
+            # to correctly trigger React/Vue input events.
+            action_msg = (
+                f"Click on the element matching '{selector}' to focus it, "
+                f"then use the keyboard to type the text '{text}' character by character. "
+                f"This ensures modern web frameworks like React register the input."
+            )
+
         await asyncio.to_thread(self._session.browser.operator.act, ActOptions(action=action_msg))
         return {"success": True, "selector": selector, "text": text}
+
+    async def browser_login(self, url: str, login_config: str) -> dict:
+        """Perform an automated login using AgentBay's built-in login skill.
+
+        This leverages AgentBay's AI-driven login capability to handle complex
+        login flows including CAPTCHAs, OTP inputs, and multi-step authentication.
+
+        Args:
+            url: The login page URL to navigate to first.
+            login_config: JSON string with login configuration, e.g.
+                          '{"api_key": "xxx", "skill_id": "yyy"}'
+        """
+        if not self._session or self._image_type != "browser":
+            await self.create_session("browser_latest")
+        await self._ensure_browser_initialized()
+
+        # Navigate to the login page first
+        await asyncio.to_thread(self._session.browser.operator.navigate, url)
+
+        # Execute the login skill
+        result = await asyncio.to_thread(
+            self._session.browser.operator.login,
+            login_config,
+            use_vision=True,
+        )
+        return {
+            "success": result.success,
+            "message": result.message or "",
+        }
 
     # ─── Code Operations ──────────────────────────
 
@@ -142,7 +213,7 @@ class AgentBayClient:
         }
         sdk_lang = lang_map.get(language.lower(), "python")
 
-        if not self._session or self._image_type != "code":
+        if not self._session or self._image_type not in ("code", "code_latest"):
             await self.create_session("code_latest")
 
         result = await asyncio.to_thread(self._session.code.run_code, code, sdk_lang)
@@ -159,6 +230,9 @@ class AgentBayClient:
     async def browser_extract(self, instruction: str, selector: str = "") -> dict:
         """Extract structured data from current page using natural language instruction."""
         await self._ensure_browser_initialized()
+        
+        # Wait for dynamic content and SPA rendering before extracting
+        await asyncio.sleep(3)
 
         from agentbay._common.models.browser_operator import ExtractOptions
         # Use a generic dict schema since we cannot define a Pydantic model at runtime
@@ -175,6 +249,9 @@ class AgentBayClient:
     async def browser_observe(self, instruction: str, selector: str = "") -> dict:
         """Observe the current page state and return interactive elements."""
         await self._ensure_browser_initialized()
+        
+        # Wait for dynamic content and SPA rendering before observing
+        await asyncio.sleep(3)
 
         from agentbay._common.models.browser_operator import ObserveOptions
         options = ObserveOptions(
@@ -214,14 +291,36 @@ class AgentBayClient:
     # ─── Computer Operations ──────────────────────────
 
     async def _ensure_computer_session(self):
-        """Ensure a computer (linux desktop) session is active."""
-        if not self._session or self._image_type not in ("computer", "linux_latest"):
+        """Ensure a computer (linux or windows desktop) session is active."""
+        if not self._session or self._image_type not in ("computer", "linux_latest", "windows_latest"):
             await self.create_session("linux_latest")
 
     async def computer_screenshot(self) -> dict:
-        """Take a screenshot of the desktop."""
+        """Take a screenshot of the desktop.
+
+        Tries the standard screenshot() API first, then falls back to
+        beta_take_screenshot() for cloud environments that don't support
+        the standard API yet.
+        """
         await self._ensure_computer_session()
-        result = await asyncio.to_thread(self._session.computer.screenshot)
+        
+        # Wait briefly for UI animations/rendering to settle
+        await asyncio.sleep(2)
+
+        try:
+            result = await asyncio.to_thread(self._session.computer.screenshot)
+            # Some cloud environments return success=False with a message
+            # telling us to use beta_take_screenshot() instead of throwing.
+            if not result.success and "beta_take_screenshot" in (result.error_message or ""):
+                logger.info("[AgentBay] screenshot() unsupported, falling back to beta_take_screenshot()")
+                result = await asyncio.to_thread(self._session.computer.beta_take_screenshot)
+        except Exception as e:
+            # Also handle the case where it raises an exception
+            if "beta_take_screenshot" in str(e):
+                logger.info("[AgentBay] Falling back to beta_take_screenshot() after exception")
+                result = await asyncio.to_thread(self._session.computer.beta_take_screenshot)
+            else:
+                raise
         return {
             "success": result.success,
             "data": getattr(result, "data", None),
@@ -333,6 +432,116 @@ class AgentBayClient:
             "apps": apps,
             "error_message": result.error_message or "",
         }
+
+    # ─── Live Preview Support ──────────────────────────
+
+    async def get_live_url(self) -> str | None:
+        """Get the VNC/viewer URL for the current computer session.
+
+        Calls session.get_link() which returns a shareable viewer URL
+        for the cloud desktop. Returns None if no session is active
+        or the API call fails.
+        """
+        if not self._session:
+            return None
+        try:
+            result = await asyncio.to_thread(self._session.get_link)
+            if result.success and result.data:
+                logger.info(f"[AgentBay] Got live URL: {str(result.data)[:80]}...")
+                return result.data
+            logger.warning(f"[AgentBay] get_link() failed: {result.error_message}")
+            return None
+        except Exception as e:
+            logger.warning(f"[AgentBay] Failed to get live URL: {e}")
+            return None
+
+    async def get_desktop_snapshot_base64(self) -> str | None:
+        """Take a quick desktop screenshot and return compressed base64 JPEG.
+
+        Used for live preview panel. Calls the same screenshot API as
+        computer_screenshot() but without the sleep delay, and compresses
+        the result for efficient WebSocket transfer.
+        Returns data:image/jpeg;base64,... or None on failure.
+        """
+        if not self._session:
+            return None
+        try:
+            # Use the same screenshot logic as computer_screenshot()
+            try:
+                result = await asyncio.to_thread(self._session.computer.screenshot)
+                if not result.success and "beta_take_screenshot" in (result.error_message or ""):
+                    result = await asyncio.to_thread(self._session.computer.beta_take_screenshot)
+            except Exception as e:
+                if "beta_take_screenshot" in str(e):
+                    result = await asyncio.to_thread(self._session.computer.beta_take_screenshot)
+                else:
+                    raise
+
+            screenshot_data = getattr(result, "data", None)
+            if not screenshot_data:
+                return None
+
+            # Compress to JPEG base64 for live preview
+            import base64
+            from io import BytesIO
+            from PIL import Image
+
+            img = Image.open(BytesIO(screenshot_data))
+            # Resize to max 1280px wide for live preview
+            if img.width > 1280:
+                ratio = 1280 / img.width
+                img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            buffer = BytesIO()
+            img.save(buffer, format="JPEG", quality=60, optimize=True)
+            b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+        except Exception as e:
+            logger.warning(f"[AgentBay] Desktop snapshot failed: {e}")
+            return None
+
+    async def get_browser_snapshot_base64(self) -> str | None:
+        """Take a quick browser screenshot and return compressed base64 JPEG.
+
+        Used for live preview panel — no wait/sleep since we want
+        the snapshot to reflect the current state immediately.
+        Returns data:image/jpeg;base64,... or None on failure.
+        """
+        if not self._session:
+            logger.info("[AgentBay] Browser snapshot skipped: No active session")
+            return None
+        if not getattr(self, "_browser_initialized", False):
+            logger.info("[AgentBay] Browser snapshot skipped: Browser not initialized")
+            return None
+        
+        try:
+            screenshot_data = await asyncio.to_thread(
+                self._session.browser.operator.screenshot, full_page=False
+            )
+            if not screenshot_data:
+                logger.info("[AgentBay] Browser snapshot returned empty data")
+                return None
+
+            # Compress screenshot to JPEG base64 for efficient transfer
+            import base64
+            from io import BytesIO
+            from PIL import Image
+
+            img = Image.open(BytesIO(screenshot_data))
+            # Resize to max 1280px wide for live preview
+            if img.width > 1280:
+                ratio = 1280 / img.width
+                img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            buffer = BytesIO()
+            img.save(buffer, format="JPEG", quality=60, optimize=True)
+            b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+        except Exception as e:
+            logger.warning(f"[AgentBay] Browser snapshot failed: {e}")
+            return None
 
     async def __aenter__(self):
         return self
@@ -474,7 +683,11 @@ async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str) ->
     if image_type == "browser":
         await client.create_session("browser_latest")
     elif image_type == "computer":
-        await client.create_session("linux_latest")
+        # Read OS preference from tool config (default: windows)
+        os_type = (tool_config or {}).get("os_type", "windows")
+        computer_image = "windows_latest" if os_type == "windows" else "linux_latest"
+        logger.info(f"[AgentBay] Creating computer session with OS: {os_type} (image: {computer_image})")
+        await client.create_session(computer_image)
     else:
         await client.create_session("code_latest")
 
