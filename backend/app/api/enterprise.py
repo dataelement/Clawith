@@ -534,6 +534,40 @@ async def update_system_setting(
     return {"key": setting.key, "value": setting.value}
 
 
+# ─── SSO Derived State Helper ───────────────────────────
+
+async def _sync_tenant_sso_state(db: AsyncSession, tenant_id: uuid.UUID):
+    """Recompute tenant.sso_enabled based on channel-level sso_login_enabled flags.
+
+    When any identity provider has sso_login_enabled=True, the tenant's
+    sso_enabled is set to True and sso_domain is auto-assigned if empty.
+    When all providers have sso_login_enabled=False, sso_enabled becomes False
+    but sso_domain is preserved for potential re-enablement.
+    """
+    from app.models.tenant import Tenant
+    count_result = await db.execute(
+        select(func.count(IdentityProvider.id)).where(
+            IdentityProvider.tenant_id == tenant_id,
+            IdentityProvider.sso_login_enabled == True,
+            IdentityProvider.is_active == True,
+        )
+    )
+    active_sso_count = count_result.scalar() or 0
+
+    tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = tenant_result.scalar_one_or_none()
+    if not tenant:
+        return
+
+    tenant.sso_enabled = active_sso_count > 0
+
+    # Auto-assign subdomain on first SSO enablement
+    if tenant.sso_enabled and not tenant.sso_domain:
+        tenant.sso_domain = f"{tenant.slug}.clawith.ai"
+
+    await db.commit()
+
+
 # ─── Identity Providers ─────────────────────────────────
 
 @router.get("/identity-providers", response_model=list[IdentityProviderOut])
@@ -575,6 +609,7 @@ class IdentityProviderCreate(BaseModel):
     provider_type: str
     name: str
     is_active: bool = True
+    sso_login_enabled: bool = False
     config: dict = {}
     tenant_id: uuid.UUID | None = None
 
@@ -698,6 +733,7 @@ async def create_identity_provider(
         provider_type=data.provider_type,
         name=data.name,
         is_active=data.is_active,
+        sso_login_enabled=data.sso_login_enabled,
         config=data.config,
         tenant_id=tid
     )
@@ -830,6 +866,7 @@ async def update_oauth2_provider(
 class IdentityProviderUpdate(BaseModel):
     name: str | None = None
     is_active: bool | None = None
+    sso_login_enabled: bool | None = None
     config: dict | None = None
 
 
@@ -853,6 +890,8 @@ async def update_identity_provider(
         provider.name = data.name
     if data.is_active is not None:
         provider.is_active = data.is_active
+    if data.sso_login_enabled is not None:
+        provider.sso_login_enabled = data.sso_login_enabled
     if data.config is not None:
         # Merge config
         new_config = provider.config.copy()
@@ -865,6 +904,11 @@ async def update_identity_provider(
         
     await db.commit()
     await db.refresh(provider)
+
+    # Recompute tenant.sso_enabled derived state whenever sso_login_enabled changes
+    if data.sso_login_enabled is not None and provider.tenant_id:
+        await _sync_tenant_sso_state(db, provider.tenant_id)
+
     return IdentityProviderOut.model_validate(provider)
 
 

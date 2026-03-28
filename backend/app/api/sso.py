@@ -82,8 +82,11 @@ async def get_sso_config(sid: uuid.UUID, db: AsyncSession = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
         
-    # 2. Query IdentityProviders for this tenant (only those that are active)
-    query = select(IdentityProvider).where(IdentityProvider.is_active == True)
+    # 2. Query IdentityProviders for this tenant (only those that are active AND SSO-enabled)
+    query = select(IdentityProvider).where(
+        IdentityProvider.is_active == True,
+        IdentityProvider.sso_login_enabled == True,
+    )
     if session.tenant_id:
         query = query.where(IdentityProvider.tenant_id == session.tenant_id)
     else:

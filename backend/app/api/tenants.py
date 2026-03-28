@@ -208,9 +208,25 @@ async def resolve_tenant_by_domain(
     domain: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Resolve a tenant by its sso_domain. Used by frontend for custom branding/SSO."""
+    """Resolve a tenant by its sso_domain or subdomain slug.
+
+    Lookup precedence:
+    1. Exact match on tenant.sso_domain (e.g. "acme.clawith.ai")
+    2. Extract slug from "{slug}.clawith.ai" and match tenant.slug
+    """
+    # 1. Try exact sso_domain match first
     result = await db.execute(select(Tenant).where(Tenant.sso_domain == domain))
     tenant = result.scalar_one_or_none()
+
+    # 2. Fallback: extract slug from subdomain pattern
+    if not tenant:
+        import re
+        m = re.match(r"^([a-z0-9][a-z0-9\-]*[a-z0-9])\.clawith\.ai$", domain.lower())
+        if m:
+            slug = m.group(1)
+            result = await db.execute(select(Tenant).where(Tenant.slug == slug))
+            tenant = result.scalar_one_or_none()
+
     if not tenant or not tenant.is_active:
         raise HTTPException(status_code=404, detail="Tenant not found or not active")
     
@@ -219,6 +235,7 @@ async def resolve_tenant_by_domain(
         "name": tenant.name,
         "slug": tenant.slug,
         "sso_enabled": tenant.sso_enabled,
+        "sso_domain": tenant.sso_domain,
         "is_active": tenant.is_active,
     }
 

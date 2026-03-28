@@ -21,6 +21,8 @@ class IdentityProvider(Base):
     provider_type: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # When True, this provider can be used for SSO login (not just directory sync)
+    sso_login_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
 
     # Optional tenant_id for enterprise-specific providers (no FK - soft coupling)

@@ -53,6 +53,7 @@ class IdentityProviderOut(BaseModel):
     provider_type: str
     name: str
     is_active: bool
+    sso_login_enabled: bool = False
     config: dict | None = None
     tenant_id: uuid.UUID | None = None
     updated_at: datetime | None = None

@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Check, Globe, Eye, Pencil, Settings, User, Lightbulb, Plug, Bot, Trash2, RefreshCw, ChevronDown } from 'lucide-react';
 import { enterpriseApi, skillApi } from '../services/api';
 import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
@@ -74,17 +73,30 @@ function DeptTree({ departments, parentId, selectedDept, onSelect, level }: {
                 <div key={d.id}>
                     <div
                         style={{
-                            padding: '5px 8px', paddingLeft: `${8 + level * 16}px`, borderRadius: '4px',
-                            cursor: 'pointer', fontSize: '13px', marginBottom: '1px',
+                            padding: '5px 8px', 
+                            paddingLeft: `${8 + level * 16}px`, 
+                            borderRadius: '4px',
+                            cursor: 'pointer', 
+                            fontSize: '13px', 
+                            marginBottom: '1px',
                             background: selectedDept === d.id ? 'rgba(224,238,238,0.12)' : 'transparent',
+                            display: 'flex', 
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
                         }}
                         onClick={() => onSelect(d.id)}
                     >
-                        <span style={{ color: 'var(--text-tertiary)', marginRight: '4px', fontSize: '11px' }}>
-                            {departments.some((c: any) => c.parent_id === d.id) ? '▸' : '·'}
-                        </span>
-                        {d.name}
-                        {d.member_count > 0 && <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: '4px' }}>({d.member_count})</span>}
+                        <div>
+                            <span style={{ color: 'var(--text-tertiary)', marginRight: '4px', fontSize: '11px' }}>
+                                {departments.some((c: any) => c.parent_id === d.id) ? '▾' : '·'}
+                            </span>
+                            {d.name}
+                        </div>
+                        {d.member_count !== undefined && (
+                            <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                                {d.member_count}
+                            </span>
+                        )}
                     </div>
                     <DeptTree departments={departments} parentId={d.id} selectedDept={selectedDept} onSelect={onSelect} level={level + 1} />
                 </div>
@@ -485,13 +497,21 @@ function OrgTab({ tenant }: { tenant: any }) {
     const renderOrgBrowser = (p: any) => {
         return (
             <div style={{ marginTop: '24px', paddingTop: '24px', borderTop: '1px dashed var(--border-subtle)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
                     <div style={{ fontWeight: 500, fontSize: '14px' }}>{t('enterprise.org.orgBrowser', 'Organization Browser')}</div>
-                    {['feishu', 'dingtalk', 'wecom'].includes(p.provider_type) && (
-                        <button className="btn btn-secondary btn-sm" style={{ fontSize: '12px' }} onClick={() => triggerSync(p.id)} disabled={!!syncing}>
-                            {syncing === p.id ? 'Syncing...' : <><RefreshCw size={12} style={{display:'inline',verticalAlign:'middle',marginRight:'4px'}} />Sync Directory</>}
-                        </button>
-                    )}
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
+                        {['feishu', 'dingtalk', 'wecom'].includes(p.provider_type) && (
+                            <button className="btn btn-secondary btn-sm" style={{ fontSize: '12px' }} onClick={() => triggerSync(p.id)} disabled={!!syncing}>
+                                {syncing === p.id ? 'Syncing...' : 'Sync Directory'}
+                            </button>
+                        )}
+                        {syncResult && (
+                            <div style={{ padding: '6px 10px', borderRadius: '4px', fontSize: '11px', background: syncResult.error ? 'rgba(255,0,0,0.1)' : 'rgba(0,200,0,0.1)' }}>
+                                {syncResult.error ? `Error: ${syncResult.error}` : `Sync complete: ${syncResult.users_created || 0} users created, ${syncResult.profiles_synced || 0} profiles synced.`}
+                            </div>
+                        )}
+                    </div>
                 </div>
                 <div style={{ display: 'flex', gap: '16px' }}>
                     <div style={{ width: '260px', borderRight: '1px solid var(--border-subtle)', paddingRight: '16px', maxHeight: '500px', overflowY: 'auto' }}>
@@ -527,8 +547,7 @@ function OrgTab({ tenant }: { tenant: any }) {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            {/* 0. SSO Status Section */}
-            <SsoStatus />
+            {/* SSO status is now derived from per-channel toggles — no global switch */}
 
             {/* 1. Identity Providers Section */}
             <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
@@ -573,7 +592,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                             <span className="badge badge-secondary" style={{ fontSize: '10px' }}>Not configured</span>
                                         )}
                                         <div style={{ color: 'var(--text-tertiary)', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', fontSize: '12px' }}>
-                                            <ChevronDown size={12} />
+                                            ▼
                                         </div>
                                     </div>
                                 </div>
@@ -581,6 +600,120 @@ function OrgTab({ tenant }: { tenant: any }) {
                                 {isExpanded && (
                                     <div style={{ padding: '0 20px 20px', background: 'var(--bg-secondary)' }}>
                                         {renderForm(idp.type, existingProvider)}
+
+                                        {/* Per-channel SSO Login toggle — only for configured, sync-capable providers */}
+                                        {existingProvider && ['feishu', 'dingtalk', 'wecom'].includes(idp.type) && (() => {
+                                            const ssoEnabled = !!existingProvider.sso_login_enabled;
+                                            const slug = tenant?.slug || '';
+                                            const domain = tenant?.sso_domain || (slug ? `${slug}.clawith.ai` : '');
+                                            const callbackUrl = domain ? `https://${domain}/api/auth/${idp.type}/callback` : '';
+
+                                            const handleSsoToggle = async () => {
+                                                const newVal = !ssoEnabled;
+                                                try {
+                                                    await fetchJson(`/enterprise/identity-providers/${existingProvider.id}`, {
+                                                        method: 'PUT',
+                                                        body: JSON.stringify({ sso_login_enabled: newVal }),
+                                                    });
+                                                    qc.invalidateQueries({ queryKey: ['identity-providers'] });
+                                                    // Refresh tenant data so sso_domain updates in UI
+                                                    if (tenant?.id) qc.invalidateQueries({ queryKey: ['tenant', tenant.id] });
+                                                } catch (e) {
+                                                    console.error('Failed to toggle SSO:', e);
+                                                }
+                                            };
+
+                                            return (
+                                                <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px dashed var(--border-subtle)' }}>
+                                                    {/* SSO Toggle */}
+                                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: ssoEnabled ? '16px' : 0 }}>
+                                                        <div>
+                                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('enterprise.identity.ssoLoginToggle', 'SSO Login')}</div>
+                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                                                                {t('enterprise.identity.ssoLoginToggleHint', 'Allow users to log in via this identity provider.')}
+                                                            </div>
+                                                        </div>
+                                                        <label style={{ position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: 0 }}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={ssoEnabled}
+                                                                onChange={handleSsoToggle}
+                                                                style={{ opacity: 0, width: 0, height: 0 }}
+                                                            />
+                                                            <span style={{
+                                                                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                                                                borderRadius: '20px', cursor: 'pointer',
+                                                                background: ssoEnabled ? 'var(--accent-primary)' : 'var(--border-subtle)',
+                                                                transition: '0.2s'
+                                                            }}>
+                                                                <span style={{
+                                                                    position: 'absolute', left: ssoEnabled ? '18px' : '2px', top: '2px',
+                                                                    width: '16px', height: '16px', borderRadius: '50%',
+                                                                    background: '#fff', transition: '0.2s',
+                                                                    boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
+                                                                }} />
+                                                            </span>
+                                                        </label>
+                                                    </div>
+
+                                                    {/* Callback URL & domain info — shown when SSO is enabled */}
+                                                    {ssoEnabled && (
+                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                                            {/* Company subdomain */}
+                                                            <div>
+                                                                <label className="form-label" style={{ fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                                                                    {t('enterprise.identity.ssoSubdomain', 'SSO Login URL')}
+                                                                </label>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                    <input
+                                                                        className="form-input"
+                                                                        readOnly
+                                                                        value={domain ? `https://${domain}` : 'Generating...'}
+                                                                        style={{ fontSize: '12px', flex: 1, maxWidth: '400px', background: 'var(--bg-primary)', cursor: 'default' }}
+                                                                    />
+                                                                    <button
+                                                                        className="btn btn-ghost btn-sm"
+                                                                        style={{ fontSize: '11px' }}
+                                                                        onClick={() => { navigator.clipboard.writeText(`https://${domain}`); }}
+                                                                    >
+                                                                        {t('common.copy', 'Copy')}
+                                                                    </button>
+                                                                </div>
+                                                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                                                    {t('enterprise.identity.ssoSubdomainHint', 'Share this URL with your team. SSO login buttons will appear when they visit this address.')}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Callback URL */}
+                                                            <div>
+                                                                <label className="form-label" style={{ fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                                                                    {t('enterprise.identity.callbackUrl', 'Redirect URL (paste this in your app settings)')}
+                                                                </label>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                    <input
+                                                                        className="form-input"
+                                                                        readOnly
+                                                                        value={callbackUrl}
+                                                                        style={{ fontSize: '12px', flex: 1, maxWidth: '400px', background: 'var(--bg-primary)', cursor: 'default' }}
+                                                                    />
+                                                                    <button
+                                                                        className="btn btn-ghost btn-sm"
+                                                                        style={{ fontSize: '11px' }}
+                                                                        onClick={() => { navigator.clipboard.writeText(callbackUrl); }}
+                                                                    >
+                                                                        {t('common.copy', 'Copy')}
+                                                                    </button>
+                                                                </div>
+                                                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                                                    {t('enterprise.identity.callbackUrlHint', 'Add this URL as the OAuth redirect URI in your identity provider\'s app configuration.')}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
+
                                         {existingProvider && renderOrgBrowser(existingProvider)}
                                     </div>
                                 )}
@@ -588,12 +721,6 @@ function OrgTab({ tenant }: { tenant: any }) {
                         );
                     })}
                 </div>
-
-                {syncResult && (
-                    <div style={{ margin: '16px', padding: '12px', borderRadius: '6px', fontSize: '12px', background: syncResult.error ? 'rgba(255,0,0,0.1)' : 'rgba(0,200,0,0.1)' }}>
-                        {syncResult.error ? `Error: ${syncResult.error}` : `Sync complete: ${syncResult.users_created || 0} users created, ${syncResult.profiles_synced || 0} profiles synced.`}
-                    </div>
-                )}
             </div>
         </div>
     );
@@ -1216,7 +1343,7 @@ function CompanyNameEditor() {
                 <button className="btn btn-primary" onClick={handleSave} disabled={saving || !name.trim()}>
                     {saving ? t('common.loading') : t('common.save', 'Save')}
                 </button>
-                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}><Check size={12} /></span>}
+                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅</span>}
             </div>
         </div>
     );
@@ -1277,7 +1404,7 @@ function CompanyTimezoneEditor() {
         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                 <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '4px' }}><Globe size={14} /> {t('enterprise.timezone.title', 'Company Timezone')}</div>
+                    <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '4px' }}>🌐 {t('enterprise.timezone.title', 'Company Timezone')}</div>
                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                         {t('enterprise.timezone.description', 'Default timezone for all agents. Agents can override individually.')}
                     </div>
@@ -1293,7 +1420,7 @@ function CompanyTimezoneEditor() {
                         <option key={tz} value={tz}>{tz}</option>
                     ))}
                 </select>
-                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}><Check size={12} /></span>}
+                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅</span>}
             </div>
         </div>
     );
@@ -1932,7 +2059,7 @@ export default function EnterpriseSettings() {
                                                     setEditingModelId(m.id);
                                                     setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
                                                     setShowAddModel(true);
-                                                }} style={{ fontSize: '12px' }}><Pencil size={12} /> {t('enterprise.tools.edit')}</button>
+                                                }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
                                             </div>
                                         </div>
@@ -2013,7 +2140,7 @@ export default function EnterpriseSettings() {
                                             padding: '1px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 500,
                                             background: isBg ? 'rgba(99,102,241,0.12)' : 'rgba(34,197,94,0.12)',
                                             color: isBg ? 'var(--accent-color)' : 'rgb(34,197,94)',
-                                        }}>{isBg ? <Settings size={12} /> : <User size={12} />}</span>
+                                        }}>{isBg ? '⚙️' : '👤'}</span>
                                         <span style={{ flex: 1, fontWeight: 500 }}>{log.action}</span>
                                         <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>{log.agent_id?.slice(0, 8) || '-'}</span>
                                     </div>
@@ -2063,9 +2190,9 @@ export default function EnterpriseSettings() {
                                 <button className="btn btn-primary" onClick={saveCompanyIntro} disabled={companyIntroSaving}>
                                     {companyIntroSaving ? t('common.loading') : t('common.save', 'Save')}
                                 </button>
-                                {companyIntroSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}><Check size={12} /> {t('enterprise.config.saved', 'Saved')}</span>}
+                                {companyIntroSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
                                 <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
-                                    <Lightbulb size={14} /> {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
+                                    💡 {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
                                 </span>
                             </div>
                         </div>
@@ -2217,7 +2344,7 @@ export default function EnterpriseSettings() {
                                 <button className="btn btn-primary" onClick={saveQuotas} disabled={quotaSaving}>
                                     {quotaSaving ? t('common.loading') : t('common.save', 'Save')}
                                 </button>
-                                {quotaSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}><Check size={12} /> Saved</span>}
+                                {quotaSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ Saved</span>}
                             </div>
                         </div>
                     </div>
@@ -2255,11 +2382,11 @@ export default function EnterpriseSettings() {
                                             <div key={row.agent_tool_id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px' }}>
                                                 <div style={{ flex: 1, minWidth: 0 }}>
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                        <span style={{ fontWeight: 500, fontSize: '13px' }}><Plug size={13} /> {row.tool_display_name}</span>
+                                                        <span style={{ fontWeight: 500, fontSize: '13px' }}>🔌 {row.tool_display_name}</span>
                                                         {row.mcp_server_name && <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>}
                                                     </div>
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                        <Bot size={13} /> {row.installed_by_agent_name || 'Unknown Agent'}
+                                                        🤖 {row.installed_by_agent_name || 'Unknown Agent'}
                                                         {row.installed_at && <span> · {new Date(row.installed_at).toLocaleString()}</span>}
                                                     </div>
                                                 </div>
@@ -2271,7 +2398,7 @@ export default function EnterpriseSettings() {
                                                         // Already deleted (e.g. removed via Global Tools) — just refresh
                                                     }
                                                     loadAgentInstalledTools();
-                                                }}><Trash2 size={12} /> {t('enterprise.tools.delete')}</button>
+                                                }}>🗑️ {t('enterprise.tools.delete')}</button>
                                             </div>
                                         ))}
                                     </div>
