@@ -984,6 +984,34 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    {
+        "name": "sql_execute",
+        "display_name": "SQL Execute",
+        "description": "Connect to any SQL database and execute queries or statements. Supports MySQL, PostgreSQL, SQLite. Pass a standard connection URI and SQL statement.",
+        "category": "database",
+        "icon": "🗄️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "connection_string": {
+                    "type": "string",
+                    "description": "Database connection URI, e.g. mysql://user:pass@host:3306/db, postgresql://user:pass@host:5432/db, sqlite:///path/to/file.db",
+                },
+                "sql": {
+                    "type": "string",
+                    "description": "SQL statement to execute (SELECT, INSERT, UPDATE, DELETE, DDL, etc.)",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Query timeout in seconds (default 30, max 120)",
+                },
+            },
+            "required": ["connection_string", "sql"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
 ]
 
 # ── AgentBay Tools ──────────────────────────────────────────────────────────

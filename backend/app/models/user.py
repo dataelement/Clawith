@@ -42,6 +42,9 @@ class User(Base):
     # Legacy Feishu specific fields (Maintained for compatibility)
     feishu_user_id: Mapped[str | None] = mapped_column(String(255))
 
+    # User source / registration channel
+    source: Mapped[str | None] = mapped_column(String(50), default="web", index=True)
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

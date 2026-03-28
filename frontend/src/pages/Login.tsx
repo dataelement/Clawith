@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { Bot, Brain, Building2, Globe, AlertTriangle } from 'lucide-react';
 import { useAuthStore } from '../stores';
 import { authApi, tenantApi, fetchJson } from '../services/api';
 
@@ -149,21 +150,21 @@ export default function Login() {
                     <p className="login-hero-desc" dangerouslySetInnerHTML={{ __html: t('login.hero.description') }} />
                     <div className="login-hero-features">
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🤖</span>
+                            <span className="login-hero-feature-icon"><Bot size={20} /></span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.multiAgent.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.multiAgent.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🧠</span>
+                            <span className="login-hero-feature-icon"><Brain size={20} /></span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.persistentMemory.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.persistentMemory.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🏛️</span>
+                            <span className="login-hero-feature-icon"><Building2 size={20} /></span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.agentPlaza.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.agentPlaza.description')}</div>
@@ -184,7 +185,7 @@ export default function Login() {
                     background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
                     zIndex: 101,
                 }} onClick={toggleLang}>
-                    🌐
+                    <Globe size={14} />
                 </div>
 
                 <div className="login-form-wrapper">
@@ -200,7 +201,7 @@ export default function Login() {
 
                     {error && (
                         <div className="login-error">
-                            <span>⚠</span> {error}
+                            <span><AlertTriangle size={14} /></span> {error}
                         </div>
                     )}
 

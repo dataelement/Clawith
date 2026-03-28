@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '../stores';
 import { fetchJson } from '../services/api';
+import { AlertTriangle } from 'lucide-react';
 
 export default function SSOEntry() {
     const [searchParams] = useSearchParams();
@@ -114,7 +115,7 @@ export default function SSOEntry() {
     if (error) {
         return (
             <div style={{ padding: '40px', textAlign: 'center' }}>
-                <h3 style={{ color: 'var(--error)' }}>⚠ Error</h3>
+                <h3 style={{ color: 'var(--error)' }}><AlertTriangle size={16} style={{display:'inline',verticalAlign:'middle',marginRight:'4px'}} />Error</h3>
                 <p>{error}</p>
             </div>
         );

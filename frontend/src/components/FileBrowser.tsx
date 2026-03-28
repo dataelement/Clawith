@@ -6,6 +6,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Folder, Pencil, Download, Upload } from 'lucide-react';
 import MarkdownRenderer from './MarkdownRenderer';
 
 // ─── Types ─────────────────────────────────────────────
@@ -262,7 +263,7 @@ export default function FileBrowser({
                     style={{ cursor: 'pointer', color: 'var(--accent-primary)', fontWeight: 500 }}
                     onClick={() => { setCurrentPath(rootPath); setViewing(null); setEditing(false); }}
                 >
-                    📁 {rootPath || 'root'}
+                    <Folder size={14} /> {rootPath || 'root'}
                 </span>
                 {pathParts.slice(rootPath ? rootPath.split('/').filter(Boolean).length : 0).map((part, i) => {
                     const upTo = pathParts.slice(0, (rootPath ? rootPath.split('/').filter(Boolean).length : 0) + i + 1).join('/');
@@ -401,7 +402,7 @@ export default function FileBrowser({
                     {isText && edit && (
                         !editing ? (
                             <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}
-                                onClick={() => { setEditContent(content); setEditing(true); }}>✏️ {t('agent.soul.editButton')}</button>
+                                onClick={() => { setEditContent(content); setEditing(true); }}><Pencil size={14} /> {t('agent.soul.editButton')}</button>
                         ) : (
                             <div style={{ display: 'flex', gap: '6px' }}>
                                 <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}
@@ -413,7 +414,7 @@ export default function FileBrowser({
                     )}
                     {api.downloadUrl && (
                         <a href={api.downloadUrl(viewing)} download style={{ textDecoration: 'none' }}>
-                            <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}>⬇ {t('common.download', 'Download')}</button>
+                            <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}><Download size={12} style={{display:'inline',verticalAlign:'middle',marginRight:'3px'}} />{t('common.download', 'Download')}</button>
                         </a>
                     )}
                     {canDelete && (
@@ -452,7 +453,7 @@ export default function FileBrowser({
                             <div style={{ fontSize: '12px', marginBottom: '16px' }}>Binary file — cannot preview</div>
                             {api.downloadUrl && (
                                 <a href={api.downloadUrl(viewing)} download style={{ textDecoration: 'none' }}>
-                                    <button className="btn btn-primary" style={{ fontSize: '13px', padding: '8px 20px' }}>⬇ {t('common.download', 'Download')}</button>
+                                    <button className="btn btn-primary" style={{ fontSize: '13px', padding: '8px 20px' }}><Download size={12} style={{display:'inline',verticalAlign:'middle',marginRight:'3px'}} />{t('common.download', 'Download')}</button>
                                 </a>
                             )}
                         </div>
@@ -475,12 +476,12 @@ export default function FileBrowser({
                 {renderBreadcrumbs()}
                 <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto' }}>
                     {upload && api.upload && (
-                        <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={handleUpload}>⬆ Upload</button>
+                        <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={handleUpload}><Upload size={12} style={{display:'inline',verticalAlign:'middle',marginRight:'3px'}} />Upload</button>
                     )}
                     {newFolder && (
                         <button className="btn btn-secondary" style={{ fontSize: '12px' }}
                             onClick={() => setPromptModal({ title: t('agent.workspace.newFolder'), placeholder: t('agent.workspace.newFolderName'), action: 'newFolder' })}>
-                            📁 {t('agent.workspace.newFolder')}
+                            <Folder size={14} /> {t('agent.workspace.newFolder')}
                         </button>
                     )}
                     {newFile && !fileFilter && (
@@ -504,7 +505,7 @@ export default function FileBrowser({
             ) : uploadProgress ? (
                 <div className="card" style={{ padding: '16px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-                        <span style={{ fontSize: '13px' }}>⬆</span>
+                        <Upload size={13} />
                         <span style={{ fontSize: '13px', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{uploadProgress.fileName}</span>
                         <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{uploadProgress.percent}%</span>
                     </div>
@@ -555,7 +556,7 @@ export default function FileBrowser({
                                         onClick={(e) => e.stopPropagation()}
                                         title={t('common.download', 'Download')}
                                         style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--accent-primary)', textDecoration: 'none', borderRadius: '4px' }}>
-                                        ⬇
+                                        <Download size={12} />
                                     </a>
                                 )}
                                 {canDelete && (

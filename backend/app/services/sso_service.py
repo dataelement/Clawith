@@ -87,7 +87,7 @@ class SSOService:
 
         # Try to find tenant by custom domain
         result = await db.execute(
-            select(Tenant).where(Tenant.custom_domain.ilike(f"%{domain}%"))
+            select(Tenant).where(Tenant.sso_domain.ilike(f"%{domain}%"))
         )
         tenant = result.scalar_one_or_none()
 
@@ -99,7 +99,7 @@ class SSOService:
             select(Tenant).where(
                 or_(
                     Tenant.name.ilike(f"%{domain.split('.')[0]}%"),
-                    Tenant.domain.ilike(f"%{domain}%"),
+                    Tenant.sso_domain.ilike(f"%{domain}%"),
                 )
             )
         )

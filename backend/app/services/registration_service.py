@@ -44,8 +44,8 @@ class RegistrationService:
         result = await db.execute(
             select(Tenant).where(
                 or_(
-                    Tenant.custom_domain.ilike(f"%{domain}%"),
-                    Tenant.domain.ilike(f"%{domain}%"),
+                    Tenant.sso_domain.ilike(f"%{domain}%"),
+                    Tenant.sso_domain.ilike(f"%{domain}%"),
                 ),
                 Tenant.is_active == True,
             )

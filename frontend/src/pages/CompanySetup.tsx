@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { Globe, AlertTriangle } from 'lucide-react';
 import { useAuthStore } from '../stores';
 import { tenantApi, authApi } from '../services/api';
 
@@ -85,7 +86,7 @@ export default function CompanySetup() {
                 background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
                 zIndex: 101,
             }} onClick={toggleLang}>
-                🌐
+                <Globe size={14} />
             </div>
 
             <div className="company-setup-container">
@@ -99,7 +100,7 @@ export default function CompanySetup() {
 
                 {error && (
                     <div className="login-error" style={{ marginBottom: 16 }}>
-                        <span>⚠</span> {error}
+                        <span><AlertTriangle size={14} /></span> {error}
                     </div>
                 )}
 
