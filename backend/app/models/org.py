@@ -76,6 +76,22 @@ class AgentRelationship(Base):
     member: Mapped["OrgMember"] = relationship()
 
 
+
+
+class AgentGroup(Base):
+    """Group relationship for an agent - allows broadcasting to chat groups."""
+
+    __tablename__ = "agent_groups"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    group_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    chat_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    channel: Mapped[str] = mapped_column(String(20), nullable=False, default="feishu")  # feishu | wecom | dingtalk
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AgentAgentRelationship(Base):
     """Relationship between two agents (digital employees)."""
 

@@ -284,6 +284,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         discord: 'gateway',
     });
 
+    // Broadcast groups state
+    const [broadcastGroups, setBroadcastGroups] = useState<Array<{channel: string; name: string; chat_id: string}>>([]);
+    const addBroadcastGroup = () => setBroadcastGroups(prev => [...prev, {channel: 'feishu', name: '', chat_id: ''}]);
+    const removeBroadcastGroup = (index: number) => setBroadcastGroups(prev => prev.filter((_, i) => i !== index));
+    const updateBroadcastGroup = (index: number, field: string, value: string) =>
+        setBroadcastGroups(prev => prev.map((g, i) => i === index ? {...g, [field]: value} : g));
+
     // Password visibility
     const [showPwds, setShowPwds] = useState<Record<string, boolean>>({});
     const togglePwd = (fieldId: string) => setShowPwds(p => ({ ...p, [fieldId]: !p[fieldId] }));
@@ -460,7 +467,10 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 app_id: form.app_id,
                 app_secret: form.app_secret,
                 encrypt_key: form.encrypt_key || undefined,
-                extra_config: { connection_mode: connectionModes.feishu || 'websocket' },
+                extra_config: {
+                    connection_mode: connectionModes.feishu || 'websocket',
+                    broadcast_groups: broadcastGroups.filter(g => g.name && g.chat_id),
+                },
             };
         }
         if (ch.id === 'wecom') {
@@ -839,6 +849,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 prefill.app_secret = config.app_secret || '';
                                                 prefill.encrypt_key = config.encrypt_key || '';
                                                 setConnectionModes(prev => ({ ...prev, feishu: config.extra_config?.connection_mode || 'websocket' }));
+                                                setBroadcastGroups(config.extra_config?.broadcast_groups || []);
                                             } else if (ch.id === 'wecom') {
                                                 const cm = config.extra_config?.connection_mode === 'websocket' ? 'websocket' : 'webhook';
                                                 setConnectionModes(prev => ({ ...prev, wecom: cm }));
@@ -915,6 +926,47 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 {/* Form fields */}
                                 {formFields.map(field =>
                                     renderField(field, ch.id, form[field.key] || '', (val) => setFormField(ch.id, field.key, val))
+                                )}
+
+                                {/* Broadcast Groups Configuration (Feishu only) */}
+                                {ch.id === 'feishu' && (
+                                    <div style={{ marginTop: '16px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                                        <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                            <span>📢 群组广播配置</span>
+                                            <button type="button" onClick={addBroadcastGroup}
+                                                style={{ fontSize: '11px', padding: '2px 10px', cursor: 'pointer', borderRadius: '4px', border: '1px solid var(--border-default)', background: 'var(--accent-primary)', color: 'white' }}>
+                                                + 添加群组
+                                            </button>
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                            配置后，Agent发送消息时会自动同步到指定的飞书群
+                                        </div>
+                                        {broadcastGroups.map((group, index) => (
+                                            <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
+                                                <select value={group.channel} onChange={e => updateBroadcastGroup(index, 'channel', e.target.value)}
+                                                    style={{ fontSize: '12px', padding: '4px 8px', borderRadius: '4px', border: '1px solid var(--border-default)', background: 'var(--bg-primary)' }}>
+                                                    <option value="feishu">飞书</option>
+                                                    <option value="wecom">企微</option>
+                                                    <option value="dingtalk">钉钉</option>
+                                                </select>
+                                                <input type="text" value={group.name} onChange={e => updateBroadcastGroup(index, 'name', e.target.value)}
+                                                    placeholder="群组名称"
+                                                    style={{ flex: 1, fontSize: '12px', padding: '4px 8px', borderRadius: '4px', border: '1px solid var(--border-default)' }} />
+                                                <input type="text" value={group.chat_id} onChange={e => updateBroadcastGroup(index, 'chat_id', e.target.value)}
+                                                    placeholder="Chat ID"
+                                                    style={{ flex: 1, fontSize: '12px', padding: '4px 8px', borderRadius: '4px', border: '1px solid var(--border-default)' }} />
+                                                <button type="button" onClick={() => removeBroadcastGroup(index)}
+                                                    style={{ fontSize: '11px', padding: '4px 8px', cursor: 'pointer', borderRadius: '4px', border: '1px solid var(--border-default)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}>
+                                                    删除
+                                                </button>
+                                            </div>
+                                        ))}
+                                        {broadcastGroups.length === 0 && (
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '8px' }}>
+                                                暂未配置群组广播
+                                            </div>
+                                        )}
+                                    </div>
                                 )}
 
                                 {/* Atlassian extra hints */}
