@@ -5,6 +5,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, get_current_user, hash_password, verify_password
@@ -81,19 +82,32 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
         **quota_defaults,
     )
     db.add(user)
-    await db.flush()
 
     # Auto-create Participant identity for the new user
     from app.models.participant import Participant
-    db.add(Participant(
+    participant = Participant(
         type="user", ref_id=user.id,
         display_name=user.display_name, avatar_url=user.avatar_url,
-    ))
-    await db.flush()
+    )
+    db.add(participant)
+
+    # Commit the user and participant together. Previously only the first-user
+    # path called db.commit() explicitly; subsequent registrations relied on the
+    # get_db() dependency's implicit commit. If that deferred commit hit an
+    # IntegrityError, FastAPI returned a raw 500 with no JSON body, which the
+    # frontend displayed as a generic "Request failed" message.
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning(f"Registration commit failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username or email already exists",
+        )
 
     # Seed default agents after first user (platform admin) registration
     if is_first_user:
-        await db.commit()  # commit user first so seeder can find the admin
         try:
             from app.services.agent_seeder import seed_default_agents
             await seed_default_agents()
