@@ -2889,15 +2889,19 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
 async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
     """Send message via the recipient's configured channel (Feishu/DingTalk/WeCom).
 
-    1. Find target user from relationships (AgentRelationship -> OrgMember)
-    2. Determine user's provider type (via OrgMember.provider_id -> IdentityProvider)
-    3. Find corresponding channel config (ChannelConfig)
-    4. Send via the appropriate channel
+    1. Check if target is a group in AgentGroup, send directly to group chat_id
+    2. Otherwise find target user from relationships (AgentRelationship -> OrgMember)
+    3. Determine user's provider type (via OrgMember.provider_id -> IdentityProvider)
+    4. Find corresponding channel config (ChannelConfig)
+    5. Send via the appropriate channel
     """
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
-    from app.models.org import AgentRelationship, OrgMember
+    from app.models.org import AgentRelationship, OrgMember, AgentGroup
     from app.models.identity import IdentityProvider
+    from app.models.channel_config import ChannelConfig
+    from app.services.feishu_service import feishu_service
+    import json as _json
 
     member_name = (args.get("member_name") or "").strip()
     message_text = (args.get("message") or "").strip()
@@ -2910,6 +2914,47 @@ async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
 
     try:
         async with async_session() as db:
+            # 0. Check if target is a group in AgentGroup
+            group_result = await db.execute(
+                select(AgentGroup).where(
+                    AgentGroup.agent_id == agent_id,
+                    AgentGroup.group_name.ilike(f"%{member_name}%")
+                )
+            )
+            target_group = group_result.scalars().first()
+
+            if target_group:
+                # Send to group directly via feishu service
+                config_result = await db.execute(
+                    select(ChannelConfig).where(
+                        ChannelConfig.agent_id == agent_id,
+                        ChannelConfig.channel_type == target_group.channel,
+                    )
+                )
+                config = config_result.scalar_one_or_none()
+
+                if not config:
+                    return f"❌ No {target_group.channel} channel configured for this agent"
+
+                try:
+                    if target_group.channel == "feishu":
+                        resp = await feishu_service.send_message(
+                            config.app_id, config.app_secret,
+                            receive_id=target_group.chat_id,
+                            msg_type="text",
+                            content=_json.dumps({"text": message_text}, ensure_ascii=False),
+                            receive_id_type="chat_id"
+                        )
+                        if resp.get("code") == 0:
+                            return f"✅ Message sent to group {target_group.group_name}"
+                        else:
+                            return f"❌ Failed to send to group: {resp.get('msg', 'unknown error')}"
+                    else:
+                        return f"❌ Group sending not yet supported for {target_group.channel}"
+                except Exception as e:
+                    logger.error(f"[ChannelMessage] Group send error: {e}")
+                    return f"❌ Group send error: {str(e)[:100]}"
+
             # 1. Find target member from relationships with provider info (only active members)
             result = await db.execute(
                 select(AgentRelationship, OrgMember, IdentityProvider)
