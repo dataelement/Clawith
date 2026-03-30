@@ -1084,7 +1084,7 @@ async def websocket_chat(
                                         user_message=_first_user_msg,
                                         assistant_response=assistant_response[:500],
                                         provider=_util_model.provider,
-                                        api_key=_util_model.api_key,
+                                        api_key=_util_model.api_key_encrypted,
                                         model_name=_util_model.model,
                                         base_url=_util_model.base_url,
                                         websocket=websocket,
