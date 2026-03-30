@@ -792,38 +792,70 @@ function CompaniesTab() {
 // ─── Edit Company Modal ───────────────────────────────
 function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { company: any, publicBaseUrl: string, onClose: () => void, onUpdated: () => void }) {
     const { t } = useTranslation();
+    const [slug, setSlug] = useState(company.slug || '');
+    const [slugStatus, setSlugStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
     const [subdomainPrefix, setSubdomainPrefix] = useState(company.subdomain_prefix || '');
     const [prefixStatus, setPrefixStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
 
     const globalHostname = publicBaseUrl ? (() => { try { return new URL(publicBaseUrl).hostname; } catch { return ''; } })() : '';
+    const globalProtocol = publicBaseUrl ? (() => { try { return new URL(publicBaseUrl).protocol + '//'; } catch { return 'https://'; } })() : 'https://';
+
+    const checkSlug = async (value: string) => {
+        if (!value || value === company.slug) { setSlugStatus('idle'); return; }
+        setSlugStatus('checking');
+        try {
+            const res = await fetchJson<any>(
+                `/tenants/check-slug?slug=${encodeURIComponent(value)}&exclude_tenant_id=${company.id}`
+            );
+            setSlugStatus(res.available ? 'available' : 'taken');
+        } catch { setSlugStatus('idle'); }
+    };
 
     const checkPrefix = async (prefix: string) => {
-        if (!prefix) { setPrefixStatus('idle'); return; }
+        if (!prefix || prefix === company.subdomain_prefix) { setPrefixStatus('idle'); return; }
         setPrefixStatus('checking');
         try {
-            const encodedPrefix = encodeURIComponent(prefix);
             const res = await fetchJson<any>(
-                `/tenants/check-prefix?prefix=${encodedPrefix}&exclude_tenant_id=${company.id}`
+                `/tenants/check-prefix?prefix=${encodeURIComponent(prefix)}&exclude_tenant_id=${company.id}`
             );
             setPrefixStatus(res.available ? 'available' : 'taken');
         } catch { setPrefixStatus('idle'); }
     };
 
     const handleSave = async () => {
+        if (slugStatus === 'taken') {
+            setError('The slug is already taken. Please choose a different one.');
+            return;
+        }
+        if (prefixStatus === 'taken') {
+            setError('The subdomain prefix is already taken. Please choose a different one.');
+            return;
+        }
         setSaving(true);
         setError('');
         try {
-            await adminApi.updateCompany(company.id, {
+            const updateData: any = {
                 subdomain_prefix: subdomainPrefix.trim() || null,
-            });
+            };
+            if (slug.trim() && slug.trim() !== company.slug) {
+                updateData.slug = slug.trim();
+            }
+            await adminApi.updateCompany(company.id, updateData);
             onUpdated();
             onClose();
         } catch (e: any) {
             setError(e.message || 'Failed to update');
         }
         setSaving(false);
+    };
+
+    const StatusBadge = ({ status }: { status: 'idle' | 'checking' | 'available' | 'taken' }) => {
+        if (status === 'checking') return <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>checking...</span>;
+        if (status === 'available') return <span style={{ fontSize: '11px', color: 'var(--success)' }}>Available</span>;
+        if (status === 'taken') return <span style={{ fontSize: '11px', color: 'var(--error)' }}>Taken</span>;
+        return null;
     };
 
     return (
@@ -833,10 +865,10 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
             backdropFilter: 'blur(4px)',
         }} onClick={onClose}>
             <div className="card" style={{
-                padding: '24px', maxWidth: '440px', width: '90%',
+                padding: '24px', maxWidth: '480px', width: '90%',
                 boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
             }} onClick={e => e.stopPropagation()}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <h2 style={{ fontSize: '16px', fontWeight: 600 }}>
                         {t('admin.editCompany', 'Edit Company')}: {company.name}
                     </h2>
@@ -847,20 +879,46 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
                         </svg>
                     </button>
                 </div>
-                
-                <h3 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>
-                    {t('admin.ssoConfigTitle', 'SSO & Domain Configuration')}
-                </h3>
-                <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '16px', lineHeight: '1.4' }}>
-                    {t('admin.ssoConfigDesc', 'Configure company-specific access domain. SSO login options will appear automatically after configuring an identity provider in enterprise settings.')}
-                </p>
 
-                <div style={{ marginBottom: '16px', background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-                    <div style={{ marginBottom: '12px' }}>
-                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '4px' }}>
+                {/* Slug section */}
+                <div style={{ marginBottom: '16px' }}>
+                    <label className="form-label" style={{ fontSize: '12px', fontWeight: 600, marginBottom: '4px', display: 'block' }}>
+                        {t('admin.slug', 'Company Identifier (Slug)')}
+                    </label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <input
+                            className="form-input"
+                            value={slug}
+                            onChange={e => {
+                                const v = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+                                setSlug(v);
+                                setSlugStatus('idle');
+                            }}
+                            onBlur={() => checkSlug(slug)}
+                            placeholder="acme-corp"
+                            style={{ fontSize: '13px', maxWidth: '200px' }}
+                        />
+                        <StatusBadge status={slugStatus} />
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                        {t('admin.slugDesc', 'Used for system identification and URL paths.')}
+                    </div>
+                </div>
+
+                {/* Domain configuration section */}
+                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '16px', marginBottom: '16px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                        {t('admin.domainConfig', 'Domain Configuration')}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px', lineHeight: '1.5' }}>
+                        {t('admin.domainConfigDesc', 'Configure a dedicated access domain for this company.')}
+                    </div>
+
+                    <div style={{ background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '4px', display: 'block' }}>
                             {t('admin.subdomainPrefix', 'Subdomain Prefix')}
                         </label>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                             <input
                                 className="form-input"
                                 value={subdomainPrefix}
@@ -878,26 +936,23 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
                                     .{globalHostname}
                                 </span>
                             )}
-                            {prefixStatus === 'checking' && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>checking...</span>}
-                            {prefixStatus === 'available' && <span style={{ fontSize: '11px', color: 'var(--success)' }}>Available</span>}
-                            {prefixStatus === 'taken' && <span style={{ fontSize: '11px', color: 'var(--error)' }}>Taken</span>}
+                            <StatusBadge status={prefixStatus} />
                         </div>
                         {subdomainPrefix && globalHostname && (
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                                {(() => { try { return new URL(publicBaseUrl).protocol + '//'; } catch { return 'https://'; } })()}{subdomainPrefix}.{globalHostname}
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px', fontFamily: 'var(--font-mono)' }}>
+                                {globalProtocol}{subdomainPrefix}.{globalHostname}
                             </div>
                         )}
                     </div>
-
                 </div>
 
-                {error && <div style={{ color: 'var(--error)', fontSize: '12px', marginBottom: '16px', textAlign: 'center' }}>{error}</div>}
+                {error && <div style={{ color: 'var(--error)', fontSize: '12px', marginBottom: '12px' }}>{error}</div>}
 
                 <div style={{ display: 'flex', gap: '8px' }}>
                     <button className="btn btn-secondary" style={{ flex: 1 }} onClick={onClose} disabled={saving}>
                         {t('common.cancel', 'Cancel')}
                     </button>
-                    <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSave} disabled={saving}>
+                    <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSave} disabled={saving || slugStatus === 'taken' || prefixStatus === 'taken'}>
                         {saving ? t('common.loading') : t('common.save', 'Save')}
                     </button>
                 </div>

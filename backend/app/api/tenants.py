@@ -48,6 +48,7 @@ class TenantOut(BaseModel):
 
 class TenantUpdate(BaseModel):
     name: str | None = None
+    slug: str | None = None
     im_provider: str | None = None
     timezone: str | None = None
     is_active: bool | None = None
@@ -69,6 +70,31 @@ def _slugify(name: str) -> str:
     # Add short random suffix for uniqueness
     slug = f"{slug}-{secrets.token_hex(3)}"
     return slug
+
+
+async def _generate_subdomain_prefix(db: AsyncSession, base: str) -> str:
+    """From a slug, generate a unique subdomain_prefix (strips random hex suffix)."""
+    # Strip trailing hex suffix added by _slugify (e.g. "-a1b2c3")
+    clean = re.sub(r"-[0-9a-f]{6}$", "", base)
+    # Keep only lowercase letters, digits, hyphens
+    prefix = re.sub(r"[^a-z0-9\-]", "", clean.lower())
+    prefix = re.sub(r"-+", "-", prefix).strip("-")
+    if len(prefix) < 2:
+        prefix = f"co-{prefix}" if prefix else "company"
+    if len(prefix) > 50:
+        prefix = prefix[:50].rstrip("-")
+
+    # Uniqueness check with counter suffix
+    candidate = prefix
+    counter = 1
+    while True:
+        result = await db.execute(
+            select(Tenant).where(Tenant.subdomain_prefix == candidate)
+        )
+        if not result.scalar_one_or_none():
+            return candidate
+        candidate = f"{prefix}-{counter}"
+        counter += 1
 
 
 # ─── Self-Service: Create Company ───────────────────────
@@ -98,6 +124,11 @@ async def self_create_company(
     tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
     db.add(tenant)
     await db.flush()
+
+    # Auto-generate subdomain_prefix from slug
+    if not tenant.subdomain_prefix:
+        tenant.subdomain_prefix = await _generate_subdomain_prefix(db, slug)
+        await db.flush()
 
     # Assign creator as org_admin
     current_user.tenant_id = tenant.id
@@ -336,6 +367,36 @@ async def check_subdomain_prefix(
     return {"available": True}
 
 
+# ─── Check Slug Availability ────────────────────────────
+
+@router.get("/check-slug")
+async def check_slug(
+    slug: str,
+    exclude_tenant_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if a slug is available (public)."""
+    # Format validation
+    if len(slug) < 2 or not re.match(r"^[a-z0-9][a-z0-9\-]*[a-z0-9]$", slug):
+        return {"available": False, "reason": "Invalid format. Use lowercase letters, numbers, hyphens. Min 2 chars."}
+
+    # Reserved slugs
+    reserved = {"admin", "api", "app", "www", "system", "platform", "default", "clawith"}
+    if slug in reserved:
+        return {"available": False, "reason": "This slug is reserved."}
+
+    # Uniqueness check
+    query = select(Tenant).where(Tenant.slug == slug)
+    if exclude_tenant_id:
+        query = query.where(Tenant.id != exclude_tenant_id)
+    result = await db.execute(query)
+    existing = result.scalar_one_or_none()
+    if existing:
+        return {"available": False, "reason": "This slug is already taken."}
+
+    return {"available": True}
+
+
 # ─── Authenticated: List / Get ──────────────────────────
 
 @router.get("/", response_model=list[TenantOut])
@@ -416,6 +477,26 @@ async def update_tenant(
 
     # effective_base_url is computed, not stored
     update_data.pop("effective_base_url", None)
+
+    # Validate and update slug if provided
+    if "slug" in update_data:
+        new_slug = (update_data.get("slug") or "").strip().lower()
+        if new_slug:
+            if not re.match(r"^[a-z0-9][a-z0-9\-]*[a-z0-9]$", new_slug) or len(new_slug) < 2:
+                raise HTTPException(status_code=400, detail="Invalid slug format. Use lowercase letters, numbers, hyphens. Min 2 chars.")
+            reserved_slugs = {"admin", "api", "app", "www", "system", "platform", "clawith"}
+            if new_slug in reserved_slugs and tenant.slug not in reserved_slugs:
+                raise HTTPException(status_code=400, detail="This slug is reserved")
+            # Uniqueness check
+            existing_slug_r = await db.execute(
+                select(Tenant).where(Tenant.slug == new_slug, Tenant.id != tenant_id)
+            )
+            if existing_slug_r.scalar_one_or_none():
+                raise HTTPException(status_code=400, detail="This slug is already taken")
+            update_data["slug"] = new_slug
+        else:
+            # Don't allow clearing slug
+            del update_data["slug"]
 
     # Validate subdomain_prefix if provided
     if "subdomain_prefix" in update_data:
