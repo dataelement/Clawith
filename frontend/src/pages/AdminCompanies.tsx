@@ -746,13 +746,13 @@ function CompaniesTab() {
                                 className="btn btn-ghost"
                                 style={{
                                     padding: '2px 8px', fontSize: '11px', height: '24px',
-                                    color: c.slug === 'default' ? 'var(--text-tertiary)' : c.is_active ? 'var(--error)' : 'var(--success)',
-                                    cursor: c.slug === 'default' ? 'not-allowed' : 'pointer',
-                                    opacity: c.slug === 'default' ? 0.5 : 1,
+                                    color: c.is_default ? 'var(--text-tertiary)' : c.is_active ? 'var(--error)' : 'var(--success)',
+                                    cursor: c.is_default ? 'not-allowed' : 'pointer',
+                                    opacity: c.is_default ? 0.5 : 1,
                                 }}
                                 onClick={() => handleToggle(c.id, !!c.is_active)}
-                                disabled={c.slug === 'default'}
-                                title={c.slug === 'default' ? t('admin.cannotDisableDefault', 'Cannot disable the default company — platform admin would be locked out') : undefined}
+                                disabled={c.is_default}
+                                title={c.is_default ? t('admin.cannotDisableDefault', 'Cannot disable the default company — platform admin would be locked out') : undefined}
                             >
                                 {c.is_active ? t('admin.disable', 'Disable') : t('admin.enable', 'Enable')}
                             </button>
