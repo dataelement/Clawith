@@ -156,4 +156,9 @@ def run_background_email_job(job, *args, **kwargs) -> None:
     """Bridge Starlette background tasks to async email jobs."""
     result = job(*args, **kwargs)
     if inspect.isawaitable(result):
-        fire_and_forget(result)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(result)
+        else:
+            fire_and_forget(result)

@@ -320,6 +320,17 @@ def test_send_system_email_uses_configured_timeout(monkeypatch):
     assert captured["to"] == ["alice@example.com"]
 
 
+def test_run_background_email_job_executes_awaitable_without_running_loop():
+    captured = {"value": None}
+
+    async def fake_job(value: str):
+        captured["value"] = value
+
+    system_email_service.run_background_email_job(fake_job, "sent")
+
+    assert captured["value"] == "sent"
+
+
 @pytest.mark.asyncio
 async def test_reset_password_updates_user(monkeypatch):
     user = make_user(password_hash=auth_api.hash_password("old-password"))

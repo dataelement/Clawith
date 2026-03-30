@@ -33,6 +33,8 @@ services:
         CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
     restart: unless-stopped
     command: ["/bin/bash", "/app/entrypoint.sh"]
+    env_file:
+      - ./.env
     environment:
       DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
       REDIS_URL: redis://redis:6379/0
