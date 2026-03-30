@@ -541,7 +541,7 @@ async def websocket_chat(
                     select(ChatMessage)
                     .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
                     .order_by(ChatMessage.created_at.desc())
-                    .limit(20)
+                    .limit(ctx_size)
                 )
                 history_messages = list(reversed(history_result.scalars().all()))
                 logger.info(f"[WS] Loaded {len(history_messages)} history messages for session {conv_id}")
