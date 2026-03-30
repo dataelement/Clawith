@@ -1327,6 +1327,16 @@ function AgentDetailInner() {
                     const idx = prev.findIndex(m => m.id === d.message_id);
                     return idx >= 0 ? prev.slice(0, idx + 1) : prev;
                 });
+            } else if (d.type === 'session_title_updated') {
+                const newTitle = d.title;
+                const sessId = d.session_id;
+                if (editingSessionIdRef.current !== sessId) {
+                    setSessions(prev => prev.map(s => s.id === sessId ? { ...s, title: newTitle } : s));
+                    setAllSessions(prev => prev.map(s => s.id === sessId ? { ...s, title: newTitle } : s));
+                    if (activeSessionIdRef.current === sessId) {
+                        setActiveSession((prev: any) => prev ? { ...prev, title: newTitle } : prev);
+                    }
+                }
             } else {
                 setChatMessages(prev => [...prev, { role: d.role, content: d.content }]);
             }
