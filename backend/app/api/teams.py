@@ -18,7 +18,7 @@ from app.config import get_settings
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
-from app.models.agent import Agent as AgentModel
+from app.models.agent import Agent as AgentModel, DEFAULT_CONTEXT_WINDOW_SIZE
 from app.models.audit import ChatMessage
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
@@ -499,7 +499,7 @@ async def teams_event_webhook(
         # Load history
         agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
-        ctx_size = agent_obj.context_window_size if agent_obj else 20
+        ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
         history_r = await db.execute(
             select(ChatMessage)

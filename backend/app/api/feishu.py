@@ -11,6 +11,7 @@ from app.core.permissions import check_agent_access, is_agent_creator, is_agent_
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.channel_config import ChannelConfig
+from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
 from app.models.user import User
 from app.models.identity import IdentityProvider
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
@@ -405,7 +406,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent_obj = agent_r.scalar_one_or_none()
             creator_id = agent_obj.creator_id if agent_obj else agent_id
-            ctx_size = agent_obj.context_window_size if agent_obj else 100
+            ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
             # Pre-resolve session so history lookup uses the UUID  (session created later if new)
             _pre_sess_r = await db.execute(
@@ -1045,7 +1046,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         _sess.last_message_at = _dt.now(_tz.utc)
 
         # Load conversation history for LLM context
-        ctx_size = agent_obj.context_window_size if agent_obj else 100
+        ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
         _hist_r = await db.execute(
             _select(ChatMessage)
             .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
@@ -1232,7 +1233,7 @@ async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str,
 
     # Build conversation messages (without system prompt — call_llm adds it)
     messages: list[dict] = []
-    ctx_size = agent.context_window_size or 100
+    ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
     if history:
         messages.extend(history[-ctx_size:])
     messages.append({"role": "user", "content": user_text})

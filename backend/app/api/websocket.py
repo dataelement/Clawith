@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.core.security import decode_access_token
 from app.core.permissions import check_agent_access, is_agent_expired
 from app.database import async_session
-from app.models.agent import Agent
+from app.models.agent import Agent, DEFAULT_CONTEXT_WINDOW_SIZE
 from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
@@ -459,7 +459,7 @@ async def websocket_chat(
             agent_type = agent.agent_type or ""
             role_description = agent.role_description or ""
             welcome_message = agent.welcome_message or ""
-            ctx_size = agent.context_window_size or 100
+            ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
             logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}, ctx: {ctx_size}")
 
             # Load the agent's primary model

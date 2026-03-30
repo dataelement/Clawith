@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from app.database import async_session
 from app.models.channel_config import ChannelConfig
+from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
 
 try:
     import discord
@@ -170,7 +171,7 @@ class DiscordGatewayManager:
                 if not agent_obj:
                     return "Agent not found."
                 creator_id = agent_obj.creator_id
-                ctx_size = agent_obj.context_window_size or 20
+                ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
 
                 # Find or create platform user for this Discord sender
                 _username = f"discord_{sender_id}"

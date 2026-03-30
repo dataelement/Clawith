@@ -21,6 +21,7 @@ from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.channel_config import ChannelConfig
+from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
 
@@ -480,7 +481,7 @@ async def _process_wecom_text(
             logger.warning(f"[WeCom] Agent {agent_id} not found")
             return
         creator_id = agent_obj.creator_id
-        ctx_size = agent_obj.context_window_size if agent_obj else 20
+        ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
         # Distinguish group chat from P2P by chat_id presence
         _is_group = bool(chat_id)

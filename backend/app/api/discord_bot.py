@@ -12,6 +12,7 @@ from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.channel_config import ChannelConfig
+from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
 
@@ -300,7 +301,7 @@ async def discord_interaction_webhook(
                 agent_r = await bg_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 agent_obj = agent_r.scalar_one_or_none()
                 creator_id = agent_obj.creator_id if agent_obj else agent_id
-                ctx_size = agent_obj.context_window_size if agent_obj else 20
+                ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
                 # Find-or-create platform user for this Discord sender
                 from app.models.user import User as _User

@@ -9,6 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+DEFAULT_CONTEXT_WINDOW_SIZE = 100
+
 
 class Agent(Base):
     """Digital employee (Agent) instance.
@@ -74,7 +76,7 @@ class Agent(Base):
     last_daily_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_monthly_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tokens_used_total: Mapped[int] = mapped_column(Integer, default=0)
-    context_window_size: Mapped[int] = mapped_column(Integer, default=100)
+    context_window_size: Mapped[int] = mapped_column(Integer, default=DEFAULT_CONTEXT_WINDOW_SIZE)
     max_tool_rounds: Mapped[int] = mapped_column(Integer, default=50)
 
     # Trigger limits (per-agent, configurable from Settings UI)
