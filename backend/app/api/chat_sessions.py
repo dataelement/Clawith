@@ -237,6 +237,7 @@ async def rename_session(
         raise HTTPException(status_code=403, detail="Not authorized")
 
     session.title = body.title
+    session.title_edited = True
     await db.commit()
     return {"id": str(session.id), "title": session.title}
 
