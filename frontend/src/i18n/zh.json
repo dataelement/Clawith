@@ -1029,15 +1029,18 @@
     "noFilterResults": "当前筛选条件下没有公司。",
     "filterStatus": "按状态筛选",
     "all": "全部",
-    "slug": "企业标识",
-    "slugDesc": "用于系统标识和 URL 路径",
     "domainConfig": "域名配置",
     "domainConfigDesc": "为企业配置专属访问域名。",
     "subdomainPrefix": "子域名前缀",
     "subdomainPrefixPlaceholderHint": "留空则使用企业标识",
     "prefixAvailable": "可用",
     "prefixTaken": "已被占用",
-    "prefixChecking": "检查中..."
+    "prefixChecking": "检查中...",
+    "default": "默认",
+    "setAsDefault": "默认企业",
+    "setAsDefaultDesc": "通过全局域名访问的用户将自动关联到此企业。",
+    "currentDefault": "当前默认",
+    "prefixTakenError": "子域名前缀已被占用，请选择其他前缀。"
   },
   "companySetup": {
     "title": "设置你的公司",

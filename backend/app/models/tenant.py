@@ -25,6 +25,7 @@ class Tenant(Base):
     )
     im_config: Mapped[dict | None] = mapped_column(JSON, default=None)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Default quotas for new users

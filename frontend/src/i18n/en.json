@@ -1060,14 +1060,17 @@
     "prev": "Prev",
     "next": "Next",
     "noFilterResults": "No companies match the current filter.",
-    "slug": "Company Identifier (Slug)",
-    "slugDesc": "Used for system identification and URL paths",
     "domainConfig": "Domain Configuration",
     "domainConfigDesc": "Configure a dedicated access domain for this company.",
     "subdomainPrefix": "Subdomain Prefix",
     "subdomainPrefixPlaceholderHint": "Leave blank to use slug",
     "prefixAvailable": "Available",
     "prefixTaken": "Already taken",
-    "prefixChecking": "checking..."
+    "prefixChecking": "checking...",
+    "default": "Default",
+    "setAsDefault": "Default Company",
+    "setAsDefaultDesc": "Users visiting the global domain will be associated with this company.",
+    "currentDefault": "Current Default",
+    "prefixTakenError": "The subdomain prefix is already taken. Please choose a different one."
   }
 }

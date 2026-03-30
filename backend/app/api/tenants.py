@@ -13,6 +13,7 @@ from loguru import logger
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+import sqlalchemy as sa
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +38,7 @@ class TenantOut(BaseModel):
     im_provider: str
     timezone: str = "UTC"
     is_active: bool
+    is_default: bool = False
     sso_enabled: bool = False
     sso_domain: str | None = None
     subdomain_prefix: str | None = None
@@ -48,10 +50,10 @@ class TenantOut(BaseModel):
 
 class TenantUpdate(BaseModel):
     name: str | None = None
-    slug: str | None = None
     im_provider: str | None = None
     timezone: str | None = None
     is_active: bool | None = None
+    is_default: bool | None = None
     sso_enabled: bool | None = None
     sso_domain: str | None = None
     subdomain_prefix: str | None = None
@@ -296,8 +298,7 @@ async def resolve_tenant_by_domain(
                 global_host = f"{global_host}:{parsed.port}"
             if domain == global_host or domain == parsed.hostname:
                 result = await db.execute(
-                    select(Tenant).where(Tenant.is_active == True)
-                    .order_by(Tenant.created_at.asc()).limit(1)
+                    select(Tenant).where(Tenant.is_active == True, Tenant.is_default == True)
                 )
                 tenant = result.scalar_one_or_none()
 
@@ -366,35 +367,6 @@ async def check_subdomain_prefix(
 
     return {"available": True}
 
-
-# ─── Check Slug Availability ────────────────────────────
-
-@router.get("/check-slug")
-async def check_slug(
-    slug: str,
-    exclude_tenant_id: uuid.UUID | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    """Check if a slug is available (public)."""
-    # Format validation
-    if len(slug) < 2 or not re.match(r"^[a-z0-9][a-z0-9\-]*[a-z0-9]$", slug):
-        return {"available": False, "reason": "Invalid format. Use lowercase letters, numbers, hyphens. Min 2 chars."}
-
-    # Reserved slugs
-    reserved = {"admin", "api", "app", "www", "system", "platform", "default", "clawith"}
-    if slug in reserved:
-        return {"available": False, "reason": "This slug is reserved."}
-
-    # Uniqueness check
-    query = select(Tenant).where(Tenant.slug == slug)
-    if exclude_tenant_id:
-        query = query.where(Tenant.id != exclude_tenant_id)
-    result = await db.execute(query)
-    existing = result.scalar_one_or_none()
-    if existing:
-        return {"available": False, "reason": "This slug is already taken."}
-
-    return {"available": True}
 
 
 # ─── Authenticated: List / Get ──────────────────────────
@@ -478,25 +450,18 @@ async def update_tenant(
     # effective_base_url is computed, not stored
     update_data.pop("effective_base_url", None)
 
-    # Validate and update slug if provided
-    if "slug" in update_data:
-        new_slug = (update_data.get("slug") or "").strip().lower()
-        if new_slug:
-            if not re.match(r"^[a-z0-9][a-z0-9\-]*[a-z0-9]$", new_slug) or len(new_slug) < 2:
-                raise HTTPException(status_code=400, detail="Invalid slug format. Use lowercase letters, numbers, hyphens. Min 2 chars.")
-            reserved_slugs = {"admin", "api", "app", "www", "system", "platform", "clawith"}
-            if new_slug in reserved_slugs and tenant.slug not in reserved_slugs:
-                raise HTTPException(status_code=400, detail="This slug is reserved")
-            # Uniqueness check
-            existing_slug_r = await db.execute(
-                select(Tenant).where(Tenant.slug == new_slug, Tenant.id != tenant_id)
+    # Slug is not updatable via this API; ignore any slug field
+    update_data.pop("slug", None)
+
+    # Handle is_default: only platform_admin can set it
+    if "is_default" in update_data:
+        if current_user.role != "platform_admin":
+            update_data.pop("is_default", None)
+        elif update_data["is_default"]:
+            # Clear is_default on all other tenants first
+            await db.execute(
+                sa.update(Tenant).where(Tenant.id != tenant_id).values(is_default=False)
             )
-            if existing_slug_r.scalar_one_or_none():
-                raise HTTPException(status_code=400, detail="This slug is already taken")
-            update_data["slug"] = new_slug
-        else:
-            # Don't allow clearing slug
-            del update_data["slug"]
 
     # Validate subdomain_prefix if provided
     if "subdomain_prefix" in update_data:
