@@ -373,6 +373,7 @@ class TenantQuotaUpdate(BaseModel):
     default_max_triggers: int | None = None
     min_poll_interval_floor: int | None = None
     max_webhook_rate_ceiling: int | None = None
+    utility_model_id: str | None = None
 
 
 @router.get("/tenant-quotas")
@@ -397,6 +398,7 @@ async def get_tenant_quotas(
         "default_max_triggers": tenant.default_max_triggers,
         "min_poll_interval_floor": tenant.min_poll_interval_floor,
         "max_webhook_rate_ceiling": tenant.max_webhook_rate_ceiling,
+        "utility_model_id": str(tenant.utility_model_id) if tenant.utility_model_id else None,
     }
 
 
@@ -442,6 +444,13 @@ async def update_tenant_quotas(
         tenant.min_poll_interval_floor = data.min_poll_interval_floor
     if data.max_webhook_rate_ceiling is not None:
         tenant.max_webhook_rate_ceiling = data.max_webhook_rate_ceiling
+
+    if data.utility_model_id is not None:
+        if data.utility_model_id == "":
+            tenant.utility_model_id = None
+        else:
+            import uuid as _uuid
+            tenant.utility_model_id = _uuid.UUID(data.utility_model_id)
 
     await db.commit()
     return {
