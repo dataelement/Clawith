@@ -20,6 +20,7 @@ from app.core.security import get_current_user, require_role
 from app.database import get_db
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.models.system_settings import SystemSetting
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -213,6 +214,7 @@ async def resolve_tenant_by_domain(
     Lookup precedence:
     1. Exact match on tenant.sso_domain (e.g. "acme.clawith.ai")
     2. Extract slug from "{slug}.clawith.ai" and match tenant.slug
+    3. Match platform global domain -> return default tenant
     """
     # 1. Try exact sso_domain match first
     result = await db.execute(select(Tenant).where(Tenant.sso_domain == domain))
@@ -220,16 +222,49 @@ async def resolve_tenant_by_domain(
 
     # 2. Fallback: extract slug from subdomain pattern
     if not tenant:
-        import re
         m = re.match(r"^([a-z0-9][a-z0-9\-]*[a-z0-9])\.clawith\.ai$", domain.lower())
         if m:
             slug = m.group(1)
             result = await db.execute(select(Tenant).where(Tenant.slug == slug))
             tenant = result.scalar_one_or_none()
 
+    # 3. Match platform global domain -> return default tenant
+    if not tenant:
+        from urllib.parse import urlparse
+        setting_r = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "platform")
+        )
+        platform = setting_r.scalar_one_or_none()
+        if platform and platform.value.get("public_base_url"):
+            parsed = urlparse(platform.value["public_base_url"])
+            global_host = parsed.hostname
+            if parsed.port and parsed.port not in (80, 443):
+                global_host = f"{global_host}:{parsed.port}"
+            if domain == global_host:
+                result = await db.execute(
+                    select(Tenant).where(Tenant.is_active == True)
+                    .order_by(Tenant.created_at.asc()).limit(1)
+                )
+                tenant = result.scalar_one_or_none()
+
     if not tenant or not tenant.is_active:
         raise HTTPException(status_code=404, detail="Tenant not found or not active")
-    
+
+    # Build effective_base_url
+    platform_result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "platform")
+    )
+    platform_setting = platform_result.scalar_one_or_none()
+    global_base_url = platform_setting.value.get("public_base_url") if platform_setting else None
+
+    if tenant.sso_domain:
+        d = tenant.sso_domain
+        effective_base_url = d if d.startswith("http") else f"https://{d}"
+    elif global_base_url:
+        effective_base_url = global_base_url
+    else:
+        effective_base_url = None
+
     return {
         "id": tenant.id,
         "name": tenant.name,
@@ -237,6 +272,7 @@ async def resolve_tenant_by_domain(
         "sso_enabled": tenant.sso_enabled,
         "sso_domain": tenant.sso_domain,
         "is_active": tenant.is_active,
+        "effective_base_url": effective_base_url,
     }
 
 # ─── Authenticated: List / Get ──────────────────────────
@@ -266,7 +302,25 @@ async def get_tenant(
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    return TenantOut.model_validate(tenant)
+
+    # Build effective_base_url
+    platform_result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "platform")
+    )
+    platform_setting = platform_result.scalar_one_or_none()
+    global_base_url = platform_setting.value.get("public_base_url") if platform_setting else None
+
+    if tenant.sso_domain:
+        d = tenant.sso_domain
+        effective_base_url = d if d.startswith("http") else f"https://{d}"
+    elif global_base_url:
+        effective_base_url = global_base_url
+    else:
+        effective_base_url = None
+
+    out = TenantOut.model_validate(tenant).model_dump()
+    out["effective_base_url"] = effective_base_url
+    return out
 
 
 @router.put("/{tenant_id}", response_model=TenantOut)

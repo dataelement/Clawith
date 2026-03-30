@@ -100,7 +100,11 @@ async def get_sso_config(sid: uuid.UUID, request: Request, db: AsyncSession = De
     
     # Determine the base URL for OAuth callbacks:
     # Use the actual request origin (scheme + host + port) for accurate redirect_uri
-    public_base = str(request.base_url).rstrip("/")
+    from app.core.domain import resolve_base_url
+    public_base = await resolve_base_url(
+        db, request=request,
+        tenant_id=str(session.tenant_id) if session.tenant_id else None
+    )
     
     auth_urls = []
     for p in providers:

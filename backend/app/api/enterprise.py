@@ -561,9 +561,9 @@ async def _sync_tenant_sso_state(db: AsyncSession, tenant_id: uuid.UUID):
 
     tenant.sso_enabled = active_sso_count > 0
 
-    # Auto-assign subdomain on first SSO enablement
-    if tenant.sso_enabled and not tenant.sso_domain:
-        tenant.sso_domain = f"{tenant.slug}.clawith.ai"
+    # sso_domain is now optional — when empty, the fallback chain
+    # (global platform URL -> request URL) handles domain resolution.
+    # No longer auto-assign {slug}.clawith.ai
 
     await db.commit()
 

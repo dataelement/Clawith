@@ -28,15 +28,9 @@ export default function Login() {
     useEffect(() => {
         document.documentElement.setAttribute('data-theme', 'dark');
 
-        // Resolve tenant by domain
-        const domain = window.location.hostname;
-        // In development, ignore localhost/127.0.0.1 unless its a subdomain we want to test
-        if (domain === 'localhost' || domain === '127.0.0.1' || domain.includes('.local')) {
-            setResolving(false);
-            return;
-        }
-
-        tenantApi.resolveByDomain(domain)
+        // Resolve tenant by domain (unified — no localhost skip, backend handles fallback)
+        const hostname = window.location.hostname;
+        tenantApi.resolveByDomain(hostname)
             .then(res => {
                 if (res) {
                     setTenant(res);

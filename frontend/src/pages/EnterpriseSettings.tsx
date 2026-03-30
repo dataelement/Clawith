@@ -754,7 +754,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                                                     <input
                                                                         className="form-input"
                                                                         readOnly
-                                                                        value={domain ? `https://${domain}` : 'Generating...'}
+                                                                        value={baseUrl || 'Generating...'}
                                                                         style={{ fontSize: '12px', flex: 1, maxWidth: '400px', background: 'var(--bg-primary)', cursor: 'default' }}
                                                                     />
                                                                     <button
@@ -762,7 +762,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                                                         style={{ fontSize: '11px' }}
                                                                         onClick={(e) => { 
                                                                             e.preventDefault();
-                                                                            navigator.clipboard.writeText(`https://${domain}`);
+                                                                            navigator.clipboard.writeText(baseUrl);
                                                                             const el = e.currentTarget;
                                                                             const old = el.textContent;
                                                                             el.textContent = 'Copied✓';
