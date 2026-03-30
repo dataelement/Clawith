@@ -238,7 +238,7 @@ async def slack_event_webhook(
     agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
     agent_obj = agent_r.scalar_one_or_none()
     creator_id = agent_obj.creator_id if agent_obj else agent_id
-    ctx_size = agent_obj.context_window_size if agent_obj else 20
+    ctx_size = agent_obj.context_window_size if agent_obj else 100
 
     # Find-or-create platform user for this Slack sender
     from app.models.user import User as _User

@@ -1234,7 +1234,7 @@ async def _call_agent_llm(db: AsyncSession, agent_id: uuid.UUID, user_text: str,
     # Build conversation messages (without system prompt — call_llm adds it)
     messages: list[dict] = []
     if history:
-        messages.extend(history[-10:])
+        messages.extend(history)
     messages.append({"role": "user", "content": user_text})
 
     # Use actual user_id so the system prompt knows who it's chatting with

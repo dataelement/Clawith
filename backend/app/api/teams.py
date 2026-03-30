@@ -499,7 +499,7 @@ async def teams_event_webhook(
         # Load history
         agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
-        ctx_size = agent_obj.context_window_size if agent_obj else 20
+        ctx_size = agent_obj.context_window_size if agent_obj else 100
 
         history_r = await db.execute(
             select(ChatMessage)
