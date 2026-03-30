@@ -483,7 +483,19 @@ function OrgTab({ tenant }: { tenant: any }) {
                         </div>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                             <label className="form-label">Authorize URL</label>
-                            <input className="form-input" value={form.authorize_url} onChange={e => setForm({ ...form, authorize_url: e.target.value })} />
+                            <input className="form-input" value={form.authorize_url} onChange={e => setForm({ ...form, authorize_url: e.target.value })} placeholder="https://sso.example.com/oauth2/authorize" />
+                        </div>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <label className="form-label">Token URL</label>
+                            <input className="form-input" value={form.token_url} onChange={e => setForm({ ...form, token_url: e.target.value })} placeholder="Leave empty to auto-derive from Authorize URL" />
+                        </div>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <label className="form-label">UserInfo URL</label>
+                            <input className="form-input" value={form.user_info_url} onChange={e => setForm({ ...form, user_info_url: e.target.value })} placeholder="Leave empty to auto-derive from Authorize URL" />
+                        </div>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <label className="form-label">Scope</label>
+                            <input className="form-input" value={form.scope} onChange={e => setForm({ ...form, scope: e.target.value })} placeholder="openid profile email" />
                         </div>
                     </div>
                 ) : type === 'wecom' ? (
