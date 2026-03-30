@@ -31,6 +31,7 @@ class CompanyStats(BaseModel):
     name: str
     slug: str
     is_active: bool
+    is_default: bool = False
     sso_enabled: bool = False
     sso_domain: str | None = None
     subdomain_prefix: str | None = None
@@ -114,6 +115,7 @@ async def list_companies(
             name=tenant.name,
             slug=tenant.slug,
             is_active=tenant.is_active,
+            is_default=tenant.is_default,
             sso_enabled=tenant.sso_enabled,
             sso_domain=tenant.sso_domain,
             subdomain_prefix=tenant.subdomain_prefix,

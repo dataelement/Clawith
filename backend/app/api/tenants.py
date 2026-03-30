@@ -457,6 +457,12 @@ async def update_tenant(
     if "is_default" in update_data:
         if current_user.role != "platform_admin":
             update_data.pop("is_default", None)
+        elif not update_data["is_default"] and tenant.is_default:
+            # Prevent disabling the current default company directly
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot disable default company directly. Set another company as default instead."
+            )
         elif update_data["is_default"]:
             # Clear is_default on all other tenants first
             await db.execute(
