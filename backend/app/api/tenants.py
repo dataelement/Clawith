@@ -39,6 +39,7 @@ class TenantOut(BaseModel):
     is_active: bool
     sso_enabled: bool = False
     sso_domain: str | None = None
+    effective_base_url: str | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -51,6 +52,7 @@ class TenantUpdate(BaseModel):
     is_active: bool | None = None
     sso_enabled: bool | None = None
     sso_domain: str | None = None
+    effective_base_url: str | None = None
 
 
 # ─── Helpers ────────────────────────────────────────────
@@ -240,7 +242,7 @@ async def resolve_tenant_by_domain(
             global_host = parsed.hostname
             if parsed.port and parsed.port not in (80, 443):
                 global_host = f"{global_host}:{parsed.port}"
-            if domain == global_host:
+            if domain == global_host or domain == parsed.hostname:
                 result = await db.execute(
                     select(Tenant).where(Tenant.is_active == True)
                     .order_by(Tenant.created_at.asc()).limit(1)
