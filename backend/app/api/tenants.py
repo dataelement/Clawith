@@ -39,6 +39,7 @@ class TenantOut(BaseModel):
     is_active: bool
     sso_enabled: bool = False
     sso_domain: str | None = None
+    subdomain_prefix: str | None = None
     effective_base_url: str | None = None
     created_at: datetime | None = None
 
@@ -52,6 +53,7 @@ class TenantUpdate(BaseModel):
     is_active: bool | None = None
     sso_enabled: bool | None = None
     sso_domain: str | None = None
+    subdomain_prefix: str | None = None
     effective_base_url: str | None = None
 
 
@@ -230,6 +232,25 @@ async def resolve_tenant_by_domain(
             result = await db.execute(select(Tenant).where(Tenant.slug == slug))
             tenant = result.scalar_one_or_none()
 
+    # 2.5 Subdomain prefix match
+    # e.g. domain=acme.clawith.yeyecha.com, global hostname=clawith.yeyecha.com -> prefix acme
+    if not tenant:
+        from urllib.parse import urlparse as _urlparse
+        setting_r2 = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "platform")
+        )
+        platform2 = setting_r2.scalar_one_or_none()
+        if platform2 and platform2.value.get("public_base_url"):
+            parsed2 = _urlparse(platform2.value["public_base_url"])
+            global_hostname = parsed2.hostname
+            if global_hostname and domain.endswith(f".{global_hostname}"):
+                prefix = domain[: -(len(global_hostname) + 1)]
+                if prefix and "." not in prefix:  # only single-level prefix
+                    result = await db.execute(
+                        select(Tenant).where(Tenant.subdomain_prefix == prefix)
+                    )
+                    tenant = result.scalar_one_or_none()
+
     # 3. Match platform global domain -> return default tenant
     if not tenant:
         from urllib.parse import urlparse
@@ -262,6 +283,13 @@ async def resolve_tenant_by_domain(
     if tenant.sso_domain:
         d = tenant.sso_domain
         effective_base_url = d if d.startswith("http") else f"https://{d}"
+    elif tenant.subdomain_prefix and global_base_url:
+        from urllib.parse import urlparse as _up
+        _p = _up(global_base_url)
+        _h = f"{tenant.subdomain_prefix}.{_p.hostname}"
+        if _p.port and _p.port not in (80, 443):
+            _h = f"{_h}:{_p.port}"
+        effective_base_url = f"{_p.scheme}://{_h}"
     elif global_base_url:
         effective_base_url = global_base_url
     else:
@@ -273,9 +301,40 @@ async def resolve_tenant_by_domain(
         "slug": tenant.slug,
         "sso_enabled": tenant.sso_enabled,
         "sso_domain": tenant.sso_domain,
+        "subdomain_prefix": tenant.subdomain_prefix,
         "is_active": tenant.is_active,
         "effective_base_url": effective_base_url,
     }
+
+# ─── Check Subdomain Prefix Availability ───────────────
+
+@router.get("/check-prefix")
+async def check_subdomain_prefix(
+    prefix: str,
+    exclude_tenant_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if a subdomain prefix is available (public)."""
+    # Format validation
+    if len(prefix) < 2 or not re.match(r"^[a-z0-9][a-z0-9\-]*[a-z0-9]$", prefix):
+        return {"available": False, "reason": "Invalid format. Use lowercase letters, numbers, hyphens. Min 2 chars."}
+
+    # Reserved prefixes
+    reserved = {"www", "api", "admin", "app", "mail", "ftp", "dev", "staging", "test", "static", "cdn", "ns1", "ns2"}
+    if prefix in reserved:
+        return {"available": False, "reason": "This prefix is reserved."}
+
+    # Uniqueness check
+    query = select(Tenant).where(Tenant.subdomain_prefix == prefix)
+    if exclude_tenant_id:
+        query = query.where(Tenant.id != exclude_tenant_id)
+    result = await db.execute(query)
+    existing = result.scalar_one_or_none()
+    if existing:
+        return {"available": False, "reason": "This prefix is already taken."}
+
+    return {"available": True}
+
 
 # ─── Authenticated: List / Get ──────────────────────────
 
@@ -315,6 +374,13 @@ async def get_tenant(
     if tenant.sso_domain:
         d = tenant.sso_domain
         effective_base_url = d if d.startswith("http") else f"https://{d}"
+    elif tenant.subdomain_prefix and global_base_url:
+        from urllib.parse import urlparse as _up2
+        _p2 = _up2(global_base_url)
+        _h2 = f"{tenant.subdomain_prefix}.{_p2.hostname}"
+        if _p2.port and _p2.port not in (80, 443):
+            _h2 = f"{_h2}:{_p2.port}"
+        effective_base_url = f"{_p2.scheme}://{_h2}"
     elif global_base_url:
         effective_base_url = global_base_url
     else:
@@ -347,6 +413,20 @@ async def update_tenant(
     if current_user.role == "platform_admin":
         update_data.pop("sso_enabled", None)
         update_data.pop("sso_domain", None)
+
+    # effective_base_url is computed, not stored
+    update_data.pop("effective_base_url", None)
+
+    # Validate subdomain_prefix if provided
+    if "subdomain_prefix" in update_data:
+        prefix = update_data["subdomain_prefix"]
+        if prefix:
+            if not re.match(r"^[a-z0-9][a-z0-9\-]*[a-z0-9]$", prefix) or len(prefix) < 2:
+                raise HTTPException(status_code=400, detail="Invalid subdomain prefix format. Use lowercase letters, numbers, hyphens. Min 2 chars.")
+            reserved = {"www", "api", "admin", "app", "mail", "ftp", "dev", "staging", "test", "static", "cdn"}
+            if prefix in reserved:
+                raise HTTPException(status_code=400, detail="This subdomain prefix is reserved")
+        update_data["subdomain_prefix"] = prefix or None
 
     for field, value in update_data.items():
         setattr(tenant, field, value)

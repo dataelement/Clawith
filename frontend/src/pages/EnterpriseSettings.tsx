@@ -631,6 +631,18 @@ function OrgTab({ tenant }: { tenant: any }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
             {/* SSO status is now derived from per-channel toggles — no global switch */}
 
+            {/* Company URL */}
+            {tenant?.subdomain_prefix && (
+                <div className="card" style={{ padding: '16px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                        {t('enterprise.org.companyUrl', 'Company URL')}
+                    </div>
+                    <div style={{ fontSize: '13px', fontFamily: 'monospace', color: 'var(--text-primary)' }}>
+                        {tenant.effective_base_url}
+                    </div>
+                </div>
+            )}
+
             {/* 1. Identity Providers Section */}
             <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
                 <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>

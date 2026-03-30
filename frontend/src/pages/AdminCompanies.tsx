@@ -342,6 +342,10 @@ function CompaniesTab() {
     const [createdCompanyName, setCreatedCompanyName] = useState('');
     const [codeCopied, setCodeCopied] = useState(false);
 
+    // Edit company modal
+    const [editingCompany, setEditingCompany] = useState<any>(null);
+    const [publicBaseUrl, setPublicBaseUrl] = useState('');
+
     // Toast
     const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
     const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
@@ -362,6 +366,9 @@ function CompaniesTab() {
 
     useEffect(() => {
         loadCompanies();
+        fetchJson<any>('/enterprise/system-settings/platform')
+            .then(d => { if (d.value?.public_base_url) setPublicBaseUrl(d.value.public_base_url); })
+            .catch(() => {});
     }, []);
 
     // Sorting logic
@@ -457,7 +464,7 @@ function CompaniesTab() {
         { key: 'created_at', label: t('admin.createdAt', 'Created'), flex: '100px' },
         { key: 'is_active', label: t('admin.status', 'Status'), flex: '100px' },
     ];
-    const actionColFlex = '80px';
+    const actionColFlex = '120px';
 
     const gridCols = columns.map(c => c.flex).join(' ') + ' ' + actionColFlex;
 
@@ -471,6 +478,16 @@ function CompaniesTab() {
                 }}>{toast.msg}</div>
             )}
 
+
+            {/* Edit Company Modal */}
+            {editingCompany && (
+                <EditCompanyModal
+                    company={editingCompany}
+                    publicBaseUrl={publicBaseUrl}
+                    onClose={() => setEditingCompany(null)}
+                    onUpdated={() => { loadCompanies(); setEditingCompany(null); }}
+                />
+            )}
 
             {/* Invitation Code Modal */}
             {createdCode && (
@@ -708,6 +725,13 @@ function CompaniesTab() {
                         <div style={{ display: 'flex', gap: '4px' }}>
                             <button
                                 className="btn btn-ghost"
+                                style={{ padding: '2px 8px', fontSize: '11px', height: '24px', color: 'var(--accent-primary)' }}
+                                onClick={() => setEditingCompany(c)}
+                            >
+                                {t('admin.edit', 'Edit')}
+                            </button>
+                            <button
+                                className="btn btn-ghost"
                                 style={{
                                     padding: '2px 8px', fontSize: '11px', height: '24px',
                                     color: c.slug === 'default' ? 'var(--text-tertiary)' : c.is_active ? 'var(--error)' : 'var(--success)',
@@ -766,12 +790,28 @@ function CompaniesTab() {
 }
 
 // ─── Edit Company Modal ───────────────────────────────
-function EditCompanyModal({ company, onClose, onUpdated }: { company: any, onClose: () => void, onUpdated: () => void }) {
+function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { company: any, publicBaseUrl: string, onClose: () => void, onUpdated: () => void }) {
     const { t } = useTranslation();
     const [ssoEnabled, setSsoEnabled] = useState(!!company.sso_enabled);
     const [ssoDomain, setSsoDomain] = useState(company.sso_domain || '');
+    const [subdomainPrefix, setSubdomainPrefix] = useState(company.subdomain_prefix || '');
+    const [prefixStatus, setPrefixStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
+
+    const globalHostname = publicBaseUrl ? (() => { try { return new URL(publicBaseUrl).hostname; } catch { return ''; } })() : '';
+
+    const checkPrefix = async (prefix: string) => {
+        if (!prefix) { setPrefixStatus('idle'); return; }
+        setPrefixStatus('checking');
+        try {
+            const encodedPrefix = encodeURIComponent(prefix);
+            const res = await fetchJson<any>(
+                `/tenants/check-prefix?prefix=${encodedPrefix}&exclude_tenant_id=${company.id}`
+            );
+            setPrefixStatus(res.available ? 'available' : 'taken');
+        } catch { setPrefixStatus('idle'); }
+    };
 
     const handleSave = async () => {
         setSaving(true);
@@ -780,6 +820,7 @@ function EditCompanyModal({ company, onClose, onUpdated }: { company: any, onClo
             await adminApi.updateCompany(company.id, {
                 sso_enabled: ssoEnabled,
                 sso_domain: ssoDomain.trim() || null,
+                subdomain_prefix: subdomainPrefix.trim() || null,
             });
             onUpdated();
             onClose();
@@ -829,6 +870,39 @@ function EditCompanyModal({ company, onClose, onUpdated }: { company: any, onClo
                             />
                             {t('admin.ssoEnabled', 'Enable SSO')}
                         </label>
+                    </div>
+
+                    <div style={{ marginBottom: '12px' }}>
+                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '4px' }}>
+                            {t('admin.subdomainPrefix', 'Subdomain Prefix')}
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <input
+                                className="form-input"
+                                value={subdomainPrefix}
+                                onChange={e => {
+                                    const v = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+                                    setSubdomainPrefix(v);
+                                    setPrefixStatus('idle');
+                                }}
+                                onBlur={() => checkPrefix(subdomainPrefix)}
+                                placeholder="acme"
+                                style={{ fontSize: '13px', maxWidth: '120px' }}
+                            />
+                            {globalHostname && (
+                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                    .{globalHostname}
+                                </span>
+                            )}
+                            {prefixStatus === 'checking' && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>checking...</span>}
+                            {prefixStatus === 'available' && <span style={{ fontSize: '11px', color: 'var(--success)' }}>Available</span>}
+                            {prefixStatus === 'taken' && <span style={{ fontSize: '11px', color: 'var(--error)' }}>Taken</span>}
+                        </div>
+                        {subdomainPrefix && globalHostname && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                {(() => { try { return new URL(publicBaseUrl).protocol + '//'; } catch { return 'https://'; } })()}{subdomainPrefix}.{globalHostname}
+                            </div>
+                        )}
                     </div>
 
                     <div>
