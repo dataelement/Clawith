@@ -62,6 +62,7 @@ interface Message {
     imageUrl?: string;
     timestamp?: string;
     isSkillIndicator?: boolean;
+    hiddenContent?: string | null;
 }
 
 export default function Chat() {
@@ -77,6 +78,7 @@ export default function Chat() {
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editContent, setEditContent] = useState('');
     const [attachedFile, setAttachedFile] = useState<{ name: string; text: string; path?: string; imageUrl?: string } | null>(null);
+    const [drawerContent, setDrawerContent] = useState<{ name: string; content: string } | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -129,12 +131,29 @@ export default function Chat() {
         })
             .then(r => r.json())
             .then((history: any[]) => {
-                if (history.length > 0) setMessages(history.map(h => {
-                    const msg = parseMessage({ role: h.role, content: h.content, fileName: h.fileName, toolCalls: h.toolCalls, thinking: h.thinking, imageUrl: h.imageUrl });
-                    msg.id = h.id;
-                    msg.timestamp = h.created_at || undefined;
-                    return msg;
-                }));
+                if (history.length > 0) {
+                    const processed: any[] = [];
+                    for (const h of history) {
+                        if (h.is_hidden) {
+                            // Reconstruct skill indicator from hidden message
+                            const firstLine = (h.content || '').split('\n')[0].replace(/^#\s*/, '').trim();
+                            processed.push({
+                                role: 'assistant' as const,
+                                content: firstLine || 'Skill loaded',
+                                isSkillIndicator: true,
+                                hiddenContent: h.content,
+                                id: h.id,
+                                timestamp: h.created_at || undefined,
+                            });
+                            continue;
+                        }
+                        const msg = parseMessage({ role: h.role, content: h.content, fileName: h.fileName, toolCalls: h.toolCalls, thinking: h.thinking, imageUrl: h.imageUrl });
+                        msg.id = h.id;
+                        msg.timestamp = h.created_at || undefined;
+                        processed.push(msg);
+                    }
+                    setMessages(processed);
+                }
             })
             .catch(() => { /* ignore */ });
     }, [id, token]);
@@ -240,6 +259,7 @@ export default function Chat() {
                         role: 'assistant' as const,
                         content: `${data.emoji || ''} ${data.name} loaded`.trim(),
                         isSkillIndicator: true,
+                        hiddenContent: data.content || null,
                     }]);
                 } else if (data.type === 'skill_error') {
                     setMessages(prev => [...prev, {
@@ -395,18 +415,19 @@ export default function Chat() {
                     )}
                     {messages.map((msg, i) => (
                         msg.isSkillIndicator ? (
-                            <div key={i} style={{ display: 'flex', justifyContent: 'center' }}>
-                                <div style={{
-                                    display: 'inline-block',
-                                    padding: '4px 12px',
-                                    borderRadius: '12px',
-                                    background: 'var(--bg-secondary, #2a2a2a)',
-                                    color: 'var(--text-secondary, #888)',
-                                    fontSize: '12px',
-                                    margin: '4px 0',
-                                }}>
-                                    {msg.content}
-                                </div>
+                            <div key={i} style={{ textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '12px', padding: '4px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                                <span>{msg.content}</span>
+                                {msg.hiddenContent && (
+                                    <button
+                                        onClick={() => setDrawerContent({ name: msg.content, content: msg.hiddenContent! })}
+                                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '14px', padding: '2px 4px', borderRadius: '4px' }}
+                                        onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
+                                        onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-tertiary)')}
+                                        title="View skill context"
+                                    >
+                                        👁
+                                    </button>
+                                )}
                             </div>
                         ) : (
                         <div key={i} className={`chat-message ${msg.role} message-row`}>
@@ -634,6 +655,38 @@ export default function Chat() {
                     )}
                 </div>
             </div>
+
+            {drawerContent && (
+                <>
+                    <div
+                        onClick={() => setDrawerContent(null)}
+                        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.3)', zIndex: 1000 }}
+                    />
+                    <div style={{
+                        position: 'fixed', top: 0, right: 0, bottom: 0, width: '40vw', minWidth: '320px', maxWidth: '600px',
+                        background: 'var(--bg-primary)', boxShadow: '-4px 0 20px rgba(0,0,0,0.15)',
+                        zIndex: 1001, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                    }}>
+                        <div style={{
+                            padding: '16px 20px', borderBottom: '1px solid var(--border-color)',
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        }}>
+                            <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                {drawerContent.name}
+                            </div>
+                            <button
+                                onClick={() => setDrawerContent(null)}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: 'var(--text-tertiary)', padding: '4px' }}
+                            >
+                                ✕
+                            </button>
+                        </div>
+                        <div style={{ flex: 1, overflow: 'auto', padding: '20px' }}>
+                            <MarkdownRenderer content={drawerContent.content} />
+                        </div>
+                    </div>
+                </>
+            )}
         </div>
     );
 }
