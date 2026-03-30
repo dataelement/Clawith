@@ -665,7 +665,10 @@
       "testing": "Testing...",
       "testSuccess": "OK ({{latency}}ms)",
       "testFailed": "Test failed: {{error}}\n\nLatency: {{latency}}ms",
-      "testError": "Test error: {{message}}"
+      "testError": "Test error: {{message}}",
+      "utilityModel": "Utility Model",
+      "utilityModelDesc": "Used for background tasks like auto-generating session titles. Select from your added models.",
+      "noUtilityModel": "None (use default behavior)"
     },
     "tools": {
       "title": "Global Tool Management",

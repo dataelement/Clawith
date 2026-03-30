@@ -735,7 +735,10 @@
       "testing": "测试中...",
       "testSuccess": "OK ({{latency}}ms)",
       "testFailed": "测试失败: {{error}}\n\n延迟: {{latency}}ms",
-      "testError": "测试错误: {{message}}"
+      "testError": "测试错误: {{message}}",
+      "utilityModel": "辅助模型",
+      "utilityModelDesc": "用于后台任务，如自动生成会话标题。从已添加的模型中选择。",
+      "noUtilityModel": "无（使用默认行为）"
     },
     "tools": {
       "title": "全局工具管理",
