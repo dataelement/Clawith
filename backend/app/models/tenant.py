@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,4 +44,8 @@ class Tenant(Base):
     default_max_triggers: Mapped[int] = mapped_column(Integer, default=20)
     min_poll_interval_floor: Mapped[int] = mapped_column(Integer, default=5)
     max_webhook_rate_ceiling: Mapped[int] = mapped_column(Integer, default=5)
+
+    utility_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("llm_models.id", ondelete="SET NULL"), nullable=True
+    )
 
