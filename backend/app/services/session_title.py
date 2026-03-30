@@ -20,10 +20,7 @@ async def generate_session_title(
     session_id: str,
     user_message: str,
     assistant_response: str,
-    provider: str,
-    api_key: str,
-    model_name: str,
-    base_url: str | None = None,
+    utility_model,
     websocket=None,
 ) -> str | None:
     """Generate a title via LLM and update the session in DB.
@@ -32,10 +29,7 @@ async def generate_session_title(
         session_id: The chat session UUID string.
         user_message: The first user message content.
         assistant_response: The first assistant response (will be truncated).
-        provider: LLM provider string (e.g., "openai", "anthropic").
-        api_key: Decrypted API key for the model.
-        model_name: Model identifier string (e.g., "gpt-4o-mini").
-        base_url: Optional base URL for the provider.
+        utility_model: LLMModel ORM object for the utility model.
         websocket: Optional WebSocket to push title update.
 
     Returns:
@@ -50,11 +44,11 @@ async def generate_session_title(
         ]
 
         response = await chat_complete(
-            provider=provider,
-            api_key=api_key,
-            model=model_name,
+            provider=utility_model.provider,
+            api_key=utility_model.api_key_encrypted,
+            model=utility_model.model,
             messages=messages,
-            base_url=base_url,
+            base_url=utility_model.base_url,
         )
 
         raw = response.get("choices", [{}])[0].get("message", {}).get("content", "")
