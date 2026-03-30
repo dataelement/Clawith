@@ -967,10 +967,10 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
                 {error && <div style={{ color: 'var(--error)', fontSize: '12px', marginBottom: '12px' }}>{error}</div>}
 
                 <div style={{ display: 'flex', gap: '8px' }}>
-                    <button className=btn btn-secondary style={{ flex: 1 }} onClick={onClose} disabled={saving}>
+                    <button className="btn btn-secondary" style={{ flex: 1 }} onClick={onClose} disabled={saving}>
                         {t('common.cancel', 'Cancel')}
                     </button>
-                    <button className=btn btn-primary style={{ flex: 1 }} onClick={handleSave} disabled={saving || prefixStatus === 'taken'}>
+                    <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSave} disabled={saving || prefixStatus === 'taken'}>
                         {saving ? t('common.loading') : t('common.save', 'Save')}
                     </button>
                 </div>
