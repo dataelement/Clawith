@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone as tz
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,7 @@ from app.models.agent import Agent
 from app.models.user import User
 
 router = APIRouter(prefix="/api/agents", tags=["chat-sessions"])
+DEFAULT_CONTEXT_BUDGET_TOKENS = 12000
 
 
 def _is_admin_or_creator(user: User, agent: Agent) -> bool:
@@ -60,6 +61,14 @@ class CreateSessionIn(BaseModel):
 
 class PatchSessionIn(BaseModel):
     title: str
+
+
+class ContextBudgetOut(BaseModel):
+    window_size_messages: int
+    session_messages_total: int
+    estimated_tokens_current_window: int
+    budget_tokens: int
+    usage_ratio: float
 
 
 @router.get("/{agent_id}/sessions")
@@ -284,6 +293,66 @@ async def delete_session(
     await db.delete(session)
     await db.commit()
     return None
+
+
+@router.get("/{agent_id}/sessions/{session_id}/context-budget", response_model=ContextBudgetOut)
+async def get_session_context_budget(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a lightweight context-budget snapshot for one chat session."""
+    # Allow looking up sessions where agent_id OR peer_agent_id matches
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Permission: owner, admin, or creator can view
+    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent = agent_result.scalar_one_or_none()
+    if str(session.user_id) != str(current_user.id) and not _is_admin_or_creator(current_user, agent):
+        raise HTTPException(status_code=403, detail="Not authorized to view this session")
+
+    window_size = max(getattr(agent, "context_window_size", 100) or 100, 1)
+
+    total_result = await db.execute(
+        select(func.count(ChatMessage.id)).where(ChatMessage.conversation_id == str(session_id))
+    )
+    session_messages_total = int(total_result.scalar() or 0)
+
+    window_result = await db.execute(
+        select(ChatMessage.content)
+        .where(ChatMessage.conversation_id == str(session_id))
+        .order_by(ChatMessage.created_at.desc())
+        .limit(window_size)
+    )
+    window_contents = window_result.scalars().all()
+
+    total_chars = sum(len(content or "") for content in window_contents)
+    # Reuse existing char-based estimator for consistency across code paths.
+    from app.services.token_tracker import estimate_tokens_from_chars
+    estimated_tokens_current_window = estimate_tokens_from_chars(total_chars) if total_chars > 0 else 0
+
+    budget_tokens = DEFAULT_CONTEXT_BUDGET_TOKENS
+    usage_ratio = round(
+        (estimated_tokens_current_window / budget_tokens) if budget_tokens > 0 else 0.0,
+        4,
+    )
+
+    return ContextBudgetOut(
+        window_size_messages=window_size,
+        session_messages_total=session_messages_total,
+        estimated_tokens_current_window=estimated_tokens_current_window,
+        budget_tokens=budget_tokens,
+        usage_ratio=usage_ratio,
+    )
 
 
 @router.get("/{agent_id}/sessions/{session_id}/messages")
