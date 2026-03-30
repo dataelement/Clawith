@@ -19,6 +19,83 @@ from app.schemas.schemas import ChannelConfigOut
 
 router = APIRouter(tags=["dingtalk"])
 
+# --- DingTalk Corp API helpers -----------------------------------------
+import time as _time
+
+_corp_token_cache: dict[str, tuple[str, float]] = {}  # {app_key: (token, expire_ts)}
+
+
+async def _get_corp_access_token(app_key: str, app_secret: str) -> str | None:
+    """Get corp access_token with in-memory cache (2h validity, refresh 5min early)."""
+    import httpx
+
+    cached = _corp_token_cache.get(app_key)
+    if cached and cached[1] > _time.time():
+        return cached[0]
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://oapi.dingtalk.com/gettoken",
+                params={"appkey": app_key, "appsecret": app_secret},
+            )
+            data = resp.json()
+            token = data.get("access_token")
+            expires_in = data.get("expires_in", 7200)
+            if not token:
+                logger.warning(f"[DingTalk] Failed to get corp access_token: {data}")
+                return None
+            _corp_token_cache[app_key] = (token, _time.time() + expires_in - 300)
+            return token
+    except Exception as e:
+        logger.warning(f"[DingTalk] _get_corp_access_token error: {e}")
+        return None
+
+
+async def _get_dingtalk_user_detail(
+    app_key: str,
+    app_secret: str,
+    staff_id: str,
+) -> dict | None:
+    """Query DingTalk user detail via corp API to get unionId/mobile/email.
+
+    Uses /topapi/v2/user/get, requires contact.user.read permission.
+    Returns None on failure (graceful degradation).
+    """
+    import httpx
+
+    try:
+        access_token = await _get_corp_access_token(app_key, app_secret)
+        if not access_token:
+            return None
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            user_resp = await client.post(
+                "https://oapi.dingtalk.com/topapi/v2/user/get",
+                params={"access_token": access_token},
+                json={"userid": staff_id, "language": "zh_CN"},
+            )
+            user_data = user_resp.json()
+
+            if user_data.get("errcode") != 0:
+                logger.warning(
+                    f"[DingTalk] /topapi/v2/user/get failed for {staff_id}: "
+                    f"errcode={user_data.get('errcode')} errmsg={user_data.get('errmsg')}"
+                )
+                return None
+
+            result = user_data.get("result", {})
+            return {
+                "unionid": result.get("unionid", ""),
+                "mobile": result.get("mobile", ""),
+                "email": result.get("email", "") or result.get("org_email", ""),
+            }
+
+    except Exception as e:
+        logger.warning(f"[DingTalk] _get_dingtalk_user_detail error for {staff_id}: {e}")
+        return None
+
+
 
 # ─── Config CRUD ────────────────────────────────────────
 
@@ -177,11 +254,102 @@ async def process_dingtalk_message(
             # P2P / single chat
             conv_id = f"dingtalk_p2p_{sender_staff_id}"
 
-        # Find or create platform user
+        # -- Load ChannelConfig early for DingTalk corp API calls --
+        _early_cfg_r = await db.execute(
+            _select(ChannelConfig).where(
+                ChannelConfig.agent_id == agent_id,
+                ChannelConfig.channel_type == "dingtalk",
+            )
+        )
+        _early_cfg = _early_cfg_r.scalar_one_or_none()
+        _early_app_key = _early_cfg.app_id if _early_cfg else None
+        _early_app_secret = _early_cfg.app_secret if _early_cfg else None
+
+        # -- Multi-dimension user matching to prevent duplicate creation --
         dt_username = f"dingtalk_{sender_staff_id}"
+
+        # Step 1: Exact username match (backward compatible)
         u_r = await db.execute(_select(UserModel).where(UserModel.username == dt_username))
         platform_user = u_r.scalar_one_or_none()
+
+        if not platform_user and _early_app_key and _early_app_secret:
+            # Step 2: Call DingTalk corp API to get unionId/mobile/email
+            dt_user_detail = await _get_dingtalk_user_detail(
+                _early_app_key, _early_app_secret, sender_staff_id
+            )
+
+            if dt_user_detail:
+                dt_unionid = dt_user_detail.get("unionid", "")
+                dt_mobile = dt_user_detail.get("mobile", "")
+                dt_email = dt_user_detail.get("email", "")
+
+                # Step 3: Match via org_members unionId (SSO users)
+                if dt_unionid and not platform_user:
+                    from app.models.org import OrgMember
+                    from app.models.identity import IdentityProvider
+                    from sqlalchemy import or_ as _or
+                    _ip_r = await db.execute(
+                        _select(IdentityProvider).where(
+                            IdentityProvider.provider_type == "dingtalk",
+                            IdentityProvider.tenant_id == agent_obj.tenant_id,
+                        )
+                    )
+                    _ip = _ip_r.scalar_one_or_none()
+                    if _ip:
+                        _om_r = await db.execute(
+                            _select(OrgMember).where(
+                                OrgMember.provider_id == _ip.id,
+                                OrgMember.status == "active",
+                                _or(
+                                    OrgMember.unionid == dt_unionid,
+                                    OrgMember.external_id == dt_unionid,
+                                ),
+                            )
+                        )
+                        _om = _om_r.scalar_one_or_none()
+                        if _om and _om.user_id:
+                            _u_r = await db.execute(
+                                _select(UserModel).where(UserModel.id == _om.user_id)
+                            )
+                            platform_user = _u_r.scalar_one_or_none()
+                            if platform_user:
+                                logger.info(
+                                    f"[DingTalk] Matched user via org_members unionid "
+                                    f"{dt_unionid}: {platform_user.username}"
+                                )
+
+                # Step 4: Match via mobile
+                if dt_mobile and not platform_user:
+                    _u_r = await db.execute(
+                        _select(UserModel).where(
+                            UserModel.primary_mobile == dt_mobile,
+                            UserModel.tenant_id == agent_obj.tenant_id,
+                        )
+                    )
+                    platform_user = _u_r.scalar_one_or_none()
+                    if platform_user:
+                        logger.info(
+                            f"[DingTalk] Matched user via mobile {dt_mobile}: "
+                            f"{platform_user.username}"
+                        )
+
+                # Step 5: Match via email
+                if dt_email and not platform_user:
+                    _u_r = await db.execute(
+                        _select(UserModel).where(
+                            UserModel.email == dt_email,
+                            UserModel.tenant_id == agent_obj.tenant_id,
+                        )
+                    )
+                    platform_user = _u_r.scalar_one_or_none()
+                    if platform_user:
+                        logger.info(
+                            f"[DingTalk] Matched user via email {dt_email}: "
+                            f"{platform_user.username}"
+                        )
+
         if not platform_user:
+            # Step 6: No match found, create new user
             import uuid as _uuid
             platform_user = UserModel(
                 username=dt_username,
@@ -193,6 +361,8 @@ async def process_dingtalk_message(
             )
             db.add(platform_user)
             await db.flush()
+            logger.info(f"[DingTalk] Created new user: {dt_username}")
+
         platform_user_id = platform_user.id
 
         # Find or create session
