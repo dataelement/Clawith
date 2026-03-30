@@ -344,6 +344,8 @@ function CompaniesTab() {
 
     // Edit company modal
     const [editingCompany, setEditingCompany] = useState<any>(null);
+    const [deletingCompanyId, setDeletingCompanyId] = useState<string | null>(null);
+    const [deleteConfirmCompany, setDeleteConfirmCompany] = useState<any>(null);
     const [publicBaseUrl, setPublicBaseUrl] = useState('');
 
     // Toast
@@ -443,6 +445,19 @@ function CompaniesTab() {
         }
     };
 
+    const handleDelete = async (company: any) => {
+        setDeletingCompanyId(company.id);
+        try {
+            await adminApi.deleteCompany(company.id);
+            loadCompanies();
+            showToast(`Company "${company.name}" deleted`);
+        } catch (e: any) {
+            showToast(e.message || 'Failed to delete', 'error');
+        }
+        setDeletingCompanyId(null);
+        setDeleteConfirmCompany(null);
+    };
+
     // Sort indicator arrow
     const SortArrow = ({ col }: { col: SortKey }) => {
         if (sortKey !== col) return <span style={{ opacity: 0.3, marginLeft: '2px' }}>&#x2195;</span>;
@@ -464,7 +479,7 @@ function CompaniesTab() {
         { key: 'created_at', label: t('admin.createdAt', 'Created'), flex: '100px' },
         { key: 'is_active', label: t('admin.status', 'Status'), flex: '100px' },
     ];
-    const actionColFlex = '120px';
+    const actionColFlex = '180px';
 
     const gridCols = columns.map(c => c.flex).join(' ') + ' ' + actionColFlex;
 
@@ -487,6 +502,63 @@ function CompaniesTab() {
                     onClose={() => setEditingCompany(null)}
                     onUpdated={() => { loadCompanies(); setEditingCompany(null); }}
                 />
+            )}
+
+            {/* Delete Confirmation Modal */}
+            {deleteConfirmCompany && (
+                <div style={{
+                    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 10001,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    backdropFilter: 'blur(4px)',
+                }} onClick={() => setDeleteConfirmCompany(null)}>
+                    <div className="card" style={{
+                        padding: '24px', maxWidth: '420px', width: '90%',
+                        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+                    }} onClick={e => e.stopPropagation()}>
+                        <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px', color: 'var(--error)' }}>
+                            {t('admin.deleteCompany', 'Delete Company')}
+                        </h2>
+                        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                            {t('admin.deleteCompanyWarning', 'This action is irreversible. The following data will be permanently deleted:')}
+                        </p>
+                        <ul style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px', paddingLeft: '16px', lineHeight: '1.8' }}>
+                            <li>{t('admin.deleteDataUsers', 'All users in this company')}</li>
+                            <li>{t('admin.deleteDataAgents', 'All agents and their conversations')}</li>
+                            <li>{t('admin.deleteDataSkills', 'All skills and LLM model configurations')}</li>
+                            <li>{t('admin.deleteDataOther', 'All invitation codes, org structure, token records')}</li>
+                        </ul>
+                        <div style={{
+                            padding: '12px', borderRadius: '8px', marginBottom: '16px',
+                            background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
+                            fontSize: '13px', fontWeight: 500,
+                        }}>
+                            {t('admin.deleteCompanyName', 'Company')}: <strong>{deleteConfirmCompany.name}</strong>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'monospace', marginTop: '2px' }}>
+                                {deleteConfirmCompany.user_count} {t('admin.users', 'users')} &middot; {deleteConfirmCompany.agent_count} {t('admin.agents', 'agents')}
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button className="btn btn-secondary" style={{ flex: 1 }}
+                                onClick={() => setDeleteConfirmCompany(null)}
+                                disabled={!!deletingCompanyId}>
+                                {t('common.cancel', 'Cancel')}
+                            </button>
+                            <button
+                                className="btn"
+                                style={{
+                                    flex: 1, background: 'var(--error)', color: '#fff',
+                                    border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer',
+                                    opacity: deletingCompanyId ? 0.6 : 1,
+                                }}
+                                onClick={() => handleDelete(deleteConfirmCompany)}
+                                disabled={!!deletingCompanyId}>
+                                {deletingCompanyId === deleteConfirmCompany.id
+                                    ? t('common.loading', 'Loading...')
+                                    : t('admin.confirmDelete', 'Yes, Delete')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* Invitation Code Modal */}
@@ -755,6 +827,22 @@ function CompaniesTab() {
                                 title={c.is_default ? t('admin.cannotDisableDefault', 'Cannot disable the default company — platform admin would be locked out') : undefined}
                             >
                                 {c.is_active ? t('admin.disable', 'Disable') : t('admin.enable', 'Enable')}
+                            </button>
+                            <button
+                                className="btn btn-ghost"
+                                style={{
+                                    padding: '2px 8px', fontSize: '11px', height: '24px',
+                                    color: c.is_default ? 'var(--text-tertiary)' : 'var(--error)',
+                                    cursor: c.is_default ? 'not-allowed' : 'pointer',
+                                    opacity: c.is_default ? 0.4 : 1,
+                                }}
+                                onClick={() => !c.is_default && setDeleteConfirmCompany(c)}
+                                disabled={c.is_default}
+                                title={c.is_default
+                                    ? t('admin.cannotDeleteDefault', 'Cannot delete the default company')
+                                    : t('admin.deleteCompany', 'Delete Company')}
+                            >
+                                {t('admin.delete', 'Delete')}
                             </button>
                         </div>
                     </div>

@@ -176,6 +176,9 @@ export const adminApi = {
     updateCompany: (id: string, data: any) =>
         request<any>(`/tenants/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 
+    deleteCompany: (id: string) =>
+        request<void>(`/admin/companies/${id}`, { method: 'DELETE' }),
+
     toggleCompany: (id: string) =>
         request<any>(`/admin/companies/${id}/toggle`, { method: 'PUT' }),
 
