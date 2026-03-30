@@ -12,7 +12,7 @@ import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import AgentCredentials from '../components/AgentCredentials';
-import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
+import { activityApi, agentApi, channelApi, chatSessionApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
@@ -1430,6 +1430,7 @@ function AgentDetailInner() {
     const [historyMsgs, setHistoryMsgs] = useState<any[]>([]);
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
+    const [showContextBudgetPopover, setShowContextBudgetPopover] = useState(false);
     const [agentExpired, setAgentExpired] = useState(false);
     // Websocket chat state (for 'me' conversation)
     const token = useAuthStore((s) => s.token);
@@ -1449,6 +1450,17 @@ function AgentDetailInner() {
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
+
+    const {
+        data: sessionContextBudget,
+        isFetching: sessionContextBudgetFetching,
+        refetch: refetchSessionContextBudget,
+    } = useQuery({
+        queryKey: ['agent-detail-chat-context-budget', id, activeSession?.id],
+        queryFn: () => chatSessionApi.contextBudget(id!, String(activeSession?.id)),
+        enabled: !!id && activeTab === 'chat' && !!activeSession?.id,
+        refetchInterval: activeTab === 'chat' && activeSession?.id ? 15000 : false,
+    });
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
 
@@ -1781,6 +1793,21 @@ function AgentDetailInner() {
     const chatInputRef = useRef<HTMLTextAreaElement>(null);
     const chatInputAreaRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const usageRatioRaw = sessionContextBudget?.usage_ratio ?? 0;
+    const usageRatio = Number.isFinite(usageRatioRaw) ? Math.max(usageRatioRaw, 0) : 0;
+    const usageRatioClamped = Math.min(usageRatio, 1);
+    const usagePercent = Math.round(usageRatio * 1000) / 10;
+    const contextRingColor = usageRatio >= 1
+        ? 'var(--error)'
+        : usageRatio >= 0.8
+            ? 'var(--warning)'
+            : usageRatio >= 0.6
+                ? 'var(--info)'
+                : 'var(--text-secondary)';
+    const contextRingRadius = 8;
+    const contextRingCircumference = 2 * Math.PI * contextRingRadius;
+    const contextRingOffset = contextRingCircumference * (1 - usageRatioClamped);
+    const formatBudgetCount = (value: number | undefined) => (typeof value === 'number' ? value.toLocaleString() : '—');
 
     // Settings form local state
     const [settingsForm, setSettingsForm] = useState({
@@ -2067,6 +2094,7 @@ function AgentDetailInner() {
                     return [...prev, parseChatMsg({ role: d.role, content: d.content, timestamp: new Date().toISOString() })];
                 });
                 fetchMySessions(true, agentId);
+                refetchSessionContextBudget();
             } else if (d.type === 'error' || d.type === 'quota_exceeded') {
                 const msg = d.content || d.detail || d.message || 'Request denied';
                 setChatMessages(prev => {
@@ -4683,6 +4711,129 @@ function AgentDetailInner() {
                                                         <IconSend size={16} stroke={1.75} />
                                                     </button>
                                                 )}
+                                                <div
+                                                    style={{ position: 'relative' }}
+                                                    onMouseEnter={() => setShowContextBudgetPopover(true)}
+                                                    onMouseLeave={() => setShowContextBudgetPopover(false)}
+                                                >
+                                                    <button
+                                                        type="button"
+                                                        aria-label={t('agent.chat.contextBudget.aria')}
+                                                        style={{
+                                                            width: '32px',
+                                                            height: '32px',
+                                                            borderRadius: '0',
+                                                            border: 'none',
+                                                            background: 'transparent',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'center',
+                                                            padding: 0,
+                                                            cursor: 'default',
+                                                            boxShadow: 'none',
+                                                            opacity: activeSession?.id ? 1 : 0.5,
+                                                        }}
+                                                    >
+                                                        <svg width="28" height="28" viewBox="0 0 20 20" role="presentation">
+                                                            <defs>
+                                                                <linearGradient id="contextBudgetRingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                                    <stop offset="0%" stopColor={contextRingColor} stopOpacity="0.95" />
+                                                                    <stop offset="100%" stopColor={contextRingColor} stopOpacity="0.55" />
+                                                                </linearGradient>
+                                                                <filter id="contextBudgetRingGlow" x="-50%" y="-50%" width="200%" height="200%">
+                                                                    <feDropShadow dx="0" dy="0" stdDeviation="1.4" floodColor={contextRingColor} floodOpacity="0.45" />
+                                                                </filter>
+                                                            </defs>
+                                                            <circle
+                                                                cx="10"
+                                                                cy="10"
+                                                                r={contextRingRadius}
+                                                                fill="none"
+                                                                stroke="rgba(127,127,127,0.22)"
+                                                                strokeWidth="2.3"
+                                                            />
+                                                            <circle
+                                                                cx="10"
+                                                                cy="10"
+                                                                r={contextRingRadius}
+                                                                fill="none"
+                                                                stroke="url(#contextBudgetRingGradient)"
+                                                                strokeWidth="2.6"
+                                                                strokeLinecap="round"
+                                                                strokeDasharray={`${contextRingCircumference} ${contextRingCircumference}`}
+                                                                strokeDashoffset={contextRingOffset}
+                                                                transform="rotate(-90 10 10)"
+                                                                filter="url(#contextBudgetRingGlow)"
+                                                                style={{ transition: 'stroke-dashoffset 180ms ease' }}
+                                                            />
+                                                            <circle cx="10" cy="10" r="4.9" fill="#ffffff" />
+                                                            <text
+                                                                x="10"
+                                                                y="10.95"
+                                                                textAnchor="middle"
+                                                                dominantBaseline="middle"
+                                                                style={{
+                                                                    fill: '#2f3440',
+                                                                    fontSize: '3.95px',
+                                                                    fontWeight: 700,
+                                                                    fontFamily: '"Avenir Next", "SF Pro Display", "Inter", sans-serif',
+                                                                    letterSpacing: '-0.08px',
+                                                                }}
+                                                            >
+                                                                <tspan>{Math.max(0, Math.round(usagePercent))}</tspan>
+                                                                <tspan style={{ fontSize: '2.6px', fontWeight: 700 }}>%</tspan>
+                                                            </text>
+                                                        </svg>
+                                                    </button>
+                                                    {showContextBudgetPopover && (
+                                                        <div style={{
+                                                            position: 'absolute',
+                                                            bottom: 'calc(100% + 10px)',
+                                                            right: 0,
+                                                            minWidth: '292px',
+                                                            border: '1px solid color-mix(in srgb, var(--border-default) 78%, transparent)',
+                                                            borderRadius: '14px',
+                                                            padding: '12px 12px 11px',
+                                                            background: `
+                                                            radial-gradient(120% 140% at 0% 0%, rgba(255,255,255,0.05), transparent 48%),
+                                                            linear-gradient(180deg, var(--bg-elevated), color-mix(in srgb, var(--bg-elevated) 88%, var(--bg-secondary) 12%))
+                                                        `,
+                                                            boxShadow: 'none',
+                                                            zIndex: 30,
+                                                            backdropFilter: 'blur(6px)',
+                                                        }}>
+                                                            <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                                <span>{t('agent.chat.contextBudget.title')}</span>
+                                                                <span style={{ color: contextRingColor, fontWeight: 700 }}>{usagePercent.toFixed(1)}%</span>
+                                                            </div>
+                                                            <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(127,127,127,0.18)', overflow: 'hidden', marginBottom: '10px' }}>
+                                                                <div style={{ height: '100%', width: `${Math.min(usageRatio, 1.2) * 100}%`, borderRadius: '999px', background: `linear-gradient(90deg, ${contextRingColor}, color-mix(in srgb, ${contextRingColor} 60%, white 40%))` }} />
+                                                            </div>
+                                                            {!activeSession?.id ? (
+                                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                                    {t('agent.chat.contextBudget.unavailable')}
+                                                                </div>
+                                                            ) : sessionContextBudgetFetching && !sessionContextBudget ? (
+                                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                                    {t('agent.chat.contextBudget.loading')}
+                                                                </div>
+                                                            ) : (
+                                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: '6px', columnGap: '10px', fontSize: '12px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.windowSize')}</span>
+                                                                    <span>{formatBudgetCount(sessionContextBudget?.window_size_messages)}</span>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.sessionMessages')}</span>
+                                                                    <span>{formatBudgetCount(sessionContextBudget?.session_messages_total)}</span>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.estimatedTokens')}</span>
+                                                                    <span>{formatBudgetCount(sessionContextBudget?.estimated_tokens_current_window)}</span>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.budgetTokens')}</span>
+                                                                    <span>{formatBudgetCount(sessionContextBudget?.budget_tokens)}</span>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.usageRatio')}</span>
+                                                                    <span style={{ color: contextRingColor, fontWeight: 700 }}>{usagePercent.toFixed(1)}%</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
                                             </div>
                                         </div>
                                         </div>

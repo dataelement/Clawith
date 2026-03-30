@@ -399,7 +399,18 @@
       "collapseSessions": "Collapse sessions",
       "showSessions": "Show chat sessions",
       "toolCallChain": "Tools Used",
-      "analysing": "Analysing"
+      "analysing": "Analysing",
+      "contextBudget": {
+        "aria": "View context window info",
+        "title": "Context Window Info",
+        "windowSize": "Window messages",
+        "sessionMessages": "Session total messages",
+        "estimatedTokens": "Estimated window tokens",
+        "budgetTokens": "Budget tokens",
+        "usageRatio": "Usage ratio",
+        "loading": "Loading...",
+        "unavailable": "No session data yet"
+      }
     },
     "activityLog": {
       "title": "Activity Log",

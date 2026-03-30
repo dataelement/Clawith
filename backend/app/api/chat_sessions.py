@@ -18,7 +18,7 @@ from app.models.agent import Agent
 from app.models.user import User
 
 router = APIRouter(prefix="/api/agents", tags=["chat-sessions"])
-DEFAULT_CONTEXT_BUDGET_TOKENS = 12000
+DEFAULT_CONTEXT_BUDGET_TOKENS = 128000
 
 
 def _is_admin_or_creator(user: User, agent: Agent) -> bool:
