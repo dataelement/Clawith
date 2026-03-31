@@ -129,12 +129,22 @@ async def _notify_mentions(db, content: str, author_id: uuid.UUID, author_name: 
 # ── Routes ──────────────────────────────────────────
 
 @router.get("/posts")
-async def list_posts(limit: int = 20, offset: int = 0, since: str | None = None, tenant_id: str | None = None):
-    """List plaza posts, newest first. Filtered by tenant_id for data isolation."""
+async def list_posts(
+    limit: int = 20,
+    offset: int = 0,
+    since: str | None = None,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+):
+    """List plaza posts, newest first. Filtered by tenant_id from JWT for data isolation."""
+    # Enforce tenant from JWT; platform_admin can optionally specify a different tenant
+    effective_tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    if tenant_id and current_user.role == "platform_admin":
+        effective_tenant_id = tenant_id
     async with async_session() as db:
         q = select(PlazaPost).order_by(desc(PlazaPost.created_at))
-        if tenant_id:
-            q = q.where(PlazaPost.tenant_id == tenant_id)
+        if effective_tenant_id:
+            q = q.where(PlazaPost.tenant_id == effective_tenant_id)
         if since:
             try:
                 since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
@@ -148,25 +158,32 @@ async def list_posts(limit: int = 20, offset: int = 0, since: str | None = None,
 
 
 @router.get("/stats")
-async def plaza_stats(tenant_id: str | None = None):
-    """Get plaza statistics scoped by tenant_id."""
+async def plaza_stats(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Get plaza statistics scoped by tenant_id from JWT."""
+    # Enforce tenant from JWT; platform_admin can optionally specify a different tenant
+    effective_tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    if tenant_id and current_user.role == "platform_admin":
+        effective_tenant_id = tenant_id
     async with async_session() as db:
         # Build base filters
-        post_filter = PlazaPost.tenant_id == tenant_id if tenant_id else True
+        post_filter = PlazaPost.tenant_id == effective_tenant_id if effective_tenant_id else True
         # Total posts
         total_posts = (await db.execute(
             select(func.count(PlazaPost.id)).where(post_filter)
         )).scalar() or 0
         # Total comments (join through post tenant_id)
         comment_q = select(func.count(PlazaComment.id))
-        if tenant_id:
-            comment_q = comment_q.join(PlazaPost, PlazaComment.post_id == PlazaPost.id).where(PlazaPost.tenant_id == tenant_id)
+        if effective_tenant_id:
+            comment_q = comment_q.join(PlazaPost, PlazaComment.post_id == PlazaPost.id).where(PlazaPost.tenant_id == effective_tenant_id)
         total_comments = (await db.execute(comment_q)).scalar() or 0
         # Today's posts
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         today_q = select(func.count(PlazaPost.id)).where(PlazaPost.created_at >= today_start)
-        if tenant_id:
-            today_q = today_q.where(PlazaPost.tenant_id == tenant_id)
+        if effective_tenant_id:
+            today_q = today_q.where(PlazaPost.tenant_id == effective_tenant_id)
         today_posts = (await db.execute(today_q)).scalar() or 0
         # Top 5 contributors by post count
         top_q = (

@@ -15,6 +15,8 @@ from loguru import logger
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import get_current_user
+from app.core.permissions import check_agent_access, is_agent_creator
 from app.database import get_db, async_session
 from app.models.agent import Agent
 from app.models.gateway_message import GatewayMessage
@@ -77,15 +79,20 @@ async def generate_api_key(
 
 
 @router.post("/agents/{agent_id}/api-key")
-async def generate_agent_api_key(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def generate_agent_api_key(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Generate or regenerate API key for an OpenClaw agent.
 
     This is an internal endpoint called by the agents API.
     """
-    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.agent_type == "openclaw"))
-    agent = result.scalar_one_or_none()
-    if not agent:
-        raise HTTPException(status_code=404, detail="OpenClaw agent not found")
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if not is_agent_creator(current_user, agent) and current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Only creator or admin can manage API keys")
+    if getattr(agent, "agent_type", "native") != "openclaw":
+        raise HTTPException(status_code=400, detail="API keys are only available for OpenClaw agents")
 
     # Generate a new key
     raw_key = f"oc-{secrets.token_urlsafe(32)}"

@@ -11,7 +11,8 @@ from sqlalchemy import select, func, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_admin, get_current_user, require_role
+from app.config import get_settings
+from app.core.security import get_current_admin, get_current_user, require_role, encrypt_data
 from app.database import get_db
 from app.models.org import OrgDepartment, OrgMember
 from app.models.identity import IdentityProvider
@@ -31,6 +32,7 @@ from app.services.platform_service import platform_service
 from app.services.sso_service import sso_service
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
+settings = get_settings()
 
 
 # ─── LLM Model Pool ────────────────────────────────────
@@ -133,7 +135,7 @@ async def add_llm_model(
     model = LLMModel(
         provider=data.provider,
         model=data.model,
-        api_key_encrypted=data.api_key,  # TODO: encrypt
+        api_key_encrypted=encrypt_data(data.api_key, settings.SECRET_KEY),
         base_url=data.base_url,
         label=data.label,
         max_tokens_per_day=data.max_tokens_per_day,
@@ -212,7 +214,7 @@ async def update_llm_model(
         if hasattr(data, 'base_url') and data.base_url is not None:
             model.base_url = data.base_url
         if data.api_key and data.api_key.strip() and not data.api_key.startswith('****'):  # Skip masked values
-            model.api_key_encrypted = data.api_key.strip()
+            model.api_key_encrypted = encrypt_data(data.api_key.strip(), settings.SECRET_KEY)
         if data.max_tokens_per_day is not None:
             model.max_tokens_per_day = data.max_tokens_per_day
         if data.enabled is not None:
