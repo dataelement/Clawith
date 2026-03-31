@@ -209,19 +209,7 @@ export default function Login() {
 
                     {tenant && tenant.sso_enabled && !isRegister && (
                         <div style={{ marginBottom: '24px' }}>
-                            <div style={{
-                                padding: '16px', borderRadius: '12px', background: 'rgba(59,130,246,0.08)',
-                                border: '1px solid rgba(59,130,246,0.15)', marginBottom: '16px',
-                                textAlign: 'center'
-                            }}>
-                                <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--accent-primary)', marginBottom: '4px' }}>
-                                    {tenant.name}
-                                </div>
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                    {t('auth.ssoNotice', 'Enterprise SSO is enabled for this domain.')}
-                                </div>
-                            </div>
-
+                            {/* SSO 提示框已隐藏 - 2026-03-31 */}
                             {ssoLoading && (
                                 <div style={{ textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '12px' }}>
                                     {t('auth.ssoLoading', 'Loading SSO providers...')}
