@@ -643,7 +643,7 @@ class OAuth2AuthProvider(BaseAuthProvider):
 
         # 优先用 provider_user_id（如 userId="liuxi"），再用 email 前缀，最后 fallback
         username = (
-            user_info.provider_user_id
+            user_info.provider_user_id[:8] if user_info.provider_user_id and len(user_info.provider_user_id) > 8 else user_info.provider_user_id
             or (user_info.email.split("@")[0] if user_info.email else None)
             or f"oauth2_user"
         )
