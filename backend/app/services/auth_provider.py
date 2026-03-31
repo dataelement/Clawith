@@ -159,6 +159,38 @@ class BaseAuthProvider(ABC):
                     tenant_id=tenant_id,
                 )
 
+        # 5. Try matching by provider_user_id as username (cross-system association, lowest priority)
+        if not user and user_info.provider_user_id:
+            from sqlalchemy import and_
+
+            # Build query: exact tenant match when tenant_id is set, no tenant filter when NULL
+            if tenant_id:
+                where_clause = and_(
+                    User.username == user_info.provider_user_id,
+                    User.tenant_id == tenant_id,
+                )
+            else:
+                where_clause = User.username == user_info.provider_user_id
+
+            result = await db.execute(select(User).where(where_clause))
+            candidate = result.scalar_one_or_none()
+            if candidate:
+                user = candidate
+                await sso_service.link_identity(
+                    db,
+                    str(user.id),
+                    self.provider_type,
+                    user_info.provider_user_id,
+                    user_info.raw_data,
+                    tenant_id=tenant_id,
+                )
+                logger.info(f"[SSO] Matched existing user by username: {user.username} (tenant_id={tenant_id})")
+
+        # Auto-bind tenant if user exists but has no tenant_id
+        if user and tenant_id and not user.tenant_id:
+            user.tenant_id = tenant_id
+            logger.info(f"[SSO] Auto-bound user {user.username} to tenant {tenant_id}")
+
         if user:
             # Update user info
             await self._update_existing_user(db, user, user_info)
@@ -231,10 +263,17 @@ class BaseAuthProvider(ABC):
         """Create new user from external identity."""
         username = user_info.email.split("@")[0] if user_info.email else f"{self.provider_type}_{user_info.provider_user_id[:8]}"
 
-        # Ensure unique username
+        # Ensure unique username -- if conflict exists, it indicates a match chain failure
         existing = await db.execute(select(User).where(User.username == username))
         if existing.scalar_one_or_none():
-            username = f"{username}_{user_info.provider_user_id[:6]}"
+            logger.error(
+                f"[SSO] Username conflict detected: {username} already exists in tenant {tenant_id}. "
+                f"This should not happen if find_or_create_user match chain is working correctly."
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Username '{username}' already exists. Please contact administrator."
+            )
 
         email = user_info.email or f"{username}@{self.provider_type}.local"
 
