@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import TakeControlPanel from './TakeControlPanel';
 
 /* ── Types ── */
 export interface LivePreviewState {
@@ -12,6 +13,8 @@ interface Props {
     liveState: LivePreviewState;
     visible: boolean;
     onToggle: () => void;
+    agentId?: string;     // needed for Take Control
+    sessionId?: string;   // needed for Take Control
 }
 
 /* ── Tab Icons (Linear-style minimal SVGs) ── */
@@ -56,8 +59,11 @@ type TabType = 'desktop' | 'browser' | 'code';
 const MIN_WIDTH = 300;  // minimum panel width in px
 const MAX_WIDTH_VW = 0.65; // maximum panel width as fraction of viewport width
 
-export default function AgentBayLivePanel({ liveState, visible, onToggle }: Props) {
+export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId }: Props) {
     const { t } = useTranslation();
+
+    // Take Control state
+    const [showTakeControl, setShowTakeControl] = useState(false);
 
     // Determine available tabs from live state
     const availableTabs: TabType[] = [];
@@ -68,18 +74,43 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle }: Prop
     const [activeTab, setActiveTab] = useState<TabType>('desktop');
     const codeEndRef = useRef<HTMLDivElement>(null);
 
-    // Resizable panel width state — starts at default 420px
     const [panelWidth, setPanelWidth] = useState(420);
     const isDragging = useRef(false);
     const dragStartX = useRef(0);
     const dragStartWidth = useRef(0);
 
-    // Auto-switch to the most recently active tab
+    // Track latest data to auto-switch tabs when new activity arrives
+    const prevDesktopUrl = useRef(liveState.desktop?.screenshotUrl);
+    const prevBrowserUrl = useRef(liveState.browser?.screenshotUrl);
+    const prevCodeLength = useRef(liveState.code?.output?.length || 0);
+
     useEffect(() => {
+        // Switch to the tab that just received a new update
+        if (liveState.desktop?.screenshotUrl !== prevDesktopUrl.current) {
+            setActiveTab('desktop');
+            prevDesktopUrl.current = liveState.desktop?.screenshotUrl;
+        }
+        if (liveState.browser?.screenshotUrl !== prevBrowserUrl.current) {
+            setActiveTab('browser');
+            prevBrowserUrl.current = liveState.browser?.screenshotUrl;
+        }
+        const currentCodeLength = liveState.code?.output?.length || 0;
+        if (currentCodeLength !== prevCodeLength.current) {
+            setActiveTab('code');
+            prevCodeLength.current = currentCodeLength;
+        }
+        
+        // Fallback: If current tab is completely gone, switch to first available
         if (availableTabs.length > 0 && !availableTabs.includes(activeTab)) {
             setActiveTab(availableTabs[0]);
         }
-    }, [availableTabs.length]);
+    }, [
+        liveState.desktop?.screenshotUrl, 
+        liveState.browser?.screenshotUrl, 
+        liveState.code?.output,
+        availableTabs,
+        activeTab
+    ]);
 
     // Auto-scroll code output
     useEffect(() => {
@@ -169,6 +200,19 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle }: Prop
                         </button>
                     ))}
                 </div>
+                {/* Take Control button — shown when browser/desktop has data */}
+                {agentId && sessionId && (activeTab === 'browser' || activeTab === 'desktop') && (
+                    <button
+                        className="live-panel-take-control"
+                        onClick={() => setShowTakeControl(true)}
+                        title="Take Control — manually interact with the browser"
+                    >
+                        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M3 3l5.5 10 1.5-4 4-1.5z" />
+                        </svg>
+                        <span>Control</span>
+                    </button>
+                )}
                 <button className="live-panel-collapse" onClick={onToggle} title="Collapse">
                     {CollapseIcon}
                 </button>
@@ -223,6 +267,15 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle }: Prop
                     </div>
                 )}
             </div>
+
+            {/* Take Control fullscreen panel */}
+            {showTakeControl && agentId && sessionId && (
+                <TakeControlPanel
+                    agentId={agentId}
+                    sessionId={sessionId}
+                    onClose={() => setShowTakeControl(false)}
+                />
+            )}
         </div>
     );
 }

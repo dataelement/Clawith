@@ -17,27 +17,39 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # 1. Add source column
+    # 1. Add source column with a safe default so existing rows get 'builtin' initially
     op.execute("ALTER TABLE tools ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'builtin'")
 
-    # 2. Backfill existing data
-    # (a) Builtin tools (type='builtin') -> source='builtin'
-    op.execute("UPDATE tools SET source = 'builtin' WHERE type = 'builtin'")
-    
-    # (b) Admin/Company tools (type='mcp' and tenant_id IS NOT NULL) -> source='admin'
-    op.execute("UPDATE tools SET source = 'admin' WHERE type = 'mcp' AND tenant_id IS NOT NULL")
-    
-    # (c) Agent user-installed tools (type='mcp' and tenant_id IS NULL) -> source='agent'
-    op.execute("UPDATE tools SET source = 'agent' WHERE type = 'mcp' AND tenant_id IS NULL")
+    # 2. Backfill existing data using the most reliable signals available.
 
-    # 3. Fix existing agent_tools source column where they were incorrectly stored as 'system'
-    # Any agent_tools record for an agent-installed MCP tool (no tenant_id) should be 'user_installed' instead of 'system'
+    # (a) Builtin tools (type='builtin') -> source='builtin'
+    #     These are already set to 'builtin' by the DEFAULT, but we set explicitly for clarity.
+    op.execute("UPDATE tools SET source = 'builtin' WHERE type = 'builtin'")
+
+    # (b) Admin/Company tools: manually created by company admins via the enterprise
+    #     settings UI. These are identified by category='custom' AND have a tenant_id.
+    #     This distinguishes them from auto-discovered Smithery/MCP tools (category='mcp').
+    #     NOTE: Do NOT use `tenant_id IS NOT NULL` alone — agent-installed MCP tools also
+    #     carry a tenant_id (to track which company's agent installed them), but they have
+    #     category='mcp', not 'custom'.
+    op.execute(
+        "UPDATE tools SET source = 'admin' "
+        "WHERE type = 'mcp' AND category = 'custom' AND tenant_id IS NOT NULL"
+    )
+
+    # (c) Agent user-installed tools: all remaining MCP tools still at the DEFAULT 'builtin'.
+    #     This includes those with a tenant_id — that field only records which company's
+    #     agent installed the tool, it does NOT make it a company-level admin tool.
+    op.execute("UPDATE tools SET source = 'agent' WHERE type = 'mcp' AND source = 'builtin'")
+
+    # 3. Fix existing agent_tools.source where incorrectly stored as 'system'.
+    #    Any agent_tools row for an agent-installed tool should use 'user_installed'.
     op.execute("""
-        UPDATE agent_tools 
-        SET source = 'user_installed' 
-        WHERE source = 'system' 
+        UPDATE agent_tools
+        SET source = 'user_installed'
+        WHERE source = 'system'
           AND tool_id IN (
-              SELECT id FROM tools WHERE type = 'mcp' AND tenant_id IS NULL
+              SELECT id FROM tools WHERE source = 'agent'
           )
     """)
 

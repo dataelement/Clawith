@@ -449,3 +449,38 @@ export const triggerApi = {
         request<void>(`/agents/${agentId}/triggers/${triggerId}`, { method: 'DELETE' }),
 };
 
+// ─── Agent Credentials ────────────────────────────────
+export const credentialApi = {
+    list: (agentId: string) =>
+        request<any[]>(`/agents/${agentId}/credentials/`),
+
+    create: (agentId: string, data: any) =>
+        request<any>(`/agents/${agentId}/credentials/`, { method: 'POST', body: JSON.stringify(data) }),
+
+    update: (agentId: string, credentialId: string, data: any) =>
+        request<any>(`/agents/${agentId}/credentials/${credentialId}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+    delete: (agentId: string, credentialId: string) =>
+        request<void>(`/agents/${agentId}/credentials/${credentialId}`, { method: 'DELETE' }),
+};
+
+// ─── AgentBay Take Control ────────────────────────────
+export const controlApi = {
+    click: (agentId: string, data: { session_id: string; x: number; y: number; button?: string }) =>
+        request<any>(`/agents/${agentId}/control/click`, { method: 'POST', body: JSON.stringify(data) }),
+
+    type: (agentId: string, data: { session_id: string; text: string }) =>
+        request<any>(`/agents/${agentId}/control/type`, { method: 'POST', body: JSON.stringify(data) }),
+
+    pressKeys: (agentId: string, data: { session_id: string; keys: string[] }) =>
+        request<any>(`/agents/${agentId}/control/press_keys`, { method: 'POST', body: JSON.stringify(data) }),
+
+    screenshot: (agentId: string, data: { session_id: string }) =>
+        request<any>(`/agents/${agentId}/control/screenshot`, { method: 'POST', body: JSON.stringify(data) }),
+
+    lock: (agentId: string, data: { session_id: string; platform_hint?: string }) =>
+        request<any>(`/agents/${agentId}/control/lock`, { method: 'POST', body: JSON.stringify(data) }),
+
+    unlock: (agentId: string, data: { session_id: string; export_cookies?: boolean; platform_hint?: string }) =>
+        request<any>(`/agents/${agentId}/control/unlock`, { method: 'POST', body: JSON.stringify(data) }),
+};

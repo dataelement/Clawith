@@ -42,7 +42,20 @@ class ConnectionManager:
     async def send_message(self, agent_id: str, message: dict):
         if agent_id in self.active_connections:
             for ws, _sid in self.active_connections[agent_id]:
-                await ws.send_json(message)
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    pass
+
+    async def send_to_session(self, agent_id: str, session_id: str, message: dict):
+        """Send message only to WebSocket connections matching the given session_id."""
+        if agent_id in self.active_connections:
+            for ws, sid in self.active_connections[agent_id]:
+                if sid == session_id:
+                    try:
+                        await ws.send_json(message)
+                    except Exception:
+                        pass
 
     def get_active_session_ids(self, agent_id: str) -> list[str]:
         """Return distinct session IDs for all active WS connections of an agent."""
@@ -103,6 +116,7 @@ async def call_llm(
     role_description: str,
     agent_id=None,
     user_id=None,
+    session_id: str = "",
     on_chunk=None,
     on_tool_call=None,
     on_thinking=None,
@@ -149,13 +163,13 @@ async def call_llm(
                     _current_user_name = _u.display_name or _u.username
         except Exception:
             pass
-    system_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
+    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
 
     # Convert messages to LLMMessage format
-    api_messages = [LLMMessage(role="system", content=system_prompt)]
+    api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
     for msg in messages:
         api_messages.append(LLMMessage(
             role=msg.get("role", "user"),
@@ -351,6 +365,7 @@ async def call_llm(
                 tool_name, args,
                 agent_id=agent_id,
                 user_id=user_id or agent_id,
+                session_id=session_id,
             )
             logger.debug(f"[LLM] Tool result: {result[:100]}")
 
@@ -541,7 +556,7 @@ async def websocket_chat(
                     select(ChatMessage)
                     .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
                     .order_by(ChatMessage.created_at.desc())
-                    .limit(20)
+                    .limit(ctx_size)
                 )
                 history_messages = list(reversed(history_result.scalars().all()))
                 logger.info(f"[WS] Loaded {len(history_messages)} history messages for session {conv_id}")
@@ -560,6 +575,9 @@ async def websocket_chat(
         manager.active_connections[agent_id_str] = []
     manager.active_connections[agent_id_str].append((websocket, conv_id))
     logger.info(f"[WS] Ready! Agent={agent_name}")
+
+    # Send session_id to frontend so Take Control can reference the correct session
+    await websocket.send_json({"type": "connected", "session_id": conv_id})
 
     # Build conversation context from history
     # IMPORTANT: Include tool_call messages so the LLM maintains tool-calling behavior.
@@ -588,11 +606,16 @@ async def websocket_chat(
                 if tc_data.get("reasoning_content"):
                     asst_msg["reasoning_content"] = tc_data["reasoning_content"]
                 conversation.append(asst_msg)
-                # Tool result message
+                # Tool result message.
+                # Sanitize any stale [ImageID: ...] markers left by the ephemeral
+                # screenshot cache — those images are gone from memory and would
+                # confuse the LLM if sent as-is.
+                from app.services.vision_inject import sanitize_history_tool_result
+                sanitized_result = sanitize_history_tool_result(str(tc_result))
                 conversation.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
-                    "content": str(tc_result)[:500],
+                    "content": sanitized_result[:500],
                 })
             except Exception:
                 continue  # Skip malformed tool_call records
@@ -740,12 +763,12 @@ async def websocket_chat(
                                 if env:
                                     tool_result = data.get("result", "") or ""
                                     if env == "desktop":
-                                        b64_url = await get_desktop_screenshot(agent_id)
+                                        b64_url = await get_desktop_screenshot(agent_id, session_id=conv_id)
                                         if b64_url:
                                             data["live_preview"] = {"env": env, "screenshot_url": b64_url}
                                             logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
                                     elif env == "browser":
-                                        b64_url = await get_browser_snapshot(agent_id)
+                                        b64_url = await get_browser_snapshot(agent_id, session_id=conv_id)
                                         if b64_url:
                                             data["live_preview"] = {"env": env, "screenshot_url": b64_url}
                                             logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
@@ -797,6 +820,7 @@ async def websocket_chat(
                         role_description,
                         agent_id=agent_id,
                         user_id=user_id,
+                        session_id=conv_id,
                         on_chunk=stream_to_ws,
                         on_tool_call=tool_call_to_ws,
                         on_thinking=thinking_to_ws,
@@ -879,6 +903,7 @@ async def websocket_chat(
                                 role_description,
                                 agent_id=agent_id,
                                 user_id=user_id,
+                                session_id=conv_id,
                                 on_chunk=stream_to_ws,
                                 on_tool_call=tool_call_to_ws,
                                 on_thinking=thinking_to_ws,

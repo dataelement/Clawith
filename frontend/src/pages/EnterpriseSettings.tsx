@@ -8,6 +8,7 @@ import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import UserManagement from './UserManagement';
 import InvitationCodes from './InvitationCodes';
+import { copyToClipboard } from '../utils/clipboard';
 
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -582,7 +583,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                         <button 
                                             className="btn btn-ghost" 
                                             style={{ position: 'absolute', top: '8px', right: '8px', fontSize: '10px', color: '#abb2bf', padding: '4px 8px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', border: 'none', borderRadius: '4px' }}
-                                            onClick={(e) => { e.preventDefault(); navigator.clipboard.writeText(FEISHU_SYNC_PERM_JSON); e.currentTarget.textContent = 'Copied✓'; setTimeout(() => { e.currentTarget.textContent = 'Copy'; }, 2000); }}
+                                            onClick={(e) => { e.preventDefault(); copyToClipboard(FEISHU_SYNC_PERM_JSON); e.currentTarget.textContent = 'Copied✓'; setTimeout(() => { e.currentTarget.textContent = 'Copy'; }, 2000); }}
                                         >
                                             Copy
                                         </button>
@@ -834,6 +835,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                                 t={t}
                                             />
                                         )}
+
 
                                         {existingProvider && renderOrgBrowser(existingProvider)}
                                     </div>
@@ -2892,8 +2894,10 @@ export default function EnterpriseSettings() {
                                                                     onClick={() => {
                                                                         setConfigCategory(category);
                                                                         setEditingConfig({});
-                                                                        // Load existing global config from the first tool in this category
-                                                                        const firstToolWithConfig = (catTools as any[]).find((tl: any) => tl.config_schema?.fields?.length > 0);
+                                                                        // Load existing global config from the first tool in this category that has a non-empty config.
+                                                                        // Do NOT require config_schema — some categories (e.g. AgentBay)
+                                                                        // define their schema only in frontend CATEGORY_CONFIG_SCHEMAS.
+                                                                        const firstToolWithConfig = (catTools as any[]).find((tl: any) => tl.config && Object.keys(tl.config).length > 0);
                                                                         if (firstToolWithConfig?.config) {
                                                                             setEditingConfig({ ...firstToolWithConfig.config });
                                                                         }
@@ -3120,6 +3124,10 @@ export default function EnterpriseSettings() {
                                                     {field.type === 'password' ? (
                                                         <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''}
                                                             onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                    ) : field.type === 'select' ? (
+                                                        <select className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))}>
+                                                            {(field.options || []).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                                        </select>
                                                     ) : (
                                                         <input type="text" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''}
                                                             onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
@@ -3129,10 +3137,12 @@ export default function EnterpriseSettings() {
                                             <div style={{ display: 'flex', gap: '8px', marginTop: '8px', justifyContent: 'flex-end' }}>
                                                 <button className="btn btn-secondary" onClick={() => setConfigCategory(null)}>{t('common.cancel')}</button>
                                                 <button className="btn btn-primary" onClick={async () => {
-                                                    // Save config to all tools in this category that have config_schema
-                                                    const catTools = allTools.filter((tl: any) => (tl.category || 'general') === configCategory && tl.config_schema?.fields?.length > 0);
-                                                    for (const tl of catTools) {
-                                                        await fetchJson(`/tools/${tl.id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
+                                                    // Save config to the first tool in this category.
+                                                    // We write to one representative tool per category;
+                                                    // get_category_config endpoint reads it back.
+                                                    const catTools = allTools.filter((tl: any) => (tl.category || 'general') === configCategory);
+                                                    if (catTools.length > 0) {
+                                                        await fetchJson(`/tools/${catTools[0].id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
                                                     }
                                                     setConfigCategory(null);
                                                     loadAllTools();

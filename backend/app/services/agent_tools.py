@@ -42,8 +42,12 @@ _TOOL_CONFIG_CACHE_TTL_SECONDS = 60
 SENSITIVE_FIELD_KEYS = {"api_key", "private_key", "auth_code", "password", "secret", "atlassian_api_key"}
 
 
-def _decrypt_sensitive_fields(config: dict) -> dict:
-    """Decrypt sensitive fields in config dict."""
+def _decrypt_sensitive_fields(config: dict, config_schema: dict | None = None) -> dict:
+    """Decrypt sensitive fields in config dict.
+
+    When config_schema is provided, also decrypts fields with type='password'
+    (e.g. smithery_api_key) that are not in the hardcoded SENSITIVE_FIELD_KEYS.
+    """
     if not config:
         return config
 
@@ -53,7 +57,16 @@ def _decrypt_sensitive_fields(config: dict) -> dict:
     settings = get_settings()
     result = dict(config)
 
-    for key in SENSITIVE_FIELD_KEYS:
+    # Build the set of sensitive keys: hardcoded + schema-derived
+    sensitive_keys = set(SENSITIVE_FIELD_KEYS)
+    if config_schema:
+        for field in config_schema.get("fields", []):
+            if field.get("type") == "password":
+                key = field.get("key", "")
+                if key:
+                    sensitive_keys.add(key)
+
+    for key in sensitive_keys:
         if key in result and result[key]:
             value = result[key]
             if isinstance(value, str) and value:
@@ -86,13 +99,16 @@ def _set_cached_tool_config(agent_id: Optional[uuid.UUID], tool_name: str, confi
 
 
 async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Optional[dict]:
-    """获取工具配置（带缓存）。
+    """Get merged tool config (with caching).
 
-    优先级：
-    1. agent_tools.config (per-agent 配置)
-    2. tools.config (全局配置)
+    Priority:
+    1. agent_tools.config (per-agent override)
+    2. tools.config (company/global config)
+
+    Both configs are decrypted using the tool's config_schema for
+    schema-aware field detection (e.g. smithery_api_key with type=password).
     """
-    # 先检查缓存
+    # Check cache first
     cached = _get_cached_tool_config(agent_id, tool_name)
     if cached is not None:
         logger.debug(f"[ToolConfig] Cache hit for {tool_name}, agent_id={agent_id}: {cached}")
@@ -101,32 +117,32 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
     from app.models.tool import Tool, AgentTool
 
     async with async_session() as db:
-        # 1. 先查 per-agent 配置
+        # 1. Try per-agent + global config together
         if agent_id:
             result = await db.execute(
-                select(AgentTool.config, Tool.config)
+                select(AgentTool.config, Tool.config, Tool.config_schema)
                 .join(Tool, AgentTool.tool_id == Tool.id)
                 .where(AgentTool.agent_id == agent_id, Tool.name == tool_name)
             )
             row = result.first()
             if row:
-                agent_config, global_config = row
-                # 合并配置：agent_config 覆盖 global_config
+                agent_config, global_config, config_schema = row
+                # Merge: agent overrides global
                 merged = {**(global_config or {}), **(agent_config or {})}
                 if merged:
-                    # Decrypt before returning
-                    merged = _decrypt_sensitive_fields(merged)
-                    logger.info(f"[ToolConfig] DB merged config for {tool_name}, agent_id={agent_id}: {merged}")
+                    # Decrypt with schema awareness
+                    merged = _decrypt_sensitive_fields(merged, config_schema)
+                    logger.info(f"[ToolConfig] DB merged config for {tool_name}, agent_id={agent_id}")
                     _set_cached_tool_config(agent_id, tool_name, merged)
                     return merged
 
-        # 2. 回退到全局配置
+        # 2. Fallback to global config only
         result = await db.execute(select(Tool).where(Tool.name == tool_name))
         tool = result.scalar_one_or_none()
         if tool and tool.config:
-            # Decrypt before returning
-            decrypted = _decrypt_sensitive_fields(tool.config)
-            logger.info(f"[ToolConfig] DB global config for {tool_name}: {decrypted}")
+            # Decrypt with schema awareness
+            decrypted = _decrypt_sensitive_fields(tool.config, tool.config_schema)
+            logger.info(f"[ToolConfig] DB global config for {tool_name}")
             _set_cached_tool_config(agent_id, tool_name, decrypted)
             return decrypted
 
@@ -599,6 +615,102 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ── Feishu Bitable (多维表格) Tools ──────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "bitable_list_tables",
+            "description": "列出飞书多维表格内的所有数据表 (Tables)。url 支持表格链接或 Wiki 链接。使用此工具了解请求的多维表格中有哪些表。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bitable_list_fields",
+            "description": "列出飞书多维表格指定数据表中的所有字段 (Fields)。url 支持表格链接或 Wiki 链接。在查询或修改数据前，必须先调用此工具了解字段名称和类型。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bitable_query_records",
+            "description": "查询飞书多维表格中的数据行。可以提供过滤条件 (filter)。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                    "filter_info": {"type": "string", "description": "可选，FQL 语法的过滤条件，例如 'CurrentValue.[Status]=\"Done\"'。如不确定过滤语法，可以不填，由你臺己在本地过滤返回的所有数据。"},
+                    "max_results": {"type": "integer", "description": "最大返回条数 (默认 100)"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bitable_create_record",
+            "description": "在飞书多维表格中新增一行数据。fields 参数是一个字典，key 是字段名 (需要先通过 bitable_list_fields 获取)，value 是对应的值。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                    "fields": {"type": "string", "description": "一个 JSON 字符串，代表要插入的 fields。例如：'{\"Name\": \"张三\", \"Age\": 30}'"},
+                },
+                "required": ["url", "fields"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bitable_update_record",
+            "description": "更新飞书多维表格中的指定行数据。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                    "record_id": {"type": "string", "description": "要更新的 record_id，通过 bitable_query_records 获取。"},
+                    "fields": {"type": "string", "description": "一个 JSON 字符串，代表要更新的 fields。例如：'{\"Status\": \"Done\"}'"},
+                },
+                "required": ["url", "record_id", "fields"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bitable_delete_record",
+            "description": "删除飞书多维表格中的指定行数据。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                    "record_id": {"type": "string", "description": "要删除的 record_id，通过 bitable_query_records 获取。"},
+                },
+                "required": ["url", "record_id"],
+            },
+        },
+    },
     # ── Feishu Document Tools ──────────────────────────────────────
     {
         "type": "function",
@@ -816,19 +928,26 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "feishu_doc_share",
+            "name": "feishu_drive_share",
             "description": (
-                "Manage Feishu document collaborators and permissions. "
+                "Manage collaborators and permissions for any Feishu Drive file "
+                "(documents, bitables, spreadsheets, folders, etc.). "
                 "Can add or remove collaborators with viewer/editor/full_access roles, "
                 "or get the current collaborator list. "
-                "Accepts colleague names (auto-searched) or open_ids directly."
+                "Accepts colleague names (auto-searched) or open_ids directly. "
+                "Use doc_type to specify the file type (default: 'docx')."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "document_token": {
                         "type": "string",
-                        "description": "Feishu document token (from feishu_doc_create or doc URL)",
+                        "description": "Feishu file token (from feishu_doc_create, bitable_create_app, or file URL)",
+                    },
+                    "doc_type": {
+                        "type": "string",
+                        "enum": ["docx", "bitable", "sheet", "doc", "folder", "mindnote", "slides", "file"],
+                        "description": "Type of the file. Default: 'docx'. Use 'bitable' for Bitable, 'sheet' for Spreadsheet, etc.",
                     },
                     "action": {
                         "type": "string",
@@ -855,6 +974,34 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ── Feishu Drive Delete Tool ───────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "feishu_drive_delete",
+            "description": (
+                "Delete a file or folder from Feishu Drive (cloud space). "
+                "The file will be moved to the recycle bin, not permanently deleted. "
+                "Supports all Feishu file types: documents, bitables, spreadsheets, folders, etc. "
+                "You must specify both the file token and its type."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_token": {
+                        "type": "string",
+                        "description": "The token of the file to delete (from file URL or previous tool results)",
+                    },
+                    "file_type": {
+                        "type": "string",
+                        "enum": ["file", "docx", "bitable", "folder", "doc", "sheet", "mindnote", "shortcut", "slides"],
+                        "description": "Type of the file to delete: 'docx' for documents, 'bitable' for Bitable, 'sheet' for spreadsheets, 'folder' for folders, etc.",
+                    },
+                },
+                "required": ["file_token", "file_type"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -874,6 +1021,70 @@ AGENT_TOOLS = [
                     },
                 },
                 "required": ["name"],
+            },
+        },
+    },
+    # ── Feishu Approval Tools ──────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "feishu_approval_create",
+            "description": "发起一个飞书审批流实例。你需要知道审批定义的 approval_code 和表单对应字段的内容。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "approval_code": {
+                        "type": "string",
+                        "description": "审批定义的唯一代码 (approval_code)",
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": "发起人的 open_id。可以通过 feishu_user_search 获取。",
+                    },
+                    "form_data": {
+                        "type": "string",
+                        "description": "表单内容的 JSON 字符串，例如 '[{\"id\":\"widget1\",\"type\":\"input\",\"value\":\"这是内容\"}]'",
+                    },
+                },
+                "required": ["approval_code", "user_id", "form_data"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "feishu_approval_query",
+            "description": "查询指定的飞书审批实例列表。可以支持按状态查询（PENDING, APPROVED, REJECTED, CANCELED, DELETED）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "approval_code": {
+                        "type": "string",
+                        "description": "审批定义的唯一代码 (approval_code)",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "可选过滤状态：PENDING, APPROVED, REJECTED, CANCELED, DELETED",
+                    },
+                },
+                "required": ["approval_code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "feishu_approval_get",
+            "description": "获取指定飞书审批实例的详细信息与当前审批状态。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instance_id": {
+                        "type": "string",
+                        "description": "审批实例的 instance_id",
+                    },
+                },
+                "required": ["instance_id"],
             },
         },
     },
@@ -1051,13 +1262,17 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "agentbay_browser_navigate",
-            "description": "使用 AgentBay 浏览器环境访问指定 URL。可用于网页抓取、截图等。需要先配置 AgentBay 通道。Tip: after navigating, use browser_observe to identify elements, then browser_type/browser_click to interact. IMPORTANT: Do NOT call navigate again after clicking or typing just to take a screenshot — that will refresh the page and lose all your progress. Use agentbay_browser_screenshot instead.",
+            "description": "使用 AgentBay 浏览器环境访问指定 URL。访问后会自动截图以便你观察当前页面状态。Tip: after navigating, use browser_observe to identify elements, then browser_type/browser_click to interact. IMPORTANT: Do NOT call navigate again after clicking or typing — that will refresh the page and lose all your progress. Use agentbay_browser_screenshot instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "要访问的网址，如 https://example.com"},
                     "wait_for": {"type": "string", "description": "等待特定元素出现的选择器（可选）"},
-                    "screenshot": {"type": "boolean", "description": "是否截图并返回图片", "default": False},
+                    "save_to_workspace": {
+                        "type": "boolean",
+                        "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
+                        "default": False,
+                    },
                 },
                 "required": ["url"],
             }
@@ -1070,7 +1285,13 @@ AGENT_TOOLS = [
             "description": "Take a screenshot of the CURRENT browser page without navigating anywhere. Use this after clicking, typing, or submitting a form to verify the result — it preserves the current page state. Never call browser_navigate just to take a screenshot.",
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "save_to_workspace": {
+                        "type": "boolean",
+                        "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
+                        "default": False,
+                    },
+                },
             }
         }
     },
@@ -1154,15 +1375,26 @@ _CHANNEL_MESSAGE_TOOL_NAMES = {
 _FEISHU_TOOL_NAMES = {
     "send_feishu_message",
     "feishu_user_search",
+    "bitable_create_app",
+    "bitable_list_tables",
+    "bitable_list_fields",
+    "bitable_query_records",
+    "bitable_create_record",
+    "bitable_update_record",
+    "bitable_delete_record",
     "feishu_wiki_list",
     "feishu_doc_read",
     "feishu_doc_create",
     "feishu_doc_append",
-    "feishu_doc_share",
+    "feishu_drive_share",
+    "feishu_drive_delete",
     "feishu_calendar_list",
     "feishu_calendar_create",
     "feishu_calendar_update",
     "feishu_calendar_delete",
+    "feishu_approval_create",
+    "feishu_approval_query",
+    "feishu_approval_get",
 }
 _always_core_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _ALWAYS_INCLUDE_CORE]
 _feishu_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _FEISHU_TOOL_NAMES]
@@ -1404,7 +1636,7 @@ async def _execute_tool_direct(
             logger.info(f"[DirectTool] Executing code with arguments: {arguments}")
             return await _execute_code(agent_id, ws, arguments)
         elif tool_name == "web_search":
-            return await _web_search(arguments)
+            return await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
             return await _jina_search(arguments)
         elif tool_name == "send_feishu_message":
@@ -1425,8 +1657,14 @@ async def execute_tool(
     arguments: dict,
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
+    session_id: str = "",
 ) -> str:
-    """Execute a tool call and return the result as a string."""
+    """Execute a tool call and return the result as a string.
+
+    Args:
+        session_id: The ChatSession ID, used to isolate AgentBay instances
+                    per conversation. Passed through to agentbay_* tools.
+    """
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
     ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
@@ -1454,6 +1692,23 @@ async def execute_tool(
         except Exception as e:
             logger.exception(f"[Autonomy] Check failed: {e}")
             return f"⚠️ Autonomy check failed ({e}). Operation blocked for safety. Please retry or contact admin."
+
+    # Pre-inject session_id into arguments for AgentBay tools so each
+    # _agentbay_* handler can pass it to get_agentbay_client_for_agent()
+    # for per-ChatSession isolation of cloud instances.
+    if tool_name.startswith("agentbay_"):
+        arguments["_session_id"] = session_id
+
+        # Take Control lock: block automatic tool execution while a human
+        # is manually controlling the browser/desktop session. This prevents
+        # input collisions between human clicks and agent-initiated actions.
+        from app.api.agentbay_control import is_session_locked
+        if is_session_locked(str(agent_id), session_id):
+            return (
+                "⏸️ A human operator is currently controlling this browser session "
+                "(Take Control mode). Please wait for them to finish before retrying "
+                "browser/computer operations."
+            )
 
     try:
         if tool_name == "list_files":
@@ -1502,7 +1757,7 @@ async def execute_tool(
         elif tool_name == "send_channel_file":
             result = await _send_channel_file(agent_id, ws, arguments)
         elif tool_name == "web_search":
-            result = await _web_search(arguments)
+            result = await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
             result = await _jina_search(arguments)
         elif tool_name == "bing_search":
@@ -1526,6 +1781,21 @@ async def execute_tool(
             result = await _discover_resources(arguments)
         elif tool_name == "import_mcp_server":
             result = await _import_mcp_server(agent_id, arguments)
+        # ── Feishu Bitable Tools ──
+        elif tool_name == "bitable_create_app":
+            result = await _bitable_create_app(agent_id, arguments)
+        elif tool_name == "bitable_list_tables":
+            result = await _bitable_list_tables(agent_id, arguments)
+        elif tool_name == "bitable_list_fields":
+            result = await _bitable_list_fields(agent_id, arguments)
+        elif tool_name == "bitable_query_records":
+            result = await _bitable_query_records(agent_id, arguments)
+        elif tool_name == "bitable_create_record":
+            result = await _bitable_create_record(agent_id, arguments)
+        elif tool_name == "bitable_update_record":
+            result = await _bitable_update_record(agent_id, arguments)
+        elif tool_name == "bitable_delete_record":
+            result = await _bitable_delete_record(agent_id, arguments)
         # ── Feishu Document Tools ──
         elif tool_name == "feishu_wiki_list":
             result = await _feishu_wiki_list(agent_id, arguments)
@@ -1536,8 +1806,10 @@ async def execute_tool(
         elif tool_name == "feishu_doc_append":
             result = await _feishu_doc_append(agent_id, arguments)
         # ── Feishu Calendar Tools ──
-        elif tool_name == "feishu_doc_share":
-            result = await _feishu_doc_share(agent_id, arguments)
+        elif tool_name in ("feishu_drive_share", "feishu_doc_share"):
+            result = await _feishu_drive_share(agent_id, arguments)
+        elif tool_name == "feishu_drive_delete":
+            result = await _feishu_drive_delete(agent_id, arguments)
         elif tool_name == "feishu_user_search":
             result = await _feishu_user_search(agent_id, arguments)
         elif tool_name == "feishu_calendar_list":
@@ -1548,6 +1820,12 @@ async def execute_tool(
             result = await _feishu_calendar_update(agent_id, arguments)
         elif tool_name == "feishu_calendar_delete":
             result = await _feishu_calendar_delete(agent_id, arguments)
+        elif tool_name == "feishu_approval_create":
+            result = await _feishu_approval_create(agent_id, arguments)
+        elif tool_name == "feishu_approval_query":
+            result = await _feishu_approval_query(agent_id, arguments)
+        elif tool_name == "feishu_approval_get":
+            result = await _feishu_approval_get(agent_id, arguments)
         # ── Email Tools ──
         elif tool_name in ("send_email", "read_emails", "reply_email"):
             result = await _handle_email_tool(tool_name, agent_id, ws, arguments)
@@ -1624,8 +1902,11 @@ async def execute_tool(
         return f"Tool execution error ({tool_name}): {type(e).__name__}: {str(e)[:200]}"
 
 
-async def _web_search(arguments: dict) -> str:
-    """Search the web using a configurable search engine (reads config from DB)."""
+async def _web_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
+    """Search the web using a configurable search engine.
+
+    Config resolution priority: Agent config > Company config > Defaults.
+    """
     import httpx
     import re
 
@@ -1633,17 +1914,8 @@ async def _web_search(arguments: dict) -> str:
     if not query:
         return "❌ Please provide search keywords"
 
-    # Load config from DB
-    config = {}
-    try:
-        from app.models.tool import Tool
-        async with async_session() as db:
-            r = await db.execute(select(Tool).where(Tool.name == "web_search"))
-            tool = r.scalar_one_or_none()
-            if tool and tool.config:
-                config = tool.config
-    except Exception:
-        pass
+    # Use the standard _get_tool_config helper (Agent > Company, cached, decrypted)
+    config = await _get_tool_config(agent_id, "web_search") or {}
 
     engine = config.get("search_engine", "duckduckgo")
     api_key = config.get("api_key", "")
@@ -3601,8 +3873,8 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 return f"⚠️ {target.name} has no LLM model configured"
 
             # Build target system prompt
-            target_system = await build_agent_context(target.id, target.name, target.role_description or "")
-            target_system += (
+            target_static, target_dynamic = await build_agent_context(target.id, target.name, target.role_description or "")
+            target_dynamic += (
                 "\n\n--- Agent-to-Agent Message ---\n"
                 "You are receiving a message from another digital employee. "
                 "Reply concisely and helpfully. Focus on the request and provide a clear answer.\n"
@@ -3662,7 +3934,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             if not base_url:
                 return f"⚠️ {target.name}'s model has no API base URL configured"
 
-            full_msgs: list[LLMMessage] = [LLMMessage(role="system", content=target_system)] + [
+            full_msgs: list[LLMMessage] = [LLMMessage(role="system", content=target_static, dynamic_content=target_dynamic)] + [
                 LLMMessage(role=m["role"], content=m["content"]) for m in conversation_messages
             ]
 
@@ -4633,31 +4905,14 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     if not file_path and not url:
         return "❌ Please provide either 'file_path' (workspace path) or 'url' (public image URL)"
 
-    # ── Load ImageKit credentials (global → per-agent fallback) ──
+    # ── Load ImageKit credentials (Agent > Company priority) ──
     private_key = ""
     url_endpoint = ""
     try:
-        from app.models.tool import Tool, AgentTool
-        async with async_session() as db:
-            # Global config
-            r = await db.execute(select(Tool).where(Tool.name == "upload_image"))
-            tool = r.scalar_one_or_none()
-            if tool and tool.config:
-                private_key = tool.config.get("private_key", "")
-                url_endpoint = tool.config.get("url_endpoint", "")
-
-            # Per-agent override (if global key is empty)
-            if not private_key and tool:
-                r2 = await db.execute(
-                    select(AgentTool).where(
-                        AgentTool.agent_id == agent_id,
-                        AgentTool.tool_id == tool.id,
-                    )
-                )
-                agent_tool = r2.scalar_one_or_none()
-                if agent_tool and agent_tool.config:
-                    private_key = agent_tool.config.get("private_key", "") or private_key
-                    url_endpoint = agent_tool.config.get("url_endpoint", "") or url_endpoint
+        # Use standard _get_tool_config (Agent > Company, cached, schema-aware decryption)
+        config = await _get_tool_config(agent_id, "upload_image") or {}
+        private_key = config.get("private_key", "")
+        url_endpoint = config.get("url_endpoint", "")
     except Exception as e:
         logger.error(f"[UploadImage] Config load error: {e}")
 
@@ -4844,7 +5099,552 @@ def _iso_to_ts(iso_str: str) -> float:
     raise ValueError(f"Cannot parse datetime: {iso_str!r}")
 
 
-# ─── Feishu Document Tools ────────────────────────────────────────────────────
+async def _get_feishu_credentials(agent_id: uuid.UUID) -> tuple[str, str]:
+    """Retrieve Feishu app_id and app_secret for an agent.
+    1. Try Agent-specific ChannelConfig
+    2. Fallback to global settings (.env)
+    """
+    from app.models.channel_config import ChannelConfig
+    from app.config import get_settings
+    
+    settings = get_settings()
+    app_id = settings.FEISHU_APP_ID
+    app_secret = settings.FEISHU_APP_SECRET
+    
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu")
+            )
+            config = result.scalar_one_or_none()
+            if config and config.app_id and config.app_secret:
+                app_id = config.app_id
+                app_secret = config.app_secret
+    except Exception:
+        pass
+        
+    return app_id, app_secret
+
+
+async def _get_feishu_tenant_doc_url(tenant_token: str, doc_token: str, doc_type: str = "docx") -> str:
+    """Build a user-accessible document URL using the tenant's actual domain.
+
+    The API gateway (open.feishu.cn) cannot serve user documents - we must use
+    the tenant's own domain (e.g. xxx.feishu.cn or xxx.larksuite.com).
+    Falls back to generating a search link if the tenant domain cannot be resolved.
+
+    Args:
+        tenant_token: A valid tenant_access_token.
+        doc_token:    The document_id (docx) or wiki node token.
+        doc_type:     'docx' or 'wiki' - controls the URL path prefix.
+    Returns:
+        A fully-formed URL string.
+    """
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://open.feishu.cn/open-apis/tenant/v2/tenant/query",
+                headers={"Authorization": f"Bearer {tenant_token}"},
+            )
+        data = resp.json()
+        if data.get("code") == 0:
+            domain = data.get("data", {}).get("tenant", {}).get("domain", "")
+            if domain:
+                return f"https://{domain}/{doc_type}/{doc_token}"
+    except Exception:
+        pass
+    # Fallback: construct a search URL so the user can locate the document
+    return f"https://feishu.cn/{doc_type}/{doc_token}"
+
+
+
+
+async def _get_feishu_bitable_url(tenant_token: str, app_token: str, table_id: str = "") -> str:
+    """Build a user-accessible Bitable URL using the tenant's actual domain.
+
+    Constructs https://{tenant_domain}/base/{app_token}?table={table_id}
+    Falls back to https://feishu.cn/base/{app_token} if domain resolution fails.
+
+    Args:
+        tenant_token: A valid tenant_access_token.
+        app_token:    The Bitable app token.
+        table_id:     Optional table ID to deep-link to a specific sheet.
+    Returns:
+        A fully-formed URL string.
+    """
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://open.feishu.cn/open-apis/tenant/v2/tenant/query",
+                headers={"Authorization": f"Bearer {tenant_token}"},
+            )
+        data = resp.json()
+        if data.get("code") == 0:
+            domain = data.get("data", {}).get("tenant", {}).get("domain", "")
+            if domain:
+                base_url = f"https://{domain}/base/{app_token}"
+                if table_id:
+                    base_url += f"?table={table_id}"
+                return base_url
+    except Exception:
+        pass
+    # Fallback
+    base_url = f"https://feishu.cn/base/{app_token}"
+    if table_id:
+        base_url += f"?table={table_id}"
+    return base_url
+
+
+def _parse_feishu_url(url: str) -> dict:
+    """Parse various Feishu URLs to extract tokens.
+    Supports Bitable (table, view) and Docx.
+    """
+    import re
+    result = {}
+    
+    # Bitable URL regex: e.g., https://example.feishu.cn/base/{app_token}?table={table_id}&view={view_id}
+    base_match = re.search(r'/base/([a-zA-Z0-9_]+)', url)
+    if base_match:
+        result['app_token'] = base_match.group(1)
+        
+    table_match = re.search(r'table=([a-zA-Z0-9_]+)', url)
+    if table_match:
+        result['table_id'] = table_match.group(1)
+    
+    # support URL with /tblxxxxxx
+    if not 'table_id' in result:
+        tbl_match = re.search(r'/(tbl[a-zA-Z0-9_]+)', url)
+        if tbl_match:
+            result['table_id'] = tbl_match.group(1)
+            
+    view_match = re.search(r'view=([a-zA-Z0-9_]+)', url)
+    if view_match:
+        result['view_id'] = view_match.group(1)
+        
+    # Docx URL regex
+    docx_match = re.search(r'/docx/([a-zA-Z0-9_]+)', url)
+    if docx_match:
+        result['document_token'] = docx_match.group(1)
+        
+    # Wiki URL regex
+    wiki_match = re.search(r'/wiki/([a-zA-Z0-9_]+)', url)
+    if wiki_match:
+        result['wiki_token'] = wiki_match.group(1)
+        
+    return result
+
+
+# ─── Feishu Bitable Tools ──────────────────────────────────────────
+
+async def _resolve_bitable_app_token(agent_id: uuid.UUID, parsed_url: dict) -> str | None:
+    app_token = parsed_url.get("app_token")
+    if app_token:
+        return app_token
+    wiki_token = parsed_url.get("wiki_token")
+    if wiki_token:
+        app_id, app_secret = await _get_feishu_credentials(agent_id)
+        if app_id and app_secret:
+            from app.services.feishu_service import feishu_service
+            token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+            node_info = await _feishu_wiki_get_node(wiki_token, token)
+            if node_info and node_info.get("obj_token"):
+                return node_info["obj_token"]
+    return None
+
+def _check_feishu_err(resp: dict) -> str | None:
+    """Check Feishu API response for errors and return a user-friendly message.
+
+    For permission-related errors, returns detailed step-by-step instructions
+    guiding the user through the Feishu UI to grant the bot app access to
+    the target document or Bitable.
+    """
+    code = resp.get("code")
+    if code != 0:
+        msg = str(resp.get("msg", ""))
+        msg_lower = msg.lower()
+        # Common Feishu permission/access error codes:
+        #   99991663 - no permission to access resource
+        #   99991661 - token invalid / access denied
+        #   99991668 - permission denied on resource
+        #   10006    - no permission
+        #   91403    - Forbidden (bitable write without app access)
+        #   91404    - bitable record not found (sometimes permission)
+        #   1063001  - doc permission denied
+        #   1063004  - doc operation forbidden
+        _perm_codes = {99991663, 10006, 99991661, 99991668, 91403, 1063001, 1063004}
+        _perm_keywords = ("permission", "forbidden", "no access", "access denied", "403")
+        is_perm_error = code in _perm_codes or any(kw in msg_lower for kw in _perm_keywords)
+        if is_perm_error:
+            return (
+                f"Failed: Permission denied (code: {code}, msg: {msg}). "
+                "The bot app does not have access to this document/Bitable. "
+                "CRITICAL INSTRUCTION for the Agent: You MUST explicitly output ALL of the following "
+                "step-by-step instructions to the user in your reply. Do NOT omit or summarize any step:\n\n"
+                "---\n"
+                "**The bot needs to be added to this document/table as an authorized app. "
+                "Please follow these steps:**\n\n"
+                "1. Open the target document or Bitable in the Feishu client (web or desktop).\n"
+                "2. Click the **「...」** menu button in the top-right corner of the page.\n"
+                "3. In the dropdown menu, hover over **「更多」** (More) at the bottom.\n"
+                "4. In the sub-menu that appears, click **「添加文档应用」** (Add Document App).\n"
+                "5. In the search box, type the name of your Feishu bot app (the one bound to this Agent's channel), then click to add it.\n"
+                "6. After adding, retry the same operation.\n\n"
+                "If you cannot find 「添加文档应用」, it means the document owner may need to enable this option, "
+                "or you can try: click **「分享」** (Share) button -> invite the bot app directly.\n"
+                "---"
+            )
+        return f"Failed: API Error {code} - {msg}"
+    return None
+
+async def _bitable_list_tables(agent_id: uuid.UUID, arguments: dict) -> str:
+    """List all tables in a Feishu Bitable app."""
+    url = arguments.get("url", "")
+    parsed = _parse_feishu_url(url)
+    app_token = await _resolve_bitable_app_token(agent_id, parsed)
+    if not app_token:
+        return "Failed: Could not extract Bitable app_token from the URL (also could not resolve wiki_token)."
+        
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "Failed: Feishu app credentials not configured for this agent."
+        
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.bitable_list_tables(app_id, app_secret, app_token)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        tables = resp.get("data", {}).get("items", [])
+        if not tables:
+            return "OK: No tables found in this Bitable."
+        lines = [f"- {t.get('name')} (ID: {t.get('table_id')})" for t in tables]
+        # Provide a user-accessible link so the user can open the Bitable directly
+        tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+        bitable_url = await _get_feishu_bitable_url(tenant_token, app_token)
+        return "OK: Tables in this Bitable:\n" + "\n".join(lines) + f"\n\n🔗 多维表格链接: {bitable_url}"
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+
+async def _bitable_create_app(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Create a new Feishu Bitable (多维表格) app.
+
+    Calls the Bitable v1 apps API: POST /open-apis/bitable/v1/apps
+    The API response includes a user-accessible URL with the tenant's own domain.
+    """
+    name = arguments.get("name", "").strip()
+    if not name:
+        return "Failed: Missing required argument 'name' — please provide a name for the new Bitable."
+
+    folder_token = arguments.get("folder_token", "").strip()
+
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "Failed: Feishu app credentials not configured for this agent."
+
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.bitable_create_app(app_id, app_secret, name, folder_token)
+        err = _check_feishu_err(resp)
+        if err:
+            return err
+
+        # API response structure: data.app.{app_token, name, url, default_table_id, folder_token}
+        app_info = resp.get("data", {}).get("app", {})
+        app_token = app_info.get("app_token", "")
+        bitable_url = app_info.get("url", "")
+        default_table_id = app_info.get("default_table_id", "")
+        if not app_token:
+            return f"Failed: Bitable created but could not extract app_token from response: {resp}"
+
+        # Fallback URL resolution if the API didn't return one
+        if not bitable_url:
+            tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+            bitable_url = await _get_feishu_bitable_url(tenant_token, app_token)
+
+        result = (
+            f"OK: Bitable created successfully!\n"
+            f"Name: {name}\n"
+            f"App Token: {app_token}\n"
+            f"URL: {bitable_url}"
+        )
+        if default_table_id:
+            result += f"\nDefault Table ID: {default_table_id}"
+        return result
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+
+async def _bitable_list_fields(agent_id: uuid.UUID, arguments: dict) -> str:
+    """List all fields (columns) in a specific Bitable table."""
+    url = arguments.get("url", "")
+    table_id = arguments.get("table_id", "")
+    
+    parsed = _parse_feishu_url(url)
+    app_token = await _resolve_bitable_app_token(agent_id, parsed)
+    table_id = table_id or parsed.get("table_id")
+    
+    if not app_token:
+        return "Failed: Could not extract Bitable app_token from the URL."
+    if not table_id:
+        return "Failed: table_id is required. Provide it as a parameter or include it in the URL."
+        
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.bitable_list_fields(app_id, app_secret, app_token, table_id)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        fields = resp.get("data", {}).get("items", [])
+        if not fields:
+            return "OK: No fields found in this table."
+        lines = [f"- {f.get('field_name')} (type: {f.get('type')}, ID: {f.get('field_id')})" for f in fields]
+        return "OK: Fields in this table:\n" + "\n".join(lines)
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+async def _bitable_query_records(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Query records (rows) from a Bitable table, with optional FQL filter."""
+    url = arguments.get("url", "")
+    table_id = arguments.get("table_id", "")
+    filter_info = arguments.get("filter_info", "")
+    max_results = arguments.get("max_results", 100)
+    
+    parsed = _parse_feishu_url(url)
+    app_token = await _resolve_bitable_app_token(agent_id, parsed)
+    table_id = table_id or parsed.get("table_id")
+    
+    if not app_token or not table_id:
+        return "Failed: Could not resolve app_token or table_id from the provided parameters/URL."
+        
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    from app.services.feishu_service import feishu_service
+    try:
+        import json
+        filters_dict = {}
+        if isinstance(filter_info, dict):
+            filters_dict = filter_info
+        elif isinstance(filter_info, str) and filter_info.strip():
+            try:
+                filters_dict = json.loads(filter_info)
+            except:
+                pass 
+                
+        resp = await feishu_service.bitable_query_records(app_id, app_secret, app_token, table_id, filters_dict)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        records = resp.get("data", {}).get("items", [])
+        if not records:
+            return "OK: No matching records found."
+        
+        lines = []
+        for r in records[:max_results]:
+            lines.append(f"Record {r.get('record_id')}: {json.dumps(r.get('fields', {}), ensure_ascii=False)}")
+        return "OK: Query results:\n" + "\n".join(lines)
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+async def _bitable_create_record(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Create a new record (row) in a Bitable table."""
+    url = arguments.get("url", "")
+    table_id = arguments.get("table_id", "")
+    fields_str = arguments.get("fields", "{}")
+    
+    parsed = _parse_feishu_url(url)
+    app_token = await _resolve_bitable_app_token(agent_id, parsed)
+    table_id = table_id or parsed.get("table_id")
+    
+    if not app_token or not table_id:
+        return "Failed: Could not resolve app_token or table_id from the provided parameters/URL."
+        
+    import json
+    try:
+        fields = json.loads(fields_str)
+    except json.JSONDecodeError:
+        return "Failed: The 'fields' parameter is not valid JSON."
+        
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.bitable_create_record(app_id, app_secret, app_token, table_id, fields)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        record = resp.get("data", {}).get("record", {})
+        # Provide a user-accessible link so they can verify the new row in the table
+        tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+        bitable_url = await _get_feishu_bitable_url(tenant_token, app_token, table_id)
+        return (
+            f"OK: Record created. Record ID: {record.get('record_id')}\n"
+            f"Fields: {json.dumps(record.get('fields', {}), ensure_ascii=False)}\n"
+            f"🔗 多维表格链接: {bitable_url}"
+        )
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+async def _bitable_update_record(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Update an existing record in a Bitable table by record_id."""
+    url = arguments.get("url", "")
+    table_id = arguments.get("table_id", "")
+    record_id = arguments.get("record_id", "")
+    fields_str = arguments.get("fields", "{}")
+    
+    parsed = _parse_feishu_url(url)
+    app_token = await _resolve_bitable_app_token(agent_id, parsed)
+    table_id = table_id or parsed.get("table_id")
+    
+    if not app_token or not table_id or not record_id:
+        return "Failed: Missing required parameters. Need app_token (from URL), table_id, and record_id."
+        
+    import json
+    try:
+        fields = json.loads(fields_str)
+    except json.JSONDecodeError:
+        return "Failed: The 'fields' parameter is not valid JSON."
+        
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.bitable_update_record(app_id, app_secret, app_token, table_id, record_id, fields)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        record = resp.get("data", {}).get("record", {})
+        # Provide a user-accessible link so they can verify the updated row
+        tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+        bitable_url = await _get_feishu_bitable_url(tenant_token, app_token, table_id)
+        return (
+            f"OK: Record updated. Record ID: {record.get('record_id')}\n"
+            f"Fields: {json.dumps(record.get('fields', {}), ensure_ascii=False)}\n"
+            f"🔗 多维表格链接: {bitable_url}"
+        )
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+async def _bitable_delete_record(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Delete a record from a Bitable table by record_id."""
+    url = arguments.get("url", "")
+    table_id = arguments.get("table_id", "")
+    record_id = arguments.get("record_id", "")
+    
+    parsed = _parse_feishu_url(url)
+    app_token = await _resolve_bitable_app_token(agent_id, parsed)
+    table_id = table_id or parsed.get("table_id")
+    
+    if not app_token or not table_id or not record_id:
+        return "Failed: Missing required parameters. Need app_token (from URL), table_id, and record_id."
+        
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.bitable_delete_record(app_id, app_secret, app_token, table_id, record_id)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        # Provide a user-accessible link so they can verify the deletion
+        tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+        bitable_url = await _get_feishu_bitable_url(tenant_token, app_token, table_id)
+        return f"OK: Record {record_id} deleted successfully.\n🔗 多维表格链接: {bitable_url}"
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+
+# ─── Feishu Document Tools ──────────────────────────────────────────
+
+async def _resolve_docx_document_token(agent_id: uuid.UUID, parsed_url: dict) -> str | None:
+    doc_token = parsed_url.get("document_token")
+    if doc_token:
+        return doc_token
+    wiki_token = parsed_url.get("wiki_token")
+    if wiki_token:
+        app_id, app_secret = await _get_feishu_credentials(agent_id)
+        if app_id and app_secret:
+            from app.services.feishu_service import feishu_service
+            token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+            node_info = await _feishu_wiki_get_node(wiki_token, token)
+            if node_info and node_info.get("obj_token"):
+                return node_info["obj_token"]
+    return None
+
+async def _feishu_read_doc(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Read full text content of a Feishu Docx."""
+    url = arguments.get("url", "")
+    parsed = _parse_feishu_url(url)
+    doc_token = await _resolve_docx_document_token(agent_id, parsed)
+    if not doc_token:
+        return "Failed: Could not extract Document token from the URL."
+        
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "Failed: Feishu app credentials not configured for this agent."
+        
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.read_feishu_doc(app_id, app_secret, doc_token)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        content = resp.get("data", {}).get("content", "")
+        if not content:
+            return "OK: Document is empty or content is unavailable."
+        return f"OK: Document Content:\n{content}"
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+async def _feishu_create_doc(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Create a new blank Feishu Docx."""
+    title = arguments.get("title", "Untitled Document")
+    folder_token = arguments.get("folder_token", "")
+    
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "Failed: Feishu app credentials not configured for this agent."
+        
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.create_feishu_doc(app_id, app_secret, folder_token or None, title)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        doc = resp.get("data", {}).get("document", {})
+        doc_id = doc.get("document_id")
+        # Get the tenant's actual domain (open.feishu.cn is the API gateway, not for users)
+        tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+        url = await _get_feishu_tenant_doc_url(tenant_token, doc_id)
+        return f"OK: Document created perfectly. Document ID: {doc_id}\nURL: {url}"
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+async def _feishu_append_doc(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Append text to the bottom of a Feishu Docx."""
+    url = arguments.get("url", "")
+    content = arguments.get("content", "")
+    if not content:
+        return "Failed: Content to append cannot be empty."
+        
+    parsed = _parse_feishu_url(url)
+    doc_token = await _resolve_docx_document_token(agent_id, parsed)
+    if not doc_token:
+        return "Failed: Could not extract Document token from the URL."
+        
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "Failed: Feishu app credentials not configured for this agent."
+        
+    from app.services.feishu_service import feishu_service
+    try:
+        # Feishu uses the document_id as the root block_id to append entirely to the document
+        resp = await feishu_service.append_feishu_doc(app_id, app_secret, doc_token, content)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        return "OK: Content appended successfully to the end of the document."
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
 
 # ─── Feishu Wiki Tools ───────────────────────────────────────────────────────
 
@@ -4881,10 +5681,11 @@ async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
     if not node_token:
         return "❌ Missing required argument 'node_token'"
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
-    _, token = creds
+    from app.services.feishu_service import feishu_service
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
     headers = {"Authorization": f"Bearer {token}"}
 
     # Resolve node → space_id
@@ -4948,21 +5749,26 @@ async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
 
 
 async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
-    import httpx
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
-        return "❌ Missing required argument 'document_token'"
+        url = arguments.get("url", "")
+        parsed = _parse_feishu_url(url)
+        document_token = parsed.get("document_token", parsed.get("wiki_token", ""))
+        
+    if not document_token:
+        return "Failed: Missing required argument 'document_token'"
     max_chars = min(int(arguments.get("max_chars", 6000)), 20000)
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
-        return "❌ Agent has no Feishu channel configured."
-    _, token = creds
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "Failed: Feishu app credentials not configured for this agent."
 
-    # Auto-detect wiki node tokens: try get_node first and use obj_token for reading
+    from app.services.feishu_service import feishu_service
+    tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+    
     read_token = document_token
     wiki_hint = ""
-    node_info = await _feishu_wiki_get_node(document_token, token)
+    node_info = await _feishu_wiki_get_node(document_token, tenant_token)
     if node_info and node_info.get("obj_token"):
         read_token = node_info["obj_token"]
         if node_info.get("has_child"):
@@ -4971,90 +5777,84 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
                 "使用 `feishu_wiki_list` 工具（传入相同的 node_token）可以查看所有子页面列表。"
             )
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.get(
-            f"https://open.feishu.cn/open-apis/docx/v1/documents/{read_token}/raw_content",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"lang": 0},
-        )
+    try:
+        resp = await feishu_service.read_feishu_doc(app_id, app_secret, read_token)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        content = resp.get("data", {}).get("content", "")
+        if not content:
+            return f"📄 Document '{document_token}' is empty.{wiki_hint}"
 
-    data = resp.json()
-    if data.get("code") != 0:
-        return f"❌ Failed to read document: {data.get('msg')} (code {data.get('code')})"
+        truncated = ""
+        if len(content) > max_chars:
+            content = content[:max_chars]
+            truncated = f"\n\n_(Truncated to {max_chars} chars)_"
 
-    content = data.get("data", {}).get("content", "")
-    if not content:
-        return f"📄 Document '{document_token}' is empty.{wiki_hint}"
-
-    truncated = ""
-    if len(content) > max_chars:
-        content = content[:max_chars]
-        truncated = f"\n\n_(Truncated to {max_chars} chars)_"
-
-    return f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}"
+        return f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}"
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
 
 
 async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
-    import httpx
     title = arguments.get("title", "").strip()
     if not title:
-        return "❌ Missing required argument 'title'"
+        return "Failed: Missing required argument 'title'"
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
-        return "❌ Agent has no Feishu channel configured."
-    _, token = creds
-    headers = {"Authorization": f"Bearer {token}"}
-
-    body: dict = {"title": title}
-    if arguments.get("folder_token"):
-        body["folder_token"] = arguments["folder_token"]
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(
-            "https://open.feishu.cn/open-apis/docx/v1/documents",
-            json=body,
-            headers=headers,
-        )
-
-    data = resp.json()
-    if data.get("code") != 0:
-        return f"❌ Failed to create document: {data.get('msg')} (code {data.get('code')})"
-
-    doc_token = data.get("data", {}).get("document", {}).get("document_id", "")
-    doc_url = f"https://bytedance.larkoffice.com/docx/{doc_token}"
-
-    # Auto-share with the Feishu sender so they can access the document
-    share_note = ""
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "Failed: Feishu app credentials not configured for this agent."
+        
+    folder_token = arguments.get("folder_token")
+    
+    from app.services.feishu_service import feishu_service
     try:
-        sender_open_id = channel_feishu_sender_open_id.get(None)
-        if sender_open_id and doc_token:
-            async with httpx.AsyncClient(timeout=10) as client:
-                share_resp = await client.post(
-                    f"https://open.feishu.cn/open-apis/drive/v1/permissions/{doc_token}/members",
-                    params={"type": "docx", "need_notification": "false"},
-                    json={
-                        "member_type": "openid",
-                        "member_id": sender_open_id,
-                        "perm": "full_access",
-                    },
-                    headers=headers,
-                )
-            sr = share_resp.json()
-            if sr.get("code") == 0:
-                share_note = "\n✅ 已自动为你开通访问权限。"
-            else:
-                share_note = f"\n⚠️ 自动授权失败（{sr.get('code')}），你可能需要手动在飞书前端打开文档。"
-    except Exception as _e:
-        share_note = f"\n⚠️ 自动授权异常: {_e}"
+        resp = await feishu_service.create_feishu_doc(app_id, app_secret, folder_token, title)
+        err = _check_feishu_err(resp)
+        if err: return err
+        
+        doc = resp.get("data", {}).get("document", {})
+        doc_token = doc.get("document_id", "")
+        # Get tenant-specific doc URL via tenant domain resolution
+        tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+        doc_url = await _get_feishu_tenant_doc_url(tenant_token, doc_token)
+        
+        # Auto-share with the Feishu sender so they can access the document
+        share_note = ""
+        try:
+            from app.api.websocket_chat import channel_feishu_sender_open_id
+            sender_open_id = channel_feishu_sender_open_id.get(None)
+            if sender_open_id and doc_token:
+                import httpx
+                tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+                async with httpx.AsyncClient(timeout=10) as client:
+                    share_resp = await client.post(
+                        f"https://open.feishu.cn/open-apis/drive/v1/permissions/{doc_token}/members",
+                        params={"type": "docx", "need_notification": "false"},
+                        json={
+                            "member_type": "openid",
+                            "member_id": sender_open_id,
+                            "perm": "full_access",
+                        },
+                        headers={"Authorization": f"Bearer {tenant_token}"},
+                    )
+                sr = share_resp.json()
+                if sr.get("code") == 0:
+                    share_note = "\n✅ 已自动为你开通访问权限。"
+                else:
+                    share_note = f"\n⚠️ 自动授权失败（{sr.get('code')}），你可能需要手动在飞书前端搜索此文件。"
+        except Exception as _e:
+            share_note = f"\n⚠️ 自动授权异常: {_e}"
 
-    return (
-        f"✅ 文档创建成功！{share_note}\n"
-        f"标题：{title}\n"
-        f"Token：{doc_token}\n"
-        f"🔗 访问链接：{doc_url}\n"
-        f"下一步：调用 feishu_doc_append(document_token=\"{doc_token}\", content=\"...\") 写入正文内容。"
-    )
+        return (
+            f"✅ 文档创建成功！{share_note}\n"
+            f"标题：{title}\n"
+            f"Token：{doc_token}\n"
+            f"🔗 访问链接：{doc_url}\n"
+            f"下一步：调用 feishu_doc_append(document_token=\"{doc_token}\", content=\"...\") 写入正文内容。"
+        )
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
 
 
 def _parse_inline_markdown(text: str) -> list[dict]:
@@ -5218,61 +6018,71 @@ def _markdown_to_feishu_blocks(markdown: str) -> list[dict]:
 
 
 async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
-    import httpx
     document_token = arguments.get("document_token", "").strip()
+    if not document_token:
+        url = arguments.get("url", "")
+        parsed = _parse_feishu_url(url)
+        document_token = parsed.get("document_token", parsed.get("wiki_token", ""))
+        
     content = arguments.get("content", "").strip()
     if not document_token:
-        return "❌ Missing required argument 'document_token'"
+        return "Failed: Missing required argument 'document_token'"
     if not content:
-        return "❌ Missing required argument 'content'"
+        return "Failed: Missing required argument 'content'"
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
-        return "❌ Agent has no Feishu channel configured."
-    _, token = creds
-    headers = {"Authorization": f"Bearer {token}"}
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "Failed: Feishu app credentials not configured for this agent."
+
+    from app.services.feishu_service import feishu_service
+    tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
 
     # For wiki node tokens, use the obj_token for the docx API
-    node_info = await _feishu_wiki_get_node(document_token, token)
+    node_info = await _feishu_wiki_get_node(document_token, tenant_token)
     docx_token = node_info["obj_token"] if (node_info and node_info.get("obj_token")) else document_token
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        meta = (await client.get(
-            f"https://open.feishu.cn/open-apis/docx/v1/documents/{docx_token}",
-            headers=headers,
-        )).json()
-        if meta.get("code") != 0:
-            return f"❌ Cannot access document: {meta.get('msg')}"
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=20) as client:
+            meta_resp = (await client.get(
+                f"https://open.feishu.cn/open-apis/docx/v1/documents/{docx_token}",
+                headers={"Authorization": f"Bearer {tenant_token}"},
+            )).json()
+            err = _check_feishu_err(meta_resp)
+            if err: return err
 
-        body_block_id = (
-            meta.get("data", {}).get("document", {}).get("body", {}).get("block_id")
-            or docx_token
+            body_block_id = (
+                meta_resp.get("data", {}).get("document", {}).get("body", {}).get("block_id")
+                or docx_token
+            )
+
+            children = _markdown_to_feishu_blocks(content)
+
+            result = (await client.post(
+                f"https://open.feishu.cn/open-apis/docx/v1/documents/{docx_token}/blocks/{body_block_id}/children",
+                json={"children": children, "index": -1}, # -1 appends to end
+                headers={"Authorization": f"Bearer {tenant_token}"},
+            )).json()
+
+            err = _check_feishu_err(result)
+            if err: return err
+
+        doc_url = await _get_feishu_tenant_doc_url(tenant_token, docx_token)
+        return (
+            f"✅ 已写入 {len(children)} 个段落到文档。\n"
+            f"🔗 文档直链（原文发给用户，勿修改）：{doc_url}"
         )
-
-        children = _markdown_to_feishu_blocks(content)
-
-        result = (await client.post(
-            f"https://open.feishu.cn/open-apis/docx/v1/documents/{docx_token}/blocks/{body_block_id}/children",
-            json={"children": children, "index": -1},
-            headers=headers,
-        )).json()
-
-    if result.get("code") != 0:
-        return f"❌ Failed to append: {result.get('msg')} (code {result.get('code')})"
-
-    doc_url = f"https://bytedance.larkoffice.com/docx/{docx_token}"
-    return (
-        f"✅ 已写入 {len(children)} 个段落到文档。\n"
-        f"🔗 文档直链（原文发给用户，勿修改）：{doc_url}"
-    )
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
 
 
 # ─── Feishu Document Share ────────────────────────────────────────────────────
 
-async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
-    """Manage Feishu document collaborators.
-    Automatically handles both regular docx documents (Drive permissions API)
-    and Wiki node documents (Wiki space members API).
+async def _feishu_drive_share(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Manage collaborators for any Feishu Drive file.
+    Supports all Drive file types (docx, bitable, sheet, doc, folder, etc.)
+    via the official Drive permissions API.
+    Also handles Wiki node documents via Wiki space members API.
     """
     import httpx
     import re as _re
@@ -5280,14 +6090,17 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
     document_token = (arguments.get("document_token") or "").strip()
     action = (arguments.get("action") or "list").strip()
     permission = (arguments.get("permission") or "edit").strip()
+    # doc_type supports all Feishu Drive file types: docx, bitable, sheet, doc, folder, etc.
+    doc_type = (arguments.get("doc_type") or "docx").strip()
 
     if not document_token:
         return "❌ Missing required argument 'document_token'"
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
-    _, token = creds
+    from app.services.feishu_service import feishu_service
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
     headers = {"Authorization": f"Bearer {token}"}
 
     # ── Detect if this is a Wiki node token ─────────────────────────────────
@@ -5307,7 +6120,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
                 f"https://open.feishu.cn/open-apis/drive/v1/permissions/{use_token}/members",
-                params={"type": "docx"},
+                params={"type": doc_type},
                 headers=headers,
             )
         data = resp.json()
@@ -5402,7 +6215,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
                     f"https://open.feishu.cn/open-apis/drive/v1/permissions/{document_token}/members",
                     json=body,
                     headers=headers,
-                    params={"type": "docx"},
+                    params={"type": doc_type},
                 )
                 d = resp.json()
                 if d.get("code") == 0:
@@ -5442,7 +6255,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
                 resp = await client.delete(
                     f"https://open.feishu.cn/open-apis/drive/v1/permissions/{document_token}/members/{oid}",
                     headers=headers,
-                    params={"type": "docx", "member_type": "openid"},
+                    params={"type": doc_type, "member_type": "openid"},
                 )
                 d = resp.json()
                 if d.get("code") == 0:
@@ -5451,6 +6264,81 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
                     results.append(f"❌ 移除「{display}」失败：{d.get('msg')} (code {d.get('code')})")
 
     return "\n".join(results) if results else "没有需要处理的成员"
+
+
+# ─── Feishu Drive Delete ──────────────────────────────────────────────────────
+
+async def _feishu_drive_delete(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Delete a file or folder from Feishu Drive (cloud space).
+    Uses the official DELETE /drive/v1/files/{file_token} API.
+    Files are moved to recycle bin, not permanently deleted.
+    Folder deletion is asynchronous and returns a task_id.
+    """
+    import httpx
+
+    file_token = (arguments.get("file_token") or "").strip()
+    file_type = (arguments.get("file_type") or "").strip()
+
+    if not file_token:
+        return "❌ Missing required argument 'file_token'"
+    if not file_type:
+        return "❌ Missing required argument 'file_type'"
+
+    # Validate file_type against Feishu's supported types
+    valid_types = {"file", "docx", "bitable", "folder", "doc", "sheet", "mindnote", "shortcut", "slides"}
+    if file_type not in valid_types:
+        return f"❌ Invalid file_type '{file_type}'. Must be one of: {', '.join(sorted(valid_types))}"
+
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "❌ Agent has no Feishu channel configured."
+    from app.services.feishu_service import feishu_service
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.delete(
+                f"https://open.feishu.cn/open-apis/drive/v1/files/{file_token}",
+                headers=headers,
+                params={"type": file_type},
+            )
+        data = resp.json()
+        code = data.get("code", -1)
+
+        if code == 0:
+            # Folder deletion is async and returns a task_id
+            task_id = data.get("data", {}).get("task_id")
+            type_labels = {
+                "file": "file", "docx": "document", "bitable": "Bitable",
+                "folder": "folder", "doc": "document (legacy)", "sheet": "spreadsheet",
+                "mindnote": "mindnote", "shortcut": "shortcut", "slides": "slides",
+            }
+            label = type_labels.get(file_type, file_type)
+            msg = f"✅ Successfully deleted {label} `{file_token}` (moved to recycle bin)."
+            if task_id:
+                msg += f"\n📋 Folder deletion is async. Task ID: `{task_id}`"
+            return msg
+
+        # Handle specific error codes
+        if code == 1061003:
+            return f"❌ File not found: `{file_token}` (type: {file_type})"
+        if code == 1061004:
+            return (
+                f"❌ Permission denied (code {code})\n"
+                "To delete a file, you need one of:\n"
+                "- File owner + parent folder edit permission\n"
+                "- Parent folder owner or full_access permission"
+            )
+        if code == 1061007:
+            return f"❌ File `{file_token}` has already been deleted."
+        if code == 1061045:
+            return "❌ Rate limited. Please wait a moment and try again."
+
+        return f"❌ Failed to delete: {data.get('msg')} (code {code})"
+
+    except Exception as e:
+        return f"❌ Error calling Feishu Drive delete API: {e}"
 
 
 # ─── Feishu Calendar Tools ────────────────────────────────────────────────────
@@ -5462,10 +6350,11 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
 
     user_email = arguments.get("user_email", "").strip()
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
-    _, token = creds
+    from app.services.feishu_service import feishu_service
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
 
     now = datetime.now(timezone.utc)
 
@@ -5619,10 +6508,11 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
         if not v:
             return f"❌ Missing required argument '{f}'"
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
-    _, token = creds
+    from app.services.feishu_service import feishu_service
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
 
     # Resolve organizer open_id from email — soft failure
     organizer_open_id: str | None = None
@@ -5728,10 +6618,11 @@ async def _feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
     if not user_email or not event_id:
         return "❌ Both 'user_email' and 'event_id' are required."
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
-    _, token = creds
+    from app.services.feishu_service import feishu_service
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
 
     open_id = await _feishu_resolve_open_id(token, user_email)
     if not open_id:
@@ -5779,10 +6670,11 @@ async def _feishu_calendar_delete(agent_id: uuid.UUID, arguments: dict) -> str:
     if not user_email or not event_id:
         return "❌ Both 'user_email' and 'event_id' are required."
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
-    _, token = creds
+    from app.services.feishu_service import feishu_service
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
 
     open_id = await _feishu_resolve_open_id(token, user_email)
     if not open_id:
@@ -5804,6 +6696,78 @@ async def _feishu_calendar_delete(agent_id: uuid.UUID, arguments: dict) -> str:
 
     return f"✅ Event `{event_id}` deleted successfully."
 
+# ─── Feishu Approval Tools ───────────────────────────────────────────────────
+
+async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "❌ Agent has no Feishu channel configured."
+
+    approval_code = arguments.get("approval_code", "").strip()
+    user_id = arguments.get("user_id", "").strip()
+    form_data = arguments.get("form_data", "").strip()
+
+    if not approval_code or not user_id or not form_data:
+        return "❌ form_data, user_id and approval_code are required."
+
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.create_approval_instance(app_id, app_secret, approval_code, user_id, form_data)
+        err = _check_feishu_err(resp)
+        if err: return err
+
+        instance_code = resp.get("data", {}).get("instance_code", "")
+        return f"✅ 审批发起成功！\n审批实例 ID: `{instance_code}`"
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+
+async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "❌ Agent has no Feishu channel configured."
+
+    approval_code = arguments.get("approval_code", "").strip()
+    status = arguments.get("status")
+
+    if not approval_code:
+        return "❌ approval_code is required."
+
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.query_approval_instances(app_id, app_secret, approval_code, status)
+        err = _check_feishu_err(resp)
+        if err: return err
+
+        data = resp.get("data", {})
+        instance_codes = data.get("instance_code_list", [])
+        
+        return f"✅ 查询完成。共发现 {len(instance_codes)} 个符合条件的审批实例。\n实例列表: {instance_codes}"
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
+
+async def _feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "❌ Agent has no Feishu channel configured."
+
+    instance_id = arguments.get("instance_id", "").strip()
+    if not instance_id:
+        return "❌ instance_id is required."
+
+    from app.services.feishu_service import feishu_service
+    try:
+        resp = await feishu_service.get_approval_instance(app_id, app_secret, instance_id)
+        err = _check_feishu_err(resp)
+        if err: return err
+
+        data = resp.get("data", {})
+        import json
+        return f"✅ 审批实例查询结果:\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
+    except Exception as e:
+        return f"Failed: {str(e)[:300]}"
+
 
 # ─── Feishu User Search ───────────────────────────────────────────────────────
 
@@ -5823,10 +6787,11 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     if not name:
         return "❌ Missing required argument 'name'"
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
-    _, token = creds
+    from app.services.feishu_service import feishu_service
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
 
     # ── Load local contacts cache ─────────────────────────────────────────────
     _cache_file = _pl.Path(f"/data/workspaces/{agent_id}/feishu_contacts_cache.json")
@@ -6068,48 +7033,77 @@ async def _list_published_pages(agent_id: uuid.UUID) -> str:
 # ─── AgentBay Tool Handlers ─────────────────────────────────────
 
 async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
-    """AgentBay 浏览器导航。"""
+    """AgentBay browser navigation.
+
+    After navigating, always captures a screenshot.  Whether that screenshot is
+    stored to disk or kept only in memory depends on save_to_workspace:
+      - False (default): bytes are held in the process-level memory cache;
+        the returned sentinel [ImageID: ...] is consumed by vision_inject.py
+        in the same request cycle and then discarded — zero disk writes.
+      - True: screenshot is written to workspace/ so the user can see it in
+        their file manager, and a Markdown link is included in the return value.
+    """
     if not agent_id:
         return "❌ AgentBay 工具需要 agent 上下文"
 
     from app.services.agentbay_client import get_agentbay_client_for_agent
 
     url = arguments.get("url", "")
-    screenshot = arguments.get("screenshot", False)
     wait_for = arguments.get("wait_for", "")
+    save_to_workspace = arguments.get("save_to_workspace", False)
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "browser")
-        result = await client.browser_navigate(url, wait_for=wait_for, screenshot=screenshot)
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "browser", session_id=_session_id)
+        # Always request a screenshot for navigation so the model can observe the result
+        result = await client.browser_navigate(url, wait_for=wait_for, screenshot=True)
 
-        # 格式化返回结果
+        # Build text parts from the navigation result
         parts = [f"✅ 已访问: {url}"]
         if result.get("title"):
             parts.append(f"标题: {result['title']}")
         if result.get("content"):
-            content = result["content"][:3000]  # 限制长度
+            content = result["content"][:3000]
             parts.append(f"内容:\n{content}")
-        logger.info(f"[AgentBay] Browser navigate result: {result['title']}")
+        logger.info(f"[AgentBay] Browser navigate result: {result.get('title')}")
+
         screenshot_data = result.get("screenshot")
-        if screenshot and screenshot_data:
-            import time
-            rel_path = f"workspace/screenshot_{int(time.time())}.png"
-            screenshot_path = ws / rel_path
-            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-            # data from agent.screenshot can be base64 string or bytes.
+        if screenshot_data:
+            import base64 as _base64
+            # Normalise to raw bytes regardless of whether it's a data URL or plain b64
             if isinstance(screenshot_data, str):
-                import base64
                 if screenshot_data.startswith("data:image"):
                     screenshot_data = screenshot_data.split(",", 1)[1]
-                screenshot_data = base64.b64decode(screenshot_data)
-            screenshot_path.write_bytes(screenshot_data)
-            
-            # 告诉大模型可以直接用 Markdown 显示出来
-            parts.append(
-                f"截图: 已保存至 `{rel_path}`。\n\n"
-                f"⚠️ 要在聊天框里向用户展示该截图，请必须在回复中包含以下原样 Markdown 语法：\n"
-                f"![浏览器截图](/api/agents/{agent_id}/files/download?path={rel_path})"
-            )
+                raw_bytes = _base64.b64decode(screenshot_data)
+            elif isinstance(screenshot_data, bytes):
+                raw_bytes = screenshot_data
+            else:
+                raw_bytes = None
+
+            if raw_bytes:
+                if save_to_workspace:
+                    # Persist to workspace/ so the user can see the file
+                    import time as _time
+                    rel_path = f"workspace/screenshot_{int(_time.time())}.png"
+                    screenshot_path = ws / rel_path
+                    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+                    screenshot_path.write_bytes(raw_bytes)
+                    parts.append(
+                        f"截图已保存至 `{rel_path}`。\n"
+                        f"![Browser Navigation Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
+                        f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
+                    )
+                    logger.info(f"[AgentBay] Browser navigate screenshot saved to {rel_path}")
+                else:
+                    # Store in memory only — vision_inject.py will consume it
+                    from app.services.vision_inject import store_temp_screenshot
+                    img_id = store_temp_screenshot(raw_bytes)
+                    parts.append(
+                        f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
+                        f"NOTE: This screenshot is for YOUR eyes only (LLM vision). The user CANNOT see it. "
+                        f"If the user asked to SEE a screenshot, call this tool again with save_to_workspace=true."
+                    )
+                    logger.info(f"[AgentBay] Browser navigate screenshot stored in memory (id={img_id})")
 
         return "\n\n".join(parts)
 
@@ -6121,40 +7115,66 @@ async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, ar
 
 
 async def _agentbay_browser_screenshot(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
-    """Take a screenshot of the current browser page without navigating.
+    """Take a screenshot of the CURRENT browser page without navigating.
 
-    This is the correct way to verify the result of a click, type, or form submit.
-    Do NOT call browser_navigate again just to take a screenshot — that refreshes the page.
+    Correct way to observe the result of a click, type, or form submit — never
+    call browser_navigate again just to screenshot, that refreshes the page.
+
+    By default (save_to_workspace=False) the image is held in the process-level
+    memory cache and consumed once by the LLM vision pipeline — no disk write,
+    nothing shown in the user's file manager or chat history.
+    Set save_to_workspace=True to persist and display the image.
     """
     if not agent_id:
         return "❌ AgentBay 工具需要 agent 上下文"
 
     from app.services.agentbay_client import get_agentbay_client_for_agent
 
+    save_to_workspace = arguments.get("save_to_workspace", False)
+
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "browser")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "browser", session_id=_session_id)
         result = await client.browser_screenshot()
 
         screenshot_data = result.get("screenshot")
         if not screenshot_data:
             return "❌ 截图失败：未返回图像数据"
 
-        import time, base64
-        rel_path = f"workspace/screenshot_{int(time.time())}.png"
-        screenshot_path = ws / rel_path
-        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-
+        import base64 as _base64
+        # Normalise to raw bytes
         if isinstance(screenshot_data, str):
             if screenshot_data.startswith("data:image"):
                 screenshot_data = screenshot_data.split(",", 1)[1]
-            screenshot_data = base64.b64decode(screenshot_data)
-        screenshot_path.write_bytes(screenshot_data)
+            raw_bytes = _base64.b64decode(screenshot_data)
+        elif isinstance(screenshot_data, bytes):
+            raw_bytes = screenshot_data
+        else:
+            return "❌ 截图失败：未知数据格式"
 
-        return (
-            f"✅ 当前页面截图已保存至 `{rel_path}`。\n\n"
-            f"⚠️ 要在聊天框里向用户展示该截图，请必须在回复中包含以下原样 Markdown 语法：\n"
-            f"![浏览器截图](/api/agents/{agent_id}/files/download?path={rel_path})"
-        )
+        if save_to_workspace:
+            # Persist to workspace/ so the user can see the file
+            import time as _time
+            rel_path = f"workspace/screenshot_{int(_time.time())}.png"
+            screenshot_path = ws / rel_path
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_path.write_bytes(raw_bytes)
+            logger.info(f"[AgentBay] Browser screenshot saved to workspace: {rel_path}")
+            return (
+                f"✅ 截图已保存至 `{rel_path}`。\n"
+                f"![Browser Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
+                f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
+            )
+        else:
+            # Store in memory only — vision_inject.py will consume it for LLM vision
+            from app.services.vision_inject import store_temp_screenshot
+            img_id = store_temp_screenshot(raw_bytes)
+            logger.info(f"[AgentBay] Browser screenshot stored in memory (id={img_id})")
+            return (
+                f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
+                f"NOTE: This screenshot is for YOUR eyes only (LLM vision). The user CANNOT see it. "
+                f"If the user asked to SEE a screenshot, call this tool again with save_to_workspace=true."
+            )
 
     except RuntimeError as e:
         return f"❌ {str(e)}"
@@ -6173,7 +7193,8 @@ async def _agentbay_browser_click(agent_id: Optional[uuid.UUID], ws: Path, argum
     selector = arguments.get("selector", "")
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "browser")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "browser", session_id=_session_id)
         await client.browser_click(selector)
         return f"✅ 已点击元素: {selector}"
     except RuntimeError as e:
@@ -6194,7 +7215,8 @@ async def _agentbay_browser_type(agent_id: Optional[uuid.UUID], ws: Path, argume
     text = arguments.get("text", "")
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "browser")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "browser", session_id=_session_id)
         await client.browser_type(selector, text)
         return f"✅ 已在 {selector} 输入文本"
     except RuntimeError as e:
@@ -6219,7 +7241,8 @@ async def _agentbay_code_execute(agent_id: Optional[uuid.UUID], ws: Path, argume
         return "❌ 请提供要执行的代码"
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "code")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "code", session_id=_session_id)
         result = await client.code_execute(language, code, timeout)
 
         # 格式化返回结果
@@ -6433,7 +7456,8 @@ async def _agentbay_browser_extract(agent_id: Optional[uuid.UUID], ws: Path, arg
         return "Missing required argument 'instruction'"
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "browser")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "browser", session_id=_session_id)
         result = await client.browser_extract(instruction, selector=selector)
 
         if result.get("success"):
@@ -6465,7 +7489,8 @@ async def _agentbay_browser_observe(agent_id: Optional[uuid.UUID], ws: Path, arg
         return "Missing required argument 'instruction'"
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "browser")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "browser", session_id=_session_id)
         result = await client.browser_observe(instruction, selector=selector)
 
         if result.get("success"):
@@ -6507,7 +7532,8 @@ async def _agentbay_browser_login(agent_id: Optional[uuid.UUID], ws: Path, argum
         return "Missing required argument 'login_config' (JSON string with api_key + skill_id)"
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "browser")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "browser", session_id=_session_id)
         result = await client.browser_login(url, login_config)
 
         if result.get("success"):
@@ -6537,7 +7563,8 @@ async def _agentbay_command_exec(agent_id: Optional[uuid.UUID], ws: Path, argume
         return "Missing required argument 'command'"
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "code")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "code", session_id=_session_id)
         result = await client.command_exec(command, timeout_ms=timeout_ms, cwd=cwd)
 
         parts = []
@@ -6589,29 +7616,70 @@ def _save_screenshot_to_workspace(agent_id: uuid.UUID, ws: Path, data) -> str:
     screenshot_path.write_bytes(raw_bytes)
     return (
         f"Screenshot saved to `{rel_path}`.\n\n"
-        f"To display the screenshot in chat, include this markdown in your reply:\n"
-        f"![Desktop Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})"
+        f"![Desktop Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
+        f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
     )
 
 
 async def _agentbay_computer_screenshot(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
-    """Take a screenshot of the AgentBay cloud desktop."""
+    """Take a screenshot of the AgentBay cloud desktop.
+
+    By default (save_to_workspace=False) the image is held in the process-level
+    memory cache for LLM vision analysis only — no disk write, nothing shown in
+    the user's file manager or chat history.
+    Set save_to_workspace=True to persist and display the image.
+    """
     if not agent_id:
         return "AgentBay tools require agent context"
 
     from app.services.agentbay_client import get_agentbay_client_for_agent
 
+    save_to_workspace = arguments.get("save_to_workspace", False)
+
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_screenshot()
 
-        if result.get("success") and result.get("data"):
-            screenshot_info = _save_screenshot_to_workspace(agent_id, ws, result["data"])
-            if screenshot_info:
-                return f"Desktop screenshot captured.\n\n{screenshot_info}"
-            return "Screenshot captured but could not save to workspace."
-        else:
+        if not (result.get("success") and result.get("data")):
             return f"Screenshot failed: {result.get('error_message', 'Unknown error')}"
+
+        raw_data = result["data"]
+
+        # Normalise to raw bytes regardless of SDK return format
+        import base64 as _base64
+        if isinstance(raw_data, str):
+            if raw_data.startswith("data:image"):
+                raw_data = raw_data.split(",", 1)[1]
+            raw_bytes = _base64.b64decode(raw_data)
+        elif isinstance(raw_data, bytes):
+            raw_bytes = raw_data
+        else:
+            return "Screenshot captured but data format is unrecognised."
+
+        if save_to_workspace:
+            # Persist to workspace/ for user visibility
+            import time as _time
+            rel_path = f"workspace/desktop-screenshot-{int(_time.time())}.png"
+            screenshot_path = ws / rel_path
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_path.write_bytes(raw_bytes)
+            logger.info(f"[AgentBay] Desktop screenshot saved to workspace: {rel_path}")
+            return (
+                f"Desktop screenshot saved to `{rel_path}`.\n"
+                f"![Desktop Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
+                f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
+            )
+        else:
+            # Store in memory only — vision_inject.py will consume it for LLM vision
+            from app.services.vision_inject import store_temp_screenshot
+            img_id = store_temp_screenshot(raw_bytes)
+            logger.info(f"[AgentBay] Desktop screenshot stored in memory (id={img_id})")
+            return (
+                f"Internal desktop screenshot captured for analysis. [ImageID: {img_id}]\n"
+                f"NOTE: This screenshot is for YOUR eyes only (LLM vision). The user CANNOT see it. "
+                f"If the user asked to SEE a screenshot, call this tool again with save_to_workspace=true."
+            )
 
     except RuntimeError as e:
         return f"{str(e)}. Please configure AgentBay in Agent settings."
@@ -6632,7 +7700,8 @@ async def _agentbay_computer_click(agent_id: Optional[uuid.UUID], ws: Path, argu
     button = arguments.get("button", "left")
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_click(x, y, button=button)
         if result.get("success"):
             return f"Clicked at ({x}, {y}) with {button} button"
@@ -6656,7 +7725,8 @@ async def _agentbay_computer_input_text(agent_id: Optional[uuid.UUID], ws: Path,
         return "Missing required argument 'text'"
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_input_text(text)
         if result.get("success"):
             return f"Typed text: {text[:100]}"
@@ -6682,7 +7752,8 @@ async def _agentbay_computer_press_keys(agent_id: Optional[uuid.UUID], ws: Path,
         return "Missing required argument 'keys'"
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_press_keys(keys, hold=hold)
         key_str = "+".join(keys)
         if result.get("success"):
@@ -6708,7 +7779,8 @@ async def _agentbay_computer_scroll(agent_id: Optional[uuid.UUID], ws: Path, arg
     amount = arguments.get("amount", 1)
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_scroll(x, y, direction=direction, amount=amount)
         if result.get("success"):
             return f"Scrolled {direction} by {amount} step(s) at ({x}, {y})"
@@ -6731,7 +7803,8 @@ async def _agentbay_computer_move_mouse(agent_id: Optional[uuid.UUID], ws: Path,
     y = arguments.get("y", 0)
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_move_mouse(x, y)
         if result.get("success"):
             return f"Mouse moved to ({x}, {y})"
@@ -6757,7 +7830,8 @@ async def _agentbay_computer_drag_mouse(agent_id: Optional[uuid.UUID], ws: Path,
     button = arguments.get("button", "left")
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_drag_mouse(from_x, from_y, to_x, to_y, button=button)
         if result.get("success"):
             return f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
@@ -6777,7 +7851,8 @@ async def _agentbay_computer_get_screen_size(agent_id: Optional[uuid.UUID], ws: 
     from app.services.agentbay_client import get_agentbay_client_for_agent
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_get_screen_size()
         if result.get("success"):
             import json
@@ -6806,7 +7881,8 @@ async def _agentbay_computer_start_app(agent_id: Optional[uuid.UUID], ws: Path, 
         return "Missing required argument 'cmd'"
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_start_app(cmd, work_dir=work_dir)
         if result.get("success"):
             # result.data may contain non-serializable objects (e.g. Process),
@@ -6837,7 +7913,8 @@ async def _agentbay_computer_get_cursor_position(agent_id: Optional[uuid.UUID], 
     from app.services.agentbay_client import get_agentbay_client_for_agent
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_get_cursor_position()
         if result.get("success"):
             import json
@@ -6860,7 +7937,8 @@ async def _agentbay_computer_get_active_window(agent_id: Optional[uuid.UUID], ws
     from app.services.agentbay_client import get_agentbay_client_for_agent
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_get_active_window()
         if result.get("success"):
             import json
@@ -6887,7 +7965,8 @@ async def _agentbay_computer_activate_window(agent_id: Optional[uuid.UUID], ws: 
         return "Missing required argument 'window_id'"
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_activate_window(int(window_id))
         if result.get("success"):
             return f"Window {window_id} activated (brought to front)"
@@ -6907,7 +7986,8 @@ async def _agentbay_computer_list_visible_apps(agent_id: Optional[uuid.UUID], ws
     from app.services.agentbay_client import get_agentbay_client_for_agent
 
     try:
-        client = await get_agentbay_client_for_agent(agent_id, "computer")
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
         result = await client.computer_list_visible_apps()
         if result.get("success"):
             import json

@@ -149,7 +149,7 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
     return "\n".join(lines)
 
 
-async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> str:
+async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> tuple[str, str]:
     """Build a rich system prompt incorporating agent's full context.
 
     Reads from workspace files:
@@ -179,17 +179,20 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     if relationships.startswith("# "):
         relationships = "\n".join(relationships.split("\n")[1:]).strip()
 
-    # --- Compose system prompt ---
+    # --- Compose static and dynamic system prompt blocks ---
     from datetime import datetime, timezone as _tz
     from app.services.timezone_utils import get_agent_timezone, now_in_timezone
     agent_tz_name = await get_agent_timezone(agent_id)
     agent_local_now = now_in_timezone(agent_tz_name)
     now_str = agent_local_now.strftime(f"%Y-%m-%d %H:%M:%S ({agent_tz_name})")
-    parts = [f"You are {agent_name}, an enterprise digital employee."]
-    parts.append(f"Your timezone is **{agent_tz_name}**. When setting cron triggers, use this timezone for time references.")
+    
+    static_parts = [f"You are {agent_name}, an enterprise digital employee."]
+
 
     if role_description:
-        parts.append(f"\n## Role\n{role_description}")
+        static_parts.append(f"\n## Role\n{role_description}")
+
+    dynamic_parts = []
 
     # --- Feishu Built-in Tools (only injected when agent has Feishu configured) ---
     _has_feishu = False
@@ -209,7 +212,7 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
         pass
 
     if _has_feishu:
-        parts.append("""
+        static_parts.append("""
 ## ⚡ Pre-installed Feishu Tools
 
 The following tools are available in your toolset. **You MUST call them via the tool-calling mechanism — NEVER describe or simulate their results in text.**
@@ -238,7 +241,8 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
 | `feishu_doc_read` | `document_token`. Supports both regular docx tokens and **wiki node tokens** (auto-converts). |
 | `feishu_doc_create` | `title`. Returns real Token and 🔗 access link, pre-authorized for you. |
 | `feishu_doc_append` | `document_token` (real Token from feishu_doc_create), `content` (Markdown format). |
-| `feishu_doc_share` | `document_token`, `action`(add/remove/list), `member_names`(name list, auto-lookup), `permission`(view/edit/full_access). |
+| `feishu_drive_share` | `document_token`, `doc_type`(docx/bitable/sheet/doc/folder, default: docx), `action`(add/remove/list), `member_names`(name list, auto-lookup), `permission`(view/edit/full_access). |
+| `feishu_drive_delete` | `file_token`, `file_type`(docx/bitable/sheet/doc/folder/file). Moves file to recycle bin. |
 | `send_feishu_message` | `open_id` or `email`, `content`. |
 
 🚫 **NEVER**:
@@ -268,7 +272,7 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
         from app.services.agent.context.dingtalk import get_dingtalk_context
         dingtalk_context = await get_dingtalk_context(agent_id)
         if dingtalk_context:
-            parts.append(dingtalk_context)
+            static_parts.append(dingtalk_context)
     except Exception:
         pass
 
@@ -287,7 +291,7 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
             )
             atlassian_config = result.scalar_one_or_none()
             if atlassian_config:
-                parts.append("""
+                static_parts.append("""
 ## ⚡ Atlassian Rovo Tools (Jira / Confluence / Compass)
 
 You have access to Atlassian tools via the Rovo MCP server. **Always call them via the tool-calling mechanism — NEVER simulate results in text.**
@@ -374,60 +378,12 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
                     company_intro = setting.value["content"].strip()
 
             if company_intro:
-                parts.append(f"\n## Company Information\n{company_intro}")
+                static_parts.append(f"\n## Company Information\n{company_intro}")
     except Exception:
         pass  # Don't break agent if DB is unavailable
 
-    if soul and soul not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
-        parts.append(f"\n## Personality\n{soul}")
+    static_parts.append("""
 
-    if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
-        parts.append(f"\n## Memory\n{memory}")
-
-    if skills_text:
-        parts.append(f"\n## Skills\n{skills_text}")
-
-    if relationships and "暂无" not in relationships and "None yet" not in relationships:
-        parts.append(f"\n## Relationships\n{relationships}")
-
-    dynamic_parts = []
-
-    # --- Focus (working memory) ---
-    focus = (
-        _read_file_safe(ws_root / "focus.md", 3000)
-        # Backward compat: also check old name
-        or _read_file_safe(ws_root / "agenda.md", 3000)
-    )
-    if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
-        if focus.startswith("# "):
-            focus = "\n".join(focus.split("\n")[1:]).strip()
-        dynamic_parts.append(f"\n## Focus\n{focus}")
-
-    # --- Active Triggers ---
-    try:
-        from app.database import async_session
-        from app.models.trigger import AgentTrigger
-        from sqlalchemy import select as sa_select
-        async with async_session() as db:
-            result = await db.execute(
-                sa_select(AgentTrigger).where(
-                    AgentTrigger.agent_id == agent_id,
-                    AgentTrigger.is_enabled == True,
-                )
-            )
-            triggers = result.scalars().all()
-            if triggers:
-                lines = ["You have the following active triggers:"]
-                for t in triggers:
-                    config_str = str(t.config)[:80]
-                    reason_str = (t.reason or "")[:500]
-                    ref_str = f" (focus: {t.focus_ref})" if t.focus_ref else ""
-                    lines.append(f"\n- **{t.name}** [{t.type}]{ref_str}\n  Config: `{config_str}`\n  Reason: {reason_str}")
-                dynamic_parts.append("\n## Active Triggers\n" + "\n".join(lines))
-    except Exception:
-        pass
-
-    parts.append("""
 ## Workspace & Tools
 
 You have a dedicated workspace with this structure:
@@ -550,14 +506,62 @@ You have internet access through these tools — **use them proactively when you
 
 🚫 **NEVER say you cannot access the internet or search the web.** You HAVE these capabilities — use them.""")
 
+    if soul and soul not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
+        static_parts.append(f"\n## Personality\n{soul}")
 
+    if skills_text:
+        static_parts.append(f"\n## Skills\n{skills_text}")
+
+    if relationships and "暂无" not in relationships and "None yet" not in relationships:
+        static_parts.append(f"\n## Relationships\n{relationships}")
+
+    if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
+        dynamic_parts.append(f"\n## Memory\n{memory}")
+
+    # --- Focus (working memory) ---
+    focus = (
+        _read_file_safe(ws_root / "focus.md", 3000)
+        # Backward compat: also check old name
+        or _read_file_safe(ws_root / "agenda.md", 3000)
+    )
+    if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
+        if focus.startswith("# "):
+            focus = "\n".join(focus.split("\n")[1:]).strip()
+        dynamic_parts.append(f"\n## Focus\n{focus}")
+
+    # --- Active Triggers ---
+    try:
+        from app.database import async_session
+        from app.models.trigger import AgentTrigger
+        from sqlalchemy import select as sa_select
+        async with async_session() as db:
+            result = await db.execute(
+                sa_select(AgentTrigger).where(
+                    AgentTrigger.agent_id == agent_id,
+                    AgentTrigger.is_enabled == True,
+                )
+            )
+            triggers = result.scalars().all()
+            if triggers:
+                lines = ["You have the following active triggers:"]
+                for t in triggers:
+                    config_str = str(t.config)[:80]
+                    reason_str = (t.reason or "")[:500]
+                    ref_str = f" (focus: {t.focus_ref})" if t.focus_ref else ""
+                    lines.append(f"\n- **{t.name}** [{t.type}]{ref_str}\n  Config: `{config_str}`\n  Reason: {reason_str}")
+                dynamic_parts.append("\n## Active Triggers\n" + "\n".join(lines))
+    except Exception:
+        pass
+
+    # --- Time Info ---
+
+    dynamic_parts.append(f"\n## Current Time\n{now_str}")
+    dynamic_parts.append(f"Your timezone is **{agent_tz_name}**. When setting cron triggers, use this timezone for time references.")
 
     # Append dynamic parts (Time, Focus, Triggers) at the very end to maximize cache hits
-    parts.extend(dynamic_parts)
-    parts.append(f"\n## Current Time\n{now_str}")
 
     # Inject current user identity
     if current_user_name:
-        parts.append(f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate.")
+        dynamic_parts.append(f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate.")
 
-    return "\n".join(parts)
+    return "\n".join(static_parts), "\n".join(dynamic_parts)

@@ -98,6 +98,8 @@ async def lifespan(app: FastAPI):
         import app.models.trigger        # noqa
         import app.models.notification   # noqa
         import app.models.gateway_message # noqa
+        import app.models.agent_credential  # noqa
+
         import app.models.identity       # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -281,6 +283,8 @@ from app.api.notification import router as notification_router
 from app.api.gateway import router as gateway_router
 from app.api.admin import router as admin_router
 from app.api.pages import router as pages_router, public_router as pages_public_router
+from app.api.agent_credentials import router as credentials_router
+from app.api.agentbay_control import router as agentbay_control_router
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(agents_router, prefix=settings.API_PREFIX)
@@ -320,6 +324,8 @@ app.include_router(gateway_router, prefix=settings.API_PREFIX)
 app.include_router(admin_router, prefix=settings.API_PREFIX)
 app.include_router(pages_router, prefix=settings.API_PREFIX)
 app.include_router(pages_public_router)  # Public endpoint for /p/{short_id}, no API prefix
+app.include_router(credentials_router, prefix=settings.API_PREFIX)
+app.include_router(agentbay_control_router, prefix=settings.API_PREFIX)
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])

@@ -565,11 +565,12 @@ class AgentBayClient:
 
 
 # ─── Session Cache for Tool Executions ──────────────────────────
-# Key: (agent_id, image_type) so browser and code sessions coexist.
-# Previously keyed by agent_id only, which caused browser session
-# to be destroyed when code session was created and vice versa.
+# Key: (agent_id, session_id, image_type) so each ChatSession gets
+# its own independent AgentBay instance for browser/computer/code.
+# Previously keyed by (agent_id, image_type) which meant all users
+# of the same Agent shared one browser/desktop — causing conflicts.
 
-_agentbay_sessions: dict[tuple[uuid.UUID, str], tuple[AgentBayClient, datetime]] = {}
+_agentbay_sessions: dict[tuple[uuid.UUID, str, str], tuple[AgentBayClient, datetime]] = {}
 _AGENTBAY_SESSION_TIMEOUT = timedelta(minutes=5)
 
 
@@ -649,17 +650,23 @@ async def test_agentbay_channel(agent_id: uuid.UUID, current_user, db) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str) -> AgentBayClient:
+async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str, session_id: str = "") -> AgentBayClient:
     """Get or create AgentBay client for agent.
 
-    Sessions are cached per (agent_id, image_type) so that an agent
-    can hold both a browser and a code session simultaneously.
-    Switching between browser and code operations no longer destroys
-    the other session.
+    Sessions are cached per (agent_id, session_id, image_type) so that each
+    ChatSession gets its own independent AgentBay instance. Multiple users
+    chatting with the same Agent will each have isolated browser/desktop/code
+    environments.
+
+    Args:
+        agent_id: The agent UUID.
+        image_type: One of 'browser', 'computer', 'code'.
+        session_id: The ChatSession ID. Defaults to '' for backward compat
+                    (e.g. test_agentbay_channel, single-session callers).
     """
 
     now = datetime.now()
-    cache_key = (agent_id, image_type)
+    cache_key = (agent_id, session_id, image_type)
 
     if cache_key in _agentbay_sessions:
         client, last_used = _agentbay_sessions[cache_key]
@@ -669,7 +676,7 @@ async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str) ->
             return client
         else:
             # Session expired, close and remove
-            logger.info(f"[AgentBay] Session expired for {image_type}, closing")
+            logger.info(f"[AgentBay] Session expired for {image_type} (session={session_id[:8]}), closing")
             await client.close_session()
             del _agentbay_sessions[cache_key]
 
@@ -696,11 +703,13 @@ async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str) ->
 
     if image_type == "browser":
         await client.create_session("browser_latest")
+        # Inject stored cookies after browser initialization
+        await _inject_credentials(client, agent_id)
     elif image_type == "computer":
         # Read OS preference from tool config (default: windows)
         os_type = (tool_config or {}).get("os_type", "windows")
         computer_image = "windows_latest" if os_type == "windows" else "linux_latest"
-        logger.info(f"[AgentBay] Creating computer session with OS: {os_type} (image: {computer_image})")
+        logger.info(f"[AgentBay] Creating computer session with OS: {os_type} (image: {computer_image}) for session={session_id[:8]}")
         await client.create_session(computer_image)
     else:
         await client.create_session("code_latest")
@@ -718,6 +727,114 @@ async def cleanup_agentbay_sessions():
     ]
     for cache_key in expired:
         client, _ = _agentbay_sessions.pop(cache_key)
-        agent_id, image_type = cache_key
-        logger.info(f"[AgentBay] Cleaning up expired {image_type} session for agent {agent_id}")
+        agent_id, session_id, image_type = cache_key
+        logger.info(f"[AgentBay] Cleaning up expired {image_type} session for agent {agent_id} (session={session_id[:8]})")
         await client.close_session()
+
+
+async def _inject_credentials(client: AgentBayClient, agent_id: uuid.UUID):
+    """Inject stored cookies into the browser via CDP after initialization.
+
+    Reads all 'active' credentials with cookies from the agent_credentials table,
+    decrypts cookies_json, and injects them via a Playwright Node.js script that
+    connects to Chrome's CDP port (localhost:9222).
+
+    This runs automatically after every browser session creation. If no credentials
+    exist or injection fails, it logs a warning but does not block the session.
+    """
+    import json
+    from app.database import async_session as async_session_factory
+    from app.models.agent_credential import AgentCredential
+    from sqlalchemy import select
+    from app.core.security import decrypt_data
+    from app.config import get_settings
+
+    settings = get_settings()
+
+    # Fetch active credentials with stored cookies
+    try:
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(AgentCredential).where(
+                    AgentCredential.agent_id == agent_id,
+                    AgentCredential.status == "active",
+                    AgentCredential.cookies_json.isnot(None),
+                )
+            )
+            credentials = result.scalars().all()
+    except Exception as e:
+        logger.warning(f"[AgentBay] Failed to query credentials for injection: {e}")
+        return
+
+    if not credentials:
+        return  # No cookies to inject
+
+    # Collect and decrypt all cookies
+    all_cookies = []
+    for cred in credentials:
+        try:
+            raw = decrypt_data(cred.cookies_json, settings.SECRET_KEY)
+            cookies = json.loads(raw)
+            if isinstance(cookies, list):
+                all_cookies.extend(cookies)
+        except Exception as e:
+            logger.warning(f"[AgentBay] Failed to decrypt cookies for {cred.platform}: {e}")
+
+    if not all_cookies:
+        return
+
+    # Ensure browser is initialized before injection (Chrome must be running)
+    try:
+        await client._ensure_browser_initialized()
+    except Exception as e:
+        logger.warning(f"[AgentBay] Cannot inject cookies — browser not initialized: {e}")
+        return
+
+    # Build Node.js injection script and write to temp file
+    # Using a temp file avoids shell quoting issues with JSON in command args
+    cookies_json_str = json.dumps(all_cookies)
+    inject_script = f"""
+const {{ chromium }} = require('playwright');
+(async () => {{
+    try {{
+        const browser = await chromium.connectOverCDP('http://localhost:9222');
+        const context = browser.contexts()[0];
+        const cookies = {cookies_json_str};
+        await context.addCookies(cookies);
+        console.log('INJECT_OK:' + cookies.length + ' cookies injected');
+    }} catch (e) {{
+        console.error('INJECT_FAIL:' + e.message);
+    }}
+}})();
+"""
+
+    try:
+        # Write script to temp file inside the container
+        await asyncio.to_thread(
+            client._session.command.exec_command,
+            f"cat > /tmp/_inject_cookies.js << 'INJECT_EOF'\n{inject_script}\nINJECT_EOF"
+        )
+        # Execute the script
+        exec_result = await asyncio.to_thread(
+            client._session.command.exec_command,
+            "node /tmp/_inject_cookies.js",
+        )
+        stdout = exec_result.output if hasattr(exec_result, 'output') else str(exec_result)
+
+        if "INJECT_OK" in stdout:
+            logger.info(f"[AgentBay] Cookie injection successful for agent {agent_id}: {stdout.strip()[:100]}")
+            # Update last_injected_at for all injected credentials
+            try:
+                from datetime import timezone as tz
+                now = datetime.now(tz.utc)
+                async with async_session_factory() as db:
+                    for cred in credentials:
+                        cred.last_injected_at = now
+                        db.add(cred)
+                    await db.commit()
+            except Exception as e:
+                logger.warning(f"[AgentBay] Failed to update last_injected_at: {e}")
+        else:
+            logger.warning(f"[AgentBay] Cookie injection may have failed: {stdout[:200]}")
+    except Exception as e:
+        logger.warning(f"[AgentBay] Cookie injection error: {e}")

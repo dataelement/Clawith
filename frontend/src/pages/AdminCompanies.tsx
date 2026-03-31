@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor } from '../utils/theme';
 import { IconFilter } from '@tabler/icons-react';
 import PlatformDashboard from './PlatformDashboard';
+import { copyToClipboard } from '../utils/clipboard';
 
 // Helper for authenticated JSON fetch
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -422,7 +423,7 @@ function CompaniesTab() {
     };
 
     const handleCopyCode = () => {
-        navigator.clipboard.writeText(createdCode).then(() => {
+        copyToClipboard(createdCode).then(() => {
             setCodeCopied(true);
             setTimeout(() => setCodeCopied(false), 2000);
         });

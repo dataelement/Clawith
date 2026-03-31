@@ -11,9 +11,11 @@ import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
+import AgentCredentials from '../components/AgentCredentials';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
+import { copyToClipboard } from '../utils/clipboard';
 
 const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
@@ -49,9 +51,12 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const [configData, setConfigData] = useState<Record<string, any>>({});
     const [configJson, setConfigJson] = useState('');
     const [configSaving, setConfigSaving] = useState(false);
-    const [toolTab, setToolTab] = useState<'platform' | 'company' | 'installed'>('platform');
+    const [toolTab, setToolTab] = useState<'company' | 'installed'>('company');
     const [deletingToolId, setDeletingToolId] = useState<string | null>(null);
     const [configCategory, setConfigCategory] = useState<string | null>(null);
+    // Global (company-level) config for the currently open modal — used to show
+    // lock hints and prevent agent from overriding company-set fields.
+    const [configGlobalData, setConfigGlobalData] = useState<Record<string, any>>({});
 
     const CATEGORY_CONFIG_SCHEMAS: Record<string, any> = {
         agentbay: {
@@ -100,16 +105,41 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         } catch (e) { console.error(e); }
     };
 
+    // Sensitive field keys that should not be pre-filled from masked global config.
+    // Hardcoded fallback set + dynamic extraction from config_schema password-type fields.
+    const SENSITIVE_KEYS_BASE = new Set(['api_key', 'private_key', 'auth_code', 'password', 'secret']);
+
+    const getSensitiveKeys = (schema: any): Set<string> => {
+        const keys = new Set(SENSITIVE_KEYS_BASE);
+        if (schema?.fields) {
+            for (const field of schema.fields) {
+                if (field.type === 'password') keys.add(field.key);
+            }
+        }
+        return keys;
+    };
+
     const openConfig = (tool: any) => {
         setConfigTool(tool);
-        const merged = { ...(tool.global_config || {}), ...(tool.agent_config || {}) };
+        // Build merged config: start with global defaults, overlay agent overrides.
+        // For sensitive fields, only use agent_config values (global ones are masked
+        // like "****xxxx" and should not pre-fill the input).
+        const sensitiveKeys = getSensitiveKeys(tool.config_schema);
+        const globalCfg = tool.global_config || {};
+        const agentCfg = tool.agent_config || {};
+        const merged: Record<string, any> = {};
+        for (const [k, v] of Object.entries(globalCfg)) {
+            if (!sensitiveKeys.has(k)) merged[k] = v;
+        }
+        Object.assign(merged, agentCfg);
         setConfigData(merged);
-        setConfigJson(JSON.stringify(tool.agent_config || {}, null, 2));
+        setConfigJson(JSON.stringify(agentCfg, null, 2));
     };
 
     const openCategoryConfig = async (category: string) => {
         setConfigCategory(category);
         setConfigData({});
+        setConfigGlobalData({});
         setConfigSaving(true);
         try {
             const token = localStorage.getItem('token');
@@ -118,7 +148,21 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
             });
             if (res.ok) {
                 const data = await res.json();
-                setConfigData(data.config || {});
+                // global_config: company-level (masked sensitive fields like ****xxxx)
+                // agent_config: agent-level overrides only
+                const globalCfg = data.global_config || {};
+                const agentCfg = data.agent_config || {};
+                setConfigGlobalData(globalCfg);
+                // Pre-fill only agent-level values; company fields show as hints
+                const catSchema = CATEGORY_CONFIG_SCHEMAS[category];
+                const sensitiveKeys = getSensitiveKeys(catSchema);
+                const merged: Record<string, any> = {};
+                for (const [k, v] of Object.entries(globalCfg)) {
+                    // Non-sensitive global fields (e.g. os_type) pre-fill; sensitive ones don't
+                    if (!sensitiveKeys.has(k)) merged[k] = v;
+                }
+                Object.assign(merged, agentCfg);
+                setConfigData(merged);
             }
         } catch (e) { console.error(e); }
         setConfigSaving(false);
@@ -129,16 +173,34 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         setConfigSaving(true);
         try {
             const token = localStorage.getItem('token');
+
             if (configCategory) {
+                const raw = configData;
+                // Strip empty sensitive fields so untouched password inputs
+                // don't send empty values that would clear an inherited company key
+                const catSchema = CATEGORY_CONFIG_SCHEMAS[configCategory!];
+                const sensitiveKeys = getSensitiveKeys(catSchema);
+                const payload: Record<string, any> = {};
+                for (const [k, v] of Object.entries(raw)) {
+                    if (sensitiveKeys.has(k) && (v === '' || v === undefined || v === null)) continue;
+                    payload[k] = v;
+                }
                 await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                    body: JSON.stringify({ config: configData }),
+                    body: JSON.stringify({ config: payload }),
                 });
                 setConfigCategory(null);
             } else {
                 const hasSchema = configTool.config_schema?.fields?.length > 0;
-                const payload = hasSchema ? configData : JSON.parse(configJson || '{}');
+                const raw = hasSchema ? configData : JSON.parse(configJson || '{}');
+                // Strip empty sensitive fields only — agent CAN override company values
+                const sensitiveKeys = getSensitiveKeys(configTool.config_schema);
+                const payload: Record<string, any> = {};
+                for (const [k, v] of Object.entries(raw)) {
+                    if (sensitiveKeys.has(k) && (v === '' || v === undefined || v === null)) continue;
+                    payload[k] = v;
+                }
                 await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -153,8 +215,8 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
 
     if (loading) return <div style={{ color: 'var(--text-tertiary)', padding: '20px' }}>{t('common.loading')}</div>;
 
-    const systemTools = tools.filter(t => t.source === 'builtin');
-    const companyTools = tools.filter(t => t.source === 'admin');
+    // Company tools = platform presets (builtin) + company admin-added tools (admin)
+    const companyTools = tools.filter(t => t.source === 'builtin' || t.source === 'admin');
     const agentInstalledTools = tools.filter(t => t.source === 'agent');
 
     const groupByCategory = (toolList: any[]) =>
@@ -299,25 +361,12 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
             </div>
         ));
 
-    const activeTools = toolTab === 'platform' ? systemTools : (toolTab === 'company' ? companyTools : agentInstalledTools);
+    const activeTools = toolTab === 'company' ? companyTools : agentInstalledTools;
 
     return (
         <>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {/* Tab Bar */}
-                <div style={{ display: 'flex', gap: '2px', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '3px' }}>
-                    <button
-                        onClick={() => setToolTab('platform')}
-                        style={{
-                            flex: 1, padding: '7px 12px', border: 'none', borderRadius: '6px', cursor: 'pointer',
-                            fontSize: '12px', fontWeight: 600, transition: 'all 0.2s',
-                            background: toolTab === 'platform' ? 'var(--bg-primary)' : 'transparent',
-                            color: toolTab === 'platform' ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                            boxShadow: toolTab === 'platform' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                        }}
-                    >
-                        🔧 {t('agent.tools.platformTools', 'Platform Tools')} ({systemTools.length})
-                    </button>
+                <div style={{ display: 'flex', gap: '4px', padding: '4px', background: 'var(--bg-secondary)', borderRadius: '8px', marginBottom: '12px' }}>
                     <button
                         onClick={() => setToolTab('company')}
                         style={{
@@ -328,7 +377,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                             boxShadow: toolTab === 'company' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
                         }}
                     >
-                        🏢 {t('agent.tools.companyTools', 'Company Tools')} ({companyTools.length})
+                        {t('agent.tools.companyTools', 'Company Tools')} ({companyTools.length})
                     </button>
                     <button
                         onClick={() => setToolTab('installed')}
@@ -340,7 +389,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                             boxShadow: toolTab === 'installed' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
                         }}
                     >
-                        🤖 {t('agent.tools.agentInstalled', 'Agent-Installed Tools')} ({agentInstalledTools.length})
+                        {t('agent.tools.agentInstalled', 'Agent Self-Installed Tools')} ({agentInstalledTools.length})
                     </button>
                 </div>
 
@@ -349,7 +398,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                     renderToolGroup(groupByCategory(activeTools))
                 ) : (
                     <div className="card" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-tertiary)' }}>
-                        {toolTab === 'installed' ? t('agent.tools.noInstalled', 'No agent-installed tools yet') : (toolTab === 'company' ? t('agent.tools.noCompany', 'No company-configured tools') : t('common.noData'))}
+                        {toolTab === 'installed' ? t('agent.tools.noInstalled', 'No agent-installed tools yet') : t('agent.tools.noCompany', 'No company-configured tools')}
                     </div>
                 )}
             </div>
@@ -397,11 +446,16 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                     <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>
                                                         {field.label}
                                                         {isReadOnly && <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '4px' }}>(Admin only)</span>}
-                                                        {configTool?.global_config?.[field.key] && (
-                                                            <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '4px' }}>
-                                                                (global: {String(configTool.global_config[field.key]).slice(0, 20)}{String(configTool.global_config[field.key]).length > 20 ? '…' : ''})
-                                                            </span>
-                                                        )}
+                                                        {/* Show company-configured value as a hint in the label */}
+                                                        {(() => {
+                                                            const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
+                                                            if (!globalVal) return null;
+                                                            return (
+                                                                <span style={{ fontWeight: 400, color: 'var(--accent-primary)', marginLeft: '4px', fontSize: '11px' }}>
+                                                                    (company: {String(globalVal).slice(0, 20)}{String(globalVal).length > 20 ? '\u2026' : ''})
+                                                                </span>
+                                                            );
+                                                        })()}
                                                     </label>
                                                     {field.type === 'checkbox' ? (
                                                         <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: isReadOnly ? 'not-allowed' : 'pointer' }}>
@@ -426,7 +480,14 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         </label>
                                                     ) : field.type === 'password' ? (
                                                         <>
-                                                        <input type="password" autoComplete="new-password" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default')} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                        {/* Show placeholder indicating company key is in use; leave blank to use it */}
+                                                        <input type="password" autoComplete="new-password" className="form-input"
+                                                            value={configData[field.key] ?? ''}
+                                                            placeholder={(() => {
+                                                                const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
+                                                                return globalVal ? `Using company key (${globalVal})` : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'));
+                                                            })()}
+                                                            onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
                                                         {/* Per-provider help text for auth_code */}
                                                         {field.key === 'auth_code' && (() => {
                                                             const providerField = configTool?.config_schema?.fields?.find((f: any) => f.key === 'email_provider');
@@ -445,7 +506,8 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
 
                                                         </>
                                                     ) : field.type === 'select' ? (
-                                                        <select className="form-input" value={configData[field.key] ?? field.default ?? ''} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}>
+                                                        <select className="form-input" value={configData[field.key] ?? field.default ?? ''}
+                                                            onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}>
                                                             {(field.options || []).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
                                                         </select>
                                                     ) : field.type === 'number' ? (
@@ -578,10 +640,30 @@ function CopyMessageButton({ text }: { text: string }) {
     const [copied, setCopied] = React.useState(false);
     const handleCopy = (e: React.MouseEvent) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(text).then(() => {
+        const copySuccess = () => {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
-        });
+        };
+        
+        if (navigator.clipboard && window.isSecureContext) {
+            copyToClipboard(text).then(copySuccess).catch(err => console.error('Clipboard API failed', err));
+        } else {
+            // Fallback for non-HTTPS dev environments
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.position = "fixed";  // Avoid scrolling to bottom
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                if (document.execCommand('copy')) {
+                    copySuccess();
+                }
+            } catch (err) {
+                console.error('Fallback copy failed', err);
+            }
+            document.body.removeChild(textArea);
+        }
     };
     return (
         <button
@@ -1210,6 +1292,7 @@ function AgentDetailInner() {
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [livePanelVisible, setLivePanelVisible] = useState(false);
+    const [wsSessionId, setWsSessionId] = useState<string>('');
     const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
@@ -1222,7 +1305,7 @@ function AgentDetailInner() {
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
-    const chatInputRef = useRef<HTMLInputElement>(null);
+    const chatInputRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Settings form local state
@@ -1423,6 +1506,12 @@ function AgentDetailInner() {
                 setIsWaiting(false);
                 if (['thinking', 'chunk', 'tool_call'].includes(d.type)) setIsStreaming(true);
                 if (['done', 'error', 'quota_exceeded'].includes(d.type)) setIsStreaming(false);
+            }
+
+            // Capture session_id from the 'connected' message for Take Control
+            if (d.type === 'connected' && d.session_id) {
+                if (isActiveRuntime) setWsSessionId(d.session_id);
+                return;
             }
 
             if (d.type === 'thinking') {
@@ -1635,12 +1724,13 @@ function AgentDetailInner() {
         }
     }, [chatMessages]);
 
-    // Auto-focus input when switching sessions
+    // Auto-focus input when switching sessions and connection is ready
     useEffect(() => {
-        if (activeSession && activeTab === 'chat') {
-            setTimeout(() => chatInputRef.current?.focus(), 150);
+        if (activeSession && activeTab === 'chat' && wsConnected) {
+            // Tiny timeout to ensure React has enabled the textarea before focusing
+            setTimeout(() => chatInputRef.current?.focus(), 50);
         }
-    }, [activeSession?.id, activeTab]);
+    }, [activeSession?.id, activeTab, wsConnected]);
 
     const sendChatMsg = () => {
         if (!id || !activeSession?.id) return;
@@ -1698,6 +1788,12 @@ function AgentDetailInner() {
         }));
 
         setChatInput('');
+        // Reset textarea height to single line after sending
+        requestAnimationFrame(() => {
+            if (chatInputRef.current) {
+                chatInputRef.current.style.height = 'auto';
+            }
+        });
         setAttachedFiles([]);
     };
 
@@ -1907,7 +2003,7 @@ function AgentDetailInner() {
 
     const CopyBtn = ({ url }: { url: string }) => (
         <button title="Copy" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
-            onClick={() => navigator.clipboard.writeText(url).then(() => { })}>
+            onClick={() => copyToClipboard(url).then(() => { })}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="4" y="4" width="9" height="11" rx="1.5" /><path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" />
             </svg>
@@ -3687,11 +3783,45 @@ function AgentDetailInner() {
                                                     <button onClick={() => { uploadAbortRef.current?.(); }} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '0 2px', lineHeight: 1 }} title="Cancel upload">✕</button>
                                                 </div>
                                             )}
-                                            <input ref={chatInputRef} className="chat-input" value={chatInput} onChange={e => setChatInput(e.target.value)}
-                                                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) { e.preventDefault(); sendChatMsg(); } }}
+                                            <textarea
+                                                ref={chatInputRef}
+                                                className="chat-input"
+                                                value={chatInput}
+                                                onChange={e => {
+                                                    setChatInput(e.target.value);
+                                                    // Auto-resize: reset then expand up to ~5 lines (130px);
+                                                    // enable scrolling when content exceeds that cap.
+                                                    const MAX_H = 130;
+                                                    requestAnimationFrame(() => {
+                                                        const el = chatInputRef.current;
+                                                        if (!el) return;
+                                                        el.style.height = 'auto';
+                                                        const natural = el.scrollHeight;
+                                                        el.style.height = Math.min(natural, MAX_H) + 'px';
+                                                        el.style.overflowY = natural > MAX_H ? 'auto' : 'hidden';
+                                                    });
+                                                }}
+                                                onKeyDown={e => {
+                                                    // Ctrl+Enter (or Cmd+Enter on Mac) sends; plain Enter inserts newline
+                                                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                                                        e.preventDefault();
+                                                        sendChatMsg();
+                                                    }
+                                                }}
                                                 onPaste={handlePaste}
                                                 placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : attachedFiles.length > 0 ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` }) : t('chat.placeholder')}
-                                                disabled={!wsConnected} style={{ flex: 1 }} autoFocus />
+                                                disabled={!wsConnected}
+                                                rows={1}
+                                                style={{
+                                                    flex: 1,
+                                                    resize: 'none',
+                                                    overflowY: 'hidden',
+                                                    lineHeight: '22px',
+                                                    paddingTop: '7px',
+                                                    paddingBottom: '7px',
+                                                }}
+                                                autoFocus
+                                            />
                                             {(isStreaming || isWaiting) ? (
                                                 <button className="btn btn-stop-generation" onClick={() => {
                                                     if (!id || !activeSession?.id) return;
@@ -3719,6 +3849,8 @@ function AgentDetailInner() {
                                         liveState={liveState}
                                         visible={livePanelVisible}
                                         onToggle={() => setLivePanelVisible(v => !v)}
+                                        agentId={id}
+                                        sessionId={wsSessionId}
                                     />
                                 )}
                             </div>
@@ -4028,8 +4160,7 @@ function AgentDetailInner() {
 
                         return (
                             <div>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)', paddingTop: '4px', paddingBottom: '12px', borderBottom: '1px solid var(--border-subtle)' }}>
-                                    <h3 style={{ margin: 0 }}>{t('agent.settings.title')}</h3>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: '8px', position: 'sticky', top: '41px', zIndex: 6, background: 'var(--bg-primary)', paddingTop: '4px', paddingBottom: '8px' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                         {settingsSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>{t('agent.settings.saved', 'Saved')}</span>}
                                         {settingsError && <span style={{ fontSize: '12px', color: settingsError.includes('adjusted') ? 'var(--warning)' : 'var(--error)', whiteSpace: 'pre-line' }}>{settingsError}</span>}
@@ -4240,6 +4371,11 @@ function AgentDetailInner() {
                                         </div>
                                     );
                                 })()}
+
+                                {/* Credentials Management — for AgentBay cookie injection */}
+                                <div style={{ marginBottom: '12px' }}>
+                                    <AgentCredentials agentId={id!} />
+                                </div>
 
                                 {/* Welcome Message */}
                                 {(() => {

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { agentApi } from '../services/api';
+import { copyToClipboard } from '../utils/clipboard';
 
 function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -55,7 +56,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
 
     const handleCopy = async (text: string) => {
         try {
-            await navigator.clipboard.writeText(text);
+            await copyToClipboard(text);
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch { }

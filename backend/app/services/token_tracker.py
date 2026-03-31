@@ -24,12 +24,20 @@ def extract_usage_tokens(usage: dict | None) -> int | None:
     if not usage:
         return None
 
-    # OpenAI: {"prompt_tokens": N, "completion_tokens": N, "total_tokens": N}
+    # OpenAI: {"prompt_tokens": N, "completion_tokens": N, "total_tokens": N, "prompt_tokens_details": {"cached_tokens": N}}
     if "total_tokens" in usage:
+        # Check for OpenAI format prompt caching
+        details = usage.get("prompt_tokens_details", {})
+        if details and details.get("cached_tokens"):
+            logger.info(f"[Token Cache] API Provider Hit -> Cached: {details.get('cached_tokens')} tokens")
         return usage["total_tokens"]
 
     # Anthropic: {"input_tokens": N, "output_tokens": N}
     if "input_tokens" in usage or "output_tokens" in usage:
+        cache_creation = usage.get("cache_creation_input_tokens", 0)
+        cache_read = usage.get("cache_read_input_tokens", 0)
+        if cache_creation or cache_read:
+            logger.info(f"[Token Cache] Anthropic Native Hit -> Created: {cache_creation}, Read: {cache_read} tokens")
         return (usage.get("input_tokens", 0) or 0) + (usage.get("output_tokens", 0) or 0)
 
     return None

@@ -75,9 +75,12 @@ export default function Chat() {
     const [attachedFile, setAttachedFile] = useState<{ name: string; text: string; path?: string; imageUrl?: string } | null>(null);
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [livePanelVisible, setLivePanelVisible] = useState(false);
+    const [wsSessionId, setWsSessionId] = useState<string>('');
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    // Ref to the chat textarea for direct DOM height manipulation
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
@@ -171,6 +174,12 @@ export default function Chat() {
                 }
                 if (['error', 'quota_exceeded'].includes(data.type)) {
                     setStreaming(false);
+                }
+
+                // Capture session_id from the 'connected' message for Take Control
+                if (data.type === 'connected' && data.session_id) {
+                    setWsSessionId(data.session_id);
+                    return;
                 }
 
                 // ── AgentBay live preview events ──
@@ -281,6 +290,13 @@ export default function Chat() {
         };
     }, [id, token]);
 
+    // Auto-focus input when connection is established
+    useEffect(() => {
+        if (connected) {
+            setTimeout(() => textareaRef.current?.focus(), 50);
+        }
+    }, [connected]);
+
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
@@ -368,13 +384,44 @@ export default function Chat() {
         wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '' }));
         setInput('');
         setAttachedFile(null);
+        // Reset textarea height back to single-line after sending
+        requestAnimationFrame(() => {
+            if (textareaRef.current) {
+                textareaRef.current.style.height = 'auto';
+            }
+        });
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !streaming) {
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        // Ctrl+Enter (or Cmd+Enter on Mac) triggers send; plain Enter inserts a newline
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing && !isWaiting && !streaming) {
             e.preventDefault();
             sendMessage();
         }
+    };
+
+    /**
+     * Resize the textarea to fit its content, capping at ~5 lines (130 px).
+     * Must be called AFTER React has committed the new value to the DOM,
+     * so we use the ref rather than the event target for reliability.
+     */
+    const MAX_TEXTAREA_HEIGHT = 130;
+    const resizeTextarea = () => {
+        const el = textareaRef.current;
+        if (!el) return;
+        // Reset to 'auto' so the element can shrink when text is deleted
+        el.style.height = 'auto';
+        const natural = el.scrollHeight;
+        el.style.height = Math.min(natural, MAX_TEXTAREA_HEIGHT) + 'px';
+        // When content exceeds the cap, enable scrolling; otherwise hide scrollbar
+        el.style.overflowY = natural > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
+    };
+
+    const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        setInput(e.target.value);
+        // Resize after state update; requestAnimationFrame ensures the DOM reflects
+        // the new value before we measure scrollHeight.
+        requestAnimationFrame(resizeTextarea);
     };
 
     const hasLiveData = !!(liveState.desktop || liveState.browser || liveState.code);
@@ -570,13 +617,24 @@ export default function Chat() {
                     >
                         {uploading ? Icons.loader : Icons.clip}
                     </button>
-                    <input
+                    <textarea
+                        ref={textareaRef}
                         className="chat-input"
                         value={input}
-                        onChange={(e) => setInput(e.target.value)}
+                        onChange={handleInputChange}
                         onKeyDown={handleKeyDown}
                         placeholder={attachedFile ? t('agent.chat.askAboutFile', { name: attachedFile.name }) : t('chat.placeholder')}
                         disabled={!connected}
+                        rows={1}
+                        style={{
+                            // Disable manual resize handle; height is controlled by JS
+                            resize: 'none',
+                            // overflow-y is dynamically toggled by resizeTextarea()
+                            overflowY: 'hidden',
+                            lineHeight: '22px',
+                            paddingTop: '8px',
+                            paddingBottom: '8px',
+                        }}
                     />
                     {(streaming || isWaiting) ? (
                         <button className="btn btn-stop-generation" onClick={() => { if (wsRef.current?.readyState === WebSocket.OPEN) { wsRef.current.send(JSON.stringify({ type: 'abort' })); setStreaming(false); setIsWaiting(false); } }} title={t('chat.stop', 'Stop')}>
@@ -596,6 +654,8 @@ export default function Chat() {
                         liveState={liveState}
                         visible={livePanelVisible}
                         onToggle={() => setLivePanelVisible(v => !v)}
+                        agentId={id}
+                        sessionId={wsSessionId}
                     />
                 )}
             </div>
