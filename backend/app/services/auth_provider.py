@@ -622,6 +622,25 @@ class OAuth2AuthProvider(BaseAuthProvider):
                 mobile=mobile,
                 raw_data=info,
             )
+    async def get_user_info_from_token_data(self, token_data: dict) -> ExternalUserInfo:
+        """Extract user info from token exchange response (fallback when userinfo endpoint fails)."""
+        info = token_data.copy()
+        if "userInfo" in info and isinstance(info["userInfo"], dict):
+            info = {**info, **info["userInfo"]}
+        logger.info(f"OAuth2 user info from token_data: {info}")
+        user_id = self._get_field(info, "user_id")
+        name = self._get_field(info, "name")
+        email = self._get_field(info, "email")
+        mobile = self._get_field(info, "mobile")
+        return ExternalUserInfo(
+            provider_type=self.provider_type,
+            provider_user_id=str(user_id),
+            name=name,
+            email=email,
+            mobile=mobile,
+            raw_data=info,
+        )
+
 
     async def _create_new_user(
         self, db, user_info, tenant_id

@@ -184,7 +184,16 @@ async def oauth2_callback(
             logger.error(f"OAuth2 token exchange failed: {token_data}")
             return HTMLResponse("Auth failed: Token exchange error")
 
-        user_info = await auth_provider.get_user_info(access_token)
+        # Try userinfo endpoint first; fallback to token_data if it fails (爷爷茶 returns 401 for new users)
+        try:
+            user_info = await auth_provider.get_user_info(access_token)
+        except Exception as e:
+            logger.warning(f"OAuth2 userinfo failed, trying token_data fallback: {e}")
+            if any(k in token_data for k in ["userId", "userName", "userCode", "mobile", "userInfo"]):
+                user_info = await auth_provider.get_user_info_from_token_data(token_data)
+            else:
+                raise
+
         if not user_info.provider_user_id:
             logger.error(f"OAuth2 user info missing userId: {user_info.raw_data}")
             return HTMLResponse("Auth failed: No user ID returned")
