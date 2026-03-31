@@ -160,14 +160,20 @@ class BaseAuthProvider(ABC):
                     tenant_id=tenant_id,
                 )
 
-        # 5. 通过 provider_user_id 匹配现有用户 username（跨系统关联，优先级最低）
+        # 5. 通过 provider_user_id 匹配现有用户 username（同租户下唯一登录凭证）
         if not user and user_info.provider_user_id:
-            result = await db.execute(
-                select(User).where(
+            from sqlalchemy import and_
+
+            # 构建查询条件：tenant_id 有值时精确匹配，为 None 时不限制租户
+            if tenant_id:
+                where_clause = and_(
                     User.username == user_info.provider_user_id,
                     User.tenant_id == tenant_id,
                 )
-            )
+            else:
+                where_clause = User.username == user_info.provider_user_id
+
+            result = await db.execute(select(User).where(where_clause))
             candidate = result.scalar_one_or_none()
             if candidate:
                 user = candidate
@@ -179,7 +185,12 @@ class BaseAuthProvider(ABC):
                     user_info.raw_data,
                     tenant_id=tenant_id,
                 )
-                logger.info(f"[SSO] Matched user by username/provider_user_id: {user.username}")
+                logger.info(f"[SSO] Matched existing user by username: {user.username} (tenant_id={tenant_id})")
+
+        # 匹配到用户后，检查是否需要自动绑定租户
+        if user and tenant_id and not user.tenant_id:
+            user.tenant_id = tenant_id
+            logger.info(f"[SSO] Auto-bound user {user.username} to tenant {tenant_id}")
 
         if user:
             # Update user info
@@ -648,12 +659,18 @@ class OAuth2AuthProvider(BaseAuthProvider):
             or f"oauth2_user"
         )
 
-        # Ensure unique username
+        # Ensure unique username -- if conflict exists, it means the match chain above failed unexpectedly
         from sqlalchemy.ext.asyncio import AsyncSession
         existing = await db.execute(select(User).where(User.username == username))
         if existing.scalar_one_or_none():
-            suffix = user_info.provider_user_id[:6] if user_info.provider_user_id else "x"
-            username = f"{username}_{suffix}"
+            logger.error(
+                f"[OAuth2] Username conflict detected: {username} already exists in tenant {tenant_id}. "
+                f"This should not happen if find_or_create_user match chain is working correctly."
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Username '{username}' already exists. Please contact administrator."
+            )
 
         email = user_info.email or f"{username}@oauth2.local"
 
