@@ -591,7 +591,19 @@ You have internet access through these tools — **use them proactively when you
             _ag = _ar.scalar_one_or_none()
             _tid = str(_ag.tenant_id) if _ag and _ag.tenant_id else None
             _platform_url = (await resolve_base_url(_db, request=None, tenant_id=_tid)).rstrip("/")
-        dynamic_parts.append("\n## Platform\nYou are running on Clawith platform at: " + _platform_url + "\nWebhook URL format: " + _platform_url + "/api/webhooks/t/<token>\nAlways use this base URL for platform URLs. Never guess or invent domain names.")
+        platform_lines = [
+            "\n## Platform Base URLs",
+            "You are running on the Clawith platform. Always use these URLs exactly -- never guess or invent domain names.",
+            "",
+            "- **Platform base**: " + _platform_url,
+            "- **Webhook**: " + _platform_url + "/api/webhooks/t/<token>  (replace <token> with actual trigger token)",
+            "- **Public page**: " + _platform_url + "/p/<short_id>  (replace <short_id> with actual page id returned by publish_page)",
+            "- **File download**: " + _platform_url + "/api/agents/<agent_id>/files/download?path=<rel_path>",
+            "- **Gateway poll**: " + _platform_url + "/api/gateway/poll  (used by external agents to check inbox)",
+            "",
+            "Never use placeholder domains (clawith.com, try.clawith.ai, webhook.clawith.com, api.clawith.ai, etc.).",
+        ]
+        dynamic_parts.append("\n".join(platform_lines))
     except Exception:
         pass
 
