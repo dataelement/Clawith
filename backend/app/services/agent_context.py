@@ -579,4 +579,20 @@ You have internet access through these tools — **use them proactively when you
     if current_user_name:
         dynamic_parts.append(f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate.")
 
+
+    # Inject platform base URL so agent knows where it is deployed
+    try:
+        from app.core.domain import resolve_base_url
+        from app.models.agent import Agent as AgentModel
+        from sqlalchemy import select as _sel
+        from app.database import async_session
+        async with async_session() as _db:
+            _ar = await _db.execute(_sel(AgentModel).where(AgentModel.id == agent_id))
+            _ag = _ar.scalar_one_or_none()
+            _tid = str(_ag.tenant_id) if _ag and _ag.tenant_id else None
+            _platform_url = (await resolve_base_url(_db, request=None, tenant_id=_tid)).rstrip("/")
+        dynamic_parts.append("\n## Platform\nYou are running on Clawith platform at: " + _platform_url + "\nWebhook URL format: " + _platform_url + "/api/webhooks/t/<token>\nAlways use this base URL for platform URLs. Never guess or invent domain names.")
+    except Exception:
+        pass
+
     return "\n".join(static_parts), "\n".join(dynamic_parts)
