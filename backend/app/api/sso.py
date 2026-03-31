@@ -190,7 +190,8 @@ async def oauth2_callback(
         except Exception as e:
             logger.warning(f"OAuth2 userinfo failed, trying token_data fallback: {e}")
             logger.info(f"token_data keys: {list(token_data.keys()) if token_data else 'empty'}")
-            if any(k in str(token_data) for k in ["userId", "userName", "userCode", "mobile", "userInfo"]):
+            # 爷爷茶 token response 包含 openid，可以用 openid 作为 provider_user_id 创建用户
+            if any(k in str(token_data) for k in ["userId", "userName", "userCode", "mobile", "userInfo", "openid"]):
                 try:
                     user_info = await auth_provider.get_user_info_from_token_data(token_data)
                     logger.info(f"token_data fallback succeeded: user_id={user_info.provider_user_id}")

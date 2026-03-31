@@ -628,7 +628,7 @@ class OAuth2AuthProvider(BaseAuthProvider):
         if "userInfo" in info and isinstance(info["userInfo"], dict):
             info = {**info, **info["userInfo"]}
         logger.info(f"OAuth2 user info from token_data: {info}")
-        user_id = self._get_field(info, "user_id")
+        user_id = self._get_field(info, "user_id") or info.get("openid", "")
         name = self._get_field(info, "name")
         email = self._get_field(info, "email")
         mobile = self._get_field(info, "mobile")
