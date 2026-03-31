@@ -159,6 +159,27 @@ class BaseAuthProvider(ABC):
                     tenant_id=tenant_id,
                 )
 
+        # 5. 通过 provider_user_id 匹配现有用户 username（跨系统关联，优先级最低）
+        if not user and user_info.provider_user_id:
+            result = await db.execute(
+                select(User).where(
+                    User.username == user_info.provider_user_id,
+                    User.tenant_id == tenant_id,
+                )
+            )
+            candidate = result.scalar_one_or_none()
+            if candidate:
+                user = candidate
+                await sso_service.link_identity(
+                    db,
+                    str(user.id),
+                    self.provider_type,
+                    user_info.provider_user_id,
+                    user_info.raw_data,
+                    tenant_id=tenant_id,
+                )
+                logger.info(f"[SSO] Matched user by username/provider_user_id: {user.username}")
+
         if user:
             # Update user info
             await self._update_existing_user(db, user, user_info)
@@ -288,8 +309,19 @@ class FeishuAuthProvider(BaseAuthProvider):
         return f"{base_url}?{params}"
 
     async def get_app_access_token(self) -> str:
-        if self._app_access_token:
-            return self._app_access_token
+        """Get or refresh the Feishu app access token.
+
+        Cached in Redis (preferred) with in-memory fallback.
+        Key: clawith:token:feishu_tenant:{app_id}
+        TTL: 6900s (7200s validity - 5 min early refresh)
+        """
+        from app.core.token_cache import get_cached_token, set_cached_token
+
+        cache_key = f"clawith:token:feishu_tenant:{self.app_id}"
+        cached = await get_cached_token(cache_key)
+        if cached:
+            self._app_access_token = cached
+            return cached
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -297,8 +329,13 @@ class FeishuAuthProvider(BaseAuthProvider):
                 json={"app_id": self.app_id, "app_secret": self.app_secret},
             )
             data = resp.json()
-            self._app_access_token = data.get("app_access_token", "")
-            return self._app_access_token
+            token = data.get("app_access_token", "") or data.get("tenant_access_token", "")
+            expire = data.get("expire", 7200)
+            if token:
+                ttl = max(expire - 300, 60)
+                await set_cached_token(cache_key, token, ttl)
+            self._app_access_token = token
+            return token
 
     async def exchange_code_for_token(self, code: str) -> dict:
         app_token = await self.get_app_access_token()
@@ -489,6 +526,18 @@ class OAuth2AuthProvider(BaseAuthProvider):
         self.token_url = self.config.get("token_url") or f"{base}/token"
         self.user_info_url = self.config.get("user_info_url") or f"{base}/userinfo"
 
+        # 字段映射配置（用户自定义）
+        self.field_mapping = self.config.get("field_mapping", {})
+
+        # 标准 OIDC 字段 fallback 顺序
+        self.FIELD_DEFAULTS = {
+            "user_id": ["sub", "userId", "id"],
+            "name": ["name", "userName", "preferred_username", "nickname"],
+            "email": ["email"],
+            "mobile": ["phone_number", "mobile", "phone"],
+            "avatar": ["picture", "avatar_url", "avatar"],
+        }
+
     async def get_authorization_url(self, redirect_uri: str, state: str) -> str:
         from urllib.parse import quote
         params = (
@@ -520,6 +569,18 @@ class OAuth2AuthProvider(BaseAuthProvider):
                 return {}
             return resp.json()
 
+    def _get_field(self, data: dict, field_key: str) -> str:
+        """Get a field value using user-defined mapping first, then standard OIDC fallbacks."""
+        # 1. 优先用用户配置的映射字段
+        custom_key = self.field_mapping.get(field_key)
+        if custom_key and data.get(custom_key):
+            return str(data[custom_key])
+        # 2. 依次尝试标准 fallback 字段
+        for std_key in self.FIELD_DEFAULTS.get(field_key, []):
+            if data.get(std_key):
+                return str(data[std_key])
+        return ""
+
     async def get_user_info(self, access_token: str) -> ExternalUserInfo:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
@@ -537,11 +598,11 @@ class OAuth2AuthProvider(BaseAuthProvider):
             
             logger.info(f"OAuth2 user info: {info}")
             
-            # 映射字段（兼容标准 OIDC 和爷爷茶格式）
-            user_id = info.get("userId") or info.get("sub") or info.get("id") or ""
-            name = info.get("userName") or info.get("name") or info.get("preferred_username") or ""
-            email = info.get("email") or ""
-            mobile = info.get("mobile") or info.get("phone_number") or ""
+            # 通用字段解析（优先用户自定义映射，再 fallback 到标准字段）
+            user_id = self._get_field(info, "user_id")
+            name = self._get_field(info, "name")
+            email = self._get_field(info, "email")
+            mobile = self._get_field(info, "mobile")
             
             return ExternalUserInfo(
                 provider_type=self.provider_type,
@@ -551,6 +612,46 @@ class OAuth2AuthProvider(BaseAuthProvider):
                 mobile=mobile,
                 raw_data=info,
             )
+
+    async def _create_new_user(
+        self, db, user_info, tenant_id
+    ):
+        """Override to use provider_user_id as username for OAuth2 (it is a readable user ID like 'liuxi')."""
+        from sqlalchemy import select
+        from app.models.user import User
+        from app.core.security import hash_password
+
+        # 优先用 provider_user_id（如 userId="liuxi"），再用 email 前缀，最后 fallback
+        username = (
+            user_info.provider_user_id
+            or (user_info.email.split("@")[0] if user_info.email else None)
+            or f"oauth2_user"
+        )
+
+        # Ensure unique username
+        from sqlalchemy.ext.asyncio import AsyncSession
+        existing = await db.execute(select(User).where(User.username == username))
+        if existing.scalar_one_or_none():
+            suffix = user_info.provider_user_id[:6] if user_info.provider_user_id else "x"
+            username = f"{username}_{suffix}"
+
+        email = user_info.email or f"{username}@oauth2.local"
+
+        user = User(
+            username=username,
+            email=email,
+            password_hash=hash_password(user_info.provider_user_id or username),
+            display_name=user_info.name or username,
+            avatar_url=user_info.avatar_url,
+            primary_mobile=user_info.mobile,
+            registration_source=self.provider_type,
+            tenant_id=tenant_id,
+        )
+
+        db.add(user)
+        await db.flush()
+
+        return user
 
 class MicrosoftTeamsAuthProvider(BaseAuthProvider):
     """Microsoft Teams OAuth provider implementation."""

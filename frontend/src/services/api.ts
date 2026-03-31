@@ -176,6 +176,9 @@ export const adminApi = {
     updateCompany: (id: string, data: any) =>
         request<any>(`/tenants/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 
+    deleteCompany: (id: string) =>
+        request<void>(`/admin/companies/${id}`, { method: 'DELETE' }),
+
     toggleCompany: (id: string) =>
         request<any>(`/admin/companies/${id}/toggle`, { method: 'PUT' }),
 
@@ -184,6 +187,12 @@ export const adminApi = {
 
     updatePlatformSettings: (data: any) =>
         request<any>('/admin/platform-settings', { method: 'PUT', body: JSON.stringify(data) }),
+
+    listCompanyCodes: (companyId: string) =>
+        request<any>(`/admin/companies/${companyId}/invitation-codes`),
+
+    createCompanyCode: (companyId: string) =>
+        request<any>(`/admin/companies/${companyId}/invitation-codes`, { method: 'POST' }),
 };
 
 // ─── Agents ───────────────────────────────────────────

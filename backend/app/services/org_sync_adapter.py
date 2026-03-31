@@ -753,11 +753,22 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
         return self.DINGTALK_API_URL
 
     async def get_access_token(self) -> str:
-        if self._access_token and self._token_expires_at and datetime.now() < self._token_expires_at:
-            return self._access_token
+        """Get or refresh the DingTalk access token.
+
+        Cached in Redis (preferred) with in-memory fallback.
+        Key: clawith:token:dingtalk_corp:{app_key}
+        TTL: expires_in - 300s (5 min early refresh)
+        """
+        from app.core.token_cache import get_cached_token, set_cached_token
 
         if not self.app_key or not self.app_secret:
             raise ValueError("DingTalk app_key/app_secret missing in provider config")
+
+        cache_key = f"clawith:token:dingtalk_corp:{self.app_key}"
+        cached = await get_cached_token(cache_key)
+        if cached:
+            self._access_token = cached
+            return cached
 
         async with httpx.AsyncClient() as client:
             resp = await client.get(
@@ -769,9 +780,11 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
                 raise RuntimeError(f"DingTalk token error: {data.get('errmsg') or data}")
             token = data.get("access_token") or ""
             expires_in = int(data.get("expires_in") or 7200)
-            self._access_token = token
-            # refresh a bit earlier
-            self._token_expires_at = datetime.now() + timedelta(seconds=max(expires_in - 60, 60))
+            if token:
+                ttl = max(expires_in - 300, 60)
+                await set_cached_token(cache_key, token, ttl)
+                self._access_token = token
+                self._token_expires_at = datetime.now() + timedelta(seconds=max(expires_in - 60, 60))
             return token
 
     async def fetch_departments(self) -> list[ExternalDepartment]:
@@ -941,9 +954,23 @@ class WeComOrgSyncAdapter(BaseOrgSyncAdapter):
         return self.WECOM_API_URL
 
     async def get_access_token(self) -> str:
-        """Get valid access token for WeCom API."""
-        if self._access_token and self._token_expires_at and datetime.now() < self._token_expires_at:
-            return self._access_token
+        """Get valid access token for WeCom API.
+
+        Cached in Redis (preferred) with in-memory fallback.
+        Key: clawith:token:wecom:{corp_id}
+        TTL: expires_in - 300s (5 min early refresh)
+        """
+        from app.core.token_cache import get_cached_token, set_cached_token
+
+        # Determine identifier for cache key
+        _corp_key = self.corp_id or self.bot_id or ""
+        cache_key = f"clawith:token:wecom:{_corp_key}"
+
+        if _corp_key:
+            cached = await get_cached_token(cache_key)
+            if cached:
+                self._access_token = cached
+                return cached
 
         # Priority 1: Standard CorpID + Secret
         if self.corp_id and self.secret:
@@ -956,8 +983,11 @@ class WeComOrgSyncAdapter(BaseOrgSyncAdapter):
                 if data.get("errcode") == 0:
                     token = data.get("access_token") or ""
                     expires_in = int(data.get("expires_in") or 7200)
-                    self._access_token = token
-                    self._token_expires_at = datetime.now() + timedelta(seconds=max(expires_in - 300, 300))
+                    if token:
+                        ttl = max(expires_in - 300, 300)
+                        await set_cached_token(cache_key, token, ttl)
+                        self._access_token = token
+                        self._token_expires_at = datetime.now() + timedelta(seconds=ttl)
                     return token
                 else:
                     logger.error(f"[WeCom Sync] Token error with corp_id: {data}")
@@ -973,8 +1003,11 @@ class WeComOrgSyncAdapter(BaseOrgSyncAdapter):
                 if data.get("errcode") == 0:
                     token = data.get("access_token") or ""
                     expires_in = int(data.get("expires_in") or 7200)
-                    self._access_token = token
-                    self._token_expires_at = datetime.now() + timedelta(seconds=max(expires_in - 300, 300))
+                    if token:
+                        ttl = max(expires_in - 300, 300)
+                        await set_cached_token(cache_key, token, ttl)
+                        self._access_token = token
+                        self._token_expires_at = datetime.now() + timedelta(seconds=ttl)
                     return token
 
         raise ValueError("WeCom credentials (corp_id/secret or bot_id/secret) missing or invalid")

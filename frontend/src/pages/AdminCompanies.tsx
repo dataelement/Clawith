@@ -6,6 +6,7 @@ import { saveAccentColor, getSavedAccentColor } from '../utils/theme';
 import { IconFilter } from '@tabler/icons-react';
 import { ShieldCheck } from 'lucide-react';
 import PlatformDashboard from './PlatformDashboard';
+import { copyToClipboard } from '../utils/clipboard';
 
 // Helper for authenticated JSON fetch
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -344,7 +345,16 @@ function CompaniesTab() {
 
     // Edit company modal
     const [editingCompany, setEditingCompany] = useState<any>(null);
+    const [deletingCompanyId, setDeletingCompanyId] = useState<string | null>(null);
+    const [deleteConfirmCompany, setDeleteConfirmCompany] = useState<any>(null);
     const [publicBaseUrl, setPublicBaseUrl] = useState('');
+
+    // Invitation codes modal
+    const [codesModal, setCodesModal] = useState<{ companyId: string; companyName: string } | null>(null);
+    const [companyCodes, setCompanyCodes] = useState<any[]>([]);
+    const [loadingCodes, setLoadingCodes] = useState(false);
+    const [newlyGeneratedCode, setNewlyGeneratedCode] = useState('');
+    const [codeCopied2, setCodeCopied2] = useState(false);
 
     // Toast
     const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
@@ -425,10 +435,35 @@ function CompaniesTab() {
     };
 
     const handleCopyCode = () => {
-        navigator.clipboard.writeText(createdCode).then(() => {
+        copyToClipboard(createdCode).then(() => {
             setCodeCopied(true);
             setTimeout(() => setCodeCopied(false), 2000);
         });
+    };
+
+    const handleViewCodes = async (companyId: string, companyName: string) => {
+        setCodesModal({ companyId, companyName });
+        setNewlyGeneratedCode('');
+        setLoadingCodes(true);
+        try {
+            const res = await adminApi.listCompanyCodes(companyId);
+            setCompanyCodes(res.codes || []);
+        } catch { setCompanyCodes([]); }
+        setLoadingCodes(false);
+    };
+
+    const handleGenerateCode = async () => {
+        if (!codesModal) return;
+        try {
+            const res = await adminApi.createCompanyCode(codesModal.companyId);
+            setNewlyGeneratedCode(res.code || '');
+            setCodeCopied2(false);
+            // Refresh list
+            const listRes = await adminApi.listCompanyCodes(codesModal.companyId);
+            setCompanyCodes(listRes.codes || []);
+        } catch (e: any) {
+            showToast(e.message || 'Failed', 'error');
+        }
     };
 
     const handleToggle = async (id: string, currentlyActive: boolean) => {
@@ -441,6 +476,19 @@ function CompaniesTab() {
         } catch (e: any) {
             showToast(e.message || 'Failed', 'error');
         }
+    };
+
+    const handleDelete = async (company: any) => {
+        setDeletingCompanyId(company.id);
+        try {
+            await adminApi.deleteCompany(company.id);
+            loadCompanies();
+            showToast(`Company "${company.name}" deleted`);
+        } catch (e: any) {
+            showToast(e.message || 'Failed to delete', 'error');
+        }
+        setDeletingCompanyId(null);
+        setDeleteConfirmCompany(null);
     };
 
     // Sort indicator arrow
@@ -464,7 +512,7 @@ function CompaniesTab() {
         { key: 'created_at', label: t('admin.createdAt', 'Created'), flex: '100px' },
         { key: 'is_active', label: t('admin.status', 'Status'), flex: '100px' },
     ];
-    const actionColFlex = '120px';
+    const actionColFlex = '180px';
 
     const gridCols = columns.map(c => c.flex).join(' ') + ' ' + actionColFlex;
 
@@ -487,6 +535,63 @@ function CompaniesTab() {
                     onClose={() => setEditingCompany(null)}
                     onUpdated={() => { loadCompanies(); setEditingCompany(null); }}
                 />
+            )}
+
+            {/* Delete Confirmation Modal */}
+            {deleteConfirmCompany && (
+                <div style={{
+                    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 10001,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    backdropFilter: 'blur(4px)',
+                }} onClick={() => setDeleteConfirmCompany(null)}>
+                    <div className="card" style={{
+                        padding: '24px', maxWidth: '420px', width: '90%',
+                        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+                    }} onClick={e => e.stopPropagation()}>
+                        <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px', color: 'var(--error)' }}>
+                            {t('admin.deleteCompany', 'Delete Company')}
+                        </h2>
+                        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                            {t('admin.deleteCompanyWarning', 'This action is irreversible. The following data will be permanently deleted:')}
+                        </p>
+                        <ul style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px', paddingLeft: '16px', lineHeight: '1.8' }}>
+                            <li>{t('admin.deleteDataUsers', 'All users in this company')}</li>
+                            <li>{t('admin.deleteDataAgents', 'All agents and their conversations')}</li>
+                            <li>{t('admin.deleteDataSkills', 'All skills and LLM model configurations')}</li>
+                            <li>{t('admin.deleteDataOther', 'All invitation codes, org structure, token records')}</li>
+                        </ul>
+                        <div style={{
+                            padding: '12px', borderRadius: '8px', marginBottom: '16px',
+                            background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
+                            fontSize: '13px', fontWeight: 500,
+                        }}>
+                            {t('admin.deleteCompanyName', 'Company')}: <strong>{deleteConfirmCompany.name}</strong>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'monospace', marginTop: '2px' }}>
+                                {deleteConfirmCompany.user_count} {t('admin.users', 'users')} &middot; {deleteConfirmCompany.agent_count} {t('admin.agents', 'agents')}
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button className="btn btn-secondary" style={{ flex: 1 }}
+                                onClick={() => setDeleteConfirmCompany(null)}
+                                disabled={!!deletingCompanyId}>
+                                {t('common.cancel', 'Cancel')}
+                            </button>
+                            <button
+                                className="btn"
+                                style={{
+                                    flex: 1, background: 'var(--error)', color: '#fff',
+                                    border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer',
+                                    opacity: deletingCompanyId ? 0.6 : 1,
+                                }}
+                                onClick={() => handleDelete(deleteConfirmCompany)}
+                                disabled={!!deletingCompanyId}>
+                                {deletingCompanyId === deleteConfirmCompany.id
+                                    ? t('common.loading', 'Loading...')
+                                    : t('admin.confirmDelete', 'Yes, Delete')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* Invitation Code Modal */}
@@ -569,6 +674,99 @@ function CompaniesTab() {
                             <button className="btn btn-secondary" onClick={() => setCreatedCode('')}
                                 style={{ height: '36px', padding: '0 20px' }}>
                                 {t('common.close', 'Close')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Invitation Codes Modal */}
+            {codesModal && (
+                <div style={{
+                    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 10001,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    backdropFilter: 'blur(4px)',
+                }} onClick={() => { setCodesModal(null); setNewlyGeneratedCode(''); }}>
+                    <div className="card" style={{
+                        padding: '24px', maxWidth: '480px', width: '90%',
+                        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                            <h2 style={{ fontSize: '16px', fontWeight: 600 }}>
+                                邀请码 — {codesModal.companyName}
+                            </h2>
+                            <button onClick={() => { setCodesModal(null); setNewlyGeneratedCode(''); }}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}>
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        {newlyGeneratedCode && (
+                            <div style={{
+                                padding: '12px 16px', borderRadius: '8px',
+                                background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.2)',
+                                marginBottom: '16px',
+                            }}>
+                                <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                                    新生成的邀请码
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <span style={{
+                                        fontFamily: 'monospace', fontSize: '18px', fontWeight: 700,
+                                        letterSpacing: '2px', color: 'var(--success)', userSelect: 'all',
+                                    }}>{newlyGeneratedCode}</span>
+                                    <button
+                                        className="btn btn-secondary"
+                                        style={{ padding: '2px 8px', fontSize: '11px', height: '24px' }}
+                                        onClick={() => {
+                                            navigator.clipboard.writeText(newlyGeneratedCode).then(() => {
+                                                setCodeCopied2(true);
+                                                setTimeout(() => setCodeCopied2(false), 2000);
+                                            });
+                                        }}
+                                    >
+                                        {codeCopied2 ? '已复制' : '复制'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        <div style={{ marginBottom: '12px' }}>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                有效邀请码
+                            </div>
+                            {loadingCodes ? (
+                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '12px 0' }}>加载中...</div>
+                            ) : companyCodes.length === 0 ? (
+                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '12px 0' }}>暂无有效邀请码</div>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '200px', overflowY: 'auto' }}>
+                                    {companyCodes.map((c: any) => (
+                                        <div key={c.id} style={{
+                                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                            padding: '8px 12px', borderRadius: '6px',
+                                            background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
+                                            fontSize: '12px',
+                                        }}>
+                                            <span style={{ fontFamily: 'monospace', fontWeight: 600, letterSpacing: '1px' }}>{c.code}</span>
+                                            <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
+                                                {c.used_count}/{c.max_uses === 0 ? '∞' : c.max_uses} 次使用
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button className="btn btn-primary" onClick={handleGenerateCode} style={{ flex: 1 }}>
+                                生成新邀请码
+                            </button>
+                            <button className="btn btn-secondary" onClick={() => { setCodesModal(null); setNewlyGeneratedCode(''); }}
+                                style={{ padding: '0 20px' }}>
+                                关闭
                             </button>
                         </div>
                     </div>
@@ -684,7 +882,19 @@ function CompaniesTab() {
                         opacity: c.is_active ? 1 : 0.5,
                     }}>
                         <div>
-                            <div style={{ fontWeight: 500 }}>{c.name}</div>
+                            <div style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                {c.name}
+                                {c.is_default && (
+                                    <span style={{
+                                        fontSize: '10px', fontWeight: 600, padding: '1px 5px',
+                                        borderRadius: '4px', background: 'rgba(59,130,246,0.1)',
+                                        color: 'var(--accent-primary)', border: '1px solid rgba(59,130,246,0.2)',
+                                        lineHeight: '16px', flexShrink: 0,
+                                    }}>
+                                        {t('admin.default', 'Default')}
+                                    </span>
+                                )}
+                            </div>
                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>{c.slug}</div>
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
@@ -732,17 +942,40 @@ function CompaniesTab() {
                             </button>
                             <button
                                 className="btn btn-ghost"
+                                style={{ padding: '2px 8px', fontSize: '11px', height: '24px', color: 'var(--text-secondary)' }}
+                                onClick={() => handleViewCodes(c.id, c.name)}
+                            >
+                                邀请码
+                            </button>
+                            <button
+                                className="btn btn-ghost"
                                 style={{
                                     padding: '2px 8px', fontSize: '11px', height: '24px',
-                                    color: c.slug === 'default' ? 'var(--text-tertiary)' : c.is_active ? 'var(--error)' : 'var(--success)',
-                                    cursor: c.slug === 'default' ? 'not-allowed' : 'pointer',
-                                    opacity: c.slug === 'default' ? 0.5 : 1,
+                                    color: c.is_default ? 'var(--text-tertiary)' : c.is_active ? 'var(--error)' : 'var(--success)',
+                                    cursor: c.is_default ? 'not-allowed' : 'pointer',
+                                    opacity: c.is_default ? 0.5 : 1,
                                 }}
                                 onClick={() => handleToggle(c.id, !!c.is_active)}
-                                disabled={c.slug === 'default'}
-                                title={c.slug === 'default' ? t('admin.cannotDisableDefault', 'Cannot disable the default company — platform admin would be locked out') : undefined}
+                                disabled={c.is_default}
+                                title={c.is_default ? t('admin.cannotDisableDefault', 'Cannot disable the default company — platform admin would be locked out') : undefined}
                             >
                                 {c.is_active ? t('admin.disable', 'Disable') : t('admin.enable', 'Enable')}
+                            </button>
+                            <button
+                                className="btn btn-ghost"
+                                style={{
+                                    padding: '2px 8px', fontSize: '11px', height: '24px',
+                                    color: c.is_default ? 'var(--text-tertiary)' : 'var(--error)',
+                                    cursor: c.is_default ? 'not-allowed' : 'pointer',
+                                    opacity: c.is_default ? 0.4 : 1,
+                                }}
+                                onClick={() => !c.is_default && setDeleteConfirmCompany(c)}
+                                disabled={c.is_default}
+                                title={c.is_default
+                                    ? t('admin.cannotDeleteDefault', 'Cannot delete the default company')
+                                    : t('admin.deleteCompany', 'Delete Company')}
+                            >
+                                {t('admin.delete', 'Delete')}
                             </button>
                         </div>
                     </div>
@@ -794,30 +1027,39 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
     const { t } = useTranslation();
     const [subdomainPrefix, setSubdomainPrefix] = useState(company.subdomain_prefix || '');
     const [prefixStatus, setPrefixStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
+    const [isDefault, setIsDefault] = useState(!!company.is_default);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
 
     const globalHostname = publicBaseUrl ? (() => { try { return new URL(publicBaseUrl).hostname; } catch { return ''; } })() : '';
+    const globalProtocol = publicBaseUrl ? (() => { try { return new URL(publicBaseUrl).protocol + '//'; } catch { return 'https://'; } })() : 'https://';
 
     const checkPrefix = async (prefix: string) => {
-        if (!prefix) { setPrefixStatus('idle'); return; }
+        if (!prefix || prefix === company.subdomain_prefix) { setPrefixStatus('idle'); return; }
         setPrefixStatus('checking');
         try {
-            const encodedPrefix = encodeURIComponent(prefix);
             const res = await fetchJson<any>(
-                `/tenants/check-prefix?prefix=${encodedPrefix}&exclude_tenant_id=${company.id}`
+                `/tenants/check-prefix?prefix=${encodeURIComponent(prefix)}&exclude_tenant_id=${company.id}`
             );
             setPrefixStatus(res.available ? 'available' : 'taken');
         } catch { setPrefixStatus('idle'); }
     };
 
     const handleSave = async () => {
+        if (prefixStatus === 'taken') {
+            setError(t('admin.prefixTakenError', 'The subdomain prefix is already taken. Please choose a different one.'));
+            return;
+        }
         setSaving(true);
         setError('');
         try {
-            await adminApi.updateCompany(company.id, {
+            const updateData: any = {
                 subdomain_prefix: subdomainPrefix.trim() || null,
-            });
+            };
+            if (isDefault !== !!company.is_default) {
+                updateData.is_default = isDefault;
+            }
+            await adminApi.updateCompany(company.id, updateData);
             onUpdated();
             onClose();
         } catch (e: any) {
@@ -826,6 +1068,28 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
         setSaving(false);
     };
 
+    const StatusBadge = ({ status }: { status: 'idle' | 'checking' | 'available' | 'taken' }) => {
+        if (status === 'checking') return <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('admin.prefixChecking', 'checking...')}</span>;
+        if (status === 'available') return <span style={{ fontSize: '11px', color: 'var(--success)' }}>{t('admin.prefixAvailable', 'Available')}</span>;
+        if (status === 'taken') return <span style={{ fontSize: '11px', color: 'var(--error)' }}>{t('admin.prefixTaken', 'Already taken')}</span>;
+        return null;
+    };
+
+    const switchStyle: React.CSSProperties = {
+        position: 'relative', display: 'inline-block', width: '40px', height: '22px',
+        cursor: 'pointer', flexShrink: 0,
+    };
+    const switchTrack = (checked: boolean): React.CSSProperties => ({
+        position: 'absolute', inset: 0,
+        background: checked ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+        borderRadius: '11px', transition: 'background 0.2s',
+    });
+    const switchThumb = (checked: boolean): React.CSSProperties => ({
+        position: 'absolute', left: checked ? '20px' : '2px', top: '2px',
+        width: '18px', height: '18px', background: '#fff',
+        borderRadius: '50%', transition: 'left 0.2s',
+    });
+
     return (
         <div style={{
             position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 10001,
@@ -833,10 +1097,10 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
             backdropFilter: 'blur(4px)',
         }} onClick={onClose}>
             <div className="card" style={{
-                padding: '24px', maxWidth: '440px', width: '90%',
+                padding: '24px', maxWidth: '480px', width: '90%',
                 boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
             }} onClick={e => e.stopPropagation()}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <h2 style={{ fontSize: '16px', fontWeight: 600 }}>
                         {t('admin.editCompany', 'Edit Company')}: {company.name}
                     </h2>
@@ -847,20 +1111,53 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
                         </svg>
                     </button>
                 </div>
-                
-                <h3 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>
-                    {t('admin.ssoConfigTitle', 'SSO & Domain Configuration')}
-                </h3>
-                <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '16px', lineHeight: '1.4' }}>
-                    {t('admin.ssoConfigDesc', 'Configure company-specific access domain. SSO login options will appear automatically after configuring an identity provider in enterprise settings.')}
-                </p>
 
-                <div style={{ marginBottom: '16px', background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-                    <div style={{ marginBottom: '12px' }}>
-                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '4px' }}>
+                {/* Default company toggle */}
+                <div style={{ marginBottom: '16px', padding: '12px', borderRadius: '8px', background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div>
+                            <div style={{ fontSize: '13px', fontWeight: 500 }}>
+                                {t('admin.setAsDefault', 'Default Company')}
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                                {t('admin.setAsDefaultDesc', 'Users visiting the global domain will be associated with this company.')}
+                            </div>
+                        </div>
+                        {company.is_default ? (
+                            <span style={{
+                                fontSize: '11px', fontWeight: 600, padding: '3px 8px',
+                                borderRadius: '6px', background: 'rgba(59,130,246,0.1)',
+                                color: 'var(--accent-primary)', border: '1px solid rgba(59,130,246,0.2)',
+                                whiteSpace: 'nowrap',
+                            }}>
+                                {t('admin.currentDefault', 'Current Default')}
+                            </span>
+                        ) : (
+                            <label style={switchStyle}>
+                                <input type="checkbox" checked={isDefault} onChange={e => setIsDefault(e.target.checked)}
+                                    style={{ opacity: 0, width: 0, height: 0 }} />
+                                <span style={switchTrack(isDefault)}>
+                                    <span style={switchThumb(isDefault)} />
+                                </span>
+                            </label>
+                        )}
+                    </div>
+                </div>
+
+                {/* Domain configuration section */}
+                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '16px', marginBottom: '16px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                        {t('admin.domainConfig', 'Domain Configuration')}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px', lineHeight: '1.5' }}>
+                        {t('admin.domainConfigDesc', 'Configure a dedicated access domain for this company.')}
+                    </div>
+
+                    <div style={{ background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '4px', display: 'block' }}>
                             {t('admin.subdomainPrefix', 'Subdomain Prefix')}
                         </label>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                             <input
                                 className="form-input"
                                 value={subdomainPrefix}
@@ -870,7 +1167,7 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
                                     setPrefixStatus('idle');
                                 }}
                                 onBlur={() => checkPrefix(subdomainPrefix)}
-                                placeholder="acme"
+                                placeholder={company.slug}
                                 style={{ fontSize: '13px', maxWidth: '120px' }}
                             />
                             {globalHostname && (
@@ -878,26 +1175,23 @@ function EditCompanyModal({ company, publicBaseUrl, onClose, onUpdated }: { comp
                                     .{globalHostname}
                                 </span>
                             )}
-                            {prefixStatus === 'checking' && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>checking...</span>}
-                            {prefixStatus === 'available' && <span style={{ fontSize: '11px', color: 'var(--success)' }}>Available</span>}
-                            {prefixStatus === 'taken' && <span style={{ fontSize: '11px', color: 'var(--error)' }}>Taken</span>}
+                            <StatusBadge status={prefixStatus} />
                         </div>
-                        {subdomainPrefix && globalHostname && (
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                                {(() => { try { return new URL(publicBaseUrl).protocol + '//'; } catch { return 'https://'; } })()}{subdomainPrefix}.{globalHostname}
+                        {(subdomainPrefix || company.slug) && globalHostname && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px', fontFamily: 'var(--font-mono)' }}>
+                                {globalProtocol}{subdomainPrefix || company.slug}.{globalHostname}
                             </div>
                         )}
                     </div>
-
                 </div>
 
-                {error && <div style={{ color: 'var(--error)', fontSize: '12px', marginBottom: '16px', textAlign: 'center' }}>{error}</div>}
+                {error && <div style={{ color: 'var(--error)', fontSize: '12px', marginBottom: '12px' }}>{error}</div>}
 
                 <div style={{ display: 'flex', gap: '8px' }}>
                     <button className="btn btn-secondary" style={{ flex: 1 }} onClick={onClose} disabled={saving}>
                         {t('common.cancel', 'Cancel')}
                     </button>
-                    <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSave} disabled={saving}>
+                    <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSave} disabled={saving || prefixStatus === 'taken'}>
                         {saving ? t('common.loading') : t('common.save', 'Save')}
                     </button>
                 </div>

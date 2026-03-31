@@ -13,6 +13,7 @@ from loguru import logger
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+import sqlalchemy as sa
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +38,7 @@ class TenantOut(BaseModel):
     im_provider: str
     timezone: str = "UTC"
     is_active: bool
+    is_default: bool = False
     sso_enabled: bool = False
     sso_domain: str | None = None
     subdomain_prefix: str | None = None
@@ -51,6 +53,7 @@ class TenantUpdate(BaseModel):
     im_provider: str | None = None
     timezone: str | None = None
     is_active: bool | None = None
+    is_default: bool | None = None
     sso_enabled: bool | None = None
     sso_domain: str | None = None
     subdomain_prefix: str | None = None
@@ -69,6 +72,31 @@ def _slugify(name: str) -> str:
     # Add short random suffix for uniqueness
     slug = f"{slug}-{secrets.token_hex(3)}"
     return slug
+
+
+async def _generate_subdomain_prefix(db: AsyncSession, base: str) -> str:
+    """From a slug, generate a unique subdomain_prefix (strips random hex suffix)."""
+    # Strip trailing hex suffix added by _slugify (e.g. "-a1b2c3")
+    clean = re.sub(r"-[0-9a-f]{6}$", "", base)
+    # Keep only lowercase letters, digits, hyphens
+    prefix = re.sub(r"[^a-z0-9\-]", "", clean.lower())
+    prefix = re.sub(r"-+", "-", prefix).strip("-")
+    if len(prefix) < 2:
+        prefix = f"co-{prefix}" if prefix else "company"
+    if len(prefix) > 50:
+        prefix = prefix[:50].rstrip("-")
+
+    # Uniqueness check with counter suffix
+    candidate = prefix
+    counter = 1
+    while True:
+        result = await db.execute(
+            select(Tenant).where(Tenant.subdomain_prefix == candidate)
+        )
+        if not result.scalar_one_or_none():
+            return candidate
+        candidate = f"{prefix}-{counter}"
+        counter += 1
 
 
 # ─── Self-Service: Create Company ───────────────────────
@@ -99,6 +127,11 @@ async def self_create_company(
     db.add(tenant)
     await db.flush()
 
+    # Auto-generate subdomain_prefix from slug
+    if not tenant.subdomain_prefix:
+        tenant.subdomain_prefix = await _generate_subdomain_prefix(db, slug)
+        await db.flush()
+
     # Assign creator as org_admin
     current_user.tenant_id = tenant.id
     current_user.role = "org_admin" if current_user.role == "member" else current_user.role
@@ -112,7 +145,7 @@ async def self_create_company(
     # Seed default agents (Morty & Meeseeks) for the new company
     try:
         from app.services.agent_seeder import seed_default_agents
-        await seed_default_agents(tenant_id=tenant.id, creator_id=current_user.id)
+        await seed_default_agents(tenant_id=tenant.id, creator_id=current_user.id, db=db)
     except Exception as e:
         logger.warning(f"[self_create_company] Failed to seed default agents: {e}")
 
@@ -265,8 +298,7 @@ async def resolve_tenant_by_domain(
                 global_host = f"{global_host}:{parsed.port}"
             if domain == global_host or domain == parsed.hostname:
                 result = await db.execute(
-                    select(Tenant).where(Tenant.is_active == True)
-                    .order_by(Tenant.created_at.asc()).limit(1)
+                    select(Tenant).where(Tenant.is_active == True, Tenant.is_default == True)
                 )
                 tenant = result.scalar_one_or_none()
 
@@ -334,6 +366,7 @@ async def check_subdomain_prefix(
         return {"available": False, "reason": "This prefix is already taken."}
 
     return {"available": True}
+
 
 
 # ─── Authenticated: List / Get ──────────────────────────
@@ -416,6 +449,25 @@ async def update_tenant(
 
     # effective_base_url is computed, not stored
     update_data.pop("effective_base_url", None)
+
+    # Slug is not updatable via this API; ignore any slug field
+    update_data.pop("slug", None)
+
+    # Handle is_default: only platform_admin can set it
+    if "is_default" in update_data:
+        if current_user.role != "platform_admin":
+            update_data.pop("is_default", None)
+        elif not update_data["is_default"] and tenant.is_default:
+            # Prevent disabling the current default company directly
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot disable default company directly. Set another company as default instead."
+            )
+        elif update_data["is_default"]:
+            # Clear is_default on all other tenants first
+            await db.execute(
+                sa.update(Tenant).where(Tenant.id != tenant_id).values(is_default=False)
+            )
 
     # Validate subdomain_prefix if provided
     if "subdomain_prefix" in update_data:

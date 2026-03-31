@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { channelApi } from '../services/api';
 import { Cloud } from 'lucide-react';
+import { copyToClipboard } from '../utils/clipboard';
 
 // ─── Shared fetchAuth (same as AgentDetail) ─────────────
 function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
@@ -247,14 +248,24 @@ const FEISHU_PERM_DISPLAY = `{
   }
 }`;
 
-// ─── Copy Button helper ─────────────────────────────────
+
 function CopyBtn({ url }: { url: string }) {
+    const [copied, setCopied] = useState(false);
     return (
-        <button title="Copy" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
-            onClick={() => navigator.clipboard.writeText(url)}>
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="4" y="4" width="9" height="11" rx="1.5" /><path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" />
-            </svg>
+        <button title="Copy" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: copied ? 'rgb(16,185,129)' : 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
+            onClick={() => {
+                copyToClipboard(url).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1500);
+                });
+            }}>
+            {copied ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            ) : (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="4" y="4" width="9" height="11" rx="1.5" /><path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" />
+                </svg>
+            )}
         </button>
     );
 }
@@ -515,7 +526,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                             <button type="button" style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
                                 onClick={(e) => {
                                     const btn = e.currentTarget;
-                                    navigator.clipboard.writeText(FEISHU_PERM_JSON).then(() => {
+                                    copyToClipboard(FEISHU_PERM_JSON).then(() => {
                                         const o = btn.textContent;
                                         btn.textContent = t('channelGuide.feishuPermCopied');
                                         btn.style.color = 'rgb(16,185,129)';

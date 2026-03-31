@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
+import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException,Query, status
 from loguru import logger
@@ -242,7 +243,7 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
 
     # Tenant-scoped login: when accessing from a company-specific domain,
     # only allow users who belong to that company (platform_admin exempt)
-    if data.tenant_id and user.role != "platform_admin":
+    if data.tenant_id and user.role != "platform_admin" and user.tenant_id is not None:
         if str(user.tenant_id) != str(data.tenant_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

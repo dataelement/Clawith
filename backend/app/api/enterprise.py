@@ -622,6 +622,7 @@ class OAuth2Config(BaseModel):
     token_url: str | None = None        # OAuth2 token endpoint
     user_info_url: str | None = None    # OAuth2 user info endpoint
     scope: str | None = "openid profile email"
+    field_mapping: dict | None = None   # Custom field name mapping
 
     def to_config_dict(self) -> dict:
         """Convert to config dict with both naming conventions for compatibility."""
@@ -640,6 +641,8 @@ class OAuth2Config(BaseModel):
             config["user_info_url"] = self.user_info_url
         if self.scope:
             config["scope"] = self.scope
+        if self.field_mapping is not None:
+            config["field_mapping"] = self.field_mapping
         return config
 
     @classmethod
@@ -652,6 +655,7 @@ class OAuth2Config(BaseModel):
             token_url=config.get("token_url"),
             user_info_url=config.get("user_info_url"),
             scope=config.get("scope"),
+            field_mapping=config.get("field_mapping"),
         )
 
 
@@ -666,6 +670,7 @@ class IdentityProviderOAuth2Create(BaseModel):
     token_url: str
     user_info_url: str
     scope: str | None = "openid profile email"
+    field_mapping: dict | None = None  # Custom field name mapping
     tenant_id: uuid.UUID | None = None
 
 
@@ -758,6 +763,7 @@ async def create_oauth2_provider(
         token_url=data.token_url,
         user_info_url=data.user_info_url,
         scope=data.scope,
+        field_mapping=data.field_mapping,
     )
     config = oauth_config.to_config_dict()
 
@@ -809,6 +815,7 @@ class OAuth2ConfigUpdate(BaseModel):
     token_url: str | None = None
     user_info_url: str | None = None
     scope: str | None = None
+    field_mapping: dict | None = None  # Custom field name mapping
 
 
 @router.patch("/identity-providers/{provider_id}/oauth2", response_model=IdentityProviderOut)
@@ -837,7 +844,7 @@ async def update_oauth2_provider(
         provider.is_active = data.is_active
 
     # Update config fields
-    if any([data.app_id, data.app_secret is not None, data.authorize_url, data.token_url, data.user_info_url, data.scope]):
+    if any([data.app_id, data.app_secret is not None, data.authorize_url, data.token_url, data.user_info_url, data.scope, data.field_mapping is not None]):
         current_config = provider.config.copy()
 
         if data.app_id is not None:
@@ -859,6 +866,8 @@ async def update_oauth2_provider(
             current_config["user_info_url"] = data.user_info_url
         if data.scope is not None:
             current_config["scope"] = data.scope
+        if data.field_mapping is not None:
+            current_config["field_mapping"] = data.field_mapping
 
         # Validate the updated config
         validate_provider_config("oauth2", current_config)
@@ -1024,8 +1033,10 @@ async def list_org_members(
         if str(current_user.tenant_id) != tenant_id:
             raise HTTPException(status_code=403, detail="Cannot access other tenant's data")
 
-    query = select(OrgMember, IdentityProvider.name.label("provider_name"), IdentityProvider.provider_type).outerjoin(
+    query = select(OrgMember, IdentityProvider.name.label("provider_name"), IdentityProvider.provider_type, User.display_name.label("user_display_name")).outerjoin(
         IdentityProvider, OrgMember.provider_id == IdentityProvider.id
+    ).outerjoin(
+        User, OrgMember.user_id == User.id
     ).where(OrgMember.status == "active")
     if tenant_id:
         query = query.where(OrgMember.tenant_id == uuid.UUID(tenant_id))
@@ -1070,6 +1081,7 @@ async def list_org_members(
             "id": str(m.id),
             "name": m.name,
             "email": m.email,
+            "phone": m.phone,
             "title": m.title,
             "department_path": m.department_path,
             "avatar_url": m.avatar_url,
@@ -1077,8 +1089,9 @@ async def list_org_members(
             "provider_id": str(m.provider_id) if m.provider_id else None,
             "provider_name": provider_name if m.provider_id else None,
             "provider_type": provider_type if m.provider_id else None,
+            "user_display_name": user_display_name,
         }
-        for m, provider_name, provider_type in rows
+        for m, provider_name, provider_type, user_display_name in rows
     ]
 
 

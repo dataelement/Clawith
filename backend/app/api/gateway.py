@@ -10,7 +10,7 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Header, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, Header, HTTPException, Depends, BackgroundTasks, Request
 from loguru import logger
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -670,6 +670,7 @@ async def send_message(
 @router.get("/setup-guide/{agent_id}")
 async def get_setup_guide(
     agent_id: uuid.UUID,
+    request: Request,
     x_api_key: str = Header(..., alias="X-Api-Key"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -678,8 +679,9 @@ async def get_setup_guide(
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Key does not match this agent")
 
-    # Note: we use the raw key from the header since the agent already authenticated
-    base_url = "https://try.clawith.ai"
+    # Resolve base URL dynamically using tenant fallback chain
+    from app.core.domain import resolve_base_url
+    base_url = await resolve_base_url(db, request=request, tenant_id=str(agent.tenant_id))
 
     skill_content = f"""---
 name: clawith_sync

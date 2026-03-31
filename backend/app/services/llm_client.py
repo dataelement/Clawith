@@ -31,12 +31,18 @@ class LLMMessage:
     tool_call_id: str | None = None
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
+    dynamic_content: str | None = None
 
     def to_openai_format(self) -> dict:
         """Convert to OpenAI format."""
         msg: dict[str, Any] = {"role": self.role}
-        if self.content is not None:
-            msg["content"] = self.content
+        
+        content = self.content
+        if self.role == "system" and self.dynamic_content:
+            content = f"{content}\n\n{self.dynamic_content}"
+            
+        if content is not None:
+            msg["content"] = content
         if self.tool_calls:
             msg["tool_calls"] = self.tool_calls
         if self.tool_call_id:
@@ -1379,7 +1385,19 @@ class AnthropicClient(LLMClient):
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
             "anthropic-version": self.API_VERSION,
+            "anthropic-beta": "prompt-caching-2024-07-31",
         }
+
+    def _normalize_base_url(self) -> str:
+        """Normalize base URL by stripping trailing API paths."""
+        url = self.base_url.rstrip("/")
+        if url.endswith("/v1/messages"):
+            url = url[: -len("/v1/messages")]
+        elif url.endswith("/v1/chat/completions"):
+            url = url[: -len("/v1/chat/completions")]
+        elif url.endswith("/v1"):
+            url = url[: -len("/v1")]
+        return url
 
     def _build_payload(
         self,
@@ -1391,16 +1409,42 @@ class AnthropicClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build Anthropic request payload."""
-        system_content = None
+        system_blocks = []
         anthropic_messages = []
 
         for msg in messages:
             if msg.role == "system":
-                system_content = msg.content
+                if msg.content:
+                    system_blocks.append({
+                        "type": "text",
+                        "text": msg.content,
+                        "cache_control": {"type": "ephemeral"}
+                    })
+                if msg.dynamic_content:
+                    system_blocks.append({
+                        "type": "text",
+                        "text": f"\n{msg.dynamic_content}"
+                    })
             else:
                 formatted = msg.to_anthropic_format()
                 if formatted:
                     anthropic_messages.append(formatted)
+
+        # In Anthropic prompt caching, we also want to cache_control the last user message
+        # So we add cache_control to the very last message in the history if it's a user message
+        if anthropic_messages and anthropic_messages[-1]["role"] == "user":
+            user_msg = anthropic_messages[-1]
+            if isinstance(user_msg["content"], list) and user_msg["content"]:
+                # Ensure the last block of the user message has cache_control
+                user_msg["content"][-1]["cache_control"] = {"type": "ephemeral"}
+            elif isinstance(user_msg["content"], str):
+                user_msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": user_msg["content"],
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -1411,8 +1455,8 @@ class AnthropicClient(LLMClient):
         if temperature is not None:
             payload["temperature"] = temperature
 
-        if system_content:
-            payload["system"] = system_content
+        if system_blocks:
+            payload["system"] = system_blocks
 
         # Handle Extended Thinking
         thinking = kwargs.pop("thinking", None)
@@ -1433,6 +1477,8 @@ class AnthropicClient(LLMClient):
                         "description": func.get("description", ""),
                         "input_schema": func.get("parameters", {"type": "object"}),
                     })
+            if anthropic_tools:
+                anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
             payload["tools"] = anthropic_tools
 
         payload.update(kwargs)
@@ -1447,7 +1493,7 @@ class AnthropicClient(LLMClient):
         **kwargs: Any,
     ) -> LLMResponse:
         """Non-streaming completion."""
-        url = f"{self.base_url.rstrip('/')}/v1/messages"
+        url = f"{self._normalize_base_url()}/v1/messages"
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
@@ -1510,7 +1556,7 @@ class AnthropicClient(LLMClient):
         **kwargs: Any,
     ) -> LLMResponse:
         """Streaming completion."""
-        url = f"{self.base_url.rstrip('/')}/v1/messages"
+        url = f"{self._normalize_base_url()}/v1/messages"
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=True, **kwargs)
 
         full_content = ""

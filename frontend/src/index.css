@@ -88,8 +88,8 @@
 
   /* Notification bar */
   --notification-bar-bg: var(--accent-primary);
-  --notification-bar-text: #ffffff;
-  --notification-bar-close-hover: rgba(255, 255, 255, 0.2);
+  --notification-bar-text: var(--bg-primary);
+  --notification-bar-close-hover: rgba(0, 0, 0, 0.1);
 }
 
 /* ─── Notification Bar ──────────────────────────────── */
@@ -100,25 +100,45 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
   background: var(--notification-bar-bg);
   color: var(--notification-bar-text);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.01em;
   position: relative;
   z-index: 100;
   flex-shrink: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.notification-bar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(100% - 60px);
+  height: 100%;
+  overflow: hidden;
+  position: relative;
 }
 
 .notification-bar-text {
-  max-width: calc(100% - 60px);
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  display: inline-block;
+}
+
+.notification-bar-text.marquee {
+  position: absolute;
+  left: 0;
+  animation: marquee 20s linear infinite;
+}
+
+.notification-bar-text.marquee:hover {
+  animation-play-state: paused;
+}
+
+@keyframes marquee {
+  0% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
 }
 
 .notification-bar-close {
@@ -193,7 +213,7 @@
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
 
   /* Light mode: notification bar always white text */
-  --notification-bar-text: #ffffff;
+  --notification-bar-text: var(--bg-primary); /* For light mode, bg-primary is #fff */
   --notification-bar-close-hover: rgba(255, 255, 255, 0.2);
 }
 
@@ -1768,19 +1788,27 @@ select:focus {
   gap: var(--space-3);
   padding: var(--space-4) 0;
   border-top: 1px solid var(--border-subtle);
+  /* Anchor buttons to the bottom edge as the textarea grows taller */
+  align-items: flex-end;
 }
 
 .chat-input {
   flex: 1;
-  height: 40px;
+  /* Use min-height so textarea can grow beyond a single line */
+  min-height: 40px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-default);
   border-radius: 10px;
+  /* Horizontal padding only; vertical padding is set inline as the element is now a textarea */
   padding: 0 14px;
   font-size: 14px;
   color: var(--text-primary);
   transition: border-color 150ms ease, box-shadow 150ms ease;
   outline: none;
+  /* Align with the upload/send buttons when the textarea is a single line */
+  align-self: center;
+  /* Preserve newlines for multiline display in the textarea */
+  white-space: pre-wrap;
 }
 
 .chat-input::placeholder {

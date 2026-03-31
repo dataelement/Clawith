@@ -150,13 +150,13 @@ async def call_llm(
                     _current_user_name = _u.display_name or _u.username
         except Exception:
             pass
-    system_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
+    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
 
     # Convert messages to LLMMessage format
-    api_messages = [LLMMessage(role="system", content=system_prompt)]
+    api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
     for msg in messages:
         api_messages.append(LLMMessage(
             role=msg.get("role", "user"),
@@ -594,11 +594,16 @@ async def websocket_chat(
                 if tc_data.get("reasoning_content"):
                     asst_msg["reasoning_content"] = tc_data["reasoning_content"]
                 conversation.append(asst_msg)
-                # Tool result message
+                # Tool result message.
+                # Sanitize any stale [ImageID: ...] markers left by the ephemeral
+                # screenshot cache — those images are gone from memory and would
+                # confuse the LLM if sent as-is.
+                from app.services.vision_inject import sanitize_history_tool_result
+                sanitized_result = sanitize_history_tool_result(str(tc_result))
                 conversation.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
-                    "content": str(tc_result)[:500],
+                    "content": sanitized_result[:500],
                 })
             except Exception:
                 continue  # Skip malformed tool_call records
@@ -678,7 +683,7 @@ async def websocket_chat(
                 _sess = _sess_r.scalar_one_or_none()
                 if _sess:
                     _sess.last_message_at = _now
-                    if not history_messages and _sess.title.startswith("Session "):
+                    if not history_messages and (_sess.title.startswith("Session ") or _sess.title == "New Session"):
                         # Use display_content for title (avoids raw base64/markers)
                         title_src = display_content if display_content else content
                         # Clean up common prefixes from image/file messages

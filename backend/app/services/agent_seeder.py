@@ -91,13 +91,27 @@ MEESEEKS_SKILLS = [
 ]
 
 
-async def seed_default_agents(tenant_id=None, creator_id=None):
+async def seed_default_agents(tenant_id=None, creator_id=None, db=None):
     """Create Morty & Meeseeks for a specific tenant.
     
     Called when a new company is created. If tenant_id/creator_id are not
     provided, falls back to platform_admin lookup (legacy behavior).
+    
+    Args:
+        db: Optional external db session. If provided, uses it (no commit).
+            If not provided, creates its own session and commits.
     """
-    async with async_session() as db:
+    _owns_session = db is None
+    if _owns_session:
+        db = async_session()
+        _ctx = db
+    else:
+        from contextlib import asynccontextmanager
+        @asynccontextmanager
+        async def _noop_ctx():
+            yield db
+        _ctx = _noop_ctx()
+    async with _ctx as db:
         # Resolve creator if not provided
         if not creator_id or not tenant_id:
             admin_result = await db.execute(
@@ -254,5 +268,6 @@ async def seed_default_agents(tenant_id=None, creator_id=None):
             encoding="utf-8",
         )
 
-        await db.commit()
+        if _owns_session:
+            await db.commit()
         logger.info(f"[AgentSeeder] Created default agents: Morty ({morty.id}), Meeseeks ({meeseeks.id})")

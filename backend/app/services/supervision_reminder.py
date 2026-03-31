@@ -126,12 +126,12 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
     if not base_url:
         return None
 
-    system_prompt = await build_agent_context(
+    static_prompt, dynamic_prompt = await build_agent_context(
         target_agent.id, target_agent.name, target_agent.role_description or ""
     )
 
     messages = [
-        LLMMessage(role="system", content=system_prompt),
+        LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),
         LLMMessage(role="user", content=message),
     ]
 

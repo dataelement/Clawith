@@ -149,6 +149,7 @@ class AgentOut(BaseModel):
     tokens_used_total: int = 0
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None
+    context_window_size: int = 100
     max_tool_rounds: int = 50
     max_triggers: int = 20
     min_poll_interval_min: int = 5
@@ -181,6 +182,7 @@ class AgentUpdate(BaseModel):
     autonomy_policy: dict | None = None
     primary_model_id: uuid.UUID | None = None
     fallback_model_id: uuid.UUID | None = None
+    context_window_size: int | None = Field(default=None, ge=1, le=500)
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None
     max_tool_rounds: int | None = None

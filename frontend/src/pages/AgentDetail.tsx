@@ -15,6 +15,7 @@ import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi,
 import { useAppStore } from '../stores';
 import { Settings, X, Wrench, Bot, Zap, Check, CheckCircle, XCircle, FileText, BarChart3, PenLine, Paperclip, Brain, ClipboardList, Landmark, HeartPulse, MessageSquare, Dna, Package, Unlock, Lock, User, Building2, Download, Clock, ChevronRight, Pencil, Eye, Globe, AlertTriangle, Calendar, CalendarDays, MessageCircle, Send, Target } from 'lucide-react';
 import { useAuthStore } from '../stores';
+import { copyToClipboard } from '../utils/clipboard';
 
 const TABS = ['chat', 'status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'activityLog', 'approvals', 'settings'] as const;
 
@@ -567,10 +568,30 @@ function CopyMessageButton({ text }: { text: string }) {
     const [copied, setCopied] = React.useState(false);
     const handleCopy = (e: React.MouseEvent) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(text).then(() => {
+        const copySuccess = () => {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
-        });
+        };
+        
+        if (navigator.clipboard && window.isSecureContext) {
+            copyToClipboard(text).then(copySuccess).catch(err => console.error('Clipboard API failed', err));
+        } else {
+            // Fallback for non-HTTPS dev environments
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.position = "fixed";  // Avoid scrolling to bottom
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                if (document.execCommand('copy')) {
+                    copySuccess();
+                }
+            } catch (err) {
+                console.error('Fallback copy failed', err);
+            }
+            document.body.removeChild(textArea);
+        }
     };
     return (
         <button
@@ -1211,7 +1232,7 @@ function AgentDetailInner() {
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
-    const chatInputRef = useRef<HTMLInputElement>(null);
+    const chatInputRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Settings form local state
@@ -1624,12 +1645,13 @@ function AgentDetailInner() {
         }
     }, [chatMessages]);
 
-    // Auto-focus input when switching sessions
+    // Auto-focus input when switching sessions and connection is ready
     useEffect(() => {
-        if (activeSession && activeTab === 'chat') {
-            setTimeout(() => chatInputRef.current?.focus(), 150);
+        if (activeSession && activeTab === 'chat' && wsConnected) {
+            // Tiny timeout to ensure React has enabled the textarea before focusing
+            setTimeout(() => chatInputRef.current?.focus(), 50);
         }
-    }, [activeSession?.id, activeTab]);
+    }, [activeSession?.id, activeTab, wsConnected]);
 
     const sendChatMsg = () => {
         if (!id || !activeSession?.id) return;
@@ -1687,6 +1709,12 @@ function AgentDetailInner() {
         }));
 
         setChatInput('');
+        // Reset textarea height to single line after sending
+        requestAnimationFrame(() => {
+            if (chatInputRef.current) {
+                chatInputRef.current.style.height = 'auto';
+            }
+        });
         setAttachedFiles([]);
     };
 
@@ -1896,7 +1924,7 @@ function AgentDetailInner() {
 
     const CopyBtn = ({ url }: { url: string }) => (
         <button title="Copy" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
-            onClick={() => navigator.clipboard.writeText(url).then(() => { })}>
+            onClick={() => copyToClipboard(url).then(() => { })}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="4" y="4" width="9" height="11" rx="1.5" /><path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" />
             </svg>
@@ -3689,11 +3717,45 @@ function AgentDetailInner() {
                                                     <button onClick={() => { uploadAbortRef.current?.(); }} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '0 2px', lineHeight: 1 }} title="Cancel upload"><X size={12} /></button>
                                                 </div>
                                             )}
-                                            <input ref={chatInputRef} className="chat-input" value={chatInput} onChange={e => setChatInput(e.target.value)}
-                                                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) { e.preventDefault(); sendChatMsg(); } }}
+                                            <textarea
+                                                ref={chatInputRef}
+                                                className="chat-input"
+                                                value={chatInput}
+                                                onChange={e => {
+                                                    setChatInput(e.target.value);
+                                                    // Auto-resize: reset then expand up to ~5 lines (130px);
+                                                    // enable scrolling when content exceeds that cap.
+                                                    const MAX_H = 130;
+                                                    requestAnimationFrame(() => {
+                                                        const el = chatInputRef.current;
+                                                        if (!el) return;
+                                                        el.style.height = 'auto';
+                                                        const natural = el.scrollHeight;
+                                                        el.style.height = Math.min(natural, MAX_H) + 'px';
+                                                        el.style.overflowY = natural > MAX_H ? 'auto' : 'hidden';
+                                                    });
+                                                }}
+                                                onKeyDown={e => {
+                                                    // Ctrl+Enter (or Cmd+Enter on Mac) sends; plain Enter inserts newline
+                                                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                                                        e.preventDefault();
+                                                        sendChatMsg();
+                                                    }
+                                                }}
                                                 onPaste={handlePaste}
                                                 placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : attachedFiles.length > 0 ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` }) : t('chat.placeholder')}
-                                                disabled={!wsConnected} style={{ flex: 1 }} autoFocus />
+                                                disabled={!wsConnected}
+                                                rows={1}
+                                                style={{
+                                                    flex: 1,
+                                                    resize: 'none',
+                                                    overflowY: 'hidden',
+                                                    lineHeight: '22px',
+                                                    paddingTop: '7px',
+                                                    paddingBottom: '7px',
+                                                }}
+                                                autoFocus
+                                            />
                                             {(isStreaming || isWaiting) ? (
                                                 <button className="btn btn-stop-generation" onClick={() => {
                                                     if (!id || !activeSession?.id) return;

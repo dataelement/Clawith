@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { authApi } from './services/api';
 import { X } from 'lucide-react';
 import Login from './pages/Login';
@@ -32,6 +32,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function NotificationBar() {
     const [config, setConfig] = useState<{ enabled: boolean; text: string } | null>(null);
     const [dismissed, setDismissed] = useState(false);
+    
+    const textRef = useRef<HTMLSpanElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [isMarquee, setIsMarquee] = useState(false);
 
     useEffect(() => {
         fetch('/api/enterprise/system-settings/notification_bar/public')
@@ -59,6 +63,24 @@ function NotificationBar() {
         return () => { document.body.classList.remove('has-notification-bar'); };
     }, [isVisible]);
 
+    // Dynamic marquee if text is too wide
+    useEffect(() => {
+        if (!isVisible) return;
+        const checkWidth = () => {
+            if (textRef.current && containerRef.current) {
+                // Determine if text is wider than its container
+                setIsMarquee(textRef.current.scrollWidth > containerRef.current.clientWidth);
+            }
+        };
+        // Small delay to ensure DOM is fully rendered
+        const timer = setTimeout(checkWidth, 100);
+        window.addEventListener('resize', checkWidth);
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener('resize', checkWidth);
+        };
+    }, [isVisible, config?.text]);
+
     if (!isVisible) return null;
 
     const handleDismiss = () => {
@@ -67,10 +89,22 @@ function NotificationBar() {
         setDismissed(true);
     };
 
+    // Calculate dynamic duration: longer text = longer animation so speed is consistent
+    const duration = config ? Math.max(20, config.text.length * 0.2) + 's' : '20s';
+
     return (
         <div className="notification-bar">
-            <span className="notification-bar-text">{config!.text}</span>
-            <button className="notification-bar-close" onClick={handleDismiss} aria-label="Close"><X size={14} /></button>
+            <div className="notification-bar-inner" ref={containerRef}>
+                <span 
+                    ref={textRef} 
+                    className={`notification-bar-text ${isMarquee ? 'marquee' : ''}`}
+                    title={config!.text}
+                    style={isMarquee ? { animationDuration: duration } : {}}
+                >
+                    {config!.text}
+                </span>
+            </div>
+            <button className="notification-bar-close" onClick={handleDismiss} aria-label="Close">✕</button>
         </div>
     );
 }

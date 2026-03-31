@@ -408,6 +408,17 @@ async def _send_dingtalk_media_message(
 
 # ─── Stream Manager ─────────────────────────────────────
 
+def _fire_and_forget(loop, coro):
+    """Schedule a coroutine on the main loop and log any unhandled exception."""
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    def _on_done(f):
+        try:
+            f.result()
+        except Exception:
+            logger.exception("[DingTalk Stream] Unhandled error in fire-and-forget coroutine")
+    future.add_done_callback(_on_done)
+
+
 class DingTalkStreamManager:
     """Manages DingTalk Stream clients for all agents."""
 
@@ -483,7 +494,10 @@ class DingTalkStreamManager:
                     msg_data = callback.data if isinstance(callback.data, dict) else json.loads(callback.data)
 
                     msgtype = msg_data.get("msgtype", "text")
-                    sender_staff_id = incoming.sender_staff_id or incoming.sender_id or ""
+                    sender_staff_id = incoming.sender_staff_id or ""
+                    sender_id = incoming.sender_id or ""
+                    if not sender_staff_id and sender_id:
+                        sender_staff_id = sender_id  # fallback
                     sender_nick = incoming.sender_nick or ""
                     message_id = incoming.message_id or ""
                     conversation_id = incoming.conversation_id or ""
@@ -510,11 +524,9 @@ class DingTalkStreamManager:
                         if main_loop and main_loop.is_running():
                             # Add thinking reaction immediately
                             from app.services.dingtalk_reaction import add_thinking_reaction
-                            asyncio.run_coroutine_threadsafe(
-                                add_thinking_reaction(app_key, app_secret, message_id, conversation_id),
-                                main_loop,
-                            )
-                            future = asyncio.run_coroutine_threadsafe(
+                            _fire_and_forget(main_loop,
+                                add_thinking_reaction(app_key, app_secret, message_id, conversation_id))
+                            _fire_and_forget(main_loop,
                                 process_dingtalk_message(
                                     agent_id=agent_id,
                                     sender_staff_id=sender_staff_id,
@@ -524,15 +536,9 @@ class DingTalkStreamManager:
                                     session_webhook=session_webhook,
                                     sender_nick=sender_nick,
                                     message_id=message_id,
-                                ),
-                                main_loop,
-                            )
-                            try:
-                                future.result(timeout=120)
-                            except Exception as e:
-                                logger.error(f"[DingTalk Stream] LLM processing error: {e}")
-                                import traceback
-                                traceback.print_exc()
+                                    sender_id=sender_id,
+                                ))
+                            # Fire-and-forget: ACK immediately, do not wait for LLM
                         else:
                             logger.warning("[DingTalk Stream] Main loop not available")
 
@@ -543,12 +549,10 @@ class DingTalkStreamManager:
                         if main_loop and main_loop.is_running():
                             # Add thinking reaction immediately
                             from app.services.dingtalk_reaction import add_thinking_reaction
-                            asyncio.run_coroutine_threadsafe(
-                                add_thinking_reaction(app_key, app_secret, message_id, conversation_id),
-                                main_loop,
-                            )
+                            _fire_and_forget(main_loop,
+                                add_thinking_reaction(app_key, app_secret, message_id, conversation_id))
                             # Process media (download + encode) in the main loop
-                            future = asyncio.run_coroutine_threadsafe(
+                            _fire_and_forget(main_loop,
                                 self._handle_media_and_dispatch(
                                     msg_data=msg_data,
                                     app_key=app_key,
@@ -560,15 +564,9 @@ class DingTalkStreamManager:
                                     session_webhook=session_webhook,
                                     sender_nick=sender_nick,
                                     message_id=message_id,
-                                ),
-                                main_loop,
-                            )
-                            try:
-                                future.result(timeout=120)
-                            except Exception as e:
-                                logger.error(f"[DingTalk Stream] Media processing error: {e}")
-                                import traceback
-                                traceback.print_exc()
+                                    sender_id=sender_id,
+                                ))
+                            # Fire-and-forget: ACK immediately, do not wait for LLM
                         else:
                             logger.warning("[DingTalk Stream] Main loop not available")
 
@@ -591,6 +589,7 @@ class DingTalkStreamManager:
                 session_webhook: str,
                 sender_nick: str = "",
                 message_id: str = "",
+                sender_id: str = "",
             ):
                 """Download media, then dispatch to process_dingtalk_message."""
                 from app.api.dingtalk import process_dingtalk_message
@@ -617,6 +616,7 @@ class DingTalkStreamManager:
                     saved_file_paths=saved_file_paths,
                     sender_nick=sender_nick,
                     message_id=message_id,
+                    sender_id=sender_id,
                 )
 
         while not stop_event.is_set() and retries <= MAX_RETRIES:

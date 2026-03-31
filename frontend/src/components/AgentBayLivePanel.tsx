@@ -68,18 +68,43 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle }: Prop
     const [activeTab, setActiveTab] = useState<TabType>('desktop');
     const codeEndRef = useRef<HTMLDivElement>(null);
 
-    // Resizable panel width state — starts at default 420px
     const [panelWidth, setPanelWidth] = useState(420);
     const isDragging = useRef(false);
     const dragStartX = useRef(0);
     const dragStartWidth = useRef(0);
 
-    // Auto-switch to the most recently active tab
+    // Track latest data to auto-switch tabs when new activity arrives
+    const prevDesktopUrl = useRef(liveState.desktop?.screenshotUrl);
+    const prevBrowserUrl = useRef(liveState.browser?.screenshotUrl);
+    const prevCodeLength = useRef(liveState.code?.output?.length || 0);
+
     useEffect(() => {
+        // Switch to the tab that just received a new update
+        if (liveState.desktop?.screenshotUrl !== prevDesktopUrl.current) {
+            setActiveTab('desktop');
+            prevDesktopUrl.current = liveState.desktop?.screenshotUrl;
+        }
+        if (liveState.browser?.screenshotUrl !== prevBrowserUrl.current) {
+            setActiveTab('browser');
+            prevBrowserUrl.current = liveState.browser?.screenshotUrl;
+        }
+        const currentCodeLength = liveState.code?.output?.length || 0;
+        if (currentCodeLength !== prevCodeLength.current) {
+            setActiveTab('code');
+            prevCodeLength.current = currentCodeLength;
+        }
+        
+        // Fallback: If current tab is completely gone, switch to first available
         if (availableTabs.length > 0 && !availableTabs.includes(activeTab)) {
             setActiveTab(availableTabs[0]);
         }
-    }, [availableTabs.length]);
+    }, [
+        liveState.desktop?.screenshotUrl, 
+        liveState.browser?.screenshotUrl, 
+        liveState.code?.output,
+        availableTabs,
+        activeTab
+    ]);
 
     // Auto-scroll code output
     useEffect(() => {

@@ -8,6 +8,7 @@ import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import UserManagement from './UserManagement';
 import InvitationCodes from './InvitationCodes';
+import { copyToClipboard } from '../utils/clipboard';
 
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -206,7 +207,8 @@ function OrgTab({ tenant }: { tenant: any }) {
         authorize_url: '',
         token_url: '',
         user_info_url: '',
-        scope: 'openid profile email'
+        scope: 'openid profile email',
+        field_mapping: { user_id: '', name: '', email: '', mobile: '' } as Record<string, string>
     });
 
     const currentTenantId = localStorage.getItem('current_tenant_id') || '';
@@ -244,8 +246,14 @@ function OrgTab({ tenant }: { tenant: any }) {
     // Mutations
     const addProvider = useMutation({
         mutationFn: (data: any) => {
-            const payload = { ...data, tenant_id: currentTenantId, is_active: true };
+            let payload = { ...data, tenant_id: currentTenantId, is_active: true };
             if (data.provider_type === 'oauth2' && useOAuth2Form) {
+                const fmPayload: Record<string, string> = {};
+                if (data.field_mapping?.user_id) fmPayload.user_id = data.field_mapping.user_id;
+                if (data.field_mapping?.name) fmPayload.name = data.field_mapping.name;
+                if (data.field_mapping?.email) fmPayload.email = data.field_mapping.email;
+                if (data.field_mapping?.mobile) fmPayload.mobile = data.field_mapping.mobile;
+                payload = { ...payload, field_mapping: Object.keys(fmPayload).length > 0 ? fmPayload : null };
                 return fetchJson('/enterprise/identity-providers/oauth2', {
                     method: 'POST',
                     body: JSON.stringify(payload)
@@ -266,9 +274,15 @@ function OrgTab({ tenant }: { tenant: any }) {
     const updateProvider = useMutation({
         mutationFn: ({ id, data }: { id: string; data: any }) => {
             if (data.provider_type === 'oauth2' && useOAuth2Form) {
+                const fmPayload: Record<string, string> = {};
+                if (data.field_mapping?.user_id) fmPayload.user_id = data.field_mapping.user_id;
+                if (data.field_mapping?.name) fmPayload.name = data.field_mapping.name;
+                if (data.field_mapping?.email) fmPayload.email = data.field_mapping.email;
+                if (data.field_mapping?.mobile) fmPayload.mobile = data.field_mapping.mobile;
+                const updateData = { ...data, field_mapping: Object.keys(fmPayload).length > 0 ? fmPayload : null };
                 return fetchJson(`/enterprise/identity-providers/${id}/oauth2`, {
                     method: 'PATCH',
-                    body: JSON.stringify(data)
+                    body: JSON.stringify(updateData)
                 });
             }
             return fetchJson(`/enterprise/identity-providers/${id}`, { method: 'PUT', body: JSON.stringify(data) });
@@ -303,14 +317,23 @@ function OrgTab({ tenant }: { tenant: any }) {
         setSyncing(null);
     };
 
-    const initOAuth2FromConfig = (config: any) => ({
-        app_id: config?.app_id || config?.client_id || '',
-        app_secret: config?.app_secret || config?.client_secret || '',
-        authorize_url: config?.authorize_url || '',
-        token_url: config?.token_url || '',
-        user_info_url: config?.user_info_url || '',
-        scope: config?.scope || 'openid profile email'
-    });
+    const initOAuth2FromConfig = (config: any) => {
+        const fm = config?.field_mapping || {};
+        return {
+            app_id: config?.app_id || config?.client_id || '',
+            app_secret: config?.app_secret || config?.client_secret || '',
+            authorize_url: config?.authorize_url || '',
+            token_url: config?.token_url || '',
+            user_info_url: config?.user_info_url || '',
+            scope: config?.scope || 'openid profile email',
+            field_mapping: {
+                user_id: fm.user_id || '',
+                name: fm.name || '',
+                email: fm.email || '',
+                mobile: fm.mobile || '',
+            }
+        };
+    };
 
     const save = () => {
         setSavingProvider(true);
@@ -323,10 +346,10 @@ function OrgTab({ tenant }: { tenant: any }) {
     };
 
     const IDP_TYPES = [
-        { type: 'feishu', name: 'Feishu', desc: 'Feishu / Lark Integration', icon: <img src="/feishu.png" width="20" height="20" alt="Feishu"/> },
-        { type: 'wecom', name: 'WeCom', desc: 'WeChat Work Integration', icon: <img src="/wecom.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="WeCom"/> },
-        { type: 'dingtalk', name: 'DingTalk', desc: 'DingTalk App Integration', icon: <img src="/dingtalk.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="DingTalk"/> },
-        { type: 'oauth2', name: 'OAuth2', desc: 'Generic OIDC Provider', icon: <div style={{width: 20, height: 20, background: 'var(--accent-primary)', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 700}}>O</div> }
+        { type: 'feishu', name: 'Feishu', desc: t('enterprise.identity.feishuDesc', 'Feishu / Lark Integration'), icon: <img src="/feishu.png" width="20" height="20" alt="Feishu"/> },
+        { type: 'wecom', name: 'WeCom', desc: t('enterprise.identity.wecomDesc', 'WeChat Work Integration'), icon: <img src="/wecom.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="WeCom"/> },
+        { type: 'dingtalk', name: 'DingTalk', desc: t('enterprise.identity.dingtalkDesc', 'DingTalk App Integration'), icon: <img src="/dingtalk.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="DingTalk"/> },
+        { type: 'oauth2', name: 'OAuth2', desc: t('enterprise.identity.oauth2Desc', 'Generic OIDC Provider'), icon: <div style={{width: 20, height: 20, background: 'var(--accent-primary)', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 700}}>O</div> }
     ];
 
     const handleExpand = (type: string, existingProvider?: any) => {
@@ -352,7 +375,8 @@ function OrgTab({ tenant }: { tenant: any }) {
                 name: nameMap[type] || type,
                 config: defaults[type] || {},
                 app_id: '', app_secret: '', authorize_url: '', token_url: '', user_info_url: '',
-                scope: 'openid profile email'
+                scope: 'openid profile email',
+                field_mapping: { user_id: '', name: '', email: '', mobile: '' }
             });
         }
         setSelectedDept(null);
@@ -383,7 +407,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                         <button 
                                             className="btn btn-ghost" 
                                             style={{ position: 'absolute', top: '8px', right: '8px', fontSize: '10px', color: '#abb2bf', padding: '4px 8px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', border: 'none', borderRadius: '4px' }}
-                                            onClick={(e) => { e.preventDefault(); navigator.clipboard.writeText(FEISHU_SYNC_PERM_JSON); e.currentTarget.textContent = 'Copied✓'; setTimeout(() => { e.currentTarget.textContent = 'Copy'; }, 2000); }}
+                                            onClick={(e) => { e.preventDefault(); copyToClipboard(FEISHU_SYNC_PERM_JSON); e.currentTarget.textContent = 'Copied✓'; setTimeout(() => { e.currentTarget.textContent = 'Copy'; }, 2000); }}
                                         >
                                             Copy
                                         </button>
@@ -452,6 +476,37 @@ function OrgTab({ tenant }: { tenant: any }) {
                             <label className="form-label">Scope</label>
                             <input className="form-input" value={form.scope} onChange={e => setForm({ ...form, scope: e.target.value })} placeholder="openid profile email" />
                         </div>
+                        <div style={{ gridColumn: '1 / -1', marginTop: '4px' }}>
+                            <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                字段映射（可选，留空使用标准 OIDC 字段）
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                <div className="form-group">
+                                    <label className="form-label" style={{ fontSize: '11px' }}>用户 ID 字段</label>
+                                    <input className="form-input" value={form.field_mapping?.user_id || ''}
+                                        onChange={e => setForm({ ...form, field_mapping: { ...form.field_mapping, user_id: e.target.value } })}
+                                        placeholder="留空用标准字段 sub" style={{ fontSize: '12px' }} />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label" style={{ fontSize: '11px' }}>姓名字段</label>
+                                    <input className="form-input" value={form.field_mapping?.name || ''}
+                                        onChange={e => setForm({ ...form, field_mapping: { ...form.field_mapping, name: e.target.value } })}
+                                        placeholder="留空用标准字段 name" style={{ fontSize: '12px' }} />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label" style={{ fontSize: '11px' }}>邮箱字段</label>
+                                    <input className="form-input" value={form.field_mapping?.email || ''}
+                                        onChange={e => setForm({ ...form, field_mapping: { ...form.field_mapping, email: e.target.value } })}
+                                        placeholder="留空用标准字段 email" style={{ fontSize: '12px' }} />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label" style={{ fontSize: '11px' }}>手机号字段</label>
+                                    <input className="form-input" value={form.field_mapping?.mobile || ''}
+                                        onChange={e => setForm({ ...form, field_mapping: { ...form.field_mapping, mobile: e.target.value } })}
+                                        placeholder="留空用标准字段 phone_number" style={{ fontSize: '12px' }} />
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 ) : type === 'wecom' ? (
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
@@ -517,10 +572,10 @@ function OrgTab({ tenant }: { tenant: any }) {
                         {savingProvider ? t('common.loading') : t('common.save', 'Save')}
                     </button>
                     {saveProviderOk && (
-                        <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>
+                        <span style={{ fontSize: '12px', color: 'var(--success)' }}>{t('enterprise.identity.savedStatus', 'Saved')}</span>
                     )}
                     {existingProvider && (
-                        <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={() => confirm('Are you sure you want to delete this configuration?') && deleteProvider.mutate(existingProvider.id)}>
+                        <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={() => confirm(t('enterprise.identity.deleteConfirmProvider', 'Are you sure you want to delete this configuration?')) && deleteProvider.mutate(existingProvider.id)}>
                             {t('common.delete', 'Delete')}
                         </button>
                     )}
@@ -538,12 +593,12 @@ function OrgTab({ tenant }: { tenant: any }) {
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
                         {['feishu', 'dingtalk', 'wecom'].includes(p.provider_type) && (
                             <button className="btn btn-secondary btn-sm" style={{ fontSize: '12px' }} onClick={() => triggerSync(p.id)} disabled={!!syncing}>
-                                {syncing === p.id ? 'Syncing...' : 'Sync Directory'}
+                                {syncing === p.id ? t('enterprise.identity.syncSyncing', 'Syncing...') : t('enterprise.identity.syncDirectory', 'Sync Directory')}
                             </button>
                         )}
                         {syncResult && (
                             <div style={{ padding: '6px 10px', borderRadius: '4px', fontSize: '11px', background: syncResult.error ? 'rgba(255,0,0,0.1)' : 'rgba(0,200,0,0.1)' }}>
-                                {syncResult.error ? `Error: ${syncResult.error}` : `Sync complete: ${syncResult.users_created || 0} users created, ${syncResult.profiles_synced || 0} profiles synced.`}
+                                {syncResult.error ? t('enterprise.identity.syncError', { error: syncResult.error, defaultValue: 'Error: {{error}}' }) : t('enterprise.identity.syncComplete', { users_created: syncResult.users_created || 0, profiles_synced: syncResult.profiles_synced || 0, defaultValue: 'Sync complete: {{users_created}} users created, {{profiles_synced}} profiles synced.' })}
                             </div>
                         )}
                     </div>
@@ -564,12 +619,16 @@ function OrgTab({ tenant }: { tenant: any }) {
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '400px', overflowY: 'auto' }}>
                             {members.map((m: any) => (
                                 <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
-                                    <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 600 }}>{m.name?.[0]}</div>
-                                    <div>
-                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{m.name}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                            {m.provider_type && <span style={{ marginRight: '4px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-secondary)', fontSize: '10px' }}>{m.provider_type}</span>}
-                                            {m.title || '-'} · {m.department_path || m.department_id || '-'}
+                                    <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 600 }}>{(m.user_display_name || m.name)?.[0]}</div>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <span style={{ fontWeight: 500, fontSize: '13px' }}>{m.user_display_name || m.name}</span>
+                                            {m.provider_type && <span style={{ padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-secondary)', fontSize: '10px', color: 'var(--text-tertiary)' }}>{m.provider_type}</span>}
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '2px' }}>
+                                            {m.email && <span>{m.email}</span>}
+                                            {m.phone && <span>{m.phone}</span>}
+                                            {!m.email && !m.phone && <span>{m.title || '-'} · {m.department_path || m.department_id || '-'}</span>}
                                         </div>
                                     </div>
                                 </div>
@@ -605,7 +664,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                         {t('enterprise.identity.title', 'Organization & Directory Sync')}
                     </h3>
                     <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                        Configure enterprise directory synchronization and Identity Provider settings.
+                        {t('enterprise.identity.description', 'Configure enterprise directory synchronization and Identity Provider settings.')}
                     </div>
                 </div>
 
@@ -630,7 +689,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                                         {existingProvider ? (
                                             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: '8px' }}>
-                                                <span className="badge badge-success" style={{ fontSize: '10px' }}>Active</span>
+                                                <span className="badge badge-success" style={{ fontSize: '10px' }}>{t('enterprise.identity.statusActive', 'Active')}</span>
                                                 {existingProvider.last_synced_at && (
                                                     <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
                                                         Synced: {new Date(existingProvider.last_synced_at).toLocaleDateString()}
@@ -638,7 +697,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                                 )}
                                             </div>
                                         ) : (
-                                            <span className="badge badge-secondary" style={{ fontSize: '10px' }}>Not configured</span>
+                                            <span className="badge badge-secondary" style={{ fontSize: '10px' }}>{t('enterprise.identity.statusNotConfigured', 'Not configured')}</span>
                                         )}
                                         <div style={{ color: 'var(--text-tertiary)', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', fontSize: '12px' }}>
                                             ▼
@@ -728,7 +787,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                                                         style={{ fontSize: '11px' }}
                                                                         onClick={(e) => { 
                                                                             e.preventDefault();
-                                                                            navigator.clipboard.writeText(baseUrl);
+                                                                            copyToClipboard(baseUrl);
                                                                             const el = e.currentTarget;
                                                                             const old = el.textContent;
                                                                             el.textContent = 'Copied✓';
@@ -760,7 +819,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                                                         style={{ fontSize: '11px' }}
                                                                         onClick={(e) => { 
                                                                             e.preventDefault();
-                                                                            navigator.clipboard.writeText(callbackUrl);
+                                                                            copyToClipboard(callbackUrl);
                                                                             const el = e.currentTarget;
                                                                             const old = el.textContent;
                                                                             el.textContent = 'Copied✓';

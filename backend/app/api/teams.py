@@ -37,22 +37,24 @@ router = APIRouter(tags=["microsoft_teams"])
 
 TEAMS_MSG_LIMIT = 28000  # Teams message char limit (approx 28KB)
 
-# In-memory cache for OAuth tokens
-_teams_tokens: dict[str, dict] = {}  # agent_id -> {access_token, expires_at}
-
-
 async def _get_teams_access_token(config: ChannelConfig) -> str | None:
     """Get or refresh Microsoft Teams access token.
     
     Supports:
     - Client credentials (app_id + app_secret) - default
     - Managed Identity (when use_managed_identity is True in extra_config)
+    Token is cached in Redis (preferred) with in-memory fallback.
+    Key: clawith:token:teams:{agent_id}
     """
+    from app.core.token_cache import get_cached_token, set_cached_token
+
     agent_id = str(config.agent_id)
-    cached = _teams_tokens.get(agent_id)
-    if cached and cached["expires_at"] > time.time() + 60:  # Refresh 60s before expiry
+    cache_key = f"clawith:token:teams:{agent_id}"
+
+    cached = await get_cached_token(cache_key)
+    if cached:
         logger.debug(f"Teams: Using cached access token for agent {agent_id}")
-        return cached["access_token"]
+        return cached
 
     # Check if managed identity should be used
     use_managed_identity = config.extra_config.get("use_managed_identity", False)
@@ -69,10 +71,9 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
             scope = "https://api.botframework.com/.default"
             token: AccessToken = await credential.get_token(scope)
             
-            _teams_tokens[agent_id] = {
-                "access_token": token.token,
-                "expires_at": token.expires_on,
-            }
+            # expires_on is a Unix timestamp; TTL = expires_on - now - 60s buffer
+            ttl = max(int(token.expires_on - time.time()) - 60, 60)
+            await set_cached_token(cache_key, token.token, ttl)
             logger.info(f"Teams: Successfully obtained access token via managed identity for agent {agent_id}, expires at {token.expires_on}")
             await credential.close()
             return token.token
@@ -117,11 +118,10 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
             access_token = token_data["access_token"]
             expires_in = token_data["expires_in"]
 
-            _teams_tokens[agent_id] = {
-                "access_token": access_token,
-                "expires_at": time.time() + expires_in,
-            }
-            logger.info(f"Teams: Successfully obtained access token for agent {agent_id}, expires in {expires_in}s")
+            # TTL = expires_in - 60s buffer
+            ttl = max(expires_in - 60, 60)
+            await set_cached_token(cache_key, access_token, ttl)
+            logger.info(f"Teams: Successfully obtained access token for agent {agent_id}, expires in {expires_in}s, TTL={ttl}s")
             return access_token
     except httpx.HTTPStatusError as e:
         error_body = e.response.text if hasattr(e, 'response') and e.response else "No response body"

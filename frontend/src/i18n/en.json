@@ -811,7 +811,11 @@
           "step4": "Paste CorpID and Secret below → click Save",
           "step5": "If you need SSO via WeCom: Turn on the 'SSO Login' switch below, then in WeCom configure: App Management → Webpage Authorization → Set Trusted Domain to your URL domain. Share the 'SSO Login URL' with your team."
         }
-      }
+      },
+      "companyUrl": "Company URL",
+      "memberEmail": "Email",
+      "memberPhone": "Phone",
+      "memberSource": "Source"
     },
     "config": {
       "title": "Platform Configuration",
@@ -882,7 +886,27 @@
         "oauth2": "OAuth2: Enter App ID, App Secret, Authorize URL, Token URL, User Info URL",
         "saml": "SAML: Requires entry_point, issuer, cert (public key).",
         "microsoft_teams": "Microsoft Teams: Requires client_id, client_secret, tenant_id."
-      }
+      },
+      "description": "Configure enterprise directory synchronization and Identity Provider settings.",
+      "statusActive": "Active",
+      "statusNotConfigured": "Not configured",
+      "syncDirectory": "Sync Directory",
+      "syncSyncing": "Syncing...",
+      "syncComplete": "Sync complete: {{users_created}} users created, {{profiles_synced}} profiles synced.",
+      "syncError": "Error: {{error}}",
+      "deleteConfirmProvider": "Are you sure you want to delete this configuration?",
+      "savedStatus": "Saved",
+      "feishuDesc": "Feishu / Lark Integration",
+      "dingtalkDesc": "DingTalk App Integration",
+      "wecomDesc": "WeChat Work Integration",
+      "oauth2Desc": "Generic OIDC Provider",
+      "ssoLoginToggle": "SSO Login",
+      "ssoLoginToggleHint": "Allow users to log in via this identity provider.",
+      "ssoSubdomain": "SSO Login URL",
+      "ssoSubdomainHint": "Share this URL with your team. SSO login buttons will appear when they visit this address.",
+      "callbackUrl": "Redirect URL (paste this in your app settings)",
+      "callbackUrlHint": "Add this URL as the OAuth redirect URI in your identity provider's app configuration.",
+      "saveFirst": "Please save the configuration first to enable SSO."
     }
   },
   "common": {
@@ -1014,5 +1038,78 @@
       "ws_step6": "Find the bot in WeCom and send a test message",
       "ws_note": "WebSocket mode requires no public IP, callback URL, or domain verification (ICP). The connection is managed automatically."
     }
+  },
+  "admin": {
+    "platformSettings": "Platform Settings",
+    "platformSettingsDesc": "Manage platform-wide settings and company tenants.",
+    "tab": {
+      "dashboard": "Dashboard",
+      "platform": "Platform",
+      "companies": "Companies"
+    },
+    "allowSelfCreate": "Allow users to create their own companies",
+    "allowSelfCreateDesc": "When disabled, only platform admins can create companies.",
+    "publicUrl": {
+      "title": "Public URL",
+      "desc": "The external URL used for webhook callbacks and published page links. Include the protocol (e.g. https://example.com)."
+    },
+    "company": "Company",
+    "orgAdmin": "Admin Email",
+    "users": "Users",
+    "agents": "Agents",
+    "tokens": "Token Usage",
+    "createdAt": "Created",
+    "status": "Status",
+    "action": "Action",
+    "all": "All",
+    "active": "Active",
+    "disabled": "Disabled",
+    "filterStatus": "Filter by status",
+    "createCompany": "Create Company",
+    "companyNamePlaceholder": "Company name",
+    "companyCreated": "Company Created",
+    "companyCreatedDesc": "has been created successfully.",
+    "inviteCodeLabel": "Admin Invitation Code",
+    "inviteCodeHowTo": "How to use this code:",
+    "inviteCodeExplain": "Send this code to the person who will manage this company. They should register a new account on the platform, then enter this code to join. The first person to use it will automatically become the Org Admin of this company. This code is single-use.",
+    "copyCode": "Copy Code",
+    "copied": "Copied",
+    "cannotDisableDefault": "Cannot disable the default company — platform admin would be locked out",
+    "confirmDisable": "Disable this company? All users and agents will be paused.",
+    "disable": "Disable",
+    "enable": "Enable",
+    "edit": "Edit",
+    "editCompany": "Edit Company",
+    "showing": "{{start}}-{{end}} of {{total}}",
+    "prev": "Prev",
+    "next": "Next",
+    "noFilterResults": "No companies match the current filter.",
+    "domainConfig": "Domain Configuration",
+    "domainConfigDesc": "Configure a dedicated access domain for this company.",
+    "subdomainPrefix": "Subdomain Prefix",
+    "subdomainPrefixPlaceholderHint": "Leave blank to use slug",
+    "prefixAvailable": "Available",
+    "prefixTaken": "Already taken",
+    "prefixChecking": "checking...",
+    "default": "Default",
+    "setAsDefault": "Default Company",
+    "setAsDefaultDesc": "Users visiting the global domain will be associated with this company.",
+    "currentDefault": "Current Default",
+    "prefixTakenError": "The subdomain prefix is already taken. Please choose a different one.",
+    "delete": "Delete",
+    "confirmDelete": "Yes, Delete",
+    "deleteCompany": "Delete Company",
+    "deleteCompanyWarning": "This action is irreversible. The following data will be permanently deleted:",
+    "deleteDataUsers": "All users in this company",
+    "deleteDataAgents": "All agents and their conversations",
+    "deleteDataSkills": "All skills and LLM model configurations",
+    "deleteDataOther": "All invitation codes, org structure, token records",
+    "deleteCompanyName": "Company"
+  },
+  "users": {
+    "newPassword": "New Password",
+    "newPasswordPlaceholder": "Leave blank to keep current password",
+    "newPasswordHint": "Optional. If provided, user password will be reset.",
+    "passwordResetSuccess": "Password has been reset"
   }
 }

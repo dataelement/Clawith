@@ -27,6 +27,34 @@ from app.schemas.schemas import ChannelConfigOut
 router = APIRouter(tags=["wecom"])
 
 
+async def _get_wecom_token_cached(corp_id: str, corp_secret: str) -> str:
+    """Get WeCom access_token with Redis (preferred) + memory fallback caching.
+
+    Key: clawith:token:wecom:{corp_id}
+    TTL: 6900s (7200s validity - 5 min early refresh)
+    """
+    from app.core.token_cache import get_cached_token, set_cached_token
+    import httpx as _httpx
+
+    cache_key = f"clawith:token:wecom:{corp_id}"
+    cached = await get_cached_token(cache_key)
+    if cached:
+        return cached
+
+    async with _httpx.AsyncClient(timeout=10) as _client:
+        _resp = await _client.get(
+            "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+            params={"corpid": corp_id, "corpsecret": corp_secret},
+        )
+        _data = _resp.json()
+        token = _data.get("access_token", "")
+        expires_in = int(_data.get("expires_in") or 7200)
+        if token:
+            ttl = max(expires_in - 300, 300)
+            await set_cached_token(cache_key, token, ttl)
+        return token
+
+
 # ─── WeCom AES Crypto ──────────────────────────────────
 
 def _pad(text: bytes) -> bytes:
@@ -394,12 +422,9 @@ async def _process_wecom_kf_event(agent_id: uuid.UUID, config_obj: ChannelConfig
             if not config:
                 return
 
-            async with httpx.AsyncClient(timeout=10) as client:
-                tok_resp = await client.get("https://qyapi.weixin.qq.com/cgi-bin/gettoken", params={"corpid": config.app_id, "corpsecret": config.app_secret})
-                token_data = tok_resp.json()
-                access_token = token_data.get("access_token")
-                if not access_token:
-                    return
+            access_token = await _get_wecom_token_cached(config.app_id, config.app_secret)
+            if not access_token:
+                return
 
                 current_cursor = token
                 has_more = 1
@@ -497,13 +522,9 @@ async def _process_wecom_text(
         # Try to resolve display name from WeCom API
         display_name = f"WeCom {from_user[:8]}"
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                tok_resp = await client.get(
-                    "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-                    params={"corpid": config.app_id, "corpsecret": config.app_secret},
-                )
-                access_token = tok_resp.json().get("access_token", "")
-                if access_token:
+            access_token = await _get_wecom_token_cached(config.app_id, config.app_secret)
+            if access_token:
+                async with httpx.AsyncClient(timeout=5) as client:
                     user_resp = await client.get(
                         "https://qyapi.weixin.qq.com/cgi-bin/user/get",
                         params={"access_token": access_token, "userid": from_user},
@@ -569,12 +590,8 @@ async def _process_wecom_text(
         # Send reply via WeCom API
         wecom_agent_id = (config.extra_config or {}).get("wecom_agent_id", "")
         try:
+            access_token = await _get_wecom_token_cached(config.app_id, config.app_secret)
             async with httpx.AsyncClient(timeout=10) as client:
-                tok_resp = await client.get(
-                    "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-                    params={"corpid": config.app_id, "corpsecret": config.app_secret},
-                )
-                access_token = tok_resp.json().get("access_token", "")
                 if access_token:
                     if is_kf and open_kfid:
                         # For KF messages, need to bridge/trans state first then send via kf/send_msg
@@ -661,18 +678,10 @@ async def wecom_callback(
 
     # 2. Exchange code for user info
     try:
+        access_token = await _get_wecom_token_cached(corp_id, secret)
+        if not access_token:
+            return HTMLResponse(f"Auth failed: Token error")
         async with httpx.AsyncClient() as client:
-            # Get access token
-            tok_res = await client.get(
-                "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-                params={"corpid": corp_id, "corpsecret": secret}
-            )
-            token_data = tok_res.json()
-            access_token = token_data.get("access_token")
-            if not access_token:
-                logger.error(f"WeCom token error: {token_data}")
-                return HTMLResponse(f"Auth failed: Token error")
-
             # Get user info
             user_res = await client.get(
                 "https://qyapi.weixin.qq.com/cgi-bin/user/getuserinfo",
@@ -691,12 +700,8 @@ async def wecom_callback(
     wc_name = f"WeCom {userid}"
     wc_email = None
     try:
+        _at2 = await _get_wecom_token_cached(corp_id, secret)
         async with httpx.AsyncClient(timeout=5) as client:
-            tok_res2 = await client.get(
-                "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-                params={"corpid": corp_id, "corpsecret": secret},
-            )
-            _at2 = tok_res2.json().get("access_token", "")
             if _at2:
                 detail_res = await client.get(
                     "https://qyapi.weixin.qq.com/cgi-bin/user/get",

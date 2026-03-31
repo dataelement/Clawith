@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,7 @@ class CompanyStats(BaseModel):
     name: str
     slug: str
     is_active: bool
+    is_default: bool = False
     sso_enabled: bool = False
     sso_domain: str | None = None
     subdomain_prefix: str | None = None
@@ -114,6 +116,7 @@ async def list_companies(
             name=tenant.name,
             slug=tenant.slug,
             is_active=tenant.is_active,
+            is_default=tenant.is_default,
             sso_enabled=tenant.sso_enabled,
             sso_domain=tenant.sso_domain,
             subdomain_prefix=tenant.subdomain_prefix,
@@ -157,6 +160,13 @@ async def create_company(
     db.add(invite)
     await db.flush()
 
+    # Seed default agents (Morty & Meeseeks) for the new company
+    try:
+        from app.services.agent_seeder import seed_default_agents
+        await seed_default_agents(tenant_id=tenant.id, creator_id=current_user.id, db=db)
+    except Exception as e:
+        logger.warning(f"[create_company] Failed to seed default agents: {e}")
+
     return CompanyCreateResponse(
         company=CompanyStats(
             id=tenant.id,
@@ -195,6 +205,56 @@ async def toggle_company(
     await db.flush()
     return {"ok": True, "is_active": new_state}
 
+
+
+@router.get("/companies/{company_id}/invitation-codes")
+async def list_company_invitation_codes(
+    company_id: uuid.UUID,
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(InvitationCode)
+        .where(InvitationCode.tenant_id == company_id)
+        .where(InvitationCode.is_active == True)
+        .order_by(InvitationCode.created_at.desc())
+    )
+    codes = result.scalars().all()
+    return {
+        "codes": [
+            {
+                "id": str(c.id),
+                "code": c.code,
+                "max_uses": c.max_uses,
+                "used_count": c.used_count,
+                "is_active": c.is_active,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in codes
+        ]
+    }
+
+
+@router.post("/companies/{company_id}/invitation-codes")
+async def create_company_invitation_code(
+    company_id: uuid.UUID,
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    t_result = await db.execute(select(Tenant).where(Tenant.id == company_id))
+    if not t_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    code_str = secrets.token_urlsafe(12)[:16].upper()
+    invite = InvitationCode(
+        code=code_str,
+        tenant_id=company_id,
+        max_uses=1,
+        created_by=current_user.id,
+    )
+    db.add(invite)
+    await db.flush()
+    return {"code": code_str}
 
 # ─── Platform Metrics Dashboard ─────────────────────────
 
@@ -355,3 +415,137 @@ async def update_platform_settings(
 
     await db.flush()
     return await get_platform_settings(current_user=current_user, db=db)
+
+
+@router.delete("/companies/{company_id}", status_code=204)
+async def delete_company(
+    company_id: uuid.UUID,
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete a company and all associated data.
+
+    Cannot delete the default company.
+    Cascade-deletes all related records in dependency order.
+    """
+    # 1. Find the tenant
+    result = await db.execute(select(Tenant).where(Tenant.id == company_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # 2. Cannot delete default company
+    if tenant.is_default:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete the default company. Please set another company as default first."
+        )
+
+    # 3. Cascade delete all associated data
+    from sqlalchemy import delete as sa_delete
+    from app.models.activity_log import AgentActivityLog, DailyTokenUsage
+    from app.models.audit import AuditLog, ApprovalRequest, ChatMessage
+    from app.models.channel_config import ChannelConfig
+    from app.models.chat_session import ChatSession
+    from app.models.gateway_message import GatewayMessage
+    from app.models.llm import LLMModel
+    from app.models.notification import Notification
+    from app.models.org import OrgMember, OrgDepartment, AgentRelationship, AgentAgentRelationship
+    from app.models.published_page import PublishedPage
+    from app.models.schedule import AgentSchedule
+    from app.models.skill import Skill
+    from app.models.task import Task
+    from app.models.tenant_setting import TenantSetting
+    from app.models.trigger import AgentTrigger
+    from app.models.tool import AgentTool
+    from app.models.identity import IdentityProvider, SSOScanSession
+
+    # 3.1 Collect agent_ids and user_ids for this tenant
+    agent_ids_result = await db.execute(
+        select(Agent.id).where(Agent.tenant_id == company_id)
+    )
+    agent_ids = [row[0] for row in agent_ids_result.all()]
+
+    user_ids_result = await db.execute(
+        select(User.id).where(User.tenant_id == company_id)
+    )
+    user_ids = [row[0] for row in user_ids_result.all()]
+
+    # 3.2 Delete tables that reference agents (via agent_id)
+    if agent_ids:
+        await db.execute(sa_delete(AgentTrigger).where(AgentTrigger.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentSchedule).where(AgentSchedule.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentActivityLog).where(AgentActivityLog.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(ChannelConfig).where(ChannelConfig.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentTool).where(AgentTool.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(Notification).where(Notification.agent_id.in_(agent_ids)))
+        # Delete TaskLog before Task (FK: task_id -> tasks.id, no cascade)
+        from app.models.task import TaskLog
+        task_ids_r = await db.execute(select(Task.id).where(Task.agent_id.in_(agent_ids)))
+        task_ids = [row[0] for row in task_ids_r.all()]
+        if task_ids:
+            await db.execute(sa_delete(TaskLog).where(TaskLog.task_id.in_(task_ids)))
+        await db.execute(sa_delete(Task).where(Task.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AuditLog).where(AuditLog.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(ApprovalRequest).where(ApprovalRequest.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(ChatMessage).where(ChatMessage.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(ChatSession).where(ChatSession.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(GatewayMessage).where(GatewayMessage.agent_id.in_(agent_ids)))
+        from app.models.agent import AgentPermission
+        await db.execute(sa_delete(AgentPermission).where(AgentPermission.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentAgentRelationship).where(AgentAgentRelationship.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentAgentRelationship).where(AgentAgentRelationship.target_agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentRelationship).where(AgentRelationship.agent_id.in_(agent_ids)))
+
+        # Null out cross-tenant FK references (other tenants' records pointing to our agents)
+        from sqlalchemy import update as sa_update
+        await db.execute(
+            sa_update(ChatSession).where(ChatSession.peer_agent_id.in_(agent_ids)).values(peer_agent_id=None)
+        )
+        await db.execute(
+            sa_update(GatewayMessage).where(GatewayMessage.sender_agent_id.in_(agent_ids)).values(sender_agent_id=None)
+        )
+
+    # 3.3 Delete tables that reference users but not tenant directly
+    if user_ids:
+        from app.models.agent import AgentTemplate
+        await db.execute(sa_delete(AgentTemplate).where(AgentTemplate.created_by.in_(user_ids)))
+
+    # 3.3b Null out cross-tenant user FK references
+    if user_ids:
+        from sqlalchemy import update as sa_update
+        await db.execute(
+            sa_update(GatewayMessage).where(GatewayMessage.sender_user_id.in_(user_ids)).values(sender_user_id=None)
+        )
+
+    # 3.4 Delete tables with tenant_id (no agent dependency)
+    await db.execute(sa_delete(DailyTokenUsage).where(DailyTokenUsage.tenant_id == company_id))
+    await db.execute(sa_delete(PublishedPage).where(PublishedPage.tenant_id == company_id))
+    await db.execute(sa_delete(OrgMember).where(OrgMember.tenant_id == company_id))
+    await db.execute(sa_delete(OrgDepartment).where(OrgDepartment.tenant_id == company_id))
+    await db.execute(sa_delete(InvitationCode).where(InvitationCode.tenant_id == company_id))
+    # Delete SkillFile before Skill (FK: skill_id -> skills.id, no cascade)
+    from app.models.skill import SkillFile
+    skill_ids_r = await db.execute(select(Skill.id).where(Skill.tenant_id == company_id))
+    skill_ids = [row[0] for row in skill_ids_r.all()]
+    if skill_ids:
+        await db.execute(sa_delete(SkillFile).where(SkillFile.skill_id.in_(skill_ids)))
+    await db.execute(sa_delete(Skill).where(Skill.tenant_id == company_id))
+    await db.execute(sa_delete(LLMModel).where(LLMModel.tenant_id == company_id))
+    await db.execute(sa_delete(TenantSetting).where(TenantSetting.tenant_id == company_id))
+
+    # 3.4b Delete identity tables with tenant_id (soft FK)
+    await db.execute(sa_delete(IdentityProvider).where(IdentityProvider.tenant_id == company_id))
+    await db.execute(sa_delete(SSOScanSession).where(SSOScanSession.tenant_id == company_id))
+
+    # 3.5 Delete agents (after all agent-dependent tables)
+    await db.execute(sa_delete(Agent).where(Agent.tenant_id == company_id))
+
+    # 3.6 Delete users (after agents, since agents.creator_id -> users.id)
+    await db.execute(sa_delete(User).where(User.tenant_id == company_id))
+
+    # 3.7 Delete the tenant itself
+    await db.delete(tenant)
+    await db.flush()
+
+    return None
