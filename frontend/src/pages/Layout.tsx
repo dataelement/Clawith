@@ -99,10 +99,12 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
     const [apiKeyCopied, setApiKeyCopied] = useState(false);
     const [apiKeyLoading, setApiKeyLoading] = useState(false);
 
-    React.useEffect(() => {
+    useEffect(() => {
         const token = localStorage.getItem('token');
         fetch('/api/users/me/api-key/status', { headers: { Authorization: `Bearer ${token}` } })
             .then(r => r.json()).then(d => setHasApiKey(d.has_api_key)).catch(() => setHasApiKey(false));
+        // 组件卸载时清除明文 key，防止残留内存
+        return () => setNewApiKey(null);
     }, []);
 
     const handleGenerateApiKey = async () => {
@@ -114,6 +116,8 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
             const data = await res.json();
             setNewApiKey(data.api_key);
             setHasApiKey(true);
+            // 60 秒后自动清除明文展示
+            setTimeout(() => setNewApiKey(null), 60000);
         } catch { showMsg(isChinese ? '生成失败' : 'Failed to generate', 'error'); }
         setApiKeyLoading(false);
     };
@@ -132,7 +136,10 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
 
     const handleCopyApiKey = () => {
         if (!newApiKey) return;
-        navigator.clipboard.writeText(newApiKey).then(() => { setApiKeyCopied(true); setTimeout(() => setApiKeyCopied(false), 2000); });
+        navigator.clipboard.writeText(newApiKey).then(() => {
+            setApiKeyCopied(true);
+            setTimeout(() => setApiKeyCopied(false), 2000);
+        });
     };
 
     const showMsg = (text: string, type: 'success' | 'error' = 'success') => {

@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import hmac
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -155,7 +156,12 @@ async def get_current_user(
             .options(selectinload(User.identity))
         )
         user = result.scalar_one_or_none()
-        if not user or not user.is_active:
+        # hmac.compare_digest 做内存层常量时间校验，防止时序攻击
+        if (
+            not user
+            or not user.is_active
+            or not hmac.compare_digest(user.api_key_hash, key_hash)
+        ):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or revoked API key")
         return user
 
