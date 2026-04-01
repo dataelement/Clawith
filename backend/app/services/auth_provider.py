@@ -256,6 +256,14 @@ class BaseAuthProvider(ABC):
             user.email = user_info.email
         if user_info.mobile and not user.primary_mobile:
             user.primary_mobile = user_info.mobile
+        # OAuth2 登录时用 provider_user_id 更新 dingtalk_ 开头的临时用户名
+        if (
+            user_info.provider_user_id
+            and user.username.startswith("dingtalk_")
+            and self.provider_type == "oauth2"
+        ):
+            user.username = user_info.provider_user_id
+            logger.info(f"[SSO] Updated username from {user.username} to {user_info.provider_user_id}")
 
         # Update legacy fields if applicable
         await self._update_legacy_user_fields(user, user_info)
