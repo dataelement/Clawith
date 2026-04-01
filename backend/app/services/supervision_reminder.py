@@ -140,7 +140,7 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
         api_key=model.api_key_encrypted,
         model=model.model,
         base_url=base_url,
-        timeout=60.0,
+        timeout=float(getattr(model, 'request_timeout', None) or 60.0),
     )
     try:
         response = await client.complete(

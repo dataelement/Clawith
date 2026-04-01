@@ -19,6 +19,9 @@ interface Props {
     agentId: string;
     sessionId: string;
     onClose: () => void;
+    /** Called with the last screenshot data URI when TC panel closes,
+     *  so the parent live preview can update immediately. */
+    onLastScreenshot?: (dataUri: string) => void;
 }
 
 /* ── Quick-key pre-defined buttons ── */
@@ -34,28 +37,51 @@ const QUICK_KEYS: { label: string; keys: string[] }[] = [
 
 /* ── Icons ── */
 const CloseIcon = (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
         <path d="M4 4l8 8M12 4l-8 8" />
     </svg>
 );
 
 const SendIcon = (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <path d="M2 8h12M10 4l4 4-4 4" />
     </svg>
 );
 
-export default function TakeControlPanel({ agentId, sessionId, onClose }: Props) {
+const SaveIcon = (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline', verticalAlign: 'middle', marginRight: 5 }}>
+        <path d="M13 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V5l-3-3z" />
+        <polyline points="9 2 9 6 4 6" />
+        <path d="M4 10h8" />
+    </svg>
+);
+
+export default function TakeControlPanel({ agentId, sessionId, onClose, onLastScreenshot }: Props) {
     const [screenshot, setScreenshot] = useState<string | null>(null);
     const [textInput, setTextInput] = useState('');
     const [locked, setLocked] = useState(false);
     const [statusText, setStatusText] = useState('Acquiring control...');
+    const [statusFlashKey, setStatusFlashKey] = useState(0);
+    // Domain auto-populated from current page URL; user can still edit
     const [platformHint, setPlatformHint] = useState('');
     const imgRef = useRef<HTMLImageElement>(null);
     const pollingRef = useRef<number | null>(null);
     const mountedRef = useRef(true);
+    // Track the latest screenshot data URI for passing to parent on close
+    const lastScreenshotRef = useRef<string | null>(null);
+    // Track the actual screen size for coordinate mapping
+    const screenSizeRef = useRef<{ width: number; height: number } | null>(null);
 
-    // Acquire lock on mount
+    // Drag gesture state
+    const dragOriginRef = useRef<{ x: number; y: number; screenX: number; screenY: number } | null>(null);
+    const [dragEnd, setDragEnd] = useState<{ x: number; y: number } | null>(null);
+    const isDraggingRef = useRef(false);
+
+    // Track lock state via ref for cleanup
+    const lockedRef = useRef(false);
+    useEffect(() => { lockedRef.current = locked; }, [locked]);
+
+    // Acquire lock on mount, then auto-fetch the current page URL to pre-fill domain
     useEffect(() => {
         mountedRef.current = true;
         (async () => {
@@ -63,170 +89,375 @@ export default function TakeControlPanel({ agentId, sessionId, onClose }: Props)
                 const res = await controlApi.lock(agentId, { session_id: sessionId });
                 if (mountedRef.current) {
                     setLocked(true);
-                    setStatusText('You are in control. Click on the screenshot to interact.');
+                    setStatusText('You are in control. Click or drag on the screenshot.');
+
+                    // Auto-populate domain from the current active page URL
+                    try {
+                        const urlRes = await controlApi.currentUrl(agentId, { session_id: sessionId });
+                        if (urlRes.url) {
+                            const hostname = new URL(urlRes.url).hostname.replace(/^www\./, '');
+                            if (hostname && hostname !== 'about:blank' && hostname !== '') {
+                                setPlatformHint(hostname);
+                            }
+                        }
+                    } catch {
+                        // Non-fatal — user can type it manually
+                    }
                 }
             } catch (e: any) {
                 if (mountedRef.current) {
-                    setStatusText(`Failed to acquire lock: ${e.message}`);
+                    setStatusText(`Failed to acquire control: ${e.message}`);
                 }
             }
         })();
 
         return () => {
             mountedRef.current = false;
-            // Release lock on unmount
-            controlApi.unlock(agentId, {
-                session_id: sessionId,
-                export_cookies: false,
-            }).catch(() => {}); 
+            if (lockedRef.current) {
+                controlApi.unlock(agentId, { session_id: sessionId, export_cookies: false }).catch(() => {});
+            }
         };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [agentId, sessionId]);
 
-    // Poll screenshots
+
+    // Poll screenshots using sequential setTimeout to avoid request pileup.
+    // Each poll waits for the previous one to complete before scheduling the
+    // next, which prevents overlapping requests that waste bandwidth and
+    // introduce jitter.
     useEffect(() => {
         if (!locked) return;
+        let cancelled = false;
 
         const poll = async () => {
+            if (cancelled) return;
             try {
                 const res = await controlApi.screenshot(agentId, { session_id: sessionId });
-                if (mountedRef.current && res.screenshot) {
-                    setScreenshot(`data:image/png;base64,${res.screenshot}`);
+                if (!cancelled && mountedRef.current && res.screenshot) {
+                    // Backend returns a complete data URI (data:image/jpeg;base64,...),
+                    // use it directly without wrapping.
+                    const dataUri = res.screenshot.startsWith('data:')
+                        ? res.screenshot
+                        : `data:image/png;base64,${res.screenshot}`;
+                    setScreenshot(dataUri);
+                    lastScreenshotRef.current = dataUri;
+                    // Store screen size for coordinate mapping
+                    if (res.screen_size) {
+                        screenSizeRef.current = res.screen_size;
+                    }
                 }
             } catch {
                 // Polling failure is non-fatal, will retry
             }
+            // Schedule next poll after this one completes (sequential, not interval)
+            if (!cancelled) {
+                pollingRef.current = window.setTimeout(poll, 400);
+            }
         };
 
-        // Initial screenshot
+        // Start polling immediately
         poll();
 
-        // Poll every 600ms
-        pollingRef.current = window.setInterval(poll, 600);
-
         return () => {
+            cancelled = true;
             if (pollingRef.current) {
-                clearInterval(pollingRef.current);
+                clearTimeout(pollingRef.current);
             }
         };
     }, [locked, agentId, sessionId]);
 
-    // Handle click on screenshot — map coordinates to actual resolution
-    const handleScreenshotClick = useCallback(async (e: React.MouseEvent<HTMLImageElement>) => {
-        if (!imgRef.current || !locked) return;
+    // Helper to update status with a visual flash — defined early for use by handlers
+    const flashStatus = useCallback((text: string) => {
+        setStatusText(text);
+        setStatusFlashKey(k => k + 1);
+    }, []);
 
+    // Map display (img element) coordinates to actual screen pixel coordinates
+    const mapToScreenCoords = useCallback((clientX: number, clientY: number) => {
+        if (!imgRef.current) return { x: 0, y: 0 };
         const rect = imgRef.current.getBoundingClientRect();
         const naturalWidth = imgRef.current.naturalWidth;
         const naturalHeight = imgRef.current.naturalHeight;
-
-        // Map display coordinates to actual coordinates
         const scaleX = naturalWidth / rect.width;
         const scaleY = naturalHeight / rect.height;
-        const x = Math.round((e.clientX - rect.left) * scaleX);
-        const y = Math.round((e.clientY - rect.top) * scaleY);
-
-        setStatusText(`Clicking at (${x}, ${y})...`);
-        try {
-            await controlApi.click(agentId, { session_id: sessionId, x, y });
-            setStatusText(`Clicked at (${x}, ${y})`);
-        } catch (err: any) {
-            setStatusText(`Click failed: ${err.message}`);
+        let x = Math.round((clientX - rect.left) * scaleX);
+        let y = Math.round((clientY - rect.top) * scaleY);
+        // Map from screenshot pixel coords to actual screen resolution if they differ
+        const ss = screenSizeRef.current;
+        if (ss && (ss.width !== naturalWidth || ss.height !== naturalHeight)) {
+            x = Math.round(x * (ss.width / naturalWidth));
+            y = Math.round(y * (ss.height / naturalHeight));
         }
-    }, [locked, agentId, sessionId]);
+        return { x, y };
+    }, []);
+
+    // --- Mouse event handlers on screenshot ---
+
+    // mousedown: begin a potential drag gesture
+    const handleMouseDown = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
+        if (!locked || !imgRef.current) return;
+        e.preventDefault();
+        const coords = mapToScreenCoords(e.clientX, e.clientY);
+        dragOriginRef.current = { x: coords.x, y: coords.y, screenX: e.clientX, screenY: e.clientY };
+        isDraggingRef.current = false;
+        setDragEnd(null);
+    }, [locked, mapToScreenCoords]);
+
+    // mousemove: update drag overlay once the gesture exceeds a 5px threshold
+    const handleMouseMove = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
+        if (!locked || !imgRef.current || !dragOriginRef.current) return;
+        const dx = e.clientX - dragOriginRef.current.screenX;
+        const dy = e.clientY - dragOriginRef.current.screenY;
+        if (!isDraggingRef.current && Math.hypot(dx, dy) > 5) {
+            isDraggingRef.current = true;
+            flashStatus('Drag to release...');
+        }
+        if (isDraggingRef.current) {
+            setDragEnd({ x: e.clientX, y: e.clientY });
+        }
+    }, [locked, flashStatus]);
+
+    // mouseup: commit drag or fall back to a click
+    const handleMouseUp = useCallback(async (e: React.MouseEvent<HTMLImageElement>) => {
+        if (!locked || !imgRef.current || !dragOriginRef.current) return;
+        const origin = dragOriginRef.current;
+        dragOriginRef.current = null;
+        setDragEnd(null);
+
+        if (isDraggingRef.current) {
+            // --- DRAG ---
+            isDraggingRef.current = false;
+            const to = mapToScreenCoords(e.clientX, e.clientY);
+            flashStatus(`Dragging (${origin.x},${origin.y}) -> (${to.x},${to.y})...`);
+            try {
+                const res = await controlApi.drag(agentId, {
+                    session_id: sessionId,
+                    from_x: origin.x,
+                    from_y: origin.y,
+                    to_x: to.x,
+                    to_y: to.y,
+                });
+                if (res.status === 'error') throw new Error(res.detail || 'Drag failed');
+                flashStatus(`Drag complete`);
+            } catch (err: any) {
+                flashStatus(`Drag failed: ${err.message}`);
+            }
+        } else {
+            // --- CLICK (no significant movement) ---
+            isDraggingRef.current = false;
+            const coords = mapToScreenCoords(e.clientX, e.clientY);
+            flashStatus(`Clicking at (${coords.x}, ${coords.y})...`);
+            try {
+                const res = await controlApi.click(agentId, { session_id: sessionId, x: coords.x, y: coords.y });
+                if (res.status === 'error') throw new Error(res.detail || 'Click failed');
+                flashStatus(`Clicked at (${coords.x}, ${coords.y})`);
+            } catch (err: any) {
+                flashStatus(`Click failed: ${err.message}`);
+            }
+        }
+    }, [locked, agentId, sessionId, mapToScreenCoords, flashStatus]);
+
+    // Cancel drag if mouse leaves the screenshot area
+    const handleMouseLeave = useCallback(() => {
+        if (isDraggingRef.current) {
+            isDraggingRef.current = false;
+            dragOriginRef.current = null;
+            setDragEnd(null);
+            flashStatus('You are in control. Click or drag on the screenshot.');
+        }
+    }, [flashStatus]);
+
 
     // Handle text input
     const handleSendText = useCallback(async () => {
         if (!textInput.trim() || !locked) return;
-        setStatusText(`Typing: "${textInput.slice(0, 30)}..."`);
+        flashStatus(`Typing: "${textInput.slice(0, 30)}..."`);
         try {
-            await controlApi.type(agentId, { session_id: sessionId, text: textInput });
-            setStatusText('Text sent');
+            const res = await controlApi.type(agentId, { session_id: sessionId, text: textInput });
+            if (res.status === 'error') throw new Error(res.detail || 'Type failed');
+            flashStatus('Text sent');
             setTextInput('');
         } catch (err: any) {
-            setStatusText(`Type failed: ${err.message}`);
+            flashStatus(`Type failed: ${err.message}`);
         }
-    }, [textInput, locked, agentId, sessionId]);
+    }, [textInput, locked, agentId, sessionId, flashStatus]);
 
     // Handle quick key press
     const handleQuickKey = useCallback(async (keys: string[]) => {
         if (!locked) return;
-        setStatusText(`Pressing: ${keys.join('+')}`);
+        flashStatus(`Pressing: ${keys.join('+')}`);
         try {
-            await controlApi.pressKeys(agentId, { session_id: sessionId, keys });
-            setStatusText(`Pressed: ${keys.join('+')}`);
+            const res = await controlApi.pressKeys(agentId, { session_id: sessionId, keys });
+            if (res.status === 'error') throw new Error(res.detail || 'Press failed');
+            flashStatus(`Pressed: ${keys.join('+')}`);
         } catch (err: any) {
-            setStatusText(`Key press failed: ${err.message}`);
+            flashStatus(`Key press failed: ${err.message}`);
         }
-    }, [locked, agentId, sessionId]);
+    }, [locked, agentId, sessionId, flashStatus]);
 
     // Complete login — export cookies and close
     const handleComplete = useCallback(async () => {
-        setStatusText('Exporting cookies...');
+        if (!locked) return;
+        setLocked(false);
+        lockedRef.current = false;  // Prevent unmount cleanup from double-unlocking
+        flashStatus('Exporting cookies...');
         try {
+            // Fetch one final high-quality screenshot to hand off to the live preview
+            try {
+                const finalRes = await controlApi.screenshot(agentId, { session_id: sessionId });
+                if (finalRes.screenshot) {
+                    lastScreenshotRef.current = finalRes.screenshot.startsWith('data:') 
+                        ? finalRes.screenshot 
+                        : `data:image/png;base64,${finalRes.screenshot}`;
+                }
+            } catch (e) {
+                // fallback to whatever is in lastScreenshotRef
+            }
+            
             const res = await controlApi.unlock(agentId, {
                 session_id: sessionId,
                 export_cookies: true,
                 platform_hint: platformHint || undefined,
             });
-            setStatusText(
+            flashStatus(
                 res.cookies_exported
                     ? `Login complete! ${res.cookie_count} cookies saved.`
                     : 'Session unlocked (no cookies exported).'
             );
-            // Small delay so the user sees the success message
+            // Pass the last screenshot to the parent so live preview updates
+            if (lastScreenshotRef.current && onLastScreenshot) {
+                console.log('[TakeControl] Passing last screenshot to parent on complete, size:', lastScreenshotRef.current.length);
+                onLastScreenshot(lastScreenshotRef.current);
+            } else {
+                console.log('[TakeControl] No screenshot to pass: ref=', !!lastScreenshotRef.current, 'callback=', !!onLastScreenshot);
+            }
             setTimeout(onClose, 1200);
         } catch (err: any) {
-            setStatusText(`Unlock failed: ${err.message}`);
+            flashStatus(`Unlock failed: ${err.message}`);
+            // Re-enable lock state if unlock request failed so user can try again
+            setLocked(true);
+            lockedRef.current = true;
         }
-    }, [agentId, sessionId, platformHint, onClose]);
+    }, [locked, agentId, sessionId, platformHint, onClose, onLastScreenshot, flashStatus]);
 
     // Handle cancel
     const handleCancel = useCallback(async () => {
+        if (!locked) {
+            // Still pass the last screenshot even if not locked
+            if (lastScreenshotRef.current && onLastScreenshot) {
+                console.log('[TakeControl] Passing last screenshot to parent on cancel (unlocked), size:', lastScreenshotRef.current.length);
+                onLastScreenshot(lastScreenshotRef.current);
+            } else {
+                console.log('[TakeControl] No screenshot to pass on cancel (unlocked): ref=', !!lastScreenshotRef.current, 'callback=', !!onLastScreenshot);
+            }
+            onClose();
+            return;
+        }
+        setLocked(false);
+        lockedRef.current = false;  // Prevent unmount cleanup from double-unlocking
+        flashStatus('Canceling...');
+
+        // Fetch one final high-quality screenshot to hand off to the live preview
+        try {
+            const finalRes = await controlApi.screenshot(agentId, { session_id: sessionId });
+            if (finalRes.screenshot) {
+                lastScreenshotRef.current = finalRes.screenshot.startsWith('data:') 
+                    ? finalRes.screenshot 
+                    : `data:image/png;base64,${finalRes.screenshot}`;
+            }
+        } catch (e) {
+            // fallback to whatever is in lastScreenshotRef
+        }
+
         try {
             await controlApi.unlock(agentId, {
                 session_id: sessionId,
                 export_cookies: false,
             });
         } catch {}
+        // Pass the last screenshot to the parent so live preview updates
+        if (lastScreenshotRef.current && onLastScreenshot) {
+            console.log('[TakeControl] Passing last screenshot to parent on cancel (locked), size:', lastScreenshotRef.current.length);
+            onLastScreenshot(lastScreenshotRef.current);
+        } else {
+            console.log('[TakeControl] No screenshot to pass on cancel (locked): ref=', !!lastScreenshotRef.current, 'callback=', !!onLastScreenshot);
+        }
         onClose();
-    }, [agentId, sessionId, onClose]);
+    }, [locked, agentId, sessionId, onClose, onLastScreenshot, flashStatus]);
 
     return (
         <div className="tc-overlay">
             <div className="tc-panel">
-                {/* Header */}
+
+                {/* ── Header ── */}
                 <div className="tc-header">
                     <div className="tc-header-left">
                         <span className="tc-live-dot" />
-                        <span className="tc-title">Take Control</span>
-                        <span className="tc-status">{statusText}</span>
+                        <span className="tc-title">Human Control</span>
+                        <span className="tc-divider" />
+                        <span className="tc-status" key={statusFlashKey}>{statusText}</span>
                     </div>
-                    <button className="tc-close-btn" onClick={handleCancel} title="Cancel">
+                    <button className="tc-close-btn" onClick={handleCancel} title="Exit without saving">
                         {CloseIcon}
                     </button>
                 </div>
 
-                {/* Screenshot area */}
+                {/* ── Screenshot area ── */}
                 <div className="tc-screenshot-area">
                     {screenshot ? (
-                        <img
-                            ref={imgRef}
-                            src={screenshot}
-                            alt="Browser session"
-                            className="tc-screenshot"
-                            onClick={handleScreenshotClick}
-                            style={{ cursor: locked ? 'crosshair' : 'default' }}
-                        />
+                        <div style={{ position: 'relative', lineHeight: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <img
+                                ref={imgRef}
+                                src={screenshot}
+                                alt="Browser session"
+                                className="tc-screenshot"
+                                onMouseDown={handleMouseDown}
+                                onMouseMove={handleMouseMove}
+                                onMouseUp={handleMouseUp}
+                                onMouseLeave={handleMouseLeave}
+                                style={{ cursor: locked ? 'crosshair' : 'default', userSelect: 'none', display: 'block', maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                                draggable={false}
+                            />
+                            {/* Drag arrow overlay */}
+                            {dragEnd && dragOriginRef.current && (
+                                <svg
+                                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+                                    viewBox={`0 0 ${imgRef.current?.offsetWidth ?? 800} ${imgRef.current?.offsetHeight ?? 600}`}
+                                    preserveAspectRatio="none"
+                                >
+                                    <defs>
+                                        <marker id="tc-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                                            <polygon points="0 0, 8 3, 0 6" fill="#6366f1" />
+                                        </marker>
+                                    </defs>
+                                    <circle
+                                        cx={dragOriginRef.current.screenX - (imgRef.current?.getBoundingClientRect().left ?? 0)}
+                                        cy={dragOriginRef.current.screenY - (imgRef.current?.getBoundingClientRect().top ?? 0)}
+                                        r="5" fill="#6366f1" opacity="0.9"
+                                    />
+                                    <line
+                                        x1={dragOriginRef.current.screenX - (imgRef.current?.getBoundingClientRect().left ?? 0)}
+                                        y1={dragOriginRef.current.screenY - (imgRef.current?.getBoundingClientRect().top ?? 0)}
+                                        x2={dragEnd.x - (imgRef.current?.getBoundingClientRect().left ?? 0)}
+                                        y2={dragEnd.y - (imgRef.current?.getBoundingClientRect().top ?? 0)}
+                                        stroke="#6366f1" strokeWidth="2" strokeDasharray="5 3"
+                                        markerEnd="url(#tc-arrowhead)" opacity="0.9"
+                                    />
+                                </svg>
+                            )}
+                        </div>
                     ) : (
                         <div className="tc-screenshot-placeholder">
-                            <span>Waiting for screenshot...</span>
+                            <div className="tc-placeholder-spinner" />
+                            <span>Connecting to session...</span>
                         </div>
                     )}
                 </div>
 
-                {/* Controls */}
-                <div className="tc-controls">
-                    {/* Text input */}
-                    <div className="tc-text-row">
+                {/* ── Toolbar ── */}
+                <div className="tc-toolbar">
+                    {/* Input + Send */}
+                    <div className="tc-input-row">
                         <input
                             className="tc-text-input"
                             type="text"
@@ -240,6 +471,7 @@ export default function TakeControlPanel({ agentId, sessionId, onClose }: Props)
                             className="tc-send-btn"
                             onClick={handleSendText}
                             disabled={!locked || !textInput.trim()}
+                            title="Send text"
                         >
                             {SendIcon}
                         </button>
@@ -258,30 +490,34 @@ export default function TakeControlPanel({ agentId, sessionId, onClose }: Props)
                             </button>
                         ))}
                     </div>
+                </div>
 
-                    {/* Platform hint + action buttons */}
-                    <div className="tc-action-row">
+                {/* ── Action bar ── */}
+                <div className="tc-action-bar">
+                    <div className="tc-domain-row">
+                        <span className="tc-domain-label">保存登录状态到</span>
                         <input
-                            className="tc-platform-input"
+                            className="tc-domain-input"
                             type="text"
                             value={platformHint}
                             onChange={(e) => setPlatformHint(e.target.value)}
-                            placeholder="Domain to save cookies for (e.g. baidu.com)"
+                            placeholder="example.com"
                         />
-                        <div className="tc-action-buttons">
-                            <button className="tc-btn-cancel" onClick={handleCancel}>
-                                Cancel
-                            </button>
-                            <button
-                                className="tc-btn-complete"
-                                onClick={handleComplete}
-                                disabled={!locked}
-                            >
-                                Complete Login
-                            </button>
-                        </div>
+                    </div>
+                    <div className="tc-action-buttons">
+                        <button className="tc-btn-cancel" onClick={handleCancel}>
+                            退出接管
+                        </button>
+                        <button
+                            className="tc-btn-save"
+                            onClick={handleComplete}
+                            disabled={!locked}
+                        >
+                            {SaveIcon} 保存登录状态
+                        </button>
                     </div>
                 </div>
+
             </div>
 
             <style>{takeControlStyles}</style>
@@ -295,93 +531,118 @@ const takeControlStyles = `
     position: fixed;
     inset: 0;
     z-index: 2000;
-    background: rgba(0, 0, 0, 0.85);
-    backdrop-filter: blur(8px);
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(12px);
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 24px;
 }
 
 .tc-panel {
-    width: 90vw;
-    max-width: 1100px;
-    max-height: 92vh;
-    background: var(--card-bg, #141422);
-    border: 1px solid var(--border-primary, rgba(255,255,255,0.1));
-    border-radius: 14px;
+    width: 100%;
+    max-width: 1080px;
+    height: 90vh;
+    background: #111118;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+    box-shadow: 0 32px 96px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.04) inset;
 }
 
+/* ── Header ── */
 .tc-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--border-primary, rgba(255,255,255,0.06));
+    padding: 10px 16px;
+    background: #0d0d14;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
     flex-shrink: 0;
 }
 
 .tc-header-left {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
+    min-width: 0;
 }
 
 .tc-live-dot {
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    background: #34c759;
-    animation: tc-pulse 2s ease-in-out infinite;
+    background: #22c55e;
+    flex-shrink: 0;
+    animation: tc-pulse 2.5s ease-in-out infinite;
+    box-shadow: 0 0 6px rgba(34,197,94,0.5);
 }
 @keyframes tc-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.6; transform: scale(0.85); }
 }
 
 .tc-title {
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 600;
-    color: var(--text-primary, #e0e0e0);
+    letter-spacing: 0.04em;
+    color: rgba(255,255,255,0.7);
+    text-transform: uppercase;
+    flex-shrink: 0;
+}
+
+.tc-divider {
+    width: 1px;
+    height: 14px;
+    background: rgba(255,255,255,0.12);
+    flex-shrink: 0;
 }
 
 .tc-status {
     font-size: 12px;
-    color: var(--text-tertiary, #888);
-    max-width: 400px;
+    color: rgba(255,255,255,0.4);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    animation: tc-status-flash 1.5s ease-out;
+}
+@keyframes tc-status-flash {
+    0%   { color: #818cf8; }
+    40%  { color: #818cf8; }
+    100% { color: rgba(255,255,255,0.4); }
 }
 
 .tc-close-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     background: transparent;
-    border: 1px solid transparent;
+    border: none;
     border-radius: 6px;
-    color: var(--text-tertiary, #888);
+    color: rgba(255,255,255,0.35);
     cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+    flex-shrink: 0;
 }
 .tc-close-btn:hover {
-    background: rgba(255,255,255,0.06);
-    color: var(--text-primary, #e0e0e0);
+    background: rgba(255,255,255,0.07);
+    color: rgba(255,255,255,0.75);
 }
 
+/* ── Screenshot area ── */
 .tc-screenshot-area {
     flex: 1;
-    min-height: 300px;
+    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    background: #0a0a18;
+    background: #08080f;
+    position: relative;
 }
 
 .tc-screenshot {
@@ -390,138 +651,188 @@ const takeControlStyles = `
     object-fit: contain;
     user-select: none;
     -webkit-user-drag: none;
+    display: block;
 }
 
 .tc-screenshot-placeholder {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 12px;
     width: 100%;
     height: 100%;
     font-size: 13px;
-    color: var(--text-tertiary, #666);
+    color: rgba(255,255,255,0.25);
 }
 
-.tc-controls {
-    padding: 12px 18px;
-    border-top: 1px solid var(--border-primary, rgba(255,255,255,0.06));
+.tc-placeholder-spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid rgba(255,255,255,0.08);
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: tc-spin 0.8s linear infinite;
+}
+@keyframes tc-spin { to { transform: rotate(360deg); } }
+
+/* ── Toolbar (text input + quick keys) ── */
+.tc-toolbar {
+    padding: 10px 14px 8px;
+    background: #0d0d14;
+    border-top: 1px solid rgba(255,255,255,0.05);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
 }
 
-.tc-text-row {
+.tc-input-row {
     display: flex;
-    gap: 8px;
+    gap: 6px;
 }
 
 .tc-text-input {
     flex: 1;
-    padding: 8px 12px;
+    padding: 7px 11px;
     font-size: 13px;
-    color: var(--text-primary, #e0e0e0);
-    background: var(--bg-secondary, rgba(255,255,255,0.04));
-    border: 1px solid var(--border-primary, rgba(255,255,255,0.1));
-    border-radius: 6px;
+    color: rgba(255,255,255,0.85);
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 7px;
     outline: none;
     font-family: inherit;
+    transition: border-color 0.15s;
 }
-.tc-text-input:focus {
-    border-color: var(--accent, #6366f1);
-}
+.tc-text-input::placeholder { color: rgba(255,255,255,0.22); }
+.tc-text-input:focus { border-color: rgba(99,102,241,0.6); background: rgba(99,102,241,0.06); }
+.tc-text-input:disabled { opacity: 0.4; }
 
 .tc-send-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
-    background: var(--accent, #6366f1);
+    width: 34px;
+    height: 34px;
+    background: #4f46e5;
     border: none;
-    border-radius: 6px;
+    border-radius: 7px;
     color: #fff;
     cursor: pointer;
     flex-shrink: 0;
+    transition: background 0.12s;
 }
-.tc-send-btn:hover { opacity: 0.9; }
-.tc-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.tc-send-btn:hover { background: #4338ca; }
+.tc-send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .tc-quick-keys {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 5px;
 }
 
 .tc-quick-key {
-    padding: 4px 10px;
+    padding: 3px 9px;
     font-size: 11px;
     font-weight: 500;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    color: var(--text-secondary, #b0b0b0);
-    background: var(--bg-tertiary, rgba(255,255,255,0.05));
-    border: 1px solid var(--border-primary, rgba(255,255,255,0.08));
-    border-radius: 4px;
+    font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+    color: rgba(255,255,255,0.5);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 5px;
     cursor: pointer;
-    transition: all 0.12s;
+    transition: all 0.1s;
 }
 .tc-quick-key:hover {
-    background: rgba(255,255,255,0.1);
-    border-color: rgba(255,255,255,0.15);
-    color: var(--text-primary, #e0e0e0);
+    background: rgba(255,255,255,0.09);
+    color: rgba(255,255,255,0.8);
+    border-color: rgba(255,255,255,0.14);
 }
-.tc-quick-key:disabled { opacity: 0.4; cursor: not-allowed; }
+.tc-quick-key:disabled { opacity: 0.3; cursor: not-allowed; }
 
-.tc-action-row {
+/* ── Action bar (domain + save/cancel) ── */
+.tc-action-bar {
     display: flex;
     align-items: center;
-    gap: 10px;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 14px;
+    background: #09090f;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
 }
 
-.tc-platform-input {
+.tc-domain-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     flex: 1;
-    padding: 7px 10px;
+    min-width: 0;
+}
+
+.tc-domain-label {
     font-size: 12px;
-    color: var(--text-primary, #e0e0e0);
-    background: var(--bg-secondary, rgba(255,255,255,0.04));
-    border: 1px solid var(--border-primary, rgba(255,255,255,0.08));
+    color: rgba(255,255,255,0.35);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.tc-domain-input {
+    flex: 1;
+    min-width: 0;
+    max-width: 260px;
+    padding: 5px 10px;
+    font-size: 12px;
+    color: rgba(255,255,255,0.75);
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
     border-radius: 6px;
     outline: none;
+    font-family: 'SF Mono', ui-monospace, monospace;
+    transition: border-color 0.15s;
 }
-.tc-platform-input:focus {
-    border-color: var(--accent, #6366f1);
-}
+.tc-domain-input::placeholder { color: rgba(255,255,255,0.2); }
+.tc-domain-input:focus { border-color: rgba(99,102,241,0.5); }
 
 .tc-action-buttons {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     flex-shrink: 0;
 }
 
 .tc-btn-cancel {
-    padding: 7px 16px;
-    font-size: 13px;
-    color: var(--text-secondary, #b0b0b0);
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.4);
     background: transparent;
-    border: 1px solid var(--border-primary, rgba(255,255,255,0.1));
-    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 7px;
     cursor: pointer;
+    transition: all 0.12s;
 }
 .tc-btn-cancel:hover {
     background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.65);
+    border-color: rgba(255,255,255,0.12);
 }
 
-.tc-btn-complete {
-    padding: 7px 20px;
-    font-size: 13px;
+.tc-btn-save {
+    display: flex;
+    align-items: center;
+    padding: 6px 16px;
+    font-size: 12px;
     font-weight: 600;
     color: #fff;
-    background: #34c759;
+    background: #4f46e5;
     border: none;
-    border-radius: 6px;
+    border-radius: 7px;
     cursor: pointer;
-    transition: opacity 0.15s;
+    transition: background 0.12s, box-shadow 0.12s;
+    box-shadow: 0 1px 8px rgba(79,70,229,0.35);
+    white-space: nowrap;
 }
-.tc-btn-complete:hover { opacity: 0.9; }
-.tc-btn-complete:disabled { opacity: 0.4; cursor: not-allowed; }
+.tc-btn-save:hover { background: #4338ca; box-shadow: 0 2px 12px rgba(79,70,229,0.5); }
+.tc-btn-save:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
 `;
+

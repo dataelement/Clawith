@@ -3,8 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { agentApi } from '../services/api';
-import { copyToClipboard } from '../utils/clipboard';
-
+import LinearCopyButton from '../components/LinearCopyButton';
 function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
     return fetch(`/api${url}`, {
@@ -28,8 +27,6 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     const [apiKey, setApiKey] = useState<string | null>(null);
     const [regenerating, setRegenerating] = useState(false);
     const [showConfirm, setShowConfirm] = useState(false);
-    const [copied, setCopied] = useState(false);
-
     // ─── Delete state ───────────────────────────────────
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [deleting, setDeleting] = useState(false);
@@ -45,21 +42,17 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
             // Refresh agent data so has_api_key updates
             queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
             if (autoCopy) {
-                handleCopy(result.api_key);
+                try {
+                    await navigator.clipboard.writeText(result.api_key);
+                } catch (err) {
+                    console.error('Failed to auto-copy to clipboard:', err);
+                }
             }
         } catch (e) {
             console.error('Failed to regenerate API key', e);
         } finally {
             setRegenerating(false);
         }
-    };
-
-    const handleCopy = async (text: string) => {
-        try {
-            await copyToClipboard(text);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        } catch { }
     };
 
     const handleDelete = async () => {
@@ -146,13 +139,13 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                                 }}>
                                     {activeKey}
                                 </code>
-                                <button
+                                <LinearCopyButton
                                     className="btn btn-secondary"
-                                    onClick={() => handleCopy(activeKey)}
-                                    style={{ padding: '4px 12px', fontSize: '12px', whiteSpace: 'nowrap' }}
-                                >
-                                    {copied ? 'Copied' : 'Copy'}
-                                </button>
+                                    textToCopy={activeKey}
+                                    label="Copy"
+                                    copiedLabel="Copied"
+                                    style={{ padding: '4px 12px', fontSize: '12px', whiteSpace: 'nowrap', minWidth: '70px', height: 'fit-content' }}
+                                />
                                 <button
                                     className="btn btn-secondary"
                                     onClick={() => setShowConfirm(true)}

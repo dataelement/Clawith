@@ -87,7 +87,14 @@ class AgentBayClient:
             raise RuntimeError("No active browser session")
         if not getattr(self, "_browser_initialized", False):
             from agentbay import BrowserOption
-            success = await asyncio.to_thread(self._session.browser.initialize, BrowserOption())
+            from agentbay._common.models.browser import BrowserViewport, BrowserScreen
+            
+            # Use high-res viewport for clearer screenshots and better layout
+            options = BrowserOption(
+                viewport=BrowserViewport(width=1920, height=1080),
+                screen=BrowserScreen(width=1920, height=1080)
+            )
+            success = await asyncio.to_thread(self._session.browser.initialize, options)
             if success is False:
                 raise RuntimeError("SDK failed to initialize browser (returned False).")
             self._browser_initialized = True
@@ -487,14 +494,14 @@ class AgentBayClient:
             from PIL import Image
 
             img = Image.open(BytesIO(screenshot_data))
-            # Resize to max 1280px wide for live preview
-            if img.width > 1280:
-                ratio = 1280 / img.width
+            # Resize to max 1920px wide for live preview (up from 1280px to preserve details)
+            if img.width > 1920:
+                ratio = 1920 / img.width
                 img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
             buffer = BytesIO()
-            img.save(buffer, format="JPEG", quality=60, optimize=True)
+            img.save(buffer, format="JPEG", quality=80, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
             return f"data:image/jpeg;base64,{b64}"
         except Exception as e:
@@ -543,14 +550,14 @@ class AgentBayClient:
 
 
             img = Image.open(BytesIO(screenshot_data))
-            # Resize to max 1280px wide for live preview
-            if img.width > 1280:
-                ratio = 1280 / img.width
+            # Resize to max 1920px wide for live preview (up from 1280px to preserve details)
+            if img.width > 1920:
+                ratio = 1920 / img.width
                 img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
             buffer = BytesIO()
-            img.save(buffer, format="JPEG", quality=60, optimize=True)
+            img.save(buffer, format="JPEG", quality=80, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
             return f"data:image/jpeg;base64,{b64}"
         except Exception as e:

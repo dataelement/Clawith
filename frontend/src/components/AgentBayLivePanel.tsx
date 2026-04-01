@@ -15,6 +15,8 @@ interface Props {
     onToggle: () => void;
     agentId?: string;     // needed for Take Control
     sessionId?: string;   // needed for Take Control
+    /** Called by TC panel on close to push the latest screenshot into liveState */
+    onLiveUpdate?: (env: 'browser' | 'desktop', screenshotDataUri: string) => void;
 }
 
 /* ── Tab Icons (Linear-style minimal SVGs) ── */
@@ -59,7 +61,7 @@ type TabType = 'desktop' | 'browser' | 'code';
 const MIN_WIDTH = 300;  // minimum panel width in px
 const MAX_WIDTH_VW = 0.65; // maximum panel width as fraction of viewport width
 
-export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId }: Props) {
+export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId, onLiveUpdate }: Props) {
     const { t } = useTranslation();
 
     // Take Control state
@@ -274,6 +276,13 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
                     agentId={agentId}
                     sessionId={sessionId}
                     onClose={() => setShowTakeControl(false)}
+                    onLastScreenshot={(dataUri) => {
+                        // Push the final TC screenshot to the live preview
+                        console.log('[LivePanel] Received last screenshot from TC, size:', dataUri.length, 'onLiveUpdate:', !!onLiveUpdate);
+                        if (onLiveUpdate) {
+                            onLiveUpdate('browser', dataUri);
+                        }
+                    }}
                 />
             )}
         </div>

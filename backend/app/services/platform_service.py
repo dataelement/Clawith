@@ -18,39 +18,38 @@ class PlatformService:
         ip_pattern = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
         return bool(ip_pattern.match(h))
 
-    async def get_public_base_url(self, db: AsyncSession, request: Request | None = None) -> str:
+    async def get_public_base_url(self, db: AsyncSession | None = None, request: Request | None = None) -> str:
         """Resolve the platform's public base URL with priority lookup.
         
         Priority:
-        1. SystemSetting (key: 'platform', value: {'public_base_url': '...'})
-        2. Environment variable (PUBLIC_BASE_URL)
-        3. Incoming request's base URL (fallback)
+        1. Environment variable (PUBLIC_BASE_URL) - from .env or docker
+        2. Incoming request's base URL (browser address)
+        3. Hardcoded fallback (https://try.clawith.ai)
         """
-        # 1. Try SystemSetting
-        result = await db.execute(select(SystemSetting).where(SystemSetting.key == "platform"))
-        setting = result.scalar_one_or_none()
-        if setting and setting.value and setting.value.get("public_base_url"):
-            return setting.value.get("public_base_url").rstrip("/")
-
-        # 2. Try environment variable
+        # 1. Try environment variable
         env_url = os.environ.get("PUBLIC_BASE_URL")
         if env_url:
             return env_url.rstrip("/")
 
-        # 3. Fallback to request
+        # 2. Fallback to request (browser address)
         if request:
             # Note: request.base_url might include trailing slash
             return str(request.base_url).rstrip("/")
 
-        # Absolute fallback for background tasks without request context
-        return "http://localhost:8000"
+        # 3. Absolute fallback
+        return "https://try.clawith.ai"
+
 
     async def get_tenant_sso_base_url(self, db: AsyncSession, tenant, request: Request | None = None) -> str:
         """Generate the SSO base URL for a tenant based on IP/Domain logic.
         
-        - If base is IP: return base
-        - If base is Domain: return {tenant_slug}.{domain}
+        Priority:
+        1. Explicit sso_domain stored in tenant record (if present)
+        2. Auto-generated URL based on the unified public_base_url (ENV > Request > Fallback)
         """
+        if tenant.sso_domain:
+            return tenant.sso_domain.rstrip("/")
+
         base_url = await self.get_public_base_url(db, request)
         
         # Parse protocol and host
@@ -76,7 +75,16 @@ class PlatformService:
             if host == "localhost":
                 return f"{protocol}://{host}{port}"
                 
-            return f"{protocol}://{tenant.slug}.{host}{port}"
+            # Generic logic: if host has a subdomain (e.g. try.clawith.ai), 
+            # we strip the first component to form a base for tenant subdomains.
+            h_parts = host.split(".")
+            if len(h_parts) > 2:
+                target_host = ".".join(h_parts[1:])
+            else:
+                target_host = host
+                
+            return f"{protocol}://{tenant.slug}.{target_host}{port}"
+
 
 # Global instance
 platform_service = PlatformService()

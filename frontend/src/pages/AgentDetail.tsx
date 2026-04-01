@@ -56,6 +56,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const [toolTab, setToolTab] = useState<'company' | 'installed'>('company');
     const [deletingToolId, setDeletingToolId] = useState<string | null>(null);
     const [configCategory, setConfigCategory] = useState<string | null>(null);
+    const [focusedField, setFocusedField] = useState<string | null>(null);
     // Global (company-level) config for the currently open modal — used to show
     // lock hints and prevent agent from overriding company-set fields.
     const [configGlobalData, setConfigGlobalData] = useState<Record<string, any>>({});
@@ -136,6 +137,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         Object.assign(merged, agentCfg);
         setConfigData(merged);
         setConfigJson(JSON.stringify(agentCfg, null, 2));
+        setFocusedField(null);
     };
 
     const openCategoryConfig = async (category: string) => {
@@ -143,6 +145,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         setConfigData({});
         setConfigGlobalData({});
         setConfigSaving(true);
+        setFocusedField(null);
         try {
             const token = localStorage.getItem('token');
             const res = await fetch(`/api/tools/agents/${agentId}/category-config/${category}`, {
@@ -292,7 +295,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                 <span style={{ fontSize: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>Built-in</span>
                                             )}
                                             {hasAgentOverride && (
-                                                <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>Configured</span>
+                                                <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>{t('enterprise.tools.configured', 'Configured')}</span>
                                             )}
                                         </div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -482,14 +485,34 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         </label>
                                                     ) : field.type === 'password' ? (
                                                         <>
-                                                        {/* Show placeholder indicating company key is in use; leave blank to use it */}
-                                                        <input type="password" autoComplete="new-password" className="form-input"
-                                                            value={configData[field.key] ?? ''}
-                                                            placeholder={(() => {
-                                                                const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
-                                                                return globalVal ? `Using company key (${globalVal})` : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'));
-                                                            })()}
-                                                            onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                        {(() => {
+                                                            const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
+                                                            const isUsingGlobal = globalVal && !configData[field.key];
+                                                            
+                                                            if (isUsingGlobal && focusedField !== field.key) {
+                                                                return (
+                                                                    <div 
+                                                                        className="form-input" 
+                                                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'text', background: 'var(--bg-tertiary)', borderColor: 'var(--border)', overflow: 'hidden' }}
+                                                                        onClick={() => setFocusedField(field.key)}
+                                                                    >
+                                                                        <span style={{ flex: 1, color: 'var(--text-tertiary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('agent.tools.usingCompanyKey', 'Using company key ({{val}})', { val: globalVal })}</span>
+                                                                        <span style={{ fontSize: '12px', color: 'var(--accent-primary)', flexShrink: 0, cursor: 'pointer' }}>{t('common.edit', 'Edit')}</span>
+                                                                    </div>
+                                                                );
+                                                            }
+
+                                                            return (
+                                                                <input type="password" autoComplete="new-password" className="form-input"
+                                                                    autoFocus={focusedField === field.key}
+                                                                    value={configData[field.key] ?? ''}
+                                                                    placeholder={globalVal ? t('agent.tools.usingCompanyKey', 'Using company key ({{val}})', { val: globalVal }) : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'))}
+                                                                    onBlur={(e) => {
+                                                                        if (!e.target.value) setFocusedField(null);
+                                                                    }}
+                                                                    onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                            );
+                                                        })()}
                                                         {/* Per-provider help text for auth_code */}
                                                         {field.key === 'auth_code' && (() => {
                                                             const providerField = configTool?.config_schema?.fields?.find((f: any) => f.key === 'email_provider');
@@ -515,7 +538,36 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                     ) : field.type === 'number' ? (
                                                         <input type="number" className="form-input" value={configData[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''} min={field.min} max={field.max} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value ? Number(e.target.value) : '' }))} />
                                                     ) : (
-                                                        <input type="text" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                        <>
+                                                        {(() => {
+                                                            const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
+                                                            const isUsingGlobal = globalVal && !configData[field.key];
+                                                            
+                                                            if (isUsingGlobal && focusedField !== field.key) {
+                                                                return (
+                                                                    <div 
+                                                                        className="form-input" 
+                                                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'text', background: 'var(--bg-tertiary)', borderColor: 'var(--border)', overflow: 'hidden' }}
+                                                                        onClick={() => setFocusedField(field.key)}
+                                                                    >
+                                                                        <span style={{ flex: 1, color: 'var(--text-tertiary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('agent.tools.usingCompanyConfig', 'Using company config ({{val}})', { val: globalVal })}</span>
+                                                                        <span style={{ fontSize: '12px', color: 'var(--accent-primary)', flexShrink: 0, cursor: 'pointer' }}>{t('common.edit', 'Edit')}</span>
+                                                                    </div>
+                                                                );
+                                                            }
+
+                                                            return (
+                                                                <input type="text" className="form-input"
+                                                                    autoFocus={focusedField === field.key}
+                                                                    value={configData[field.key] ?? ''}
+                                                                    placeholder={globalVal ? t('agent.tools.usingCompanyConfig', 'Using company config ({{val}})', { val: globalVal }) : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'))}
+                                                                    onBlur={(e) => {
+                                                                        if (!e.target.value) setFocusedField(null);
+                                                                    }}
+                                                                    onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                            );
+                                                        })()}
+                                                        </>
                                                     )}
                                                 </div>
                                             );
@@ -3851,7 +3903,8 @@ function AgentDetailInner() {
                                                     value={chatInput}
                                                     onChange={e => setChatInput(e.target.value)}
                                                     onKeyDown={e => {
-                                                        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                                                        // Enter sends the message; Shift+Enter inserts a newline
+                                                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
                                                             e.preventDefault();
                                                             sendChatMsg();
                                                         }

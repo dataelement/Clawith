@@ -6,7 +6,7 @@ import uuid
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -91,7 +91,12 @@ async def _send_verification_email_task(
     db: AsyncSession,
 ) -> None:
     """Helper to create verification token and add email task to background tasks."""
-    if not settings.SYSTEM_SMTP_HOST or not settings.SYSTEM_EMAIL_FROM_ADDRESS:
+    # Check if email is configured — either via DB (platform settings UI) or env vars.
+    # We must check the DB config too, since most users configure SMTP via the UI.
+    from app.services.system_email_service import resolve_email_config_async
+    email_config = await resolve_email_config_async(db)
+    if not email_config:
+        logger.debug("No email config found (env or DB), skipping verification email")
         return
 
     from app.services.email_verification_service import email_verification_service
@@ -556,10 +561,10 @@ async def forgot_password(
     db: AsyncSession = Depends(get_db),
 ):
     """Request a password reset link for a global Identity."""
-    from app.config import get_settings
-    settings = get_settings()
+    from app.services.system_email_service import resolve_email_config_async
+    email_config = await resolve_email_config_async(db)
 
-    if not settings.SYSTEM_SMTP_HOST or not settings.SYSTEM_EMAIL_FROM_ADDRESS:
+    if not email_config:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password reset is currently unavailable (no mail server configured)."
@@ -732,6 +737,7 @@ async def get_my_tenants(
 @router.post("/switch-tenant", response_model=TenantSwitchResponse)
 async def switch_tenant(
     data: TenantSwitchRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -768,18 +774,10 @@ async def switch_tenant(
     token = create_access_token(str(target_user.id), target_user.role)
 
     # 4. Determine redirect URL
-    redirect_url = None
+    # Determine redirect URL (Priority: sso_domain > ENV > Request > Fallback)
+    from app.services.platform_service import platform_service
+    redirect_url = await platform_service.get_tenant_sso_base_url(db, tenant, request)
 
-    # Priority 1: Tenant SSO domain — stored as full URL now (e.g. "https://acme.clawith.ai")
-    if tenant.sso_domain:
-        redirect_url = tenant.sso_domain
-
-    # Priority 2: Global public_base_url from system settings
-    if not redirect_url:
-        result = await db.execute(select(SystemSetting).where(SystemSetting.key == "platform"))
-        platform_setting = result.scalar_one_or_none()
-        if platform_setting:
-            redirect_url = platform_setting.value.get("public_base_url") or platform_setting.value.get("public_url")
 
     # Include token in redirect URL for cross-domain switching if needed
     if redirect_url:
@@ -1059,8 +1057,7 @@ async def resend_verification(
     db: AsyncSession = Depends(get_db),
 ):
     """Resend email verification link."""
-    from app.config import get_settings
-    settings = get_settings()
+    from app.services.system_email_service import resolve_email_config_async
 
     # Always return success to prevent email enumeration
     generic_response = {
@@ -1068,7 +1065,9 @@ async def resend_verification(
         "message": "If an account with that email exists, a verification email has been sent.",
     }
 
-    if not settings.SYSTEM_SMTP_HOST or not settings.SYSTEM_EMAIL_FROM_ADDRESS:
+    # Check if email is configured (DB-only, no env fallback)
+    email_config = await resolve_email_config_async(db)
+    if not email_config:
         return generic_response
 
     # Find Identity by email

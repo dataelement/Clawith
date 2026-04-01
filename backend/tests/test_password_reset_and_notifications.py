@@ -13,7 +13,6 @@ from app.core.security import verify_password
 from app.models.user import User
 from app.schemas.schemas import ForgotPasswordRequest, ResetPasswordRequest
 from app.services import password_reset_service, system_email_service
-from app.services.system_email_service import SystemEmailConfigError
 
 
 class DummyScalars:
@@ -187,22 +186,7 @@ async def test_forgot_password_returns_generic_response_for_unknown_email():
     assert background_tasks.tasks == []
 
 
-@pytest.mark.asyncio
-async def test_forgot_password_hides_email_delivery_failures(monkeypatch):
-    user = make_user()
-    db = RecordingDB([DummyResult(user)])
-    background_tasks = BackgroundTasks()
 
-    def fake_get_system_email_config():
-        raise RuntimeError("smtp failed")
-
-    monkeypatch.setattr("app.services.system_email_service.get_system_email_config", fake_get_system_email_config)
-
-    response = await auth_api.forgot_password(ForgotPasswordRequest(email=user.email), background_tasks, db)
-
-    assert response["ok"] is True
-    assert "password reset email" in response["message"]
-    assert background_tasks.tasks == []
 
 
 @pytest.mark.asyncio
@@ -219,10 +203,7 @@ async def test_forgot_password_queues_background_email(monkeypatch):
 
     monkeypatch.setattr(password_reset_service, "create_password_reset_token", fake_create_password_reset_token)
     monkeypatch.setattr(password_reset_service, "build_password_reset_url", fake_build_password_reset_url)
-    monkeypatch.setattr(
-        "app.services.system_email_service.get_system_email_config",
-        lambda: SimpleNamespace(from_address="bot@example.com"),
-    )
+
 
     response = await auth_api.forgot_password(ForgotPasswordRequest(email=user.email), background_tasks, db)
 
@@ -231,46 +212,7 @@ async def test_forgot_password_queues_background_email(monkeypatch):
     assert len(background_tasks.tasks) == 1
 
 
-def test_system_email_config_uses_configured_timeout(monkeypatch):
-    monkeypatch.setattr(
-        system_email_service,
-        "get_settings",
-        lambda: SimpleNamespace(
-            SYSTEM_EMAIL_FROM_ADDRESS="bot@example.com",
-            SYSTEM_EMAIL_FROM_NAME="Clawith",
-            SYSTEM_SMTP_HOST="smtp.example.com",
-            SYSTEM_SMTP_PORT=465,
-            SYSTEM_SMTP_USERNAME="",
-            SYSTEM_SMTP_PASSWORD="secret",
-            SYSTEM_SMTP_SSL=True,
-            SYSTEM_SMTP_TIMEOUT_SECONDS=42,
-        ),
-    )
 
-    config = system_email_service.get_system_email_config()
-
-    assert config.smtp_timeout_seconds == 42
-
-
-def test_system_email_config_clamps_non_positive_timeout(monkeypatch):
-    monkeypatch.setattr(
-        system_email_service,
-        "get_settings",
-        lambda: SimpleNamespace(
-            SYSTEM_EMAIL_FROM_ADDRESS="bot@example.com",
-            SYSTEM_EMAIL_FROM_NAME="Clawith",
-            SYSTEM_SMTP_HOST="smtp.example.com",
-            SYSTEM_SMTP_PORT=465,
-            SYSTEM_SMTP_USERNAME="",
-            SYSTEM_SMTP_PASSWORD="secret",
-            SYSTEM_SMTP_SSL=True,
-            SYSTEM_SMTP_TIMEOUT_SECONDS=0,
-        ),
-    )
-
-    config = system_email_service.get_system_email_config()
-
-    assert config.smtp_timeout_seconds == 1
 
 
 def test_send_system_email_uses_configured_timeout(monkeypatch):
@@ -297,24 +239,20 @@ def test_send_system_email_uses_configured_timeout(monkeypatch):
             captured["to"] = to_addresses
             captured["has_message"] = bool(message)
 
-    monkeypatch.setattr(
-        system_email_service,
-        "get_system_email_config",
-        lambda: system_email_service.SystemEmailConfig(
-            from_address="bot@example.com",
-            from_name="Clawith",
-            smtp_host="smtp.example.com",
-            smtp_port=465,
-            smtp_username="bot@example.com",
-            smtp_password="secret",
-            smtp_ssl=True,
-            smtp_timeout_seconds=27,
-        ),
+    config = system_email_service.SystemEmailConfig(
+        from_address="bot@example.com",
+        from_name="Clawith",
+        smtp_host="smtp.example.com",
+        smtp_port=465,
+        smtp_username="bot@example.com",
+        smtp_password="secret",
+        smtp_ssl=True,
+        smtp_timeout_seconds=27,
     )
     monkeypatch.setattr(system_email_service.smtplib, "SMTP_SSL", DummySMTPSSL)
-    monkeypatch.setattr(system_email_service, "_force_ipv4", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(system_email_service, "force_ipv4", lambda: contextlib.nullcontext())
 
-    system_email_service._send_system_email_sync("alice@example.com", "subject", "body")
+    system_email_service._send_email_with_config_sync(config, "alice@example.com", "subject", "body")
 
     assert captured["timeout"] == 27
     assert captured["to"] == ["alice@example.com"]
@@ -344,12 +282,12 @@ async def test_reset_password_updates_user(monkeypatch):
 async def test_broadcast_notification_rejects_missing_system_email_config(monkeypatch):
     current_user = make_user(role="org_admin")
 
-    def fake_get_system_email_config():
-        raise SystemEmailConfigError("missing smtp host")
+    async def fake_resolve_email_config_async(db):
+        return None
 
     monkeypatch.setattr(
-        "app.services.system_email_service.get_system_email_config",
-        fake_get_system_email_config,
+        "app.services.system_email_service.resolve_email_config_async",
+        fake_resolve_email_config_async,
     )
 
     with pytest.raises(HTTPException) as excinfo:
@@ -374,9 +312,20 @@ async def test_broadcast_notification_queues_email_delivery(monkeypatch):
     ])
     background_tasks = BackgroundTasks()
 
+    async def fake_resolve_email_config_async(db):
+        return system_email_service.SystemEmailConfig(
+            from_address="bot@example.com",
+            from_name="Clawith",
+            smtp_host="smtp.example.com",
+            smtp_port=465,
+            smtp_username="bot@example.com",
+            smtp_password="secret",
+            smtp_ssl=True,
+            smtp_timeout_seconds=15,
+        )
     monkeypatch.setattr(
-        "app.services.system_email_service.get_system_email_config",
-        lambda: SimpleNamespace(from_address="bot@example.com"),
+        "app.services.system_email_service.resolve_email_config_async",
+        fake_resolve_email_config_async,
     )
     notifications = []
 

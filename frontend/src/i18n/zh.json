@@ -452,6 +452,8 @@
         "encryptKey": "Encrypt Key",
         "webhookUrl": "Webhook URL",
         "configured": "已配置",
+      "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
+      "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})",
         "notConfigured": "未配置",
         "saveChannel": "保存配置",
         "syncHint": "在配置飞书机器人之前，请先在企业设置 → 组织架构中同步您的组织结构。这确保机器人能够识别消息发送者。"
@@ -531,7 +533,10 @@
       "companyTools": "公司配置工具",
       "agentInstalled": "数字员工自行安装的工具",
       "noInstalled": "暂无自行安装的工具",
-      "noCompany": "暂无公司统一配置的工具"
+      "noCompany": "暂无公司统一配置的工具",
+      "configured": "已配置",
+      "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
+      "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})"
     },
     "toolCategories": {
       "file": "文件操作",
@@ -777,6 +782,9 @@
       "maxOutputTokens": "最大输出 Token",
       "maxOutputTokensPlaceholder": "提供商默认",
       "maxOutputTokensDesc": "覆盖默认的输出 Token 限制。从提供商自动填充；根据需要调整。",
+      "requestTimeout": "请求超时（秒）",
+      "requestTimeoutPlaceholder": "留空使用默认 120 (建议本地模型填 300+)",
+      "requestTimeoutDesc": "覆盖默认的接口超时时间。大参数量或本地部署模型推理较慢时建议调大。",
       "enabled": "启用",
       "disabled": "禁用",
       "save": "保存",
@@ -1030,7 +1038,6 @@
     "ssoDomainPlaceholder": "例如: acme.clawith.com",
     "confirmDisable": "停用此公司？所有用户和数字员工将被暂停。",
 
-    "copied": "已复制",
     "showing": "{{start}}-{{end}} / {{total}}",
     "prev": "上一页",
     "next": "下一页"

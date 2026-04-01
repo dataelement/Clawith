@@ -2,8 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { channelApi } from '../services/api';
-import { copyToClipboard } from '../utils/clipboard';
-
+import LinearCopyButton from './LinearCopyButton';
 // ─── Shared fetchAuth (same as AgentDetail) ─────────────
 function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -248,26 +247,7 @@ const FEISHU_PERM_DISPLAY = `{
 }`;
 
 
-function CopyBtn({ url }: { url: string }) {
-    const [copied, setCopied] = useState(false);
-    return (
-        <button title="Copy" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: copied ? 'rgb(16,185,129)' : 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
-            onClick={() => {
-                copyToClipboard(url).then(() => {
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 1500);
-                });
-            }}>
-            {copied ? (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-            ) : (
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="4" y="4" width="9" height="11" rx="1.5" /><path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" />
-                </svg>
-            )}
-        </button>
-    );
-}
+// CopyBtn is removed, using LinearCopyButton directly
 
 // ─── Main Component ─────────────────────────────────────
 export default function ChannelConfig({ mode, agentId, canManage = true, values, onChange }: ChannelConfigProps) {
@@ -522,16 +502,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                     <div style={{ margin: '8px 0', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
                             <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t('channelGuide.feishuPermJson')}</span>
-                            <button type="button" style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
-                                onClick={(e) => {
-                                    const btn = e.currentTarget;
-                                    copyToClipboard(FEISHU_PERM_JSON).then(() => {
-                                        const o = btn.textContent;
-                                        btn.textContent = t('channelGuide.feishuPermCopied');
-                                        btn.style.color = 'rgb(16,185,129)';
-                                        setTimeout(() => { btn.textContent = o; btn.style.color = ''; }, 1500);
-                                    });
-                                }}>{t('channelGuide.feishuPermCopy')}</button>
+                            <LinearCopyButton
+                                textToCopy={FEISHU_PERM_JSON}
+                                label={t('channelGuide.feishuPermCopy', 'Copy')}
+                                copiedLabel={t('channelGuide.feishuPermCopied', 'Copied')}
+                                className=""
+                                style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
+                            />
                         </div>
                         <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all' }}>{FEISHU_PERM_DISPLAY}</pre>
                     </div>
@@ -759,7 +736,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                         <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>{ch.webhookLabel}</div>
                                         <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
                                             <span style={{ color: 'var(--accent-primary)' }}>{webhookUrl}</span>
-                                            <CopyBtn url={webhookUrl} />
+                                            <LinearCopyButton
+                                                textToCopy={webhookUrl}
+                                                label="Copy"
+                                                iconOnly={true}
+                                                className=""
+                                                style={{ marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle' }}
+                                            />
                                         </div>
                                     </div>
                                 )}

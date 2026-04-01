@@ -443,11 +443,24 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             sender_name = _user_info.get("name", "")
                             sender_user_id_feishu = _user_info.get("user_id", "")
                             sender_email = _user_info.get("email", "") or _user_info.get("enterprise_email", "")
+                            # Feishu contact API returns 'avatar' as a dict
+                            # (keys: avatar_240, avatar_640, avatar_origin), NOT a plain URL.
+                            # We must extract a string to avoid a DataError when writing to the DB.
+                            _raw_avatar = _user_info.get("avatar")
+                            if isinstance(_raw_avatar, dict):
+                                _avatar_url = (
+                                    _raw_avatar.get("avatar_240")
+                                    or _raw_avatar.get("avatar_640")
+                                    or _raw_avatar.get("avatar_origin")
+                                    or ""
+                                )
+                            else:
+                                _avatar_url = _raw_avatar or ""
                             extra_info = {
                                 "name": sender_name,
                                 "email": sender_email,
                                 "mobile": _user_info.get("mobile"),
-                                "avatar_url": _user_info.get("avatar"),
+                                "avatar_url": _avatar_url,
                                 "unionid": _user_info.get("user_id"),  # tenant-level user_id
                                 "open_id": sender_open_id,
                             }

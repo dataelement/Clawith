@@ -408,11 +408,16 @@ export default function Layout() {
         setTenantFormError('');
         setTenantFormLoading(true);
         try {
-            await tenantApi.join(joinInviteCode);
-            // Refresh user to get the new tenant
-            const me = await authApi.me();
-            const token = localStorage.getItem('token');
-            if (token) setAuth(me, token);
+            const result = await tenantApi.join(joinInviteCode);
+            if (result.access_token) {
+                // Multi-tenant: backend created a new User record, switch context
+                localStorage.setItem('token', result.access_token);
+            } else {
+                // Registration flow: same user updated, refresh store
+                const me = await authApi.me();
+                const token = localStorage.getItem('token');
+                if (token) setAuth(me, token);
+            }
             setShowTenantMenu(false);
             window.location.reload();
         } catch (err: any) {
@@ -428,11 +433,16 @@ export default function Layout() {
         setTenantFormError('');
         setTenantFormLoading(true);
         try {
-            await tenantApi.selfCreate({ name: createCompanyName });
-            // Refresh user to get the new tenant
-            const me = await authApi.me();
-            const token = localStorage.getItem('token');
-            if (token) setAuth(me, token);
+            const result = await tenantApi.selfCreate({ name: createCompanyName });
+            if (result.access_token) {
+                // Multi-tenant: backend created a new User record, switch context
+                localStorage.setItem('token', result.access_token);
+            } else {
+                // Registration flow: same user updated, refresh store
+                const me = await authApi.me();
+                const token = localStorage.getItem('token');
+                if (token) setAuth(me, token);
+            }
             setShowTenantMenu(false);
             window.location.reload();
         } catch (err: any) {

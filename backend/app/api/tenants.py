@@ -65,9 +65,13 @@ def _slugify(name: str) -> str:
     return slug
 
 
-# ─── Self-Service: Create Company ───────────────────────
+class SelfCreateResponse(BaseModel):
+    """Response for self-create company, includes token for context switching."""
+    tenant: TenantOut
+    access_token: str | None = None  # Non-null when a new User record was created (multi-tenant switch)
 
-@router.post("/self-create", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
+
+@router.post("/self-create", response_model=SelfCreateResponse, status_code=status.HTTP_201_CREATED)
 async def self_create_company(
     data: TenantCreate,
     current_user: User = Depends(get_authenticated_user),
@@ -75,7 +79,10 @@ async def self_create_company(
 ):
     """Create a new company (self-service). The creator becomes org_admin.
 
-    Allows unverified users to create company during registration flow."""
+    Supports both:
+    - Registration flow (user has no tenant yet): assigns tenant directly
+    - Switch-org flow (user already has a tenant): creates a new User record for the new tenant
+    """
     # Block self-creation if locked to a specific tenant (Dedicated Link flow)
     if data.target_tenant_id is not None:
         raise HTTPException(status_code=403, detail="Company creation is not allowed via this link. Please join your assigned organization.")
@@ -95,17 +102,55 @@ async def self_create_company(
     db.add(tenant)
     await db.flush()
 
-    # Assign creator as org_admin
-    current_user.tenant_id = tenant.id
-    current_user.role = "org_admin" if current_user.role == "member" else current_user.role
-    # Inherit quota defaults from new tenant
-    current_user.quota_message_limit = tenant.default_message_limit
-    current_user.quota_message_period = tenant.default_message_period
-    current_user.quota_max_agents = tenant.default_max_agents
-    current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
-    await db.flush()
+    access_token = None
 
-    return TenantOut.model_validate(tenant)
+    if current_user.tenant_id is not None:
+        # Multi-tenant: user already belongs to a company.
+        # Create a NEW User record for the new tenant instead of overwriting.
+        from app.core.security import create_access_token
+        from app.models.participant import Participant
+
+        new_user = User(
+            identity_id=current_user.identity_id,
+            tenant_id=tenant.id,
+            display_name=current_user.display_name,
+            role="org_admin",
+            registration_source="web",
+            is_active=current_user.is_active,
+            quota_message_limit=tenant.default_message_limit,
+            quota_message_period=tenant.default_message_period,
+            quota_max_agents=tenant.default_max_agents,
+            quota_agent_ttl_hours=tenant.default_agent_ttl_hours,
+        )
+        db.add(new_user)
+        await db.flush()
+
+        # Create Participant for the new user record
+        db.add(Participant(
+            type="user",
+            ref_id=new_user.id,
+            display_name=new_user.display_name,
+            avatar_url=new_user.avatar_url,
+        ))
+        await db.flush()
+
+        # Generate token scoped to the new user so frontend can switch context
+        access_token = create_access_token(str(new_user.id), new_user.role)
+    else:
+        # Registration flow: user has no tenant yet, assign directly
+        current_user.tenant_id = tenant.id
+        current_user.role = "org_admin" if current_user.role == "member" else current_user.role
+        # Inherit quota defaults from new tenant
+        current_user.quota_message_limit = tenant.default_message_limit
+        current_user.quota_message_period = tenant.default_message_period
+        current_user.quota_max_agents = tenant.default_max_agents
+        current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
+        await db.flush()
+
+    return SelfCreateResponse(
+        tenant=TenantOut.model_validate(tenant),
+        access_token=access_token,
+    )
 
 
 # ─── Self-Service: Join Company via Invite Code ─────────
@@ -118,6 +163,7 @@ class JoinRequest(BaseModel):
 class JoinResponse(BaseModel):
     tenant: TenantOut
     role: str
+    access_token: str | None = None  # Non-null when a new User record was created (multi-tenant switch)
 
 
 @router.post("/join", response_model=JoinResponse)
@@ -128,10 +174,9 @@ async def join_company(
 ):
     """Join an existing company using an invitation code.
 
-    Allows unverified users to join company during registration flow."""
-    if current_user.tenant_id is not None:
-        raise HTTPException(status_code=400, detail="You already belong to a company")
-
+    Supports both:
+    - Registration flow (user has no tenant yet): assigns tenant directly
+    - Switch-org flow (user already has a tenant): creates a new User record"""
     from app.models.invitation_code import InvitationCode
     ic_result = await db.execute(
         select(InvitationCode).where(
@@ -157,6 +202,16 @@ async def join_company(
     if not tenant or not tenant.is_active:
         raise HTTPException(status_code=400, detail="Company not found or is disabled")
 
+    # Check if user already belongs to this specific tenant
+    existing_membership = await db.execute(
+        select(User).where(
+            User.identity_id == current_user.identity_id,
+            User.tenant_id == tenant.id,
+        )
+    )
+    if existing_membership.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="You already belong to this company")
+
     # Check if this company has an org_admin already
     admin_check = await db.execute(
         select(sqla_func.count()).select_from(User).where(
@@ -169,15 +224,52 @@ async def join_company(
     # First joiner of an empty company becomes org_admin
     assigned_role = "member" if has_admin else "org_admin"
 
-    # Assign user to company
-    current_user.tenant_id = tenant.id
-    if current_user.role == "member":
-        current_user.role = assigned_role
-    # Inherit quota defaults from tenant
-    current_user.quota_message_limit = tenant.default_message_limit
-    current_user.quota_message_period = tenant.default_message_period
-    current_user.quota_max_agents = tenant.default_max_agents
-    current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
+    access_token = None
+
+    if current_user.tenant_id is not None:
+        # Multi-tenant: user already belongs to a company.
+        # Create a NEW User record for the new tenant.
+        from app.core.security import create_access_token
+        from app.models.participant import Participant
+
+        new_user = User(
+            identity_id=current_user.identity_id,
+            tenant_id=tenant.id,
+            display_name=current_user.display_name,
+            role=assigned_role,
+            registration_source="web",
+            is_active=current_user.is_active,
+            quota_message_limit=tenant.default_message_limit,
+            quota_message_period=tenant.default_message_period,
+            quota_max_agents=tenant.default_max_agents,
+            quota_agent_ttl_hours=tenant.default_agent_ttl_hours,
+        )
+        db.add(new_user)
+        await db.flush()
+
+        # Create Participant for the new user record
+        db.add(Participant(
+            type="user",
+            ref_id=new_user.id,
+            display_name=new_user.display_name,
+            avatar_url=new_user.avatar_url,
+        ))
+        await db.flush()
+
+        # Generate token scoped to the new user so frontend can switch context
+        access_token = create_access_token(str(new_user.id), new_user.role)
+        final_role = new_user.role
+    else:
+        # Registration flow: user has no tenant yet, assign directly
+        current_user.tenant_id = tenant.id
+        if current_user.role == "member":
+            current_user.role = assigned_role
+        # Inherit quota defaults from tenant
+        current_user.quota_message_limit = tenant.default_message_limit
+        current_user.quota_message_period = tenant.default_message_period
+        current_user.quota_max_agents = tenant.default_max_agents
+        current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
+        final_role = current_user.role
 
     # Increment invitation code usage
     code_obj.used_count += 1
@@ -185,7 +277,8 @@ async def join_company(
 
     return JoinResponse(
         tenant=TenantOut.model_validate(tenant),
-        role=current_user.role,
+        role=final_role,
+        access_token=access_token,
     )
 
 

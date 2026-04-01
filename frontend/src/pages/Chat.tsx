@@ -388,8 +388,8 @@ export default function Chat() {
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        // Ctrl+Enter (or Cmd+Enter on Mac) triggers send; plain Enter inserts a newline
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing && !isWaiting && !streaming) {
+        // Enter sends the message; Shift+Enter inserts a newline
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !streaming) {
             e.preventDefault();
             sendMessage();
         }
@@ -660,6 +660,13 @@ export default function Chat() {
                         onToggle={() => setLivePanelVisible(v => !v)}
                         agentId={id}
                         sessionId={wsSessionId}
+                        onLiveUpdate={(env, screenshotDataUri) => {
+                            // Update live preview with the latest screenshot from Take Control
+                            setLiveState(prev => ({
+                                ...prev,
+                                [env]: { screenshotUrl: screenshotDataUri },
+                            }));
+                        }}
                     />
                 )}
             </div>

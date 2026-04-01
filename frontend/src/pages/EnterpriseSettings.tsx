@@ -8,8 +8,7 @@ import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import UserManagement from './UserManagement';
 import InvitationCodes from './InvitationCodes';
-import { copyToClipboard } from '../utils/clipboard';
-
+import LinearCopyButton from '../components/LinearCopyButton';
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -27,7 +26,7 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 interface LLMModel {
     id: string; provider: string; model: string; label: string;
-    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; temperature?: number; created_at: string;
+    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; request_timeout?: number; temperature?: number; created_at: string;
 }
 
 interface LLMProviderSpec {
@@ -206,28 +205,29 @@ function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
                         {t('enterprise.identity.ssoSubdomain', 'SSO Login URL')}
                     </label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <input
-                            className="form-input"
-                            readOnly
-                            value={domain ? (domain.startsWith('http') ? domain : `https://${domain}`) : ''}
-                            placeholder={t('enterprise.identity.ssoUrlEmpty', '请先开启 SSO 以生成地址')}
-                            style={{ fontSize: '12px', flex: 1, maxWidth: '400px', background: 'var(--bg-primary)', cursor: 'default' }}
-                        />
-                        <button
+                        <div style={{
+                            flex: 1, maxWidth: '400px',
+                            padding: '8px 12px',
+                            background: 'var(--bg-elevated)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            color: domain ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                            fontFamily: 'monospace',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
+                        }}>
+                            {domain ? (domain.startsWith('http') ? domain : `https://${domain}`) : t('enterprise.identity.ssoUrlEmpty', '请先开启 SSO 以生成地址')}
+                        </div>
+                        <LinearCopyButton
                             className="btn btn-ghost btn-sm"
-                            style={{ fontSize: '11px' }}
+                            style={{ fontSize: '11px', width: 'auto', minWidth: '70px', height: '33px' }}
                             disabled={!domain}
-                            onClick={(e) => {
-                                e.preventDefault();
-                                navigator.clipboard.writeText(domain.startsWith('http') ? domain : `https://${domain}`);
-                                const el = e.currentTarget;
-                                const old = el.textContent;
-                                el.textContent = 'Copied✓';
-                                setTimeout(() => { el.textContent = old; }, 2000);
-                            }}
-                        >
-                            {t('common.copy', 'Copy')}
-                        </button>
+                            textToCopy={domain ? (domain.startsWith('http') ? domain : `https://${domain}`) : ''}
+                            label={t('common.copy', 'Copy')}
+                            copiedLabel="Copied"
+                        />
                     </div>
                     <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
                         {t('enterprise.identity.ssoSubdomainHint', 'Share this URL with your team. SSO login buttons will appear when they visit this address.')}
@@ -238,28 +238,29 @@ function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
                         {t('enterprise.identity.callbackUrl', 'Redirect URL (paste this in your app settings)')}
                     </label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <input
-                            className="form-input"
-                            readOnly
-                            value={callbackUrl}
-                            placeholder={t('enterprise.identity.ssoUrlEmpty', '请先开启 SSO 以生成地址')}
-                            style={{ fontSize: '12px', flex: 1, maxWidth: '400px', background: 'var(--bg-primary)', cursor: 'default' }}
-                        />
-                        <button
+                        <div style={{
+                            flex: 1, maxWidth: '400px',
+                            padding: '8px 12px',
+                            background: 'var(--bg-elevated)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            color: callbackUrl ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                            fontFamily: 'monospace',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
+                        }}>
+                            {callbackUrl || t('enterprise.identity.ssoUrlEmpty', '请先开启 SSO 以生成地址')}
+                        </div>
+                        <LinearCopyButton
                             className="btn btn-ghost btn-sm"
-                            style={{ fontSize: '11px' }}
+                            style={{ fontSize: '11px', width: 'auto', minWidth: '70px', height: '33px' }}
                             disabled={!callbackUrl}
-                            onClick={(e) => {
-                                e.preventDefault();
-                                navigator.clipboard.writeText(callbackUrl);
-                                const el = e.currentTarget;
-                                const old = el.textContent;
-                                el.textContent = 'Copied✓';
-                                setTimeout(() => { el.textContent = old; }, 2000);
-                            }}
-                        >
-                            {t('common.copy', 'Copy')}
-                        </button>
+                            textToCopy={callbackUrl}
+                            label={t('common.copy', 'Copy')}
+                            copiedLabel="Copied"
+                        />
                     </div>
                     <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
                         {t('enterprise.identity.callbackUrlHint', "Add this URL as the OAuth redirect URI in your identity provider's app configuration.")}
@@ -275,6 +276,9 @@ function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
 function OrgTab({ tenant }: { tenant: any }) {
     const { t } = useTranslation();
     const qc = useQueryClient();
+
+
+
 
     const SsoStatus = () => {
         const [isExpanded, setIsExpanded] = useState(!!tenant?.sso_enabled);
@@ -580,13 +584,13 @@ function OrgTab({ tenant }: { tenant: any }) {
                                         {t('enterprise.org.feishuGuideText', 'Permission JSON (bulk import)')}
                                     </div>
                                     <div style={{ position: 'relative', background: '#282c34', borderRadius: '6px', padding: '12px', paddingRight: '40px', color: '#abb2bf', fontFamily: 'monospace', fontSize: '11px', whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
-                                        <button
+                                        <LinearCopyButton
                                             className="btn btn-ghost"
-                                            style={{ position: 'absolute', top: '8px', right: '8px', fontSize: '10px', color: '#abb2bf', padding: '4px 8px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', border: 'none', borderRadius: '4px' }}
-                                            onClick={(e) => { e.preventDefault(); copyToClipboard(FEISHU_SYNC_PERM_JSON); e.currentTarget.textContent = 'Copied✓'; setTimeout(() => { e.currentTarget.textContent = 'Copy'; }, 2000); }}
-                                        >
-                                            Copy
-                                        </button>
+                                            style={{ position: 'absolute', top: '8px', right: '8px', fontSize: '10px', color: '#abb2bf', padding: '4px 8px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', border: 'none', borderRadius: '4px', height: 'fit-content', minWidth: '60px' }}
+                                            textToCopy={FEISHU_SYNC_PERM_JSON}
+                                            label="Copy"
+                                            copiedLabel="Copied✓"
+                                        />
                                         {FEISHU_SYNC_PERM_JSON}
                                     </div>
                                     <div style={{ marginTop: '8px', color: 'var(--text-secondary)' }}>
@@ -843,6 +847,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                     })}
                 </div>
             </div>
+
         </div>
     );
 }
@@ -1688,68 +1693,6 @@ export default function EnterpriseSettings() {
     const [companyIntroSaving, setCompanyIntroSaving] = useState(false);
     const [companyIntroSaved, setCompanyIntroSaved] = useState(false);
 
-    // System email configuration
-    const [systemEmailConfig, setSystemEmailConfig] = useState({
-        SYSTEM_EMAIL_FROM_ADDRESS: '',
-        SYSTEM_EMAIL_FROM_NAME: 'Clawith',
-        SYSTEM_SMTP_HOST: '',
-        SYSTEM_SMTP_PORT: 465,
-        SYSTEM_SMTP_USERNAME: '',
-        SYSTEM_SMTP_PASSWORD: '',
-        SYSTEM_SMTP_SSL: true,
-        SYSTEM_SMTP_TIMEOUT_SECONDS: 15,
-    });
-    const [emailConfigSaving, setEmailConfigSaving] = useState(false);
-    const [emailConfigSaved, setEmailConfigSaved] = useState(false);
-
-    // Load system email config
-    useEffect(() => {
-        setSystemEmailConfig({
-            SYSTEM_EMAIL_FROM_ADDRESS: '',
-            SYSTEM_EMAIL_FROM_NAME: 'Clawith',
-            SYSTEM_SMTP_HOST: '',
-            SYSTEM_SMTP_PORT: 465,
-            SYSTEM_SMTP_USERNAME: '',
-            SYSTEM_SMTP_PASSWORD: '',
-            SYSTEM_SMTP_SSL: true,
-            SYSTEM_SMTP_TIMEOUT_SECONDS: 15,
-        });
-        if (!selectedTenantId) return;
-        const emailConfigKey = `system_email_${selectedTenantId}`;
-        fetchJson<any>(`/enterprise/system-settings/${emailConfigKey}`)
-            .then(d => {
-                if (d?.value) {
-                    setSystemEmailConfig({
-                        SYSTEM_EMAIL_FROM_ADDRESS: d.value.SYSTEM_EMAIL_FROM_ADDRESS || '',
-                        SYSTEM_EMAIL_FROM_NAME: d.value.SYSTEM_EMAIL_FROM_NAME || 'Clawith',
-                        SYSTEM_SMTP_HOST: d.value.SYSTEM_SMTP_HOST || '',
-                        SYSTEM_SMTP_PORT: d.value.SYSTEM_SMTP_PORT || 465,
-                        SYSTEM_SMTP_USERNAME: d.value.SYSTEM_SMTP_USERNAME || '',
-                        SYSTEM_SMTP_PASSWORD: d.value.SYSTEM_SMTP_PASSWORD || '',
-                        SYSTEM_SMTP_SSL: d.value.SYSTEM_SMTP_SSL !== undefined ? d.value.SYSTEM_SMTP_SSL : true,
-                        SYSTEM_SMTP_TIMEOUT_SECONDS: d.value.SYSTEM_SMTP_TIMEOUT_SECONDS || 15,
-                    });
-                }
-            })
-            .catch(() => { });
-    }, [selectedTenantId]);
-
-    const saveEmailConfig = async () => {
-        setEmailConfigSaving(true);
-        try {
-            const emailConfigKey = `system_email_${selectedTenantId}`;
-            await fetchJson(`/enterprise/system-settings/${emailConfigKey}`, {
-                method: 'PUT',
-                body: JSON.stringify({ value: systemEmailConfig }),
-            });
-            setEmailConfigSaved(true);
-            setTimeout(() => setEmailConfigSaved(false), 2000);
-        } catch (e: any) {
-            alert('Failed to save email config: ' + (e.message || 'Unknown error'));
-        } finally {
-            setEmailConfigSaving(false);
-        }
-    };
 
     // Company intro key: always per-tenant scoped
     const companyIntroKey = selectedTenantId ? `company_intro_${selectedTenantId}` : 'company_intro';
@@ -1901,7 +1844,7 @@ export default function EnterpriseSettings() {
     });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, temperature: '' as string });
+    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, request_timeout: '' as string, temperature: '' as string });
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
@@ -2004,6 +1947,7 @@ export default function EnterpriseSettings() {
                                     base_url: defaultSpec?.default_base_url || '',
                                     label: '', supports_vision: false,
                                     max_output_tokens: defaultSpec ? String(defaultSpec.default_max_tokens) : '4096',
+                                    request_timeout: '',
                                     temperature: '',
                                 });
                                 setShowAddModel(true);
@@ -2070,6 +2014,11 @@ export default function EnterpriseSettings() {
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc', 'Limits generation length')}</div>
                                     </div>
                                     <div className="form-group">
+                                        <label className="form-label">{t('enterprise.llm.requestTimeout', 'Request Timeout (s)')}</label>
+                                        <input className="form-input" type="number" min="1" placeholder={t('enterprise.llm.requestTimeoutPlaceholder', 'e.g. 120 (Leave empty for default)')} value={modelForm.request_timeout} onChange={e => setModelForm({ ...modelForm, request_timeout: e.target.value })} />
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.requestTimeoutDesc', 'Increase for slow local models.')}</div>
+                                    </div>
+                                    <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.temperature', 'Temperature')}</label>
                                         <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={e => setModelForm({ ...modelForm, temperature: e.target.value })} />
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
@@ -2107,6 +2056,7 @@ export default function EnterpriseSettings() {
                                         const data = {
                                             ...modelForm,
                                             max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
+                                            request_timeout: modelForm.request_timeout ? Number(modelForm.request_timeout) : null,
                                             temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
                                         };
                                         addModel.mutate(data);
@@ -2173,6 +2123,11 @@ export default function EnterpriseSettings() {
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc', 'Limits generation length')}</div>
                                                 </div>
                                                 <div className="form-group">
+                                                    <label className="form-label">{t('enterprise.llm.requestTimeout', 'Request Timeout (s)')}</label>
+                                                    <input className="form-input" type="number" min="1" placeholder={t('enterprise.llm.requestTimeoutPlaceholder', 'e.g. 120 (Leave empty for default)')} value={modelForm.request_timeout} onChange={e => setModelForm({ ...modelForm, request_timeout: e.target.value })} />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.requestTimeoutDesc', 'Increase for slow local models.')}</div>
+                                                </div>
+                                                <div className="form-group">
                                                     <label className="form-label">{t('enterprise.llm.temperature', 'Temperature')}</label>
                                                     <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={e => setModelForm({ ...modelForm, temperature: e.target.value })} />
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
@@ -2211,6 +2166,7 @@ export default function EnterpriseSettings() {
                                                     const data = {
                                                         ...modelForm,
                                                         max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
+                                                        request_timeout: modelForm.request_timeout ? Number(modelForm.request_timeout) : null,
                                                         temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
                                                     };
                                                     updateModel.mutate({ id: editingModelId!, data });
@@ -2259,7 +2215,7 @@ export default function EnterpriseSettings() {
                                                 {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>Vision</span>}
                                                 <button className="btn btn-ghost" onClick={() => {
                                                     setEditingModelId(m.id);
-                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
+                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', request_timeout: m.request_timeout ? String(m.request_timeout) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
                                                     setShowAddModel(true);
                                                 }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
@@ -2370,125 +2326,6 @@ export default function EnterpriseSettings() {
 
                         {/* ── 0.5. Company Timezone ── */}
                         <CompanyTimezoneEditor key={`tz-${selectedTenantId}`} />
-
-                        {/* ── 1. System Email Configuration ── */}
-                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.systemEmail.title', 'System Email Configuration')}</h3>
-                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                            {t('enterprise.systemEmail.description', 'Configure SMTP settings for sending system emails such as password resets and notifications.')}
-                        </p>
-                        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.fromAddress', 'From Email Address')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        value={systemEmailConfig.SYSTEM_EMAIL_FROM_ADDRESS}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_EMAIL_FROM_ADDRESS: e.target.value })}
-                                        placeholder="noreply@yourcompany.com"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.fromName', 'From Name')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        value={systemEmailConfig.SYSTEM_EMAIL_FROM_NAME}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_EMAIL_FROM_NAME: e.target.value })}
-                                        placeholder="Clawith"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.smtpHost', 'SMTP Host')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        value={systemEmailConfig.SYSTEM_SMTP_HOST}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_HOST: e.target.value })}
-                                        placeholder="smtp.gmail.com"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.smtpPort', 'SMTP Port')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        type="number"
-                                        value={systemEmailConfig.SYSTEM_SMTP_PORT}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_PORT: parseInt(e.target.value) || 465 })}
-                                        placeholder="465"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.username', 'SMTP Username')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        value={systemEmailConfig.SYSTEM_SMTP_USERNAME}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_USERNAME: e.target.value })}
-                                        placeholder="your-email@gmail.com"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.password', 'SMTP Password / App Password')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        type="password"
-                                        value={systemEmailConfig.SYSTEM_SMTP_PASSWORD}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_PASSWORD: e.target.value })}
-                                        placeholder="••••••••"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.timeout', 'Timeout (seconds)')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        type="number"
-                                        value={systemEmailConfig.SYSTEM_SMTP_TIMEOUT_SECONDS}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_TIMEOUT_SECONDS: parseInt(e.target.value) || 15 })}
-                                        placeholder="15"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', paddingTop: '24px' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={systemEmailConfig.SYSTEM_SMTP_SSL}
-                                            onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_SSL: e.target.checked })}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '13px' }}>
-                                            {t('enterprise.systemEmail.useSsl', 'Use SSL/TLS')}
-                                        </span>
-                                    </label>
-                                </div>
-                            </div>
-                            <div style={{ marginTop: '16px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                <button className="btn btn-primary" onClick={saveEmailConfig} disabled={emailConfigSaving}>
-                                    {emailConfigSaving ? t('common.loading') : t('common.save', 'Save')}
-                                </button>
-                                {emailConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('common.saved', 'Saved')}</span>}
-                            </div>
-                            <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                💡 {t('enterprise.systemEmail.hint', 'For Gmail, use an App Password. For QQ/163 mail, use the SMTP authorization code.')}
-                            </div>
-                        </div>
 
                         {/* ── 2. Company Intro ── */}
                         <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyIntro.title', 'Company Intro')}</h3>
@@ -2902,7 +2739,9 @@ export default function EnterpriseSettings() {
                                                                     }}
                                                                     style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
                                                                     title={`Configure ${category}`}
-                                                                >Configure</button>
+                                                                >
+                                                                    ⚙️ {t('enterprise.tools.configure', 'Configure')}
+                                                                </button>
                                                             )}
                                                             {/* Category Bulk Toggle */}
                                                             <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${categoryLabels[category] || category} tools`}>
@@ -2945,6 +2784,9 @@ export default function EnterpriseSettings() {
                                                                                         {tool.type === 'mcp' ? 'MCP' : 'Built-in'}
                                                                                     </span>
                                                                                     {tool.is_default && <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.15)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>Default</span>}
+                                                                                    {tool.config && Object.keys(tool.config).length > 0 && (
+                                                                                        <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>{t('enterprise.tools.configured', 'Configured')}</span>
+                                                                                    )}
                                                                                 </div>
                                                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                                                                     {tool.description?.slice(0, 80)}
@@ -2956,13 +2798,12 @@ export default function EnterpriseSettings() {
                                                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
                                                                             {/* Per-tool config button: only if the tool has its own schema AND is NOT part of a category config */}
                                                                             {hasOwnConfig && (
-                                                                                <button className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
-                                                                                    if (isEditing) {
-                                                                                        setEditingToolId(null);
-                                                                                    } else {
+                                                                                <button
+                                                                                    style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                                                                    title={t('enterprise.tools.configureSettings', 'Configure settings')}
+                                                                                    onClick={async () => {
                                                                                         setEditingToolId(tool.id);
                                                                                         const cfg = { ...tool.config };
-                                                                                        // Pre-load jina api_key from system_settings
                                                                                         if (tool.name === 'jina_search' || tool.name === 'jina_read') {
                                                                                             try {
                                                                                                 const token = localStorage.getItem('token');
@@ -2972,8 +2813,10 @@ export default function EnterpriseSettings() {
                                                                                             } catch { }
                                                                                         }
                                                                                         setEditingConfig(cfg);
-                                                                                    }
-                                                                                }}>{isEditing ? t('enterprise.tools.collapse') : t('enterprise.tools.configure')}</button>
+                                                                                    }}
+                                                                                >
+                                                                                    ⚙️ {t('enterprise.tools.configure')}
+                                                                                </button>
                                                                             )}
 
                                                                             {/* Delete (non-builtin only) */}

@@ -97,23 +97,17 @@ class EmailVerificationService:
         display_name: str,
         verification_code: str,
         expiry_minutes: int,
-        tenant_id: uuid.UUID | None = None,
     ) -> None:
-        """Send an email verification code."""
-        from app.services.system_email_service import send_system_email
+        """Send an email verification code using the configured template."""
+        from app.services.system_email_service import send_system_email, render_email_template
 
-        await send_system_email(
-            to,
-            "Verify your Clawith email address",
-            (
-                f"Hello {display_name},\n\n"
-                f"Welcome to Clawith! Please use the following 6-digit code to verify your email address:\n\n"
-                f"Verification code: {verification_code}\n\n"
-                f"This code expires in {expiry_minutes} minutes. "
-                f"If you did not create an account, you can ignore this email."
-            ),
-            tenant_id=tenant_id,
-        )
+        variables = {
+            "display_name": display_name,
+            "verification_code": verification_code,
+            "expiry_minutes": str(expiry_minutes),
+        }
+        subject, body = await render_email_template("email_verification", variables)
+        await send_system_email(to, subject, body)
 
 # Global Instance
 email_verification_service = EmailVerificationService()

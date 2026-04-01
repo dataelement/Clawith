@@ -357,9 +357,18 @@ async def get_agent(
     out = AgentOut.model_validate(agent).model_dump()
     out["access_level"] = access_level
 
-    # Resolve creator username (one extra query, only on detail page)
+    # Resolve creator username (one extra query, only on detail page).
+    # IMPORTANT: User.username is an association_proxy to User.identity.username.
+    # We must eagerly load the identity relationship (selectinload) to avoid
+    # async lazy-loading errors (SQLAlchemy raises MissingGreenlet in async context).
     if agent.creator_id:
-        creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
+        from sqlalchemy.orm import selectinload
+        from app.models.user import Identity  # noqa: F401
+        creator_result = await db.execute(
+            select(User)
+            .where(User.id == agent.creator_id)
+            .options(selectinload(User.identity))
+        )
         creator = creator_result.scalar_one_or_none()
         out["creator_username"] = creator.username if creator else None
 

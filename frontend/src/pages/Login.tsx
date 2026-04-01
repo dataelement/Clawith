@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import { authApi, tenantApi, fetchJson } from '../services/api';
@@ -8,11 +8,16 @@ import type { TokenResponse } from '../types';
 export default function Login() {
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
+    const invitationCode = searchParams.get('code');
+    const invitedEmail = searchParams.get('email') || '';
     const setAuth = useAuthStore((s) => s.setAuth);
-    const [isRegister, setIsRegister] = useState(false);
+    // Default to register if there's an invitation code — will be overridden after email check
+    const [isRegister, setIsRegister] = useState(!!invitationCode);
     const [error, setError] = useState('');
     const [successMessage, setSuccessMessage] = useState('');
     const [loading, setLoading] = useState(false);
+    const [checkingEmail, setCheckingEmail] = useState(!!invitationCode && !!invitedEmail);
     const [tenant, setTenant] = useState<any>(null);
     const [resolving, setResolving] = useState(true);
     const [ssoProviders, setSsoProviders] = useState<any[]>([]);
@@ -21,14 +26,34 @@ export default function Login() {
     const [tenantSelection, setTenantSelection] = useState<any[] | null>(null);
 
     const [form, setForm] = useState({
-        login_identifier: '',
+        login_identifier: invitedEmail,  // Pre-fill invited email if present
         password: '',
         tenant_id: '',
     });
 
-    // Login page always uses dark theme (hero panel is dark)
     useEffect(() => {
         document.documentElement.setAttribute('data-theme', 'dark');
+
+        // If arriving via invitation link with email, check whether the email is already registered
+        // to decide whether to show login or register form.
+        if (invitationCode && invitedEmail) {
+            setCheckingEmail(true);
+            fetch('/api/enterprise/check-email-exists', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: invitedEmail }),
+            })
+                .then(r => r.json())
+                .then((res: { exists: boolean }) => {
+                    // If email already registered → show login form; otherwise show register form
+                    setIsRegister(!res.exists);
+                })
+                .catch(() => {
+                    // On error, fall back to register form (safe default)
+                    setIsRegister(true);
+                })
+                .finally(() => setCheckingEmail(false));
+        }
 
         // Resolve tenant by domain (for SSO detection only, not for login form)
         const domain = window.location.host;
@@ -95,6 +120,7 @@ export default function Login() {
                     email: form.login_identifier,
                     password: form.password,
                     display_name: form.login_identifier.split('@')[0],
+                    ...(invitationCode ? { invitation_code: invitationCode } : {})
                 });
                 // Save authentication state for company selection (user not active yet)
                 if (regRes.access_token && regRes.user) {
@@ -111,7 +137,13 @@ export default function Login() {
                 const res = await authApi.login({
                     login_identifier: form.login_identifier,
                     password: form.password,
-                    ...(tenant?.id ? { tenant_id: tenant.id } : {}),
+                    // Only pass tenant_id for dedicated SSO subdomain login (not IP-mode SSO).
+                    // IP-mode SSO resolves a tenant for SSO buttons only and must NOT constrain
+                    // password-based login to that tenant (it would reject users from other tenants).
+                    ...(tenant?.id && tenant.sso_domain && !tenant.sso_domain.match(/^https?:\/\/\d{1,3}(\.\d{1,3}){3}(:\d+)?$/)
+                        ? { tenant_id: tenant.id }
+                        : {}
+                    ),
                 });
 
                 // Check if multi-tenant selection is needed
@@ -123,6 +155,30 @@ export default function Login() {
 
                 const tokenRes = res as TokenResponse;
                 setAuth(tokenRes.user, tokenRes.access_token);
+
+                // If the user arrived via an invitation link, join the invited company
+                // before redirecting. The /tenants/join endpoint handles:
+                // - Existing user with no tenant → assigns the tenant directly
+                // - Existing user with a tenant → creates a new User record for the new tenant
+                //   and returns a new access_token scoped to that tenant.
+                if (invitationCode) {
+                    try {
+                        const joinRes = await tenantApi.join(invitationCode);
+                        if (joinRes?.access_token) {
+                            // Store the new tenant-scoped token first so that
+                            // the subsequent /auth/me call uses the correct context.
+                            localStorage.setItem('token', joinRes.access_token);
+                            const meRes = await authApi.me();
+                            setAuth(meRes, joinRes.access_token);
+                        }
+                        navigate('/');
+                        return;
+                    } catch (joinErr: any) {
+                        // If joining fails (code already used, code invalid, already a member),
+                        // just continue into the user's existing company — don't block login.
+                        console.warn('[invitation] join failed, entering original company:', joinErr.message);
+                    }
+                }
 
                 if (tokenRes.user && !tokenRes.user.tenant_id) {
                     navigate('/setup-company');
@@ -154,6 +210,8 @@ export default function Login() {
                     setError(t('auth.notInOrganization', 'This account does not belong to this organization.'));
                 } else if (msg.includes('500') || msg.includes('Internal Server Error')) {
                     setError(t('auth.serverStarting'));
+                } else if (msg.includes('Email already registered') || msg.includes('该邮箱已注册')) {
+                    setError(t('auth.emailAlreadyRegistered', '该邮箱已注册，请直接登录'));
                 } else {
                     setError(msg);
                 }
@@ -262,6 +320,16 @@ export default function Login() {
                 </div>
 
                 <div className="login-form-wrapper">
+                    {checkingEmail ? (
+                        // While resolving invitation email, show a minimal loading indicator
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '200px', gap: '16px' }}>
+                            <span className="login-spinner" style={{ width: 24, height: 24 }} />
+                            <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>
+                                {t('auth.checkingInvitation', 'Checking invitation...')}
+                            </span>
+                        </div>
+                    ) : (
+                    <>
                     <div className="login-form-header">
                         <div className="login-form-logo"><img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />Clawith</div>
                         <h2 className="login-form-title">
@@ -417,64 +485,131 @@ export default function Login() {
                     {tenantSelection && (
                         <div style={{
                             position: 'fixed',
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            bottom: 0,
-                            background: 'rgba(0,0,0,0.5)',
+                            top: 0, left: 0, right: 0, bottom: 0,
+                            background: 'rgba(5, 5, 8, 0.82)',
+                            backdropFilter: 'blur(8px)',
+                            WebkitBackdropFilter: 'blur(8px)',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            zIndex: 1000,
+                            zIndex: 2000,
                         }}>
+                            {/* Dark glass card — stands out via border + shadow, not color inversion */}
                             <div style={{
-                                background: 'var(--bg-primary)',
+                                background: '#161620',
                                 borderRadius: '16px',
                                 padding: '32px',
                                 maxWidth: '400px',
                                 width: '90%',
+                                border: '1px solid rgba(255, 255, 255, 0.12)',
+                                boxShadow: '0 0 0 1px rgba(255,255,255,0.04), 0 32px 80px rgba(0,0,0,0.7)',
                             }}>
-                                <h3 style={{ fontSize: '18px', fontWeight: 600, marginBottom: '16px', color: 'var(--text-primary)' }}>
+                                <h3 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px', color: 'rgba(255,255,255,0.95)' }}>
                                     {t('auth.selectOrganization', '选择公司')}
                                 </h3>
-                                <p style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '20px' }}>
+                                <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.42)', marginBottom: '20px', lineHeight: '1.5' }}>
                                     {t('auth.multiTenantPrompt', '该邮箱对应多个公司，请选择要登录的公司：')}
                                 </p>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                    {tenantSelection.map((t: any) => (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                    {tenantSelection.map((tenant: any) => (
                                         <button
-                                            key={t.tenant_id}
-                                            onClick={() => handleTenantSelect(t.tenant_id)}
+                                            key={tenant.tenant_id}
+                                            onClick={() => handleTenantSelect(tenant.tenant_id)}
                                             style={{
                                                 padding: '12px 16px',
-                                                borderRadius: '8px',
-                                                border: '1px solid var(--border-subtle)',
-                                                background: 'var(--bg-secondary)',
-                                                color: 'var(--text-primary)',
+                                                borderRadius: '10px',
+                                                border: '1px solid rgba(255,255,255,0.09)',
+                                                background: 'rgba(255,255,255,0.05)',
+                                                color: 'rgba(255,255,255,0.88)',
                                                 fontSize: '14px',
+                                                fontWeight: 500,
                                                 cursor: 'pointer',
                                                 textAlign: 'left',
+                                                transition: 'background 0.15s, border-color 0.15s',
+                                            }}
+                                            onMouseEnter={e => {
+                                                (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.10)';
+                                                (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.20)';
+                                            }}
+                                            onMouseLeave={e => {
+                                                (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.05)';
+                                                (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.09)';
                                             }}
                                         >
-                                            {t.tenant_name} {t.tenant_slug && `(${t.tenant_slug})`}
+                                            {tenant.tenant_name} {tenant.tenant_slug && `(${tenant.tenant_slug})`}
                                         </button>
                                     ))}
+                                    {/* Create or Join Organization */}
+                                    <button
+                                        onClick={async () => {
+                                            // Log in with the first tenant to get a valid token, then redirect to company setup
+                                            try {
+                                                setLoading(true);
+                                                const firstTenant = tenantSelection[0];
+                                                const res = await authApi.login({
+                                                    login_identifier: form.login_identifier,
+                                                    password: form.password,
+                                                    tenant_id: firstTenant.tenant_id,
+                                                });
+                                                const tokenRes = res as TokenResponse;
+                                                setAuth(tokenRes.user, tokenRes.access_token);
+                                                setTenantSelection(null);
+                                                navigate('/setup-company?from=tenant-selection');
+                                            } catch (err: any) {
+                                                setError(err.message || 'Failed');
+                                                setTenantSelection(null);
+                                            } finally {
+                                                setLoading(false);
+                                            }
+                                        }}
+                                        style={{
+                                            padding: '12px 16px',
+                                            borderRadius: '10px',
+                                            border: '1px dashed rgba(255,255,255,0.15)',
+                                            background: 'transparent',
+                                            color: 'rgba(255,255,255,0.38)',
+                                            fontSize: '14px',
+                                            cursor: 'pointer',
+                                            textAlign: 'left',
+                                            transition: 'border-color 0.15s, color 0.15s',
+                                        }}
+                                        onMouseEnter={e => {
+                                            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.28)';
+                                            (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.6)';
+                                        }}
+                                        onMouseLeave={e => {
+                                            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.15)';
+                                            (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.38)';
+                                        }}
+                                    >
+                                        {t('auth.createOrJoinOrganization', 'Create or Join Organization')}
+                                    </button>
                                 </div>
                                 <button
                                     onClick={() => setTenantSelection(null)}
                                     style={{
-                                        marginTop: '20px',
+                                        marginTop: '16px',
                                         padding: '10px 16px',
-                                        borderRadius: '8px',
-                                        border: 'none',
-                                        background: 'var(--bg-tertiary)',
-                                        color: 'var(--text-primary)',
+                                        borderRadius: '10px',
+                                        border: '1px solid rgba(255,255,255,0.07)',
+                                        background: 'rgba(255,255,255,0.04)',
+                                        color: 'rgba(255,255,255,0.5)',
                                         fontSize: '14px',
+                                        fontWeight: 500,
                                         cursor: 'pointer',
                                         width: '100%',
+                                        transition: 'background 0.15s, color 0.15s',
+                                    }}
+                                    onMouseEnter={e => {
+                                        (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.08)';
+                                        (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.7)';
+                                    }}
+                                    onMouseLeave={e => {
+                                        (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)';
+                                        (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.5)';
                                     }}
                                 >
-                                    {t('common.cancel', '取消')}
+                                    {t('common.cancel', 'Cancel')}
                                 </button>
                             </div>
                         </div>
@@ -486,6 +621,8 @@ export default function Login() {
                             {isRegister ? t('auth.goLogin') : t('auth.goRegister')}
                         </a>
                     </div>
+                    </>
+                    )}
                 </div>
             </div>
         </div>

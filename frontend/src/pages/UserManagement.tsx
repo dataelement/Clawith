@@ -4,6 +4,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
+import LinearCopyButton from '../components/LinearCopyButton';
 
 interface UserInfo {
     id: string;
@@ -67,7 +68,7 @@ export default function UserManagement() {
     const [inviteEmails, setInviteEmails] = useState('');
     const [inviting, setInviting] = useState(false);
     const [inviteResult, setInviteResult] = useState<{ invited: number; message: string } | null>(null);
-    const [inviteLink, setInviteLink] = useState('');
+
 
     // Search, sort & pagination
     const [searchQuery, setSearchQuery] = useState('');
@@ -140,19 +141,7 @@ export default function UserManagement() {
         setChangingRoleUserId(null);
     };
 
-    // ── Invite handlers ──
-    const generateInviteLink = async () => {
-        try {
-            const tenantId = localStorage.getItem('current_tenant_id') || '';
-            const data = await fetchJson<any>(`/enterprise/invitation-codes/generate${tenantId ? `?tenant_id=${tenantId}` : ''}`, { method: 'POST' });
-            const url = new URL(window.location.origin + '/login');
-            if (data.code) url.searchParams.set('code', data.code);
-            setInviteLink(url.toString());
-        } catch (e: any) {
-            setToast(`Error: ${e.message}`);
-            setTimeout(() => setToast(''), 3000);
-        }
-    };
+    // ── Handlers ──
 
     const handleSendInvites = async () => {
         const emails = inviteEmails.split(/[\n,]+/).map(e => e.trim()).filter(Boolean);
@@ -273,7 +262,7 @@ export default function UserManagement() {
                         <button
                             className="btn btn-primary"
                             style={{ fontSize: '13px', padding: '6px 16px' }}
-                            onClick={() => { setShowInviteModal(true); setInviteEmails(''); setInviteResult(null); setInviteLink(''); }}
+                            onClick={() => { setShowInviteModal(true); setInviteEmails(''); setInviteResult(null); }}
                         >
                             {isChinese ? '邀请新用户' : 'Invite Users'}
                         </button>
@@ -508,29 +497,7 @@ export default function UserManagement() {
                                 onChange={e => setInviteEmails(e.target.value)}
                                 style={{ resize: 'vertical', fontSize: '13px', marginBottom: '16px', width: '100%' }}
                             />
-
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-                                    {isChinese ? '或直接分享邀请链接：' : 'Or share an invitation link:'}
-                                </div>
-                                {!inviteLink ? (
-                                    <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={generateInviteLink}>
-                                        {isChinese ? '生成链接' : 'Generate Link'}
-                                    </button>
-                                ) : (
-                                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                                        <input className="form-input" value={inviteLink} readOnly style={{ width: '200px', fontSize: '11px', padding: '4px 8px' }} />
-                                        <button className="btn btn-secondary" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => {
-                                            navigator.clipboard.writeText(inviteLink);
-                                            setToast(isChinese ? '已复制' : 'Copied!');
-                                            setTimeout(() => setToast(''), 2000);
-                                        }}>
-                                            {isChinese ? '复制' : 'Copy'}
-                                        </button>
-                                    </div>
-                                )}
-                            </div>
-
+                            {/* public link generated here previously */}
                             {inviteResult && (
                                 <div style={{ marginTop: '12px', padding: '10px 14px', background: 'rgba(0,200,100,0.1)', color: 'var(--success)', borderRadius: '6px', fontSize: '13px' }}>
                                     {inviteResult.message} ({inviteResult.invited} {isChinese ? '位用户' : 'users'})

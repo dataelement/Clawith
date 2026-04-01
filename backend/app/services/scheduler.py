@@ -83,7 +83,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                     api_key=model.api_key_encrypted,
                     model=model.model,
                     base_url=model.base_url,
-                    timeout=120.0,
+                    timeout=float(getattr(model, 'request_timeout', None) or 120.0),
                 )
             except Exception as e:
                 logger.error(f"Schedule {schedule_id}: Failed to create LLM client: {e}")

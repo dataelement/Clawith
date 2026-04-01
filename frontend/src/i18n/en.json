@@ -483,7 +483,8 @@
       "companyTools": "Company Configured Tools",
       "agentInstalled": "Agent Self-Installed Tools",
       "noInstalled": "No tools installed yet",
-      "noCompany": "No company-configured tools"
+      "noCompany": "No company-configured tools",
+      "configured": "Configured"
     },
     "toolCategories": {
       "file": "File Operations",
@@ -710,6 +711,9 @@
       "maxOutputTokens": "Max Output Tokens",
       "maxOutputTokensPlaceholder": "Provider default",
       "maxOutputTokensDesc": "Override the default output token limit. Auto-filled from provider; adjust as needed.",
+      "requestTimeout": "Request Timeout (s)",
+      "requestTimeoutPlaceholder": "Leave empty for 120s default (300+ recommended for local models)",
+      "requestTimeoutDesc": "Override total HTTP timeout per request. Increase this for local models that are slow to generate.",
       "enabled": "Enabled",
       "disabled": "Disabled",
       "save": "Save",

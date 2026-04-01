@@ -606,6 +606,81 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "generate_image_siliconflow",
+            "description": "Generate an image via SiliconFlow (FLUX). Save to workspace. Fast and China-friendly.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed image description in English.",
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "Image size. Default: 1024x1024. Options: 1024x1024, 1024x768, 768x1024",
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Workspace path to save the image (e.g. workspace/images/sunset.png).",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image_openai",
+            "description": "Generate an image via OpenAI. Save to workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed image description in English.",
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "Image size. Default: 1024x1024.",
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Workspace path to save the image.",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image_google",
+            "description": "Generate an image via Google Gemini Image (Nano Banana) or Vertex AI. Save to workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed image description in English.",
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "Image size. Default: 1024x1024.",
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Workspace path to save the image.",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "discover_resources",
             "description": "Search public MCP registries (Smithery) for tools and capabilities that can extend your abilities. Use this when you encounter a task you cannot handle with your current tools.",
             "parameters": {
@@ -1787,6 +1862,12 @@ async def execute_tool(
             result = await _execute_code(agent_id, ws, arguments)
         elif tool_name == "upload_image":
             result = await _upload_image(agent_id, ws, arguments)
+        elif tool_name == "generate_image_siliconflow":
+            result = await _generate_image(agent_id, ws, arguments, "siliconflow")
+        elif tool_name == "generate_image_openai":
+            result = await _generate_image(agent_id, ws, arguments, "openai")
+        elif tool_name == "generate_image_google":
+            result = await _generate_image(agent_id, ws, arguments, "google")
         elif tool_name == "discover_resources":
             result = await _discover_resources(arguments)
         elif tool_name == "import_mcp_server":
@@ -1816,7 +1897,7 @@ async def execute_tool(
         elif tool_name == "feishu_doc_append":
             result = await _feishu_doc_append(agent_id, arguments)
         # ── Feishu Calendar Tools ──
-        elif tool_name in ("feishu_drive_share", "feishu_doc_share"):  # backward compat
+        elif tool_name == "feishu_drive_share":
             result = await _feishu_drive_share(agent_id, arguments)
         elif tool_name == "feishu_drive_delete":
             result = await _feishu_drive_delete(agent_id, arguments)
@@ -3944,7 +4025,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 api_key=target_model.api_key_encrypted,
                 model=target_model.model,
                 base_url=base_url,
-                timeout=120.0,
+                timeout=float(getattr(target_model, 'request_timeout', None) or 120.0),
             )
             _A2A_RETRYABLE_MARKERS = (
                 "http 408", "http 429", "http 500", "http 502", "http 503", "http 504",
@@ -4746,12 +4827,10 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
         # Return webhook URL for webhook triggers
         if ttype == "webhook":
-            from app.config import get_settings
-            settings = get_settings()
-            base = getattr(settings, 'PUBLIC_URL', '') or ''
-            if not base:
-                base = 'https://try.clawith.ai'  # fallback
+            from app.services.platform_service import platform_service
+            base = await platform_service.get_public_base_url()
             webhook_url = f"{base.rstrip('/')}/api/webhooks/t/{config['token']}"
+
             return f"✅ Webhook trigger '{name}' created.\n\nWebhook URL: {webhook_url}\n\nTell the user to configure this URL in their external service (e.g. GitHub, Grafana). When the service sends a POST to this URL, you will be woken up with the payload as context."
 
         return f"✅ Trigger '{name}' created ({ttype}). It will fire according to your config and wake you up with the reason as context."
@@ -4991,6 +5070,272 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     except Exception as e:
         return f"❌ Upload error: {type(e).__name__}: {str(e)[:300]}"
 
+
+
+# ─── Image Generation (Multi-Provider) ────────────────────────────────────────
+
+async def _generate_image(agent_id: uuid.UUID, ws: Path, arguments: dict, provider: str) -> str:
+    """Generate an image using the configured provider and save to workspace.
+
+    Supported providers:
+    - siliconflow: OpenAI-compatible API (FLUX models, China-friendly)
+    - openai: Native OpenAI API (GPT Image)
+    - google: Google Gemini Native Image API (Nano Banana)
+
+    The tool config is resolved via the standard _get_tool_config() hierarchy:
+    global tool config (admin-set) -> per-agent tool config override.
+    """
+    import httpx
+    from datetime import datetime
+
+    prompt = arguments.get("prompt")
+    if not prompt:
+        return "❌ Missing required argument 'prompt' for generate_image"
+
+    size = arguments.get("size", "1024x1024")
+    save_path = arguments.get("save_path", "")
+
+    # Load tool config (global -> per-agent override)
+    tool_key = f"generate_image_{provider}"
+    config = await _get_tool_config(agent_id, tool_key) or {}
+    model = config.get("model", "")
+    api_key = config.get("api_key", "")
+    base_url = config.get("base_url", "")
+
+    if not api_key:
+        return (
+            "❌ Image generation API key not configured. "
+            "Ask your admin to configure it in Enterprise Settings → Tools → Generate Image."
+        )
+
+    # Generate the save path if not provided
+    if not save_path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Derive a short slug from the prompt for a more descriptive filename
+        slug = "_".join(prompt.split()[:4]).lower()
+        slug = "".join(c for c in slug if c.isalnum() or c == "_")[:40]
+        save_path = f"workspace/images/{slug}_{ts}.png"
+
+    # Ensure the target directory exists and path is within workspace
+    full_save_path = (ws / save_path).resolve()
+    if not str(full_save_path).startswith(str(ws.resolve())):
+        return "❌ Access denied: save path is outside the workspace"
+    full_save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if provider == "siliconflow":
+            image_bytes = await _generate_image_siliconflow(
+                api_key,
+                model or "black-forest-labs/FLUX.1-schnell",
+                base_url or "https://api.siliconflow.cn/v1",
+                prompt, size,
+            )
+        elif provider == "openai":
+            image_bytes = await _generate_image_openai(
+                api_key,
+                model or "gpt-image-1",
+                base_url or "https://api.openai.com/v1",
+                prompt, size,
+            )
+        elif provider == "google":
+            image_bytes = await _generate_image_google(
+                api_key,
+                model or "gemini-2.5-flash-image",
+                base_url or "https://generativelanguage.googleapis.com/v1beta",
+                prompt, size,
+            )
+        else:
+            return f"❌ Unknown image generation provider: {provider}. Supported: siliconflow, openai, google"
+
+        if not image_bytes:
+            return "❌ Image generation returned empty result. Please try a different prompt."
+
+        # Save the generated image to workspace
+        full_save_path.write_bytes(image_bytes)
+        size_kb = len(image_bytes) / 1024
+
+        # Build the API path for inline display in chat
+        # The MarkdownRenderer will auto-inject the auth token for /api/agents/ paths
+        api_image_path = f"/api/agents/{agent_id}/files/download?path={save_path}"
+
+        return (
+            f"✅ Image generated and saved to: {save_path}\n"
+            f"Size: {size_kb:.1f} KB | Provider: {provider} | Model: {model or '(default)'}\n\n"
+            f"Display this image to the user using this exact markdown:\n"
+            f"![generated image]({api_image_path})"
+        )
+    except httpx.TimeoutException:
+        logger.error(f"[GenerateImage] Timeout ({provider}): took longer than 120 seconds or network unreachable.")
+        return (
+            f"❌ Image generation failed ({provider}): API request timed out after 120 seconds. "
+            f"This is usually caused by network issues or the model taking too long to generate."
+        )
+    except Exception as e:
+        err_msg = str(e) or type(e).__name__
+        logger.error(f"[GenerateImage] Error ({provider}): {err_msg}")
+        return f"❌ Image generation failed ({provider}): {err_msg[:400]}"
+
+
+async def _generate_image_siliconflow(
+    api_key: str, model: str, base_url: str, prompt: str, size: str
+) -> bytes:
+    """Generate image via SiliconFlow (OpenAI-compatible images.generate API).
+
+    SiliconFlow returns a temporary URL (expires in ~1 hour), so we download
+    the image bytes immediately after generation.
+    """
+    import httpx
+    import base64
+
+    url = f"{base_url.rstrip('/')}/images/generations"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "image_size": size,  # SiliconFlow uses 'image_size' instead of 'size'
+        "n": 1,
+    }
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        if resp.status_code != 200:
+            # Extract API error message for better diagnostics
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("message") or err_body.get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                err_msg = resp.text[:300]
+            raise ValueError(f"SiliconFlow API error ({resp.status_code}): {err_msg}")
+        data = resp.json()
+
+        # SiliconFlow may return url or b64_json
+        image_data = data.get("data", [{}])[0]
+        image_url = image_data.get("url")
+        if image_url:
+            # Download the temporary URL immediately
+            img_resp = await client.get(image_url, timeout=60)
+            img_resp.raise_for_status()
+            return img_resp.content
+
+        b64 = image_data.get("b64_json")
+        if b64:
+            return base64.b64decode(b64)
+
+        raise ValueError(f"No image URL or b64_json in SiliconFlow response: {data}")
+
+
+async def _generate_image_openai(
+    api_key: str, model: str, base_url: str, prompt: str, size: str
+) -> bytes:
+    """Generate image via OpenAI GPT Image API.
+
+    Requests b64_json format to avoid dealing with URL expiry.
+    """
+    import httpx
+    import base64
+
+    url = f"{base_url.rstrip('/')}/images/generations"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "n": 1,
+        "response_format": "b64_json",
+    }
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        if resp.status_code != 200:
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                err_msg = resp.text[:300]
+            raise ValueError(f"OpenAI API error ({resp.status_code}): {err_msg}")
+        data = resp.json()
+
+        image_data = data.get("data", [{}])[0]
+        b64 = image_data.get("b64_json")
+        if b64:
+            return base64.b64decode(b64)
+
+        # Fallback: try URL
+        image_url = image_data.get("url")
+        if image_url:
+            img_resp = await client.get(image_url, timeout=60)
+            img_resp.raise_for_status()
+            return img_resp.content
+
+        raise ValueError(f"No b64_json or URL in OpenAI response: {data}")
+
+
+async def _generate_image_google(
+    api_key: str, model: str, base_url: str, prompt: str, size: str
+) -> bytes:
+    """Generate image via Google Gemini Native Image API (Nano Banana) or Vertex AI.
+
+    Uses the Gemini generateContent endpoint with responseModalities=["IMAGE"].
+    Converts WxH size to aspect ratio format (e.g. 1024x1024 -> 1:1).
+    Extracts the generated image from inlineData in the response parts.
+    """
+    import httpx
+    import base64
+
+    url = f"{base_url.rstrip('/')}/models/{model}:generateContent?key={api_key}"
+
+    # Convert WxH size to aspect ratio for Gemini API
+    # Supported: 1:1, 3:4, 4:3, 9:16, 16:9
+    size_to_ratio = {
+        "1024x1024": "1:1",
+        "768x1024": "3:4",
+        "1024x768": "4:3",
+        "768x1366": "9:16",
+        "1366x768": "16:9",
+        "1024x1536": "3:4",
+        "1536x1024": "4:3",
+    }
+    aspect_ratio = size_to_ratio.get(size, "1:1")
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {
+                "numberOfImages": 1,
+                "aspectRatio": aspect_ratio,
+            },
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(
+            url, json=payload, headers={"Content-Type": "application/json"}
+        )
+        if resp.status_code != 200:
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                err_msg = resp.text[:300]
+            raise ValueError(f"Google Gemini API error ({resp.status_code}): {err_msg}")
+        data = resp.json()
+
+        # Extract image from response candidates -> content -> parts
+        candidates = data.get("candidates", [])
+        if not candidates:
+            raise ValueError(f"No candidates in Gemini response: {data}")
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        for part in parts:
+            if "inlineData" in part:
+                b64 = part["inlineData"]["data"]
+                return base64.b64decode(b64)
+
+        raise ValueError(
+            f"No image (inlineData) found in Gemini response parts. "
+            f"Parts: {[p.get('text', '(image)') if 'text' in p else '(inline)' for p in parts]}"
+        )
 
 
 # ─── Feishu Helper ────────────────────────────────────────────────────────────
@@ -5822,7 +6167,7 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
                 async with httpx.AsyncClient(timeout=10) as client:
                     share_resp = await client.post(
                         f"https://open.feishu.cn/open-apis/drive/v1/permissions/{doc_token}/members",
-                        params={"type": "docx", "need_notification": "false"},
+                        params={"type": "docx"},
                         json={
                             "member_type": "openid",
                             "member_id": sender_open_id,
@@ -6068,22 +6413,20 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
         return f"Failed: {str(e)[:300]}"
 
 
-# ─── Feishu Drive Share (all file types) ──────────────────────────────────────
+# ─── Feishu Drive Share (All File Types) ────────────────────────────────────────
 
 async def _feishu_drive_share(agent_id: uuid.UUID, arguments: dict) -> str:
-    """Manage Feishu Drive file collaborators.
-    Supports all file types: docx, bitable, sheet, doc, folder, mindnote, slides.
-    Automatically handles both regular files (Drive permissions API)
+    """Manage Feishu drive file collaborators.
+    Automatically handles both regular docs/files (Drive permissions API)
     and Wiki node documents (Wiki space members API).
     """
     import httpx
     import re as _re
 
     document_token = (arguments.get("document_token") or "").strip()
+    doc_type = (arguments.get("doc_type") or "docx").strip()
     action = (arguments.get("action") or "list").strip()
     permission = (arguments.get("permission") or "edit").strip()
-    # doc_type defaults to 'docx' for backward compatibility
-    doc_type = (arguments.get("doc_type") or "docx").strip()
 
     if not document_token:
         return "❌ Missing required argument 'document_token'"

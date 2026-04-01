@@ -490,6 +490,14 @@ export const controlApi = {
     pressKeys: (agentId: string, data: { session_id: string; keys: string[] }) =>
         request<any>(`/agents/${agentId}/control/press_keys`, { method: 'POST', body: JSON.stringify(data) }),
 
+    /** Simulate a natural human drag (Bezier curve trajectory) for slider CAPTCHAs. */
+    drag: (agentId: string, data: { session_id: string; from_x: number; from_y: number; to_x: number; to_y: number; duration_ms?: number }) =>
+        request<any>(`/agents/${agentId}/control/drag`, { method: 'POST', body: JSON.stringify(data) }),
+
+    /** Get the current active page URL from the browser session (for auto-populating domain). */
+    currentUrl: (agentId: string, data: { session_id: string }) =>
+        request<{ status: string; url: string }>(`/agents/${agentId}/control/current-url`, { method: 'POST', body: JSON.stringify(data) }),
+
     screenshot: (agentId: string, data: { session_id: string }) =>
         request<any>(`/agents/${agentId}/control/screenshot`, { method: 'POST', body: JSON.stringify(data) }),
 
@@ -499,3 +507,4 @@ export const controlApi = {
     unlock: (agentId: string, data: { session_id: string; export_cookies?: boolean; platform_hint?: string }) =>
         request<any>(`/agents/${agentId}/control/unlock`, { method: 'POST', body: JSON.stringify(data) }),
 };
+

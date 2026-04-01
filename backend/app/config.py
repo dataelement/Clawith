@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 60
-    EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+    EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES: int = 60  # 1 hour
     EMAIL_VERIFICATION_REQUIRED: bool = False  # Require email verification for login
 
     # File Storage
@@ -88,16 +88,6 @@ class Settings(BaseSettings):
 
     # Jina AI (Reader + Search APIs)
     JINA_API_KEY: str = ""
-
-    # System email (platform-owned outbound mail)
-    SYSTEM_EMAIL_FROM_ADDRESS: str = ""
-    SYSTEM_EMAIL_FROM_NAME: str = "Clawith"
-    SYSTEM_SMTP_HOST: str = ""
-    SYSTEM_SMTP_PORT: int = 465
-    SYSTEM_SMTP_USERNAME: str = ""
-    SYSTEM_SMTP_PASSWORD: str = ""
-    SYSTEM_SMTP_SSL: bool = True
-    SYSTEM_SMTP_TIMEOUT_SECONDS: int = 15
 
 
     # Sandbox configuration
