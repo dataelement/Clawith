@@ -784,8 +784,8 @@ async def switch_tenant(
 
     # 4. Determine redirect URL
     # Determine redirect URL (Priority: sso_domain > ENV > Request > Fallback)
-    from app.services.platform_service import platform_service
-    redirect_url = await platform_service.get_tenant_sso_base_url(db, tenant, request)
+    from app.core.domain import resolve_base_url
+    redirect_url = await resolve_base_url(db, request=request, tenant_id=str(tenant.id) if tenant else None)
 
 
     # Include token in redirect URL for cross-domain switching if needed

@@ -30,6 +30,7 @@ from app.services.autonomy_service import autonomy_service
 from app.services.enterprise_sync import enterprise_sync_service
 from app.services.llm_utils import get_provider_manifest
 from app.services.platform_service import platform_service
+from app.core.domain import resolve_base_url
 from app.services.sso_service import sso_service
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
@@ -660,7 +661,7 @@ async def _sync_tenant_sso_state(db: AsyncSession, tenant_id: uuid.UUID):
 
     # Auto-assign subdomain on first SSO enablement based on Platform rules
     if tenant.sso_enabled and not tenant.sso_domain:
-        sso_base = await platform_service.get_tenant_sso_base_url(db, tenant)
+        sso_base = await resolve_base_url(db, tenant_id=str(tenant.id) if tenant else None)
         host = sso_base.split("://")[-1].split(":")[0].split("/")[0]
         is_ip = platform_service.is_ip_address(host)
 
@@ -687,7 +688,7 @@ async def _regenerate_all_sso_domains(db: AsyncSession):
       The first SSO-enabled tenant keeps it; all others get sso_domain=None.
       If no SSO-enabled tenant exists, the first tenant in the list gets it.
     """
-    base_url = await platform_service.get_public_base_url(db)
+    base_url = await resolve_base_url(db)
     host = base_url.split("://")[-1].split(":")[0].split("/")[0]
     is_ip = platform_service.is_ip_address(host)
 
@@ -701,13 +702,13 @@ async def _regenerate_all_sso_domains(db: AsyncSession):
         if is_ip:
             # IP mode: only one tenant can have SSO domain
             if i == 0:
-                sso_base = await platform_service.get_tenant_sso_base_url(db, tenant)
+                sso_base = await resolve_base_url(db, tenant_id=str(tenant.id) if tenant else None)
                 tenant.sso_domain = sso_base
             else:
                 tenant.sso_domain = None
         else:
             # Domain mode: each tenant gets their own subdomain
-            sso_base = await platform_service.get_tenant_sso_base_url(db, tenant)
+            sso_base = await resolve_base_url(db, tenant_id=str(tenant.id) if tenant else None)
             tenant.sso_domain = sso_base
         logger.info(f"[SSO regen] tenant={tenant.slug} sso_domain={tenant.sso_domain}")
 
@@ -1325,7 +1326,7 @@ async def invite_users(
     if not tenant:
         raise HTTPException(status_code=404, detail="Company not found")
 
-    base_url = await platform_service.get_public_base_url(db, request=request)
+    base_url = await resolve_base_url(db, request=request)
     
     invited_count = 0
     codes = []
