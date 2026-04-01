@@ -5216,7 +5216,8 @@ async def _generate_image_google(
 ) -> bytes:
     """Generate image via Google Gemini Native Image API (Nano Banana).
 
-    Uses the Gemini generateContent endpoint with responseModalities=["TEXT", "IMAGE"].
+    Uses the Gemini generateContent endpoint with responseModalities=["IMAGE"].
+    Converts WxH size to aspect ratio format (e.g. 1024x1024 -> 1:1).
     Extracts the generated image from inlineData in the response parts.
     """
     import httpx
@@ -5226,10 +5227,28 @@ async def _generate_image_google(
         f"https://generativelanguage.googleapis.com/v1beta/"
         f"models/{model}:generateContent?key={api_key}"
     )
+
+    # Convert WxH size to aspect ratio for Gemini API
+    # Supported: 1:1, 3:4, 4:3, 9:16, 16:9
+    size_to_ratio = {
+        "1024x1024": "1:1",
+        "768x1024": "3:4",
+        "1024x768": "4:3",
+        "768x1366": "9:16",
+        "1366x768": "16:9",
+        "1024x1536": "3:4",
+        "1536x1024": "4:3",
+    }
+    aspect_ratio = size_to_ratio.get(size, "1:1")
+
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"],
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {
+                "numberOfImages": 1,
+                "aspectRatio": aspect_ratio,
+            },
         },
     }
 
