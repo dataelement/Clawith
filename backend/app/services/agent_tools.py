@@ -1716,7 +1716,17 @@ async def _execute_tool_direct(
             content = arguments.get("content", "")
             if not path:
                 return "Missing path"
-            return _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            # 写入 memory.md 后异步触发 OpenViking 索引（失败不影响写入结果）
+            if "memory" in path and path.endswith(".md"):
+                try:
+                    import asyncio
+                    from app.services.openviking_client import index_memory_file
+                    file_path = (ws / path).resolve()
+                    asyncio.create_task(index_memory_file(str(agent_id), file_path))
+                except Exception:
+                    pass
+            return result
         elif tool_name == "execute_code":
             logger.info(f"[DirectTool] Executing code with arguments: {arguments}")
             return await _execute_code(agent_id, ws, arguments)

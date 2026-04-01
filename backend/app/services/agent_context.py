@@ -7,6 +7,8 @@ workspace files and composes a comprehensive system prompt.
 import uuid
 from pathlib import Path
 
+from loguru import logger
+
 from app.config import get_settings
 
 settings = get_settings()
@@ -149,7 +151,7 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
     return "\n".join(lines)
 
 
-async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> tuple[str, str]:
+async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None, query: str = "") -> tuple[str, str]:
     """Build a rich system prompt incorporating agent's full context.
 
     Reads from workspace files:
@@ -515,8 +517,26 @@ You have internet access through these tools — **use them proactively when you
     if relationships and "暂无" not in relationships and "None yet" not in relationships:
         static_parts.append(f"\n## Relationships\n{relationships}")
 
+    # --- Memory: OpenViking semantic retrieval (falls back to full memory.md) ---
+    _memory_text = ""
     if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
-        dynamic_parts.append(f"\n## Memory\n{memory}")
+        if query:
+            try:
+                from app.services.openviking_client import search_memory, is_available
+                if await is_available():
+                    snippets = await search_memory(query=query, agent_id=str(agent_id))
+                    if snippets:
+                        _memory_text = "\n\n".join(snippets)
+                        logger.debug(f"[OpenViking] Retrieved {len(snippets)} memory snippet(s) for agent {agent_id}")
+            except Exception as _ov_err:
+                logger.debug(f"[OpenViking] memory retrieval skipped: {_ov_err}")
+
+        # Fallback: full memory.md injection
+        if not _memory_text:
+            _memory_text = memory
+
+    if _memory_text:
+        dynamic_parts.append(f"\n## Memory\n{_memory_text}")
 
     # --- Focus (working memory) ---
     focus = (

@@ -163,7 +163,13 @@ async def call_llm(
                     _current_user_name = _u.display_name or _u.username
         except Exception:
             pass
-    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
+    # 取最新用户消息作为 OpenViking 检索的 query
+    _ov_query = ""
+    for _m in reversed(messages):
+        if _m.get("role") == "user" and isinstance(_m.get("content"), str):
+            _ov_query = _m["content"][:500]
+            break
+    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name, query=_ov_query)
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
