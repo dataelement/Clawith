@@ -93,6 +93,48 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
     const [msg, setMsg] = useState('');
     const [msgType, setMsgType] = useState<'success' | 'error'>('success');
 
+    // API Key state
+    const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
+    const [newApiKey, setNewApiKey] = useState<string | null>(null);
+    const [apiKeyCopied, setApiKeyCopied] = useState(false);
+    const [apiKeyLoading, setApiKeyLoading] = useState(false);
+
+    React.useEffect(() => {
+        const token = localStorage.getItem('token');
+        fetch('/api/users/me/api-key/status', { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => r.json()).then(d => setHasApiKey(d.has_api_key)).catch(() => setHasApiKey(false));
+    }, []);
+
+    const handleGenerateApiKey = async () => {
+        setApiKeyLoading(true);
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch('/api/users/me/api-key', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+            if (!res.ok) throw new Error('Failed');
+            const data = await res.json();
+            setNewApiKey(data.api_key);
+            setHasApiKey(true);
+        } catch { showMsg(isChinese ? '生成失败' : 'Failed to generate', 'error'); }
+        setApiKeyLoading(false);
+    };
+
+    const handleRevokeApiKey = async () => {
+        if (!confirm(isChinese ? '确认撤销 API Key？撤销后无法恢复。' : 'Revoke API key? This cannot be undone.')) return;
+        setApiKeyLoading(true);
+        try {
+            const token = localStorage.getItem('token');
+            await fetch('/api/users/me/api-key', { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+            setHasApiKey(false);
+            setNewApiKey(null);
+        } catch { showMsg(isChinese ? '撤销失败' : 'Failed to revoke', 'error'); }
+        setApiKeyLoading(false);
+    };
+
+    const handleCopyApiKey = () => {
+        if (!newApiKey) return;
+        navigator.clipboard.writeText(newApiKey).then(() => { setApiKeyCopied(true); setTimeout(() => setApiKeyCopied(false), 2000); });
+    };
+
     const showMsg = (text: string, type: 'success' | 'error' = 'success') => {
         setMsg(text); setMsgType(type); setTimeout(() => setMsg(''), 3000);
     };
@@ -210,6 +252,35 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
                     <div><label style={labelStyle}>{isChinese ? '新密码' : 'New Password'}</label><input className="form-input" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder={isChinese ? '至少 6 个字符' : 'Min 6 characters'} style={inputStyle} /></div>
                     <div><label style={labelStyle}>{isChinese ? '确认新密码' : 'Confirm New Password'}</label><input className="form-input" type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} style={inputStyle} /></div>
                     <div style={{ display: 'flex', justifyContent: 'flex-end' }}><button className="btn btn-primary" onClick={handleChangePassword} disabled={saving} style={{ padding: '6px 16px', fontSize: '12px' }}>{saving ? '...' : (isChinese ? '修改密码' : 'Change Password')}</button></div>
+                </div>
+                <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: '20px', marginBottom: '20px' }} />
+                {/* API Key */}
+                <h4 style={{ margin: '0 0 8px', fontSize: '13px', color: 'var(--text-secondary)' }}>{isChinese ? 'API Key（外部集成）' : 'API Key (External Integrations)'}</h4>
+                <p style={{ margin: '0 0 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                    {isChinese ? '用于 MCP Server、Cursor 等外部工具调用 Clawith，永不过期。' : 'For MCP Server, Cursor, and other external tools. Never expires.'}
+                </p>
+                {newApiKey ? (
+                    <div style={{ marginBottom: '12px' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--warning, #f59e0b)', marginBottom: '6px' }}>
+                            {isChinese ? '请立即复制，此 key 不会再次显示：' : 'Copy now — this key will not be shown again:'}
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <input readOnly value={newApiKey} className="form-input" style={{ fontSize: '11px', fontFamily: 'monospace', flex: 1 }} onClick={e => (e.target as HTMLInputElement).select()} />
+                            <button className="btn btn-ghost" onClick={handleCopyApiKey} style={{ padding: '6px 12px', fontSize: '12px', whiteSpace: 'nowrap' }}>
+                                {apiKeyCopied ? (isChinese ? '已复制' : 'Copied!') : (isChinese ? '复制' : 'Copy')}
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                    <button className="btn btn-primary" onClick={handleGenerateApiKey} disabled={apiKeyLoading} style={{ padding: '6px 16px', fontSize: '12px' }}>
+                        {apiKeyLoading ? '...' : (hasApiKey ? (isChinese ? '重新生成' : 'Regenerate') : (isChinese ? '生成 API Key' : 'Generate API Key'))}
+                    </button>
+                    {hasApiKey && !newApiKey && (
+                        <button className="btn btn-ghost" onClick={handleRevokeApiKey} disabled={apiKeyLoading} style={{ padding: '6px 16px', fontSize: '12px', color: 'var(--error)' }}>
+                            {isChinese ? '撤销' : 'Revoke'}
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

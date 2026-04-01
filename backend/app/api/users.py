@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -149,6 +151,46 @@ async def update_user_quota(
         quota_agent_ttl_hours=user.quota_agent_ttl_hours,
         agents_count=agents_count,
     )
+
+
+# ─── User API Key ──────────────────────────────────────
+
+def _hash_user_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+@router.post("/me/api-key")
+async def generate_user_api_key(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate or regenerate a personal API key.
+
+    The raw key is returned only once — store it safely.
+    Subsequent calls invalidate the previous key.
+    """
+    raw_key = f"cw-{secrets.token_urlsafe(32)}"
+    current_user.api_key_hash = _hash_user_key(raw_key)
+    await db.commit()
+    return {"api_key": raw_key, "message": "保存好这个 key，它不会再次显示。"}
+
+
+@router.delete("/me/api-key", status_code=204)
+async def revoke_user_api_key(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke the current personal API key."""
+    current_user.api_key_hash = None
+    await db.commit()
+
+
+@router.get("/me/api-key/status")
+async def get_user_api_key_status(
+    current_user: User = Depends(get_current_user),
+):
+    """Return whether the user has an active API key."""
+    return {"has_api_key": current_user.api_key_hash is not None}
 
 
 # ─── Role Management ───────────────────────────────────

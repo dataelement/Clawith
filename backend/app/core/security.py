@@ -1,6 +1,7 @@
 """Security utilities: JWT, password hashing, and authentication dependencies."""
 
 import base64
+import hashlib
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
@@ -21,7 +22,7 @@ from app.database import get_db
 settings = get_settings()
 
 # Bearer token scheme
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 def encrypt_data(plaintext: str, key: str) -> str:
@@ -132,11 +133,39 @@ def decode_access_token(token: str) -> dict:
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
 ):
-    """Dependency to get the current authenticated and active user."""
+    """Dependency to get the current authenticated and active user.
+
+    Accepts two authentication methods (in priority order):
+    1. X-Api-Key header — permanent user API key (for MCP / external tools)
+    2. Authorization: Bearer <JWT> — standard session token
+    """
     from app.models.user import User
+
+    # ── Method 1: X-Api-Key header ──────────────────────
+    api_key = request.headers.get("X-Api-Key") or request.headers.get("x-api-key")
+    if api_key and api_key.startswith("cw-"):
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        result = await db.execute(
+            select(User)
+            .where(User.api_key_hash == key_hash)
+            .options(selectinload(User.identity))
+        )
+        user = result.scalar_one_or_none()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or revoked API key")
+        return user
+
+    # ── Method 2: Bearer JWT ─────────────────────────────
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     payload = decode_access_token(credentials.credentials)
     user_id = payload.get("sub")
@@ -155,11 +184,18 @@ async def get_current_user(
 
 
 async def get_authenticated_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
 ):
     """Dependency to get the current authenticated user (even if not active yet)."""
     from app.models.user import User
+
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     payload = decode_access_token(credentials.credentials)
     user_id = payload.get("sub")

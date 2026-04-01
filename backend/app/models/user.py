@@ -88,6 +88,9 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    # User-level API key (for MCP / external integrations, never expires)
+    api_key_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+
     # Usage quotas (set by admin, defaults from tenant)
     quota_message_limit: Mapped[int] = mapped_column(Integer, default=50)
     quota_message_period: Mapped[str] = mapped_column(String(20), default="permanent")  # permanent|daily|weekly|monthly
