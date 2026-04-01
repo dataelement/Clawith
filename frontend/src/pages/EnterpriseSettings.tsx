@@ -468,74 +468,77 @@ function OrgTab({ tenant }: { tenant: any }) {
                 {type === 'oauth2' ? (
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                         <div className="form-group">
-                            <label className="form-label">Client ID</label>
+                            <label className="form-label">{t('enterprise.identity.clientId')}</label>
                             <input className="form-input" value={form.config?.app_id || ''} onChange={e => setForm({ ...form, config: { ...form.config, app_id: e.target.value } })} />
                         </div>
                         <div className="form-group">
-                            <label className="form-label">Client Secret</label>
+                            <label className="form-label">{t('enterprise.identity.clientSecret')}</label>
                             <input className="form-input" type="password" value={form.config?.app_secret || ''} onChange={e => setForm({ ...form, config: { ...form.config, app_secret: e.target.value } })} />
                         </div>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                            <label className="form-label">Authorize URL</label>
-                            <input className="form-input" value={form.config?.authorize_url || ''} onChange={e => setForm({ ...form, config: { ...form.config, authorize_url: e.target.value } })} placeholder="https://sso.example.com/oauth2/authorize" />
+                            <label className="form-label">{t('enterprise.identity.authorizeUrl')}</label>
+                            <input className="form-input" value={form.config?.authorize_url || ''} onChange={e => setForm({ ...form, config: { ...form.config, authorize_url: e.target.value } })} placeholder={t('enterprise.identity.authorizeUrlPlaceholder')} />
                         </div>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                            <label className="form-label">Token URL</label>
-                            <input className="form-input" value={form.config?.token_url || ''} onChange={e => setForm({ ...form, config: { ...form.config, token_url: e.target.value } })} placeholder="Leave empty to auto-derive from Authorize URL" />
+                            <label className="form-label">{t('enterprise.identity.tokenUrl')}</label>
+                            <input className="form-input" value={form.config?.token_url || ''} onChange={e => setForm({ ...form, config: { ...form.config, token_url: e.target.value } })} placeholder={t('enterprise.identity.tokenUrlPlaceholder')} />
                         </div>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                            <label className="form-label">UserInfo URL</label>
-                            <input className="form-input" value={form.config?.user_info_url || ''} onChange={e => setForm({ ...form, config: { ...form.config, user_info_url: e.target.value } })} placeholder="Leave empty to auto-derive from Authorize URL" />
+                            <label className="form-label">{t('enterprise.identity.userInfoUrl')}</label>
+                            <input className="form-input" value={form.config?.user_info_url || ''} onChange={e => setForm({ ...form, config: { ...form.config, user_info_url: e.target.value } })} placeholder={t('enterprise.identity.tokenUrlPlaceholder')} />
                         </div>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                            <label className="form-label">Scope</label>
-                            <input className="form-input" value={form.config?.scope || ''} onChange={e => setForm({ ...form, config: { ...form.config, scope: e.target.value } })} placeholder="openid profile email" />
+                            <label className="form-label">{t('enterprise.identity.scope')}</label>
+                            <input className="form-input" value={form.config?.scope || ''} onChange={e => setForm({ ...form, config: { ...form.config, scope: e.target.value } })} placeholder={t('enterprise.identity.scopePlaceholder')} />
                         </div>
                         <div style={{ gridColumn: '1 / -1', marginTop: '4px' }}>
-                            <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                                Field Mapping (Optional, leave empty to use standard OIDC fields)
+                            <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                                {t('enterprise.identity.fieldMapping')}
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                {t('enterprise.identity.fieldMappingHint')}
                             </div>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                                 <div className="form-group">
-                                    <label className="form-label" style={{ fontSize: '11px' }}>User ID Field</label>
+                                    <label className="form-label" style={{ fontSize: '11px' }}>{t('enterprise.identity.userIdField')}</label>
                                     <div style={{ display: 'flex', gap: '4px' }}>
                                         <input className="form-input" value={form.config?.field_mapping?.user_id || ''}
                                             onChange={e => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, user_id: e.target.value } : { user_id: e.target.value, name: '', email: '', mobile: '' } } })}
-                                            placeholder="Default: sub" style={{ fontSize: '12px', flex: 1 }} />
-                                        <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, user_id: '' } : { user_id: '', name: '', email: '', mobile: '' } } })} title="Clear this field" style={{ minWidth: 'auto', padding: '4px 8px' }}>✕</button>
+                                            placeholder={t('enterprise.identity.userIdFieldPlaceholder')} style={{ fontSize: '12px', flex: 1 }} />
+                                        <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, user_id: '' } : { user_id: '', name: '', email: '', mobile: '' } } })} title={t('enterprise.identity.clearField')} style={{ minWidth: 'auto', padding: '4px 8px' }}>✕</button>
                                     </div>
                                 </div>
                                 <div className="form-group">
-                                    <label className="form-label" style={{ fontSize: '11px' }}>Name Field</label>
+                                    <label className="form-label" style={{ fontSize: '11px' }}>{t('enterprise.identity.nameField')}</label>
                                     <div style={{ display: 'flex', gap: '4px' }}>
                                         <input className="form-input" value={form.config?.field_mapping?.name || ''}
                                             onChange={e => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, name: e.target.value } : { user_id: '', name: e.target.value, email: '', mobile: '' } } })}
-                                            placeholder="Default: name" style={{ fontSize: '12px', flex: 1 }} />
-                                        <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, name: '' } : { user_id: '', name: '', email: '', mobile: '' } } })} title="Clear this field" style={{ minWidth: 'auto', padding: '4px 8px' }}>✕</button>
+                                            placeholder={t('enterprise.identity.nameFieldPlaceholder')} style={{ fontSize: '12px', flex: 1 }} />
+                                        <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, name: '' } : { user_id: '', name: '', email: '', mobile: '' } } })} title={t('enterprise.identity.clearField')} style={{ minWidth: 'auto', padding: '4px 8px' }}>✕</button>
                                     </div>
                                 </div>
                                 <div className="form-group">
-                                    <label className="form-label" style={{ fontSize: '11px' }}>Email Field</label>
+                                    <label className="form-label" style={{ fontSize: '11px' }}>{t('enterprise.identity.emailField')}</label>
                                     <div style={{ display: 'flex', gap: '4px' }}>
                                         <input className="form-input" value={form.config?.field_mapping?.email || ''}
                                             onChange={e => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, email: e.target.value } : { user_id: '', name: '', email: e.target.value, mobile: '' } } })}
-                                            placeholder="Default: email" style={{ fontSize: '12px', flex: 1 }} />
-                                        <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, email: '' } : { user_id: '', name: '', email: '', mobile: '' } } })} title="Clear this field" style={{ minWidth: 'auto', padding: '4px 8px' }}>✕</button>
+                                            placeholder={t('enterprise.identity.emailFieldPlaceholder')} style={{ fontSize: '12px', flex: 1 }} />
+                                        <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, email: '' } : { user_id: '', name: '', email: '', mobile: '' } } })} title={t('enterprise.identity.clearField')} style={{ minWidth: 'auto', padding: '4px 8px' }}>✕</button>
                                     </div>
                                 </div>
                                 <div className="form-group">
-                                    <label className="form-label" style={{ fontSize: '11px' }}>Mobile Field</label>
+                                    <label className="form-label" style={{ fontSize: '11px' }}>{t('enterprise.identity.mobileField')}</label>
                                     <div style={{ display: 'flex', gap: '4px' }}>
                                         <input className="form-input" value={form.config?.field_mapping?.mobile || ''}
                                             onChange={e => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, mobile: e.target.value } : { user_id: '', name: '', email: '', mobile: e.target.value } } })}
-                                            placeholder="Default: phone_number" style={{ fontSize: '12px', flex: 1 }} />
-                                        <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, mobile: '' } : { user_id: '', name: '', email: '', mobile: '' } } })} title="Clear this field" style={{ minWidth: 'auto', padding: '4px 8px' }}>✕</button>
+                                            placeholder={t('enterprise.identity.mobileFieldPlaceholder')} style={{ fontSize: '12px', flex: 1 }} />
+                                        <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: form.config.field_mapping ? { ...form.config.field_mapping, mobile: '' } : { user_id: '', name: '', email: '', mobile: '' } } })} title={t('enterprise.identity.clearField')} style={{ minWidth: 'auto', padding: '4px 8px' }}>✕</button>
                                     </div>
                                 </div>
                             </div>
                             <div style={{ marginTop: '8px' }}>
-                                <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: null } })} disabled={!form.config?.field_mapping} style={{ fontSize: '11px' }}>🗑️ Clear All Field Mappings</button>
-                                {form.config?.field_mapping && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: '8px' }}>Custom field mapping configured</span>}
+                                <button className="btn btn-ghost btn-sm" onClick={() => setForm({ ...form, config: { ...form.config, field_mapping: null } })} disabled={!form.config?.field_mapping} style={{ fontSize: '11px' }}>{t('enterprise.identity.clearAllMappings')}</button>
+                                {form.config?.field_mapping && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: '8px' }}>{t('enterprise.identity.hasCustomMapping')}</span>}
                             </div>
                         </div>
                     </div>

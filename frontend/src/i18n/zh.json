@@ -968,7 +968,37 @@
       "ssoSubdomainHint": "将此地址分享给团队成员，访问后会出现 SSO 登录按钮。",
       "callbackUrl": "回调地址（粘贴到应用设置中）",
       "callbackUrlHint": "将此 URL 添加为身份提供商应用配置中的 OAuth 重定向 URI。",
-      "saveFirst": "请先保存配置后再启用 SSO。"
+      "saveFirst": "请先保存配置后再启用 SSO。",
+      "oauth2": "OAuth2",
+      "clientId": "Client ID",
+      "clientSecret": "Client Secret",
+      "authorizeUrl": "授权地址",
+      "tokenUrl": "Token 地址",
+      "userInfoUrl": "用户信息地址",
+      "scope": "Scope",
+      "fieldMapping": "字段映射",
+      "fieldMappingHint": "可选，留空使用标准 OIDC 字段",
+      "userIdField": "用户 ID 字段",
+      "nameField": "姓名字段",
+      "emailField": "邮箱字段",
+      "mobileField": "手机号字段",
+      "clearField": "清空此字段",
+      "clearAllMappings": "清空所有字段映射",
+      "hasCustomMapping": "当前已配置自定义字段映射",
+      "authorizeUrlPlaceholder": "https://sso.example.com/oauth2/authorize",
+      "tokenUrlPlaceholder": "留空则从授权地址自动推导",
+      "userInfoUrlPlaceholder": "留空则从授权地址自动推导",
+      "scopePlaceholder": "openid profile email",
+      "userIdFieldPlaceholder": "默认：sub",
+      "nameFieldPlaceholder": "默认：name",
+      "emailFieldPlaceholder": "默认：email",
+      "mobileFieldPlaceholder": "默认：phone_number",
+      "validation": {
+        "clientIdRequired": "Client ID 是必填项",
+        "clientSecretRequired": "Client Secret 是必填项",
+        "authorizeUrlRequired": "授权地址是必填项",
+        "invalidUrl": "URL 格式不正确"
+      }
     }
   },
   "common": {

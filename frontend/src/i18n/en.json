@@ -906,7 +906,37 @@
       "ssoSubdomainHint": "Share this URL with your team. SSO login buttons will appear when they visit this address.",
       "callbackUrl": "Redirect URL (paste this in your app settings)",
       "callbackUrlHint": "Add this URL as the OAuth redirect URI in your identity provider's app configuration.",
-      "saveFirst": "Please save the configuration first to enable SSO."
+      "saveFirst": "Please save the configuration first to enable SSO.",
+      "oauth2": "OAuth2",
+      "clientId": "Client ID",
+      "clientSecret": "Client Secret",
+      "authorizeUrl": "Authorize URL",
+      "tokenUrl": "Token URL",
+      "userInfoUrl": "UserInfo URL",
+      "scope": "Scope",
+      "fieldMapping": "Field Mapping",
+      "fieldMappingHint": "Optional, leave empty to use standard OIDC fields",
+      "userIdField": "User ID Field",
+      "nameField": "Name Field",
+      "emailField": "Email Field",
+      "mobileField": "Mobile Field",
+      "clearField": "Clear this field",
+      "clearAllMappings": "Clear All Field Mappings",
+      "hasCustomMapping": "Custom field mapping configured",
+      "authorizeUrlPlaceholder": "https://sso.example.com/oauth2/authorize",
+      "tokenUrlPlaceholder": "Leave empty to auto-derive from Authorize URL",
+      "userInfoUrlPlaceholder": "Leave empty to auto-derive from Authorize URL",
+      "scopePlaceholder": "openid profile email",
+      "userIdFieldPlaceholder": "Default: sub",
+      "nameFieldPlaceholder": "Default: name",
+      "emailFieldPlaceholder": "Default: email",
+      "mobileFieldPlaceholder": "Default: phone_number",
+      "validation": {
+        "clientIdRequired": "Client ID is required",
+        "clientSecretRequired": "Client Secret is required",
+        "authorizeUrlRequired": "Authorize URL is required",
+        "invalidUrl": "Invalid URL format"
+      }
     }
   },
   "common": {
