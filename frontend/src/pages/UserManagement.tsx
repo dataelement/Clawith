@@ -4,7 +4,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
-import { copyToClipboard } from '../utils/clipboard';
+import LinearCopyButton from '../components/LinearCopyButton';
 
 interface UserInfo {
     id: string;
@@ -526,16 +526,13 @@ export default function UserManagement() {
                                 ) : (
                                     <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                                         <input className="form-input" value={inviteLink} readOnly style={{ width: '200px', fontSize: '11px', padding: '4px 8px' }} />
-                                        <button className="btn btn-secondary" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={async (e) => {
-                                            e.preventDefault();
-                                            await copyToClipboard(inviteLink);
-                                            const el = e.currentTarget;
-                                            const old = el.textContent;
-                                            el.textContent = isChinese ? '已复制✓' : 'Copied✓';
-                                            setTimeout(() => { el.textContent = old; }, 2000);
-                                        }}>
-                                            {isChinese ? '复制' : 'Copy'}
-                                        </button>
+                                        <LinearCopyButton
+                                            textToCopy={inviteLink}
+                                            label={isChinese ? '复制' : 'Copy'}
+                                            copiedLabel={isChinese ? '已复制' : 'Copied'}
+                                            className="btn btn-secondary"
+                                            style={{ fontSize: '11px', padding: '4px 8px', minWidth: '70px', width: 'auto' }}
+                                        />
                                     </div>
                                 )}
                             </div>

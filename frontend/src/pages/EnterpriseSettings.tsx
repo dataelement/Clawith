@@ -8,6 +8,7 @@ import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import UserManagement from './UserManagement';
 import InvitationCodes from './InvitationCodes';
+import LinearCopyButton from '../components/LinearCopyButton';
 import { copyToClipboard } from '../utils/clipboard';
 
 // API helpers for enterprise endpoints
@@ -213,21 +214,14 @@ function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
                             placeholder={t('enterprise.identity.ssoUrlEmpty', '请先开启 SSO 以生成地址')}
                             style={{ fontSize: '12px', flex: 1, maxWidth: '400px', background: 'var(--bg-primary)', cursor: 'default' }}
                         />
-                        <button
+                        <LinearCopyButton
                             className="btn btn-ghost btn-sm"
-                            style={{ fontSize: '11px' }}
+                            style={{ fontSize: '11px', width: 'auto', minWidth: '70px' }}
                             disabled={!domain}
-                            onClick={async (e) => {
-                                e.preventDefault();
-                                await copyToClipboard(domain.startsWith('http') ? domain : `https://${domain}`);
-                                const el = e.currentTarget;
-                                const old = el.textContent;
-                                el.textContent = 'Copied✓';
-                                setTimeout(() => { el.textContent = old; }, 2000);
-                            }}
-                        >
-                            {t('common.copy', 'Copy')}
-                        </button>
+                            textToCopy={domain ? (domain.startsWith('http') ? domain : `https://${domain}`) : ''}
+                            label={t('common.copy', 'Copy')}
+                            copiedLabel="Copied"
+                        />
                     </div>
                     <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
                         {t('enterprise.identity.ssoSubdomainHint', 'Share this URL with your team. SSO login buttons will appear when they visit this address.')}
@@ -245,21 +239,14 @@ function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
                             placeholder={t('enterprise.identity.ssoUrlEmpty', '请先开启 SSO 以生成地址')}
                             style={{ fontSize: '12px', flex: 1, maxWidth: '400px', background: 'var(--bg-primary)', cursor: 'default' }}
                         />
-                        <button
+                        <LinearCopyButton
                             className="btn btn-ghost btn-sm"
-                            style={{ fontSize: '11px' }}
+                            style={{ fontSize: '11px', width: 'auto', minWidth: '70px' }}
                             disabled={!callbackUrl}
-                            onClick={async (e) => {
-                                e.preventDefault();
-                                await copyToClipboard(callbackUrl);
-                                const el = e.currentTarget;
-                                const old = el.textContent;
-                                el.textContent = 'Copied✓';
-                                setTimeout(() => { el.textContent = old; }, 2000);
-                            }}
-                        >
-                            {t('common.copy', 'Copy')}
-                        </button>
+                            textToCopy={callbackUrl}
+                            label={t('common.copy', 'Copy')}
+                            copiedLabel="Copied"
+                        />
                     </div>
                     <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
                         {t('enterprise.identity.callbackUrlHint', "Add this URL as the OAuth redirect URI in your identity provider's app configuration.")}
