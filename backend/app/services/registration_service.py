@@ -193,7 +193,7 @@ class RegistrationService:
             display_name=name,
             role=role,
             registration_source=registration_source,
-            is_active=is_active or is_platform_admin,
+            is_active=is_active or identity.is_platform_admin,
         )
 
         db.add(user)
