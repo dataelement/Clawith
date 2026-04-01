@@ -316,29 +316,6 @@ function OrgTab({ tenant }: { tenant: any }) {
                             {t('enterprise.identity.ssoDomainDesc', 'The custom domain users will use to log in via SSO.')}
                         </div>
                     </div>
-                    <div>
-                        <label style={{ position: 'relative', display: 'inline-block', width: '36px', height: '20px' }}>
-                            <input
-                                type="checkbox"
-                                checked={ssoEnabled}
-                                onChange={handleToggle}
-                                style={{ opacity: 0, width: 0, height: 0 }}
-                            />
-                            <span style={{
-                                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-                                borderRadius: '20px', cursor: 'pointer',
-                                background: ssoEnabled ? 'var(--accent-primary)' : 'var(--border-subtle)',
-                                transition: '0.2s'
-                            }}>
-                                <span style={{
-                                    position: 'absolute', left: ssoEnabled ? '18px' : '2px', top: '2px',
-                                    width: '16px', height: '16px', borderRadius: '50%',
-                                    background: '#fff', transition: '0.2s',
-                                    boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
-                                }} />
-                            </span>
-                        </label>
-                    </div>
                 </div>
             </div>
         );
