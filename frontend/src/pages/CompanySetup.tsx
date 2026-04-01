@@ -32,12 +32,15 @@ export default function CompanySetup() {
         }).catch(() => {});
     }, []);
 
-    // If user already has a company and not from registration, redirect home
+    // Allow access from login tenant selection dialog ("Create or Join Organization")
+    const fromTenantSelection = (location.state as any)?.fromTenantSelection;
+
+    // If user already has a company and not from registration/tenant-selection, redirect home
     useEffect(() => {
-        if (user?.tenant_id && !fromRegister) {
+        if (user?.tenant_id && !fromRegister && !fromTenantSelection) {
             navigate('/');
         }
-    }, [user, navigate, fromRegister]);
+    }, [user, navigate, fromRegister, fromTenantSelection]);
 
     const refreshUser = async () => {
         try {
