@@ -33,30 +33,7 @@ from app.services.sso_service import sso_service
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 
 
-# ─── Public: Check Email Exists ────────────────────────
-
-class CheckEmailRequest(BaseModel):
-    email: str
-
-
-@router.post("/check-email-exists")
-async def check_email_exists(
-    data: CheckEmailRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Public endpoint — check if an email address is already registered on this platform.
-
-    Used by the invitation flow to decide whether to show the login or register form.
-    Only returns a boolean; does not expose any user data.
-    """
-    from app.models.user import Identity
-    result = await db.execute(
-        select(Identity).where(Identity.email == data.email.strip().lower())
-    )
-    exists = result.scalar_one_or_none() is not None
-    return {"exists": exists}
-
-
+# ─── LLM Model Pool ────────────────────────────────────
 
 @router.get("/llm-providers")
 async def list_llm_providers(
@@ -159,11 +136,11 @@ async def add_llm_model(
         api_key_encrypted=data.api_key,  # TODO: encrypt
         base_url=data.base_url,
         label=data.label,
+        temperature=data.temperature,
         max_tokens_per_day=data.max_tokens_per_day,
         enabled=data.enabled,
         supports_vision=data.supports_vision,
         max_output_tokens=data.max_output_tokens,
-        request_timeout=data.request_timeout,
         tenant_id=uuid.UUID(tid) if tid else None,
     )
     db.add(model)
@@ -244,10 +221,10 @@ async def update_llm_model(
             model.enabled = data.enabled
         if hasattr(data, 'supports_vision') and data.supports_vision is not None:
             model.supports_vision = data.supports_vision
-        if hasattr(data, 'max_output_tokens') and data.max_output_tokens is not None:
+        if hasattr(data, "temperature") and data.temperature is not None:
+            model.temperature = data.temperature
+        if hasattr(data, "max_output_tokens") and data.max_output_tokens is not None:
             model.max_output_tokens = data.max_output_tokens
-        if hasattr(data, 'request_timeout') and data.request_timeout is not None:
-            model.request_timeout = data.request_timeout
 
         await db.commit()
         await db.refresh(model)
@@ -1386,7 +1363,7 @@ async def invite_users(
         db.add(code)
         codes.append(code)
         
-        invite_url = f"{base_url}/login?code={code_str}&email={email}"
+        invite_url = f"{base_url}/login?code={code_str}"
         
         inviter_name = current_user.display_name or current_user.username
         
