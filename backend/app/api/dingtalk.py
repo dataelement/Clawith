@@ -318,6 +318,8 @@ async def process_dingtalk_message(
         dt_username = f"dingtalk_{sender_staff_id}"
         platform_user = None
         dt_unionid = ""
+        dt_mobile = ""
+        dt_email = ""
         matched_via = ""
 
         # Find the DingTalk identity provider for this tenant
@@ -362,7 +364,8 @@ async def process_dingtalk_message(
             if dt_user_detail:
                 dt_unionid = dt_user_detail.get("unionid", "")
                 dt_mobile = dt_user_detail.get("mobile", "")
-                dt_email = dt_user_detail.get("email", "")
+                dt_email = dt_user_detail.get("email", "") or dt_user_detail.get("org_email", "")
+                logger.info(f"[DingTalk] Step3: user_detail for {sender_staff_id}: unionid={dt_unionid}, mobile={dt_mobile}, email={dt_email}")
 
                 # 3a: unionId 查 org_members（跨通道匹配 SSO 用户）
                 if dt_unionid and _dingtalk_provider and not platform_user:
@@ -410,14 +413,29 @@ async def process_dingtalk_message(
                         matched_via = "email"
                         logger.info(f"[DingTalk] Step3c: Matched user via email: {platform_user.username}")
 
+                # 3d: display_name 匹配（同租户下唯一同名，兜底）
+                if sender_nick and not platform_user:
+                    _u_r = await db.execute(
+                        _select(UserModel).where(
+                            UserModel.display_name == sender_nick,
+                            UserModel.tenant_id == agent_obj.tenant_id,
+                        )
+                    )
+                    _candidates = _u_r.scalars().all()
+                    if len(_candidates) == 1:
+                        platform_user = _candidates[0]
+                        matched_via = "display_name"
+                        logger.info(f"[DingTalk] Step3d: Matched user via unique display_name: {platform_user.username}")
+
         # Step 4: No match found — create new user
         if not platform_user:
             import uuid as _uuid
             platform_user = UserModel(
                 username=dt_username,
-                email=f"{dt_username}@dingtalk.local",
+                email=dt_email or f"{dt_username}@dingtalk.local",
                 password_hash=hash_password(_uuid.uuid4().hex),
                 display_name=sender_nick or f"DingTalk {sender_staff_id[:8]}",
+                primary_mobile=dt_mobile or None,
                 role="member",
                 tenant_id=agent_obj.tenant_id if agent_obj else None,
                 source="dingtalk",
@@ -427,13 +445,20 @@ async def process_dingtalk_message(
             matched_via = "created"
             logger.info(f"[DingTalk] Step4: Created new user: {dt_username}")
         else:
-            # Update display_name and source for existing users
+            # Update display_name, source, mobile, email for existing users
             updated = False
             if sender_nick and platform_user.display_name != sender_nick:
                 platform_user.display_name = sender_nick
                 updated = True
             if not platform_user.source or platform_user.source == "web":
                 platform_user.source = "dingtalk"
+                updated = True
+            # 补充 mobile/email（通讯录获取的信息写入已有用户）
+            if dt_mobile and not platform_user.primary_mobile:
+                platform_user.primary_mobile = dt_mobile
+                updated = True
+            if dt_email and (not platform_user.email or platform_user.email.endswith((".local",))):
+                platform_user.email = dt_email
                 updated = True
             if updated:
                 await db.flush()

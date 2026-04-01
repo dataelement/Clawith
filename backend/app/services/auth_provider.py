@@ -188,6 +188,27 @@ class BaseAuthProvider(ABC):
                 )
                 logger.info(f"[SSO] Matched existing user by username: {user.username} (tenant_id={tenant_id})")
 
+        # 6. 通过 display_name 匹配（同租户下唯一同名用户，兜底匹配）
+        if not user and user_info.name and tenant_id:
+            name_result = await db.execute(
+                select(User).where(
+                    User.display_name == user_info.name,
+                    User.tenant_id == tenant_id,
+                )
+            )
+            name_candidates = name_result.scalars().all()
+            if len(name_candidates) == 1:
+                user = name_candidates[0]
+                await sso_service.link_identity(
+                    db,
+                    str(user.id),
+                    self.provider_type,
+                    provider_user_id,
+                    user_info.raw_data,
+                    tenant_id=tenant_id,
+                )
+                logger.info(f"[SSO] Step6: Matched user by unique display_name: {user.username} (name={user_info.name})")
+
         # 匹配到用户后，检查是否需要自动绑定租户
         if user and tenant_id and not user.tenant_id:
             user.tenant_id = tenant_id
