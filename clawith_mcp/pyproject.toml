@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clawith-mcp"
+version = "0.1.0"
+description = "MCP Server for Clawith — call Clawith agents from Cursor and other MCP clients"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+clawith-mcp = "server:main"

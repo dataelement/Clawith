@@ -419,3 +419,137 @@ def _split_inline_tools(content: str) -> list[dict]:
         parts.append({"role": "assistant", "content": content})
 
     return parts
+
+
+# ─── Synchronous Chat (for MCP Server / external tools) ──────────────────────
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None  # 不传则自动复用最近会话
+
+
+@router.post("/{agent_id}/chat")
+async def chat_with_agent(
+    agent_id: uuid.UUID,
+    body: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a message to an agent and wait for the full response.
+
+    Designed for external tools (MCP Server, Cursor, scripts).
+    Authenticates via X-Api-Key or Bearer JWT.
+    Returns the complete reply as plain JSON — no streaming.
+    """
+    from app.api.websocket import call_llm
+    from app.models.llm import LLMModel
+    from app.models.audit import ChatMessage
+    from app.core.permissions import check_agent_access, is_agent_expired
+
+    # Load agent
+    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Access check
+    if not await check_agent_access(agent, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if is_agent_expired(agent):
+        raise HTTPException(status_code=403, detail="Agent has expired")
+
+    # Load LLM model
+    if not agent.primary_model_id:
+        raise HTTPException(status_code=400, detail="Agent has no LLM model configured")
+    model_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
+    model = model_result.scalar_one_or_none()
+    if not model or not model.enabled:
+        raise HTTPException(status_code=400, detail="Agent LLM model is unavailable")
+
+    # Find or create session
+    session_id_str: str
+    if body.session_id:
+        session_id_str = body.session_id
+    else:
+        # Reuse most recent session, or create one
+        sess_result = await db.execute(
+            select(ChatSession)
+            .where(
+                ChatSession.agent_id == agent_id,
+                ChatSession.user_id == current_user.id,
+                ChatSession.source_channel == "web",
+            )
+            .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
+            .limit(1)
+        )
+        session = sess_result.scalar_one_or_none()
+        if not session:
+            from datetime import datetime, timezone as tz_
+            now = datetime.now(tz_.utc)
+            session = ChatSession(
+                id=uuid.uuid4(),
+                agent_id=agent_id,
+                user_id=current_user.id,
+                title=f"MCP {now.strftime('%m-%d %H:%M')}",
+                source_channel="web",
+                created_at=now,
+            )
+            db.add(session)
+            await db.commit()
+            await db.refresh(session)
+        session_id_str = str(session.id)
+
+    # Load conversation history (last 20 messages for context)
+    hist_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == session_id_str)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(20)
+    )
+    history = list(reversed(hist_result.scalars().all()))
+    messages = [{"role": m.role, "content": m.content or ""} for m in history if m.role in ("user", "assistant")]
+    messages.append({"role": "user", "content": body.message})
+
+    # Save user message
+    user_msg = ChatMessage(
+        agent_id=agent_id,
+        user_id=current_user.id,
+        role="user",
+        content=body.message,
+        conversation_id=session_id_str,
+    )
+    db.add(user_msg)
+    await db.commit()
+
+    # Call LLM
+    reply = await call_llm(
+        model=model,
+        messages=messages,
+        agent_name=agent.name,
+        role_description=agent.role_description or "",
+        agent_id=str(agent_id),
+        user_id=str(current_user.id),
+        session_id=session_id_str,
+    )
+
+    # Save assistant reply
+    assistant_msg = ChatMessage(
+        agent_id=agent_id,
+        user_id=current_user.id,
+        role="assistant",
+        content=reply,
+        conversation_id=session_id_str,
+    )
+    db.add(assistant_msg)
+
+    # Update session last_message_at
+    sess_upd = await db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(session_id_str)))
+    sess_obj = sess_upd.scalar_one_or_none()
+    if sess_obj:
+        from datetime import datetime, timezone as tz_
+        sess_obj.last_message_at = datetime.now(tz_.utc)
+
+    await db.commit()
+
+    return {"reply": reply, "session_id": session_id_str}
