@@ -252,6 +252,29 @@ async def create_tool(
     return {"id": str(tool.id), "name": tool.name}
 
 
+class BulkToolUpdateItem(BaseModel):
+    tool_id: str
+    enabled: bool
+
+@router.put("/bulk")
+async def update_tools_bulk(
+    updates: list[BulkToolUpdateItem],
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk update the enabled status of multiple tools."""
+    tool_ids = [uuid.UUID(u.tool_id) for u in updates]
+    result = await db.execute(select(Tool).where(Tool.id.in_(tool_ids)))
+    tools_map = {str(t.id): t for t in result.scalars().all()}
+    
+    for update in updates:
+        if update.tool_id in tools_map:
+            tools_map[update.tool_id].enabled = update.enabled
+            
+    await db.commit()
+    return {"ok": True}
+
+
 @router.put("/{tool_id}")
 async def update_tool(
     tool_id: uuid.UUID,
@@ -272,29 +295,6 @@ async def update_tool(
 
     for field, value in update_data.items():
         setattr(tool, field, value)
-    await db.commit()
-    return {"ok": True}
-
-
-class BulkToolUpdateItem(BaseModel):
-    tool_id: str
-    enabled: bool
-
-@router.put("/bulk")
-async def update_tools_bulk(
-    updates: list[BulkToolUpdateItem],
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Bulk update the enabled status of multiple tools."""
-    tool_ids = [uuid.UUID(u.tool_id) for u in updates]
-    result = await db.execute(select(Tool).where(Tool.id.in_(tool_ids)))
-    tools_map = {str(t.id): t for t in result.scalars().all()}
-    
-    for update in updates:
-        if update.tool_id in tools_map:
-            tools_map[update.tool_id].enabled = update.enabled
-            
     await db.commit()
     return {"ok": True}
 
