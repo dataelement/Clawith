@@ -359,7 +359,8 @@ async def get_agent(
 
     # Resolve creator username (one extra query, only on detail page)
     if agent.creator_id:
-        creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
+        from sqlalchemy.orm import selectinload as _sil
+        creator_result = await db.execute(select(User).where(User.id == agent.creator_id).options(_sil(User.identity)))
         creator = creator_result.scalar_one_or_none()
         out["creator_username"] = creator.username if creator else None
 

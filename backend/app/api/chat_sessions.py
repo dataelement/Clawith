@@ -118,10 +118,10 @@ async def list_sessions(
             else:
                 # Human session — resolve username
                 user_r = await db.execute(
-                    select(func.coalesce(User.display_name, User.username))
-                    .where(User.id == session.user_id)
+                    select(User).where(User.id == session.user_id)
                 )
-                display = user_r.scalar_one_or_none() or "Unknown"
+                _user = user_r.scalar_one_or_none()
+                display = (_user.display_name or _user.username or "Unknown") if _user else "Unknown"
 
             out.append(SessionOut(
                 id=str(session.id),

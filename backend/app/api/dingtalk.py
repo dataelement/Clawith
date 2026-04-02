@@ -275,6 +275,8 @@ async def process_dingtalk_message(
     from sqlalchemy import select as _select
     from app.database import async_session
     from app.models.agent import Agent as AgentModel
+    from app.models.user import User as UserModel
+    from sqlalchemy.orm import selectinload as _selectinload
     from app.models.audit import ChatMessage
     from app.services.channel_session import find_or_create_channel_session
     from app.services.channel_user_service import channel_user_service
@@ -341,7 +343,7 @@ async def process_dingtalk_message(
             )
             _om = _om_r.scalar_one_or_none()
             if _om and _om.user_id:
-                _u_r = await db.execute(_select(UserModel).where(UserModel.id == _om.user_id))
+                _u_r = await db.execute(_select(UserModel).where(UserModel.id == _om.user_id).options(_selectinload(UserModel.identity)))
                 platform_user = _u_r.scalar_one_or_none()
                 if platform_user:
                     matched_via = "org_member.external_id(staff_id)"
@@ -384,7 +386,7 @@ async def process_dingtalk_message(
                     )
                     _om = _om_r.scalar_one_or_none()
                     if _om and _om.user_id:
-                        _u_r = await db.execute(_select(UserModel).where(UserModel.id == _om.user_id))
+                        _u_r = await db.execute(_select(UserModel).where(UserModel.id == _om.user_id).options(_selectinload(UserModel.identity)))
                         platform_user = _u_r.scalar_one_or_none()
                         if platform_user:
                             matched_via = "org_member.unionid"

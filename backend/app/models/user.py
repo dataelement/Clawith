@@ -100,7 +100,7 @@ class User(Base):
     quota_agent_ttl_hours: Mapped[int] = mapped_column(Integer, default=48)
 
     # Relationships
-    identity: Mapped["Identity"] = relationship(back_populates="tenant_users")
+    identity: Mapped["Identity"] = relationship(back_populates="tenant_users", lazy="selectin")
 
     # Association proxies for backward compatibility
     email = association_proxy("identity", "email")

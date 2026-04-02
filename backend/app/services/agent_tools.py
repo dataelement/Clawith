@@ -3559,12 +3559,12 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
             target_user = u_result.scalar_one_or_none()
             if not target_user:
                 # List available users for the agent to pick from (within the same tenant)
-                list_query = select(UserModel.username, UserModel.display_name).limit(20)
+                list_query = select(UserModel).limit(20)
                 if agent.tenant_id:
                     list_query = list_query.where(UserModel.tenant_id == agent.tenant_id)
                 
                 all_r = await db.execute(list_query)
-                names = [f"{r.display_name or r.username}" for r in all_r.all()]
+                names = [f"{u.display_name or u.username}" for u in all_r.scalars().all()]
                 return f"❌ No user named '{username}' found in your organization. Available users: {', '.join(names) if names else 'none'}"
 
             # Find or create a web session between the agent and this user
