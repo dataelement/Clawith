@@ -190,14 +190,22 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read file contents from the workspace. Can read tasks.json for tasks, soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info.",
+            "description": "Read file contents from the workspace. Can read tasks.json for tasks, soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info. Use offset and limit for reading large files in chunks.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md, skills/xxx.md, enterprise_info/company_profile.md",
-                    }
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Starting line number (0-indexed, default 0). Use with limit for pagination.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of lines to read (default 2000). Use with offset for pagination.",
+                    },
                 },
                 "required": ["path"],
             },
@@ -238,6 +246,86 @@ AGENT_TOOLS = [
                     }
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    # --- Enhanced file management tools ---
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": "Perform surgical string replacement in a file without rewriting the entire content. Use this for targeted edits to avoid overwriting concurrent changes. The old_string must match exactly (including whitespace).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path to edit, e.g.: memory/memory.md, skills/my-skill/SKILL.md",
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Exact text to find and replace. Must match exactly including whitespace and newlines.",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Replacement text",
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace all occurrences if true (default: false). Set to true when you want to replace every match.",
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Search for content patterns across files using regex. Returns matching lines with file paths and line numbers. Useful for finding code, configurations, or text across the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex pattern to search for, e.g.: 'API_KEY', 'def\\\\s+\\\\w+', '@app\\\\.(get|post)'",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to search in (default: root). e.g.: 'skills', 'workspace', 'memory'",
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "File pattern to match (default: all files). e.g.: '*.md', '*.py', '*.json'",
+                    },
+                    "ignore_case": {
+                        "type": "boolean",
+                        "description": "Case-insensitive search (default: false)",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_files",
+            "description": "Find files matching glob patterns. Returns file paths with sizes and modification info. Useful for discovering files in the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern to match files, e.g.: '**/*.md' (all markdown files), 'skills/*.md' (skill files), 'workspace/**/*' (all files under workspace)",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Base directory for search (default: root). e.g.: 'skills', 'workspace'",
+                    },
+                },
+                "required": ["pattern"],
             },
         },
     },
@@ -1839,7 +1927,9 @@ async def execute_tool(
             path = arguments.get("path")
             if not path:
                 return "❌ Missing required argument 'path' for read_file"
-            result = _read_file(ws, path, tenant_id=_agent_tenant_id)
+            offset = int(arguments.get("offset", 0))
+            limit = int(arguments.get("limit", 2000))
+            result = _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
         elif tool_name == "read_document":
             path = arguments.get("path")
             if not path:
@@ -1856,6 +1946,41 @@ async def execute_tool(
             result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
         elif tool_name == "delete_file":
             result = _delete_file(ws, arguments.get("path", ""))
+        # --- Enhanced file management tools ---
+        elif tool_name == "edit_file":
+            path = arguments.get("path")
+            old_string = arguments.get("old_string")
+            new_string = arguments.get("new_string")
+            if not path:
+                return "❌ Missing required argument 'path' for edit_file"
+            if old_string is None:
+                return "❌ Missing required argument 'old_string' for edit_file"
+            if new_string is None:
+                return "❌ Missing required argument 'new_string' for edit_file"
+            replace_all = arguments.get("replace_all", False)
+            result = _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id)
+        elif tool_name == "search_files":
+            pattern = arguments.get("pattern")
+            if not pattern:
+                return "❌ Missing required argument 'pattern' for search_files"
+            result = _search_files(
+                ws,
+                pattern,
+                path=arguments.get("path", "."),
+                file_pattern=arguments.get("file_pattern", "*"),
+                ignore_case=arguments.get("ignore_case", False),
+                tenant_id=_agent_tenant_id
+            )
+        elif tool_name == "find_files":
+            pattern = arguments.get("pattern")
+            if not pattern:
+                return "❌ Missing required argument 'pattern' for find_files"
+            result = _find_files(
+                ws,
+                pattern,
+                path=arguments.get("path", "."),
+                tenant_id=_agent_tenant_id
+            )
         elif tool_name == "manage_tasks":
             result = await _manage_tasks(agent_id, user_id, ws, arguments)
         elif tool_name == "set_trigger":
@@ -2826,7 +2951,19 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     return header + "\n".join(items)
 
 
-def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
+def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: int = 0, limit: int = 2000) -> str:
+    """Read file contents with optional line range support.
+
+    Args:
+        ws: Workspace root path
+        rel_path: Relative file path
+        tenant_id: Optional tenant ID for enterprise_info
+        offset: Starting line number (0-indexed)
+        limit: Maximum number of lines to read
+
+    Returns:
+        File content with line numbers, or error message
+    """
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
@@ -2847,9 +2984,33 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
 
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
-        if len(content) > 6000:
-            content = content[:6000] + f"\n\n...[truncated, {len(content)} chars total]"
-        return content
+        lines = content.splitlines()
+        total_lines = len(lines)
+
+        # Apply offset and limit
+        start = max(0, offset)
+        end = min(total_lines, start + limit)
+
+        if start >= total_lines:
+            return f"Offset {offset} exceeds file length ({total_lines} lines total)"
+
+        selected_lines = lines[start:end]
+
+        # Format with line numbers (like cat -n)
+        result = []
+        for i, line in enumerate(selected_lines, start=start):
+            result.append(f"{i+1:6}\t{line}")
+
+        output = "\n".join(result)
+
+        # Add pagination info if file is larger than what we show
+        if total_lines > end:
+            output += f"\n\n... [{total_lines - end} more lines not shown, lines {end+1}-{total_lines}]"
+
+        # Add header with file info
+        header = f"📄 {rel_path} (lines {start+1}-{end} of {total_lines})\n"
+        return header + output
+
     except Exception as e:
         return f"Read failed: {e}"
 
@@ -3032,6 +3193,211 @@ def _delete_file(ws: Path, rel_path: str) -> str:
             return f"✅ Deleted {rel_path}"
     except Exception as e:
         return f"Delete failed: {e}"
+
+
+def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replace_all: bool = False, tenant_id: str | None = None) -> str:
+    """Perform surgical string replacement in a file.
+
+    Args:
+        ws: Workspace root path
+        rel_path: Relative file path
+        old_string: Exact text to find and replace
+        new_string: Replacement text
+        replace_all: Replace all occurrences if True
+        tenant_id: Optional tenant ID for enterprise_info
+
+    Returns:
+        Success message or error
+    """
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if rel_path and rel_path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(file_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+    else:
+        file_path = (ws / rel_path).resolve()
+        if not str(file_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
+
+    if not file_path.exists():
+        return f"File not found: {rel_path}"
+
+    if not file_path.is_file():
+        return f"Not a file: {rel_path}"
+
+    try:
+        content = file_path.read_text(encoding="utf-8")
+
+        if old_string not in content:
+            return f"❌ 'old_string' not found in {rel_path}. Please check the exact text including whitespace and newlines."
+
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+            count = content.count(old_string)
+        else:
+            # Ensure uniqueness for single replacement
+            count = content.count(old_string)
+            if count > 1:
+                return f"❌ 'old_string' appears {count} times in {rel_path}. Use replace_all=true or provide more context to make the match unique."
+            new_content = content.replace(old_string, new_string, 1)
+            count = 1
+
+        file_path.write_text(new_content, encoding="utf-8")
+        return f"✅ Replaced {count} occurrence(s) in {rel_path}"
+
+    except Exception as e:
+        return f"Edit failed: {e}"
+
+
+def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "*", ignore_case: bool = False, tenant_id: str | None = None) -> str:
+    """Search for content patterns across files using regex.
+
+    Args:
+        ws: Workspace root path
+        pattern: Regex pattern to search for
+        path: Directory to search in (relative to workspace root)
+        file_pattern: File pattern to match (glob)
+        ignore_case: Case-insensitive search
+        tenant_id: Optional tenant ID for enterprise_info
+
+    Returns:
+        Matching lines with file paths and line numbers
+    """
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if path and path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = path[len("enterprise_info"):].lstrip("/")
+        search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(search_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+        ws_for_relative = enterprise_root
+    else:
+        search_path = (ws / path).resolve() if path and path != "." else ws
+        if not str(search_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
+        ws_for_relative = ws
+
+    if not search_path.exists():
+        return f"Directory not found: {path}"
+
+    flags = re.IGNORECASE if ignore_case else 0
+
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        return f"Invalid regex pattern: {e}"
+
+    results = []
+    total_matches = 0
+    files_searched = 0
+
+    # Use rglob for recursive search
+    for file_path in search_path.rglob(file_pattern):
+        if not file_path.is_file():
+            continue
+        # Skip hidden files and common binary/extensions
+        if file_path.name.startswith("."):
+            continue
+        suffix = file_path.suffix.lower()
+        if suffix in {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}:
+            continue
+
+        files_searched += 1
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+            for i, line in enumerate(content.splitlines(), 1):
+                if regex.search(line):
+                    rel_path = file_path.relative_to(ws_for_relative)
+                    # Truncate long lines
+                    display_line = line.strip()[:100]
+                    results.append(f"{rel_path}:{i}: {display_line}")
+                    total_matches += 1
+                    if len(results) >= 50:  # Limit results
+                        break
+        except Exception:
+            continue
+
+        if len(results) >= 50:
+            break
+
+    if not results:
+        return f"No matches found for pattern '{pattern}' in {files_searched} file(s)"
+
+    header = f"🔍 Found {total_matches} match(es) in {files_searched} file(s) for pattern '{pattern}':\n"
+    return header + "\n".join(results)
+
+
+def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None = None) -> str:
+    """Find files matching glob patterns.
+
+    Args:
+        ws: Workspace root path
+        pattern: Glob pattern to match files
+        path: Base directory for search (relative to workspace root)
+        tenant_id: Optional tenant ID for enterprise_info
+
+    Returns:
+        List of matching files with sizes
+    """
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if path and path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = path[len("enterprise_info"):].lstrip("/")
+        search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(search_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+        ws_for_relative = enterprise_root
+    else:
+        search_path = (ws / path).resolve() if path and path != "." else ws
+        if not str(search_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
+        ws_for_relative = ws
+
+    if not search_path.exists():
+        return f"Directory not found: {path}"
+
+    try:
+        matches = list(search_path.glob(pattern))
+    except Exception as e:
+        return f"Invalid glob pattern: {e}"
+
+    if not matches:
+        return f"No files matching pattern: {pattern}"
+
+    # Sort by modification time (most recent first)
+    matches.sort(key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
+
+    results = []
+    dir_count = 0
+    file_count = 0
+
+    for m in matches[:100]:  # Limit to 100 results
+        rel_path = m.relative_to(ws_for_relative)
+        if m.is_dir():
+            dir_count += 1
+            results.append(f"📁 {rel_path}/")
+        else:
+            file_count += 1
+            try:
+                size = m.stat().st_size
+                size_str = f"{size//1024}KB" if size > 1024 else f"{size}B"
+                results.append(f"📄 {rel_path} ({size_str})")
+            except Exception:
+                results.append(f"📄 {rel_path}")
+
+    header = f"📂 Found {len(matches)} item(s) ({dir_count} dirs, {file_count} files) matching '{pattern}':\n"
+    return header + "\n".join(results)
 
 
 async def _manage_tasks(
