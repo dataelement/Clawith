@@ -28,6 +28,7 @@ ss-nodes.json
 .agents/
 _agent/
 _agents/
+.trae/
 
 # Internal docs
 docs/
