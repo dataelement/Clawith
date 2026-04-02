@@ -284,7 +284,7 @@ class BaseAuthProvider(ABC):
             db,
             email=user_info.email,
             phone=user_info.mobile,
-            username=username,
+            username=user_info.email.split("@")[0] if user_info.email else None,
             password=effective_id,
         )
 
