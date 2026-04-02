@@ -538,7 +538,7 @@ export default function Layout() {
                         <button className="btn btn-ghost sidebar-collapse-btn" onClick={toggleSidebar} style={{
                             padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center',
                             marginLeft: 'auto', color: 'var(--text-tertiary)',
-                        }} title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}>
+                        }} title={isSidebarCollapsed ? t('common.expandSidebar') : t('common.collapseSidebar')}>
                             {isSidebarCollapsed ? SidebarIcons.expand : SidebarIcons.collapse}
                         </button>
                     </div>
@@ -688,7 +688,7 @@ export default function Layout() {
                         }}>
                             <button className="btn btn-ghost" onClick={toggleTheme} style={{
                                 padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            }} title={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}>
+                            }} title={theme === 'dark' ? t('common.lightMode') : t('common.darkMode')}>
                                 {theme === 'dark' ? SidebarIcons.sun : SidebarIcons.moon}
                             </button>
                             <button className="btn btn-ghost" onClick={() => { setShowNotifications(v => !v); if (!showNotifications) refetchNotifications(); }} style={{

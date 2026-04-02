@@ -358,8 +358,8 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                         className="btn btn-ghost"
                                         style={{ position: 'absolute', top: '4px', right: '4px', fontSize: '11px', minWidth: '60px' }}
                                         textToCopy={`Please create a skill file at skills/clawith_sync.md with the following content, then add "Check Clawith inbox using the clawith_sync skill and process any pending messages" to your HEARTBEAT.md:\n\n---\nname: clawith_sync\ndescription: Sync with Clawith platform — check inbox, submit results, and send messages.\n---\n\n# Clawith Sync\n\n## When to use\nCheck for new messages from the Clawith platform during every heartbeat cycle.\nYou can also proactively send messages to people and agents in your relationships.\n\n## Instructions\n\n### 1. Check inbox\nMake an HTTP GET request:\n- URL: ${window.location.origin}/api/gateway/poll\n- Header: X-Api-Key: ${createdApiKey}\n\nThe response contains a \`messages\` array. Each message includes:\n- \`id\` — unique message ID (use this for reporting)\n- \`content\` — the message text\n- \`sender_user_name\` — name of the Clawith user who sent it\n- \`sender_user_id\` — unique ID of the sender\n- \`conversation_id\` — the conversation this message belongs to\n- \`history\` — array of previous messages in this conversation for context\n\nThe response also contains a \`relationships\` array describing your colleagues:\n- \`name\` — the person or agent name\n- \`type\` — "human" or "agent"\n- \`role\` — relationship type (e.g. collaborator, supervisor)\n- \`channels\` — available communication channels (e.g. ["feishu"], ["agent"])\n\n**IMPORTANT**: Use the \`history\` array to understand conversation context before replying.\nDifferent \`sender_user_name\` values mean different people — address them accordingly.\n\n### 2. Report results\nFor each completed message, make an HTTP POST request:\n- URL: ${window.location.origin}/api/gateway/report\n- Header: X-Api-Key: ${createdApiKey}\n- Header: Content-Type: application/json\n- Body: {"message_id": "<id from the message>", "result": "<your response>"}\n\n### 3. Send a message to someone\nTo proactively contact a person or agent, make an HTTP POST request:\n- URL: ${window.location.origin}/api/gateway/send-message\n- Header: X-Api-Key: ${createdApiKey}\n- Header: Content-Type: application/json\n- Body: {"target": "<name of person or agent>", "content": "<your message>"}\n\nThe system auto-detects the best channel. For agents, the reply appears in your next poll.\nFor humans, the message is delivered via their available channel (e.g. Feishu).`}
-                                        label={t('common.copy', 'Copy')}
-                                        copiedLabel="Copied"
+                                        label={t('common.copy')}
+                                        copiedLabel={t('common.copied')}
                                     />
                                 </div>
                     </div>
@@ -380,8 +380,8 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                     className="btn btn-secondary"
                                     style={{ fontSize: '11px', padding: '4px 12px', minWidth: '70px', height: 'fit-content' }}
                                     textToCopy={createdApiKey}
-                                    label={t('common.copy', 'Copy')}
-                                    copiedLabel="Copied"
+                                    label={t('common.copy')}
+                                    copiedLabel={t('common.copied')}
                                 />
                             </div>
                             <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
@@ -461,7 +461,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                     </p>
 
                     <div className="form-group">
-                        <label className="form-label">{t('agent.fields.name')} *</label>
+                        <label className="form-label">{t('agent.fields.name')} <span style={{ color: 'var(--error)' }}>*</span></label>
                         <input className={`form-input${fieldErrors.name ? ' input-error' : ''}`} value={form.name}
                             onChange={(e) => { setForm({ ...form, name: e.target.value }); clearFieldError('name'); }}
                             placeholder={t('openclaw.namePlaceholder', 'e.g. My OpenClaw Bot')} autoFocus />
@@ -569,14 +569,16 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                         <div
                                             key={tmpl.id}
                                             onClick={() => {
-                                                // Parse soul_template to extract personality and boundaries
-                                                const sections = parseSoulTemplate(tmpl.soul_template, ['Personality', 'Boundaries']);
+                                                const templateData = t(`wizard.templates.templateData.${tmpl.name}`, { returnObjects: true }) as any;
+                                                const description = templateData?.description || tmpl.description;
+                                                const personality = templateData?.personality || '';
+                                                const boundaries = templateData?.boundaries || '';
                                                 setForm({
                                                     ...form,
                                                     template_id: tmpl.id,
-                                                    role_description: tmpl.description,
-                                                    personality: sections.personality || '',
-                                                    boundaries: sections.boundaries || '',
+                                                    role_description: description,
+                                                    personality: personality,
+                                                    boundaries: boundaries,
                                                 });
                                             }}
                                             style={{
@@ -714,6 +716,8 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                             {globalSkills.map((skill: any) => {
                                 const isDefault = skill.is_default;
                                 const isChecked = form.skill_ids.includes(skill.id);
+                                const skillName = String(t(`wizard.step3.skills.${skill.name}.name`, skill.name));
+                                const skillDesc = String(t(`wizard.step3.skills.${skill.name}.description`, skill.description));
                                 return (
                                     <label key={skill.id} style={{
                                         display: 'flex', alignItems: 'center', gap: '12px', padding: '12px',
@@ -737,16 +741,16 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                         <div style={{ fontSize: '18px' }}>{skill.icon}</div>
                                         <div style={{ flex: 1 }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                <span style={{ fontWeight: 500, fontSize: '13px' }}>{skill.name}</span>
-                                                {isDefault && <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', background: 'var(--accent-primary)', color: '#fff', fontWeight: 500 }}>Required</span>}
+                                                <span style={{ fontWeight: 500, fontSize: '13px' }}>{skillName}</span>
+                                                {isDefault && <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', background: 'var(--accent-primary)', color: '#fff', fontWeight: 500 }}>{t('wizard.step3.required')}</span>}
                                             </div>
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{skill.description}</div>
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{skillDesc}</div>
                                         </div>
                                     </label>);
                             })}
                             {globalSkills.length === 0 && (
                                 <div style={{ padding: '16px', background: 'var(--bg-elevated)', borderRadius: '8px', fontSize: '13px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-                                    No skills available. Add skills in Company Settings.
+                                    {t('wizard.step3.noSkills')}
                                 </div>
                             )}
                         </div>

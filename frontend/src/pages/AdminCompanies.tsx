@@ -184,7 +184,32 @@ function PlatformTab() {
         // Load email templates
         fetchJson<any>('/enterprise/email-templates')
             .then(d => {
-                if (d.templates) setEmailTemplates(d.templates);
+                if (d.templates) {
+                    // Use localized defaults for empty templates
+                    const localizedDefaults: Record<string, { subject: string; body: string }> = {
+                        email_verification: {
+                            subject: t('enterprise.emailTemplates.emailVerificationSubject', 'Verify your Clawith email address'),
+                            body: t('enterprise.emailTemplates.emailVerificationBody', 'Hello {{display_name}},\n\nWelcome to Clawith! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.')
+                        },
+                        password_reset: {
+                            subject: t('enterprise.emailTemplates.passwordResetSubject', 'Reset your Clawith password'),
+                            body: t('enterprise.emailTemplates.passwordResetBody', 'Hello {{display_name}},\n\nWe received a request to reset your Clawith password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.')
+                        },
+                        company_invitation: {
+                            subject: t('enterprise.emailTemplates.companyInvitationSubject', '{{inviter_name}} invited you to join {{company_name}} on Clawith'),
+                            body: t('enterprise.emailTemplates.companyInvitationBody', 'Hello,\n\n{{inviter_name}} has invited you to join their team \'{{company_name}}\' on Clawith.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don\'t want to join this team or didn\'t expect this invitation, you can ignore this email.')
+                        }
+                    };
+                    
+                    const templatesWithDefaults = { ...d.templates };
+                    Object.keys(localizedDefaults).forEach(key => {
+                        if (!templatesWithDefaults[key] || !templatesWithDefaults[key].subject || !templatesWithDefaults[key].body) {
+                            templatesWithDefaults[key] = localizedDefaults[key];
+                        }
+                    });
+                    
+                    setEmailTemplates(templatesWithDefaults);
+                }
                 if (d.variables) setEmailTemplateVars(d.variables);
                 if (d.defaults) setEmailTemplateDefaults(d.defaults);
             })
@@ -196,7 +221,7 @@ function PlatformTab() {
         try {
             await adminApi.updatePlatformSettings({ [key]: value });
             setSettings((s: any) => ({ ...s, [key]: value }));
-            showToast('Setting updated');
+            showToast(t('admin.settingUpdated', 'Setting updated'));
         } catch (e: any) {
             showToast(e.message || 'Failed', 'error');
         }
@@ -269,8 +294,24 @@ function PlatformTab() {
     };
 
     const resetTemplate = (key: string) => {
-        if (emailTemplateDefaults[key]) {
-            setEmailTemplates(prev => ({ ...prev, [key]: { ...emailTemplateDefaults[key] } }));
+        // Use localized default templates
+        const localizedDefaults: Record<string, { subject: string; body: string }> = {
+            email_verification: {
+                subject: t('enterprise.emailTemplates.emailVerificationSubject', 'Verify your Clawith email address'),
+                body: t('enterprise.emailTemplates.emailVerificationBody', 'Hello {{display_name}},\n\nWelcome to Clawith! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.')
+            },
+            password_reset: {
+                subject: t('enterprise.emailTemplates.passwordResetSubject', 'Reset your Clawith password'),
+                body: t('enterprise.emailTemplates.passwordResetBody', 'Hello {{display_name}},\n\nWe received a request to reset your Clawith password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.')
+            },
+            company_invitation: {
+                subject: t('enterprise.emailTemplates.companyInvitationSubject', '{{inviter_name}} invited you to join {{company_name}} on Clawith'),
+                body: t('enterprise.emailTemplates.companyInvitationBody', 'Hello,\n\n{{inviter_name}} has invited you to join their team \'{{company_name}}\' on Clawith.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don\'t want to join this team or didn\'t expect this invitation, you can ignore this email.')
+            }
+        };
+        
+        if (localizedDefaults[key]) {
+            setEmailTemplates(prev => ({ ...prev, [key]: { ...localizedDefaults[key] } }));
         }
     };
 
@@ -773,17 +814,17 @@ function CompaniesTab() {
 
     const columns: { key: SortKey; label: string; flex: string }[] = [
         { key: 'name', label: t('admin.company', 'Company'), flex: '2fr' },
-        { key: 'sso_enabled', label: 'SSO', flex: '100px' },
-        { key: 'org_admin_email', label: t('admin.orgAdmin', 'Admin Email'), flex: '1.5fr' },
+        { key: 'sso_enabled', label: t('admin.sso', 'SSO'), flex: '100px' },
+        { key: 'org_admin_email', label: t('admin.orgAdmin', 'Admin Email'), flex: '2fr' },
         { key: 'user_count', label: t('admin.users', 'Users'), flex: '70px' },
-        { key: 'agent_count', label: t('admin.agents', 'Agents'), flex: '70px' },
-        { key: 'total_tokens', label: t('admin.tokens', 'Token Usage'), flex: '100px' },
+        { key: 'agent_count', label: t('admin.agents', 'Agents'), flex: '100px' },
+        { key: 'total_tokens', label: t('admin.tokens', 'Token Usage'), flex: '120px' },
         { key: 'created_at', label: t('admin.createdAt', 'Created'), flex: '100px' },
-        { key: 'is_active', label: t('admin.status', 'Status'), flex: '100px' },
     ];
+    const statusColFlex = '100px';
     const actionColFlex = '80px';
 
-    const gridCols = columns.map(c => c.flex).join(' ') + ' ' + actionColFlex;
+    const gridCols = columns.map(c => c.flex).join(' ') + ' ' + statusColFlex + ' ' + actionColFlex;
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>

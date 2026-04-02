@@ -803,7 +803,8 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             <span style={{ color: 'var(--accent-primary)' }}>{webhookUrl}</span>
                                             <LinearCopyButton
                                                 textToCopy={webhookUrl}
-                                                label="Copy"
+                                                label={t('common.copy')}
+                                                copiedLabel={t('common.copied')}
                                                 iconOnly={true}
                                                 className=""
                                                 style={{ marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle' }}

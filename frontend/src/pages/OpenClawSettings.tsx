@@ -142,8 +142,8 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                                 <LinearCopyButton
                                     className="btn btn-secondary"
                                     textToCopy={activeKey}
-                                    label="Copy"
-                                    copiedLabel="Copied"
+                                    label={t('common.copy')}
+                                    copiedLabel={t('common.copied')}
                                     style={{ padding: '4px 12px', fontSize: '12px', whiteSpace: 'nowrap', minWidth: '70px', height: 'fit-content' }}
                                 />
                                 <button
