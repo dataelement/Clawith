@@ -446,15 +446,8 @@ async def chat_with_agent(
     from app.models.audit import ChatMessage
     from app.core.permissions import check_agent_access, is_agent_expired
 
-    # Load agent
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = agent_result.scalar_one_or_none()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    # Access check
-    if not await check_agent_access(agent, current_user, db):
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Load agent + access check (raises HTTPException if denied)
+    agent, _role = await check_agent_access(db, current_user, agent_id)
 
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
@@ -553,3 +546,170 @@ async def chat_with_agent(
     await db.commit()
 
     return {"reply": reply, "session_id": session_id_str}
+
+
+# ─── Streaming Chat (SSE) ────────────────────────────────────────────────────
+
+import asyncio
+from fastapi.responses import StreamingResponse
+
+
+@router.post("/{agent_id}/chat/stream")
+async def chat_with_agent_stream(
+    agent_id: uuid.UUID,
+    body: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a message and receive the reply as a Server-Sent Events stream.
+
+    Events:
+      data: {"type": "chunk", "text": "..."}   — streaming token
+      data: {"type": "done",  "session_id": "...", "reply": "full reply"}
+      data: {"type": "error", "message": "..."}
+    """
+    import json as _json
+    from app.api.websocket import call_llm_stream
+    from app.models.llm import LLMModel
+    from app.models.audit import ChatMessage
+    from app.core.permissions import check_agent_access, is_agent_expired
+
+    # Load agent + access check
+    agent, _role = await check_agent_access(db, current_user, agent_id)
+
+    if is_agent_expired(agent):
+        raise HTTPException(status_code=403, detail="Agent has expired")
+
+    if not agent.primary_model_id:
+        raise HTTPException(status_code=400, detail="Agent has no LLM model configured")
+    model_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
+    model = model_result.scalar_one_or_none()
+    if not model or not model.enabled:
+        raise HTTPException(status_code=400, detail="Agent LLM model is unavailable")
+
+    # Find or create session
+    if body.session_id:
+        session_id_str = body.session_id
+    else:
+        sess_result = await db.execute(
+            select(ChatSession)
+            .where(
+                ChatSession.agent_id == agent_id,
+                ChatSession.user_id == current_user.id,
+                ChatSession.source_channel == "web",
+            )
+            .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
+            .limit(1)
+        )
+        session = sess_result.scalar_one_or_none()
+        if not session:
+            from datetime import datetime, timezone as tz_
+            now = datetime.now(tz_.utc)
+            session = ChatSession(
+                id=uuid.uuid4(),
+                agent_id=agent_id,
+                user_id=current_user.id,
+                title=f"Stream {now.strftime('%m-%d %H:%M')}",
+                source_channel="web",
+                created_at=now,
+            )
+            db.add(session)
+            await db.commit()
+            await db.refresh(session)
+        session_id_str = str(session.id)
+
+    # Load history
+    hist_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == session_id_str)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(20)
+    )
+    history = list(reversed(hist_result.scalars().all()))
+    messages = [{"role": m.role, "content": m.content or ""} for m in history if m.role in ("user", "assistant")]
+    messages.append({"role": "user", "content": body.message})
+
+    # Save user message
+    user_msg = ChatMessage(
+        agent_id=agent_id,
+        user_id=current_user.id,
+        role="user",
+        content=body.message,
+        conversation_id=session_id_str,
+    )
+    db.add(user_msg)
+    await db.commit()
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_chunk(text: str) -> None:
+        await queue.put(("chunk", text))
+
+    async def run_llm() -> None:
+        try:
+            # Try streaming-capable call first, fall back to synchronous
+            try:
+                reply = await call_llm_stream(
+                    model=model,
+                    messages=messages,
+                    agent_name=agent.name,
+                    role_description=agent.role_description or "",
+                    agent_id=str(agent_id),
+                    user_id=str(current_user.id),
+                    session_id=session_id_str,
+                    on_chunk=on_chunk,
+                )
+            except (TypeError, AttributeError):
+                # call_llm_stream not available — fall back to call_llm
+                from app.api.websocket import call_llm
+                reply = await call_llm(
+                    model=model,
+                    messages=messages,
+                    agent_name=agent.name,
+                    role_description=agent.role_description or "",
+                    agent_id=str(agent_id),
+                    user_id=str(current_user.id),
+                    session_id=session_id_str,
+                )
+            await queue.put(("done", reply))
+        except Exception as exc:
+            await queue.put(("error", str(exc)))
+
+    asyncio.create_task(run_llm())
+
+    async def event_stream():
+        full_reply = ""
+        while True:
+            kind, payload = await queue.get()
+            if kind == "chunk":
+                full_reply += payload
+                yield f"data: {_json.dumps({'type': 'chunk', 'text': payload})}\n\n"
+            elif kind == "done":
+                # payload is the full reply (from sync fallback or streaming completion)
+                if not full_reply:
+                    full_reply = payload
+                # Persist assistant message
+                from app.database import get_db as _get_db
+                async for _db in _get_db():
+                    asst_msg = ChatMessage(
+                        agent_id=agent_id,
+                        user_id=current_user.id,
+                        role="assistant",
+                        content=full_reply,
+                        conversation_id=session_id_str,
+                    )
+                    _db.add(asst_msg)
+                    sess_upd = await _db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(session_id_str)))
+                    sess_obj = sess_upd.scalar_one_or_none()
+                    if sess_obj:
+                        from datetime import datetime, timezone as tz_
+                        sess_obj.last_message_at = datetime.now(tz_.utc)
+                    await _db.commit()
+                    break
+                yield f"data: {_json.dumps({'type': 'done', 'session_id': session_id_str, 'reply': full_reply})}\n\n"
+                break
+            elif kind == "error":
+                yield f"data: {_json.dumps({'type': 'error', 'message': payload})}\n\n"
+                break
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
