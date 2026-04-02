@@ -224,6 +224,112 @@ If `git clone` is slow or times out:
 
 ---
 
+## 🔌 External Integrations (IDE & Tool Access)
+
+Clawith agents can be called directly from your IDE or any HTTP client via a personal API Key and MCP Server.
+
+### 🔑 User API Key
+
+Generate a personal API key to authenticate external requests:
+
+1. Open Clawith → top-right avatar → **Account Settings**
+2. Scroll to **API Key** → click **Generate API Key**
+3. Copy and save the key (shown only once)
+
+The key is passed as `X-Api-Key: cw-xxx` in HTTP requests, or as `CLAWITH_API_KEY` in MCP config.
+
+---
+
+### 🤖 MCP Server (Cursor / Claude Code / Android Studio)
+
+The bundled `clawith_mcp/` package exposes Clawith agents as MCP tools, giving any MCP-compatible IDE direct access to your agent crew.
+
+**Install:**
+
+```bash
+cd clawith_mcp
+/opt/homebrew/bin/python3.13 -m venv .venv
+.venv/bin/pip install mcp httpx
+```
+
+**Available tools:**
+
+| Tool | Description |
+|---|---|
+| `list_agents` | List all accessible agents |
+| `call_agent` | Send a message and get the full reply |
+| `new_session` | Create a new session (avoid context pollution between tasks) |
+| `get_session_history` | Retrieve recent messages from a session |
+
+**Cursor** — edit `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "clawith": {
+      "command": "/path/to/clawith_mcp/.venv/bin/python",
+      "args": ["/path/to/clawith_mcp/server.py"],
+      "env": {
+        "CLAWITH_URL": "http://your-server:8008",
+        "CLAWITH_API_KEY": "cw-your-key",
+        "CLAWITH_DEFAULT_AGENT_ID": "optional-agent-uuid"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** — add to `.mcp.json` in your project root (same format as above).
+
+**Android Studio** — `Settings → Tools → AI Assistant → Model Context Protocol (MCP)` → add server with the same command/env.
+
+> Team setup: each member generates their own API Key and points `CLAWITH_URL` at the shared Clawith server.
+
+---
+
+### 🔍 Semantic Memory (OpenViking)
+
+Clawith integrates with [OpenViking](https://github.com/OpenViking/OpenViking) for vector-based semantic memory retrieval. When an agent responds, Clawith automatically searches the agent's indexed memory for relevant context and injects it into the prompt.
+
+**How it works:**
+- Agent `memory.md` is indexed via OpenViking's session/extract pipeline
+- On each chat turn, the top-K semantically relevant snippets are retrieved and prepended to the system prompt
+- Scope is isolated per-agent via the `X-OpenViking-Agent` header
+
+**Configure** — add to `.env`:
+
+```bash
+OPENVIKING_URL=http://127.0.0.1:1933
+```
+
+No additional setup needed — indexing and retrieval happen automatically.
+
+---
+
+### ⚡ Streaming Chat API
+
+For programmatic access with real-time output, use the streaming endpoint:
+
+```
+POST /api/agents/{agent_id}/chat/stream
+X-Api-Key: cw-your-key
+Content-Type: application/json
+
+{"message": "your message", "session_id": "optional-uuid"}
+```
+
+Returns `text/event-stream` with events:
+
+```
+data: {"type": "chunk", "text": "..."}   ← streaming token
+data: {"type": "done",  "session_id": "...", "reply": "full reply"}
+data: {"type": "error", "message": "..."}
+```
+
+Synchronous (non-streaming) version: `POST /api/agents/{agent_id}/chat` — returns `{"reply": "...", "session_id": "..."}`.
+
+---
+
 ## 🤝 Contributing
 
 We welcome contributions of all kinds! Whether it's fixing bugs, adding features, improving docs, or translating — check out our [Contributing Guide](CONTRIBUTING.md) to get started. Look for [`good first issue`](https://github.com/dataelement/Clawith/labels/good%20first%20issue) if you're new.

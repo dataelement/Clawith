@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "openviking": {
+      "command": "node",
+      "args": [
+        "/Users/shubinzhang/Documents/UGit/OpenViking/examples/claude-code-memory-plugin/scripts/start-memory-server.mjs"
+      ],
+      "env": {
+        "OPENVIKING_CONFIG_FILE": "/Users/shubinzhang/.openviking/ov.conf",
+        "CLAUDE_PLUGIN_ROOT": "/Users/shubinzhang/Documents/UGit/OpenViking/examples/claude-code-memory-plugin"
+      }
+    },
+    "clawith": {
+      "command": "/Users/shubinzhang/Documents/UGit/Clawith/clawith_mcp/.venv/bin/python",
+      "args": ["/Users/shubinzhang/Documents/UGit/Clawith/clawith_mcp/server.py"],
+      "env": {
+        "CLAWITH_URL": "http://localhost:8008",
+        "CLAWITH_API_KEY": "cw-c5CUKt0rrxnlGXhPk47FTriCrH5et0xnIkF0to_GQX8",
+        "CLAWITH_DEFAULT_AGENT_ID": "82e3e5d0-6899-4c49-acb8-7d1ee5baab5a"
+      }
+    }
+  }
+}

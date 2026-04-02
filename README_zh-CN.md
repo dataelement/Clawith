@@ -194,6 +194,112 @@ git clone https://gitclone.com/github.com/dataelement/Clawith.git
 
 ---
 
+## 🔌 外部集成（IDE & 工具调用）
+
+通过个人 API Key 和 MCP Server，可以从 IDE 或任意 HTTP 客户端直接调用 Clawith 智能体。
+
+### 🔑 用户 API Key
+
+生成个人 API Key 用于外部请求鉴权：
+
+1. 打开 Clawith → 右上角头像 → **账户设置**
+2. 滚动到 **API Key** 区块 → 点击**生成 API Key**
+3. 复制保存（只显示一次）
+
+Key 通过 `X-Api-Key: cw-xxx` 请求头传递，或在 MCP 配置中设置为 `CLAWITH_API_KEY`。
+
+---
+
+### 🤖 MCP Server（Cursor / Claude Code / Android Studio）
+
+内置的 `clawith_mcp/` 包将 Clawith 智能体暴露为 MCP 工具，让任意支持 MCP 的 IDE 都能直接访问你的智能体团队。
+
+**安装：**
+
+```bash
+cd clawith_mcp
+/opt/homebrew/bin/python3.13 -m venv .venv
+.venv/bin/pip install mcp httpx
+```
+
+**可用工具：**
+
+| 工具 | 说明 |
+|---|---|
+| `list_agents` | 列出所有有权限的智能体 |
+| `call_agent` | 发消息并获取完整回复 |
+| `new_session` | 创建新会话（任务切换时避免上下文污染） |
+| `get_session_history` | 查看会话历史消息 |
+
+**Cursor** — 编辑 `~/.cursor/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "clawith": {
+      "command": "/path/to/clawith_mcp/.venv/bin/python",
+      "args": ["/path/to/clawith_mcp/server.py"],
+      "env": {
+        "CLAWITH_URL": "http://your-server:8008",
+        "CLAWITH_API_KEY": "cw-your-key",
+        "CLAWITH_DEFAULT_AGENT_ID": "可选-智能体UUID"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** — 在项目根目录创建 `.mcp.json`，格式相同。
+
+**Android Studio** — `Settings → Tools → AI Assistant → Model Context Protocol (MCP)` → 添加服务器，填入相同的 command/env。
+
+> 团队使用：每位成员生成自己的 API Key，`CLAWITH_URL` 指向同一台 Clawith 服务器即可。
+
+---
+
+### 🔍 语义记忆（OpenViking）
+
+Clawith 集成 [OpenViking](https://github.com/OpenViking/OpenViking) 实现基于向量的语义记忆检索。智能体回复时，Clawith 会自动检索相关记忆片段并注入系统提示词。
+
+**工作原理：**
+- 智能体 `memory.md` 通过 OpenViking session/extract 管道建立索引
+- 每轮对话时，检索语义最相关的 Top-K 片段，前置注入提示词
+- 通过 `X-OpenViking-Agent` 请求头按智能体隔离作用域
+
+**配置** — 在 `.env` 中添加：
+
+```bash
+OPENVIKING_URL=http://127.0.0.1:1933
+```
+
+无需额外设置，索引和检索全自动触发。
+
+---
+
+### ⚡ 流式聊天 API
+
+通过流式接口实现实时输出：
+
+```
+POST /api/agents/{agent_id}/chat/stream
+X-Api-Key: cw-your-key
+Content-Type: application/json
+
+{"message": "你的消息", "session_id": "可选UUID"}
+```
+
+返回 `text/event-stream`：
+
+```
+data: {"type": "chunk", "text": "..."}   ← 流式 token
+data: {"type": "done",  "session_id": "...", "reply": "完整回复"}
+data: {"type": "error", "message": "..."}
+```
+
+同步（非流式）版本：`POST /api/agents/{agent_id}/chat`，返回 `{"reply": "...", "session_id": "..."}`。
+
+---
+
 ## 🤝 参与贡献
 
 欢迎各种形式的贡献！无论是修复 Bug、添加功能、改进文档还是翻译——请查看我们的[贡献指南](CONTRIBUTING.md)开始参与。新手可以关注 [`good first issue`](https://github.com/dataelement/Clawith/labels/good%20first%20issue) 标签。
