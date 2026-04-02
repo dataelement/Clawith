@@ -156,8 +156,13 @@ async def call_llm(
     if user_id:
         try:
             from app.models.user import User as _UserModel
+            from sqlalchemy.orm import selectinload as _selectinload
             async with async_session() as _udb:
-                _ur = await _udb.execute(select(_UserModel).where(_UserModel.id == user_id))
+                _ur = await _udb.execute(
+                    select(_UserModel)
+                    .where(_UserModel.id == user_id)
+                    .options(_selectinload(_UserModel.identity))
+                )
                 _u = _ur.scalar_one_or_none()
                 if _u:
                     _current_user_name = _u.display_name or _u.username

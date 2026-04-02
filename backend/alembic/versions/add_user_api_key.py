@@ -7,7 +7,7 @@ from alembic import op
 
 
 revision = "add_user_api_key"
-down_revision = "user_refactor_v1"
+down_revision = "d9cbd43b62e5"
 branch_labels = None
 depends_on = None
 
