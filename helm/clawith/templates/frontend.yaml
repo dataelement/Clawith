@@ -1,0 +1,56 @@
+{{- if .Values.frontend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "clawith.fullname" . }}-frontend
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "clawith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "clawith.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        {{- include "clawith.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: "{{ .Values.global.imageRegistry }}/{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
+        imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.frontend.service.targetPort }}
+          name: http
+        env:
+        - name: VITE_API_URL
+          value: {{ .Values.frontend.env.viteApiUrl | quote }}
+        {{- with .Values.frontend.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "clawith.fullname" . }}-frontend
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "clawith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  type: {{ .Values.frontend.service.type }}
+  selector:
+    {{- include "clawith.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+  ports:
+  - protocol: TCP
+    port: {{ .Values.frontend.service.port }}
+    targetPort: http
+    name: http
+{{- end }}
+

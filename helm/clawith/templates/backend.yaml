@@ -1,0 +1,141 @@
+{{- if .Values.backend.enabled }}
+{{- if and .Values.backend.persistence.enabled (not .Values.backend.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "clawith.fullname" . }}-backend-data
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "clawith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  accessModes:
+    - {{ .Values.backend.persistence.accessMode }}
+  {{- if .Values.backend.persistence.storageClass }}
+  storageClassName: {{ .Values.backend.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backend.persistence.size }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "clawith.fullname" . }}-backend
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "clawith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "clawith.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "clawith.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+      - name: backend
+        image: "{{ .Values.global.imageRegistry }}/{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+        imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+        {{- if .Values.backend.hostCerts.enabled }}
+        lifecycle:
+          postStart:
+            exec:
+              command:
+                - /bin/sh
+                - '-c'
+                - >-
+                  for i in `ls {{ .Values.backend.hostCerts.paths.shareCA }}/*.crt
+                  {{ .Values.backend.hostCerts.paths.certs }}/*.crt 2>/dev/null || true`; do 
+                    [ -f "$i" ] && echo -e "`cat $i`\n" >> {{ .Values.backend.hostCerts.containerPaths.sslCertFile }}
+                  done
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.backend.service.port }}
+          name: http
+        env:
+        - name: DATABASE_URL
+          value: "postgresql+asyncpg://{{ include "clawith.postgresql.username" . }}:{{ include "clawith.postgresql.password" . }}@{{ include "clawith.postgresql.host" . }}:{{ include "clawith.postgresql.port" . }}/{{ include "clawith.postgresql.database" . }}"
+        - name: REDIS_URL
+          value: "redis://{{ include "clawith.redis.host" . }}:{{ include "clawith.redis.port" . }}/{{ .Values.redis.external.database | default 0 }}"
+        - name: AGENT_DATA_DIR
+          value: {{ .Values.backend.env.agentDataDir | quote }}
+        - name: AGENT_TEMPLATE_DIR
+          value: {{ .Values.backend.env.agentTemplateDir | quote }}
+        {{- if .Values.backend.hostCerts.enabled }}
+        - name: SSL_CERT_FILE
+          value: {{ .Values.backend.hostCerts.containerPaths.sslCertFile | quote }}
+        - name: REQUESTS_CA_BUNDLE
+          value: {{ .Values.backend.hostCerts.containerPaths.requestsCaBundle | quote }}
+        - name: CURL_CA_BUNDLE
+          value: {{ .Values.backend.hostCerts.containerPaths.curlCaBundle | quote }}
+        {{- end }}
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "clawith.secretName" . }}
+              key: secret-key
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "clawith.secretName" . }}
+              key: jwt-secret-key
+        volumeMounts:
+        {{- if .Values.backend.persistence.enabled }}
+        - name: agent-data
+          mountPath: {{ .Values.backend.env.agentDataDir }}
+        {{- end }}
+        {{- if .Values.backend.hostCerts.enabled }}
+        - mountPath: {{ .Values.backend.hostCerts.paths.certs }}
+          name: clawithcerts
+          readOnly: true
+        - mountPath: {{ .Values.backend.hostCerts.paths.shareCA }}
+          name: clawithcerts-share
+          readOnly: true
+        {{- end }}
+        {{- with .Values.backend.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      volumes:
+      {{- if .Values.backend.persistence.enabled }}
+      - name: agent-data
+        persistentVolumeClaim:
+          claimName: {{ .Values.backend.persistence.existingClaim | default (printf "%s-backend-data" (include "clawith.fullname" .)) }}
+      {{- end }}
+      {{- if .Values.backend.hostCerts.enabled }}
+      - name: clawithcerts
+        hostPath:
+          path: {{ .Values.backend.hostCerts.paths.certs }}
+          type: Directory
+      - name: clawithcerts-share
+        hostPath:
+          path: {{ .Values.backend.hostCerts.paths.shareCA }}
+          type: Directory
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "clawith.fullname" . }}-backend
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "clawith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  type: {{ .Values.backend.service.type }}
+  selector:
+    {{- include "clawith.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+  ports:
+  - protocol: TCP
+    port: {{ .Values.backend.service.port }}
+    targetPort: http
+    name: http
+{{- end }}

@@ -1,0 +1,36 @@
+{{- if and .Values.frontend.enabled .Values.frontend.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "clawith.fullname" . }}-frontend
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "clawith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+  {{- with .Values.frontend.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.frontend.ingress.className }}
+  ingressClassName: {{ .Values.frontend.ingress.className }}
+  {{- end }}
+  {{- if .Values.frontend.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.frontend.ingress.host }}
+    secretName: {{ .Values.frontend.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.frontend.ingress.host }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ include "clawith.fullname" . }}-frontend
+            port:
+              number: {{ .Values.frontend.service.port }}
+{{- end }}
+
