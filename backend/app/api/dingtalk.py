@@ -166,7 +166,8 @@ async def process_dingtalk_message(
             logger.warning(f"[DingTalk] Agent {agent_id} not found")
             return
         creator_id = agent_obj.creator_id
-        ctx_size = agent_obj.context_window_size if agent_obj else 20
+        from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+        ctx_size = agent_obj.context_window_size if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
         # Determine conv_id for session isolation
         if conversation_type == "2":

@@ -276,11 +276,9 @@ async def _process_wecom_stream_message(
     from app.database import async_session
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
-    from app.models.user import User as UserModel
-    from app.core.security import hash_password
     from app.services.channel_session import find_or_create_channel_session
+    from app.services.channel_user_service import channel_user_service
     from app.api.feishu import _call_agent_llm
-    import uuid as _uuid
 
     async with async_session() as db:
         # Load agent
@@ -289,7 +287,8 @@ async def _process_wecom_stream_message(
         if not agent_obj:
             logger.warning(f"[WeCom Stream] Agent {agent_id} not found")
             return "Agent not found"
-        ctx_size = agent_obj.context_window_size or 20
+        from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+        ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
 
         # Conversation ID: differentiate single chat vs group chat
         # Group detection is based on chatid presence, not chattype (SDK bug)
@@ -298,28 +297,17 @@ async def _process_wecom_stream_message(
         else:
             conv_id = f"wecom_p2p_{sender_id}"
 
-        # Find or create platform user
-        wc_username = f"wecom_{sender_id}"
-        query = _select(UserModel).where(UserModel.username == wc_username)
-        if agent and agent.tenant_id:
-            query = query.where(UserModel.tenant_id == agent.tenant_id)
-            
-        u_r = await db.execute(query)
-        platform_user = u_r.scalar_one_or_none()
-
-        if not platform_user:
-            platform_user = UserModel(
-                username=wc_username,
-                email=f"{wc_username}@wecom.local",
-                password_hash=hash_password(str(_uuid.uuid4())),
-                display_name=f"WeCom {sender_id[:8]}",
-                role="member",
-                tenant_id=agent.tenant_id if agent else None,
-                registration_source="wecom",
-            )
-
-            db.add(platform_user)
-            await db.flush()
+        # Resolve or create platform user via unified channel user service.
+        # This correctly handles the User/Identity model relationship
+        # (email/username/password_hash are AssociationProxy fields — cannot be
+        # set directly in UserModel constructor).
+        platform_user = await channel_user_service.resolve_channel_user(
+            db=db,
+            agent=agent_obj,
+            channel_type="wecom",
+            external_user_id=sender_id,
+            extra_info={"display_name": f"WeCom {sender_id[:8]}"},
+        )
         platform_user_id = platform_user.id
 
         # Find or create session

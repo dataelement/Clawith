@@ -175,7 +175,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             logger.info(f"Schedule {schedule_id} executed for agent {agent.name}: {reply[:80]}")
 
     except Exception as e:
-        logger.error(f"Schedule {schedule_id} execution error: {e}", exc_info=True)
+        logger.exception(f"Schedule {schedule_id} execution error: {e}")
 
 
 async def _tick():
@@ -220,7 +220,7 @@ async def _tick():
                 logger.info(f"Triggered schedule '{sched.name}' (next: {next_run})")
 
     except Exception as e:
-        logger.error(f"Scheduler tick error: {e}", exc_info=True)
+        logger.exception(f"Scheduler tick error: {e}")
         await write_audit_log("schedule_error", {"error": str(e)[:300]})
 
 

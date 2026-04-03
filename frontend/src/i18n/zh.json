@@ -236,7 +236,7 @@
       "title": "🤖 模型配置",
       "model": "🧠 模型",
       "provider": "🏢 提供商",
-      "contextRounds": "🔄 上下文轮次"
+      "contextRounds": "🔄 上下文窗口"
     },
     "actions": {
       "start": "启动",
@@ -403,9 +403,9 @@
       "primaryModel": "主模型",
       "fallbackModel": "备选模型",
       "noFallback": "无备选",
-      "conversationContext": "对话上下文",
-      "maxRounds": "最大对话轮次",
-      "roundsDesc": "每次对话最多进行的 LLM 调用轮次",
+      "conversationContext": "上下文窗口",
+      "maxRounds": "上下文窗口大小",
+      "roundsDesc": "每次 LLM 请求时携带的近期历史消息数量",
       "tokenLimits": "Token 用量限制",
       "dailyLimit": "每日上限",
       "monthlyLimit": "每月上限",

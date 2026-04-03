@@ -470,7 +470,8 @@ async def _process_wecom_text(
             logger.warning(f"[WeCom] Agent {agent_id} not found")
             return
         creator_id = agent_obj.creator_id
-        ctx_size = agent_obj.context_window_size if agent_obj else 20
+        from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+        ctx_size = agent_obj.context_window_size if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
         # Distinguish group chat from P2P by chat_id presence
         _is_group = bool(chat_id)
@@ -667,7 +668,7 @@ async def wecom_callback(
             db, user_info, tenant_id=tenant_id or provider.tenant_id
         )
     except Exception as e:
-        logger.error(f"WeCom login/register error: {e}", exc_info=True)
+        logger.exception(f"WeCom login/register error: {e}")
         return HTMLResponse(f"Auth failed: {str(e)}")
 
 

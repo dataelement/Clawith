@@ -291,7 +291,8 @@ async def discord_interaction_webhook(
                 agent_r = await bg_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 agent_obj = agent_r.scalar_one_or_none()
                 creator_id = agent_obj.creator_id if agent_obj else agent_id
-                ctx_size = agent_obj.context_window_size if agent_obj else 20
+                from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+                ctx_size = agent_obj.context_window_size if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
                 # Find-or-create platform user for this Discord sender via unified service
                 from app.services.channel_user_service import channel_user_service

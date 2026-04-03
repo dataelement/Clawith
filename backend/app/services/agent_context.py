@@ -261,12 +261,6 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
 → Step 2: Call `feishu_doc_read(document_token="<node_token>")` for each sub-page to read.
 → **Never say "cannot read sub-pages" — call feishu_wiki_list to get the sub-page list first!**
 
-✅ **When user asks to create a document IN a Wiki knowledge base:**
-→ Step 1: Call `feishu_wiki_list(node_token="<parent_node_token>")` to get the space_id and confirm the target location.
-→ Step 2: Call `feishu_doc_create(title="...", wiki_space_id="<space_id>", parent_node_token="<node_token>")`.
-→ Step 3: Use the returned obj_token (doc Token) with `feishu_doc_append` to write content.
-→ If user just says "create in the wiki" without specifying a parent — you can provide `parent_node_token` from the URL they shared, or omit it to create at the wiki root.
-
 ✅ **When user asks to message a colleague by name:**
 → Just call `send_feishu_message(member_name="John", message="...")` — it auto-searches.
 → Or use `open_id` directly if you already have it from `feishu_user_search`.

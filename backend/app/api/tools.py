@@ -252,29 +252,9 @@ async def create_tool(
     return {"id": str(tool.id), "name": tool.name}
 
 
-@router.put("/{tool_id}")
-async def update_tool(
-    tool_id: uuid.UUID,
-    data: ToolUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Update a tool."""
-    result = await db.execute(select(Tool).where(Tool.id == tool_id))
-    tool = result.scalar_one_or_none()
-    if not tool:
-        raise HTTPException(status_code=404, detail="Tool not found")
-
-    update_data = data.model_dump(exclude_unset=True)
-    # Encrypt sensitive fields in config
-    if "config" in update_data and update_data["config"]:
-        update_data["config"] = _encrypt_sensitive_fields(update_data["config"], tool.config_schema)
-
-    for field, value in update_data.items():
-        setattr(tool, field, value)
-    await db.commit()
-    return {"ok": True}
-
+# NOTE: Literal path routes (/bulk, /mcp-server) MUST be defined BEFORE
+# parameterized routes (/{tool_id}) to avoid older FastAPI/Starlette versions
+# matching "bulk" as a uuid.UUID path parameter and returning 422.
 
 class BulkToolUpdateItem(BaseModel):
     tool_id: str
@@ -295,6 +275,30 @@ async def update_tools_bulk(
         if update.tool_id in tools_map:
             tools_map[update.tool_id].enabled = update.enabled
             
+    await db.commit()
+    return {"ok": True}
+
+
+@router.put("/{tool_id}")
+async def update_tool(
+    tool_id: uuid.UUID,
+    data: ToolUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a tool."""
+    result = await db.execute(select(Tool).where(Tool.id == tool_id))
+    tool = result.scalar_one_or_none()
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+
+    update_data = data.model_dump(exclude_unset=True)
+    # Encrypt sensitive fields in config
+    if "config" in update_data and update_data["config"]:
+        update_data["config"] = _encrypt_sensitive_fields(update_data["config"], tool.config_schema)
+
+    for field, value in update_data.items():
+        setattr(tool, field, value)
     await db.commit()
     return {"ok": True}
 

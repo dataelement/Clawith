@@ -65,7 +65,7 @@ async def resolve_email_config_async(db) -> SystemEmailConfig | None:
         setting = result.scalar_one_or_none()
         if setting and setting.value:
             v = setting.value
-            if v.get("SYSTEM_EMAIL_FROM_ADDRESS") and v.get("SYSTEM_SMTP_HOST") and v.get("SYSTEM_SMTP_PASSWORD"):
+            if v.get("SYSTEM_EMAIL_FROM_ADDRESS") and v.get("SYSTEM_SMTP_HOST"):
                 return SystemEmailConfig(
                     from_address=str(v.get("SYSTEM_EMAIL_FROM_ADDRESS", "")).strip(),
                     from_name=str(v.get("SYSTEM_EMAIL_FROM_NAME", "Clawith")).strip() or "Clawith",

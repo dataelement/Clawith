@@ -126,7 +126,7 @@ class DiscordGatewayManager:
             except discord.LoginFailure:
                 logger.error(f"[Discord GW] Invalid bot token for agent {agent_id}")
             except Exception as e:
-                logger.error(f"[Discord GW] Bot error for agent {agent_id}: {e}", exc_info=True)
+                logger.exception(f"[Discord GW] Bot error for agent {agent_id}: {e}")
             finally:
                 if not client.is_closed():
                     await client.close()
@@ -170,7 +170,8 @@ class DiscordGatewayManager:
                 if not agent_obj:
                     return "Agent not found."
                 creator_id = agent_obj.creator_id
-                ctx_size = agent_obj.context_window_size or 20
+                from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+                ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
 
                 # Find or create platform user for this Discord sender via unified service
                 from app.services.channel_user_service import channel_user_service
@@ -250,9 +251,8 @@ class DiscordGatewayManager:
                 return reply_text
 
         except Exception as e:
-            logger.error(
-                f"[Discord GW] Error handling message for {agent_id}: {e}",
-                exc_info=True,
+            logger.exception(
+                f"[Discord GW] Error handling message for {agent_id}: {e}"
             )
             return f"An error occurred while processing your message: {str(e)[:100]}"
 

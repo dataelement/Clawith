@@ -485,7 +485,8 @@ async def websocket_chat(
             agent_type = agent.agent_type or ""
             role_description = agent.role_description or ""
             welcome_message = agent.welcome_message or ""
-            ctx_size = agent.context_window_size or 100
+            from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+            ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
             logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}, ctx: {ctx_size}")
 
             # Load the agent's primary model

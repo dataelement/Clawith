@@ -229,7 +229,7 @@
       "title": "🤖 Model Config",
       "model": "🧠 Model",
       "provider": "🏢 Provider",
-      "contextRounds": "🔄 Context Rounds"
+      "contextRounds": "🔄 Context Window"
     },
     "actions": {
       "start": "Start",
@@ -395,9 +395,9 @@
       "primaryModel": "Primary Model",
       "fallbackModel": "Fallback Model",
       "noFallback": "No fallback",
-      "conversationContext": "Conversation Context",
-      "maxRounds": "Max Rounds",
-      "roundsDesc": "Maximum LLM call rounds per conversation",
+      "conversationContext": "Context Window",
+      "maxRounds": "Context Window Size",
+      "roundsDesc": "Number of recent messages included as context for each LLM request",
       "tokenLimits": "Token Limits",
       "dailyLimit": "Daily Limit",
       "monthlyLimit": "Monthly Limit",

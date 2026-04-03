@@ -61,6 +61,21 @@ type TabType = 'desktop' | 'browser' | 'code';
 const MIN_WIDTH = 300;  // minimum panel width in px
 const MAX_WIDTH_VW = 0.65; // maximum panel width as fraction of viewport width
 
+/**
+ * Calculate initial panel width as 50% of the chat container.
+ * The chat container sits inside `.main-content` (after the sidebar),
+ * so we use the viewport width minus sidebar instead of a fixed value.
+ */
+function calcHalfContainerWidth(): number {
+    // Try to measure the actual chat container
+    const container = document.querySelector('.chat-container') as HTMLElement | null;
+    if (container) {
+        return Math.max(MIN_WIDTH, Math.floor(container.clientWidth / 2));
+    }
+    // Fallback: guess sidebar is ~60px, split the remaining viewport in half
+    return Math.max(MIN_WIDTH, Math.floor((window.innerWidth - 60) / 2));
+}
+
 export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId, onLiveUpdate }: Props) {
     const { t } = useTranslation();
 
@@ -76,8 +91,22 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
     const [activeTab, setActiveTab] = useState<TabType>('desktop');
     const codeEndRef = useRef<HTMLDivElement>(null);
 
-    const [panelWidth, setPanelWidth] = useState(420);
+    const [panelWidth, setPanelWidth] = useState(() => calcHalfContainerWidth());
+    const panelRef = useRef<HTMLDivElement>(null);
+
+    // Recalculate on window resize to keep approximate 50% split
+    useEffect(() => {
+        const onResize = () => {
+            // Only auto-resize if user hasn't manually dragged
+            if (!isDragging.current && !userResized.current) {
+                setPanelWidth(calcHalfContainerWidth());
+            }
+        };
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
     const isDragging = useRef(false);
+    const userResized = useRef(false);  // Once user manually drags, stop auto-resizing
     const dragStartX = useRef(0);
     const dragStartWidth = useRef(0);
 
@@ -146,6 +175,7 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
         const onMouseUp = () => {
             if (!isDragging.current) return;
             isDragging.current = false;
+            userResized.current = true;  // User manually chose a width; stop auto-resizing
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
         };

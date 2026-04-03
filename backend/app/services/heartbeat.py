@@ -408,7 +408,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         logger.info(f"💓 Heartbeat for {agent_name}: {'OK' if is_ok else reply[:60]}")
 
     except Exception as e:
-        logger.error(f"Heartbeat error for agent {agent_id}: {e}", exc_info=True)
+        logger.exception(f"Heartbeat error for agent {agent_id}: {e}")
 
 
 async def _heartbeat_tick():
@@ -472,7 +472,7 @@ async def _heartbeat_tick():
                 await write_audit_log("heartbeat_tick", {"eligible_agents": len(agents), "triggered": triggered})
 
     except Exception as e:
-        logger.error(f"Heartbeat tick error: {e}", exc_info=True)
+        logger.exception(f"Heartbeat tick error: {e}")
         await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
 
 

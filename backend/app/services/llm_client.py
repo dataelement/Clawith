@@ -541,10 +541,15 @@ class OpenAICompatibleClient(LLMClient):
 
                 break  # Success
 
-            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+            except (httpx.TransportError, httpx.ConnectTimeout) as e:
+                # TransportError covers all network-layer issues:
+                # - ConnectError, ReadError, WriteError (NetworkError subclasses)
+                # - RemoteProtocolError, LocalProtocolError (ProtocolError subclasses)
+                # The last case is common with local vLLM when the server closes
+                # the connection mid-stream (e.g. OOM, context limit exceeded).
                 if attempt < max_retries - 1:
                     wait = (attempt + 1) * 1
-                    logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}), retrying in {wait}s...")
+                    logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}: {e}), retrying in {wait}s...")
                     await asyncio.sleep(wait)
                     full_content = ""
                     full_reasoning = ""
@@ -553,7 +558,7 @@ class OpenAICompatibleClient(LLMClient):
                     tag_buffer = ""
                     json_buffer = ""
                 else:
-                    raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
+                    raise LLMError(f"Connection failed after {max_retries} attempts: {type(e).__name__}: {e}")
 
         # Clean up any remaining think tags
         full_content = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_content).strip()
@@ -1332,8 +1337,10 @@ class GeminiClient(LLMClient):
                                 },
                             })
 
-        except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
-            raise LLMError(f"Connection failed: {e}")
+        except (httpx.TransportError, httpx.ConnectTimeout) as e:
+            # TransportError covers NetworkError (ConnectError, ReadError) and
+            # ProtocolError (RemoteProtocolError) — all common with local vLLM.
+            raise LLMError(f"Connection failed: {type(e).__name__}: {e}")
 
         return LLMResponse(
             content=full_text,
@@ -1659,8 +1666,10 @@ class AnthropicClient(LLMClient):
                     elif current_event == "message_stop":
                         break
 
-        except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
-            raise LLMError(f"Connection failed: {e}")
+        except (httpx.TransportError, httpx.ConnectTimeout) as e:
+            # TransportError covers NetworkError (ConnectError, ReadError) and
+            # ProtocolError (RemoteProtocolError) — all common with local vLLM.
+            raise LLMError(f"Connection failed: {type(e).__name__}: {e}")
 
         # Normalize stop reason to OpenAI style (optional but helpful for consistency)
         if last_finish_reason == "end_turn":

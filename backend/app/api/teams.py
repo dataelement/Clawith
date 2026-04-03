@@ -80,7 +80,7 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
             logger.error(f"Teams: azure-identity package not installed. Install it with: pip install azure-identity")
             return None
         except Exception as e:
-            logger.error(f"Teams: Failed to get access token via managed identity for agent {agent_id}: {e}", exc_info=True)
+            logger.exception(f"Teams: Failed to get access token via managed identity for agent {agent_id}: {e}")
             return None
     
     # Use client credentials (app_id + app_secret)
@@ -136,7 +136,7 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
         logger.error(f"Teams: Token URL={token_url}, tenant_id={tenant_id}, client_id={app_id[:20]}...")
         return None
     except Exception as e:
-        logger.error(f"Teams: Failed to get access token for agent {agent_id}: {e}", exc_info=True)
+        logger.exception(f"Teams: Failed to get access token for agent {agent_id}: {e}")
         return None
 
 
@@ -435,7 +435,8 @@ async def teams_event_webhook(
         # Load agent (must happen before user resolution for tenant_id)
         agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
-        ctx_size = agent_obj.context_window_size if agent_obj else 20
+        from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+        ctx_size = agent_obj.context_window_size if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
         # Find-or-create platform user for this Teams sender via unified service
         from app.services.channel_user_service import channel_user_service
@@ -507,7 +508,7 @@ async def teams_event_webhook(
             _cfs_s.reset(_cfs_s_token)
             logger.info(f"Teams: LLM reply generated: {reply_text[:80]}")
         except Exception as e:
-            logger.error(f"Teams: Failed to call LLM for agent {agent_id}: {e}", exc_info=True)
+            logger.exception(f"Teams: Failed to call LLM for agent {agent_id}: {e}")
             reply_text = "Sorry, I encountered an error processing your message."
             _cfs_s.reset(_cfs_s_token)
 
@@ -518,7 +519,7 @@ async def teams_event_webhook(
             await db.commit()
             logger.info(f"Teams: Saved reply to database for conversation {conversation_id}")
         except Exception as e:
-            logger.error(f"Teams: Failed to save reply to database: {e}", exc_info=True)
+            logger.exception(f"Teams: Failed to save reply to database: {e}")
             await db.rollback()
 
         # Send to Teams
@@ -554,12 +555,12 @@ async def teams_event_webhook(
                 await _send_teams_message(config, conversation_id, reply_activity)
                 logger.info(f"Teams: Successfully sent reply to Teams")
             except Exception as e:
-                logger.error(f"Teams: Failed to send message to Teams: {e}", exc_info=True)
+                logger.exception(f"Teams: Failed to send message to Teams: {e}")
         else:
             use_mi = config.extra_config.get("use_managed_identity", False)
             logger.warning(f"Teams: Cannot send reply - missing credentials (managed_identity={use_mi}, app_id={bool(config.app_id)}, app_secret={bool(config.app_secret)}), conversation_id={bool(conversation_id)}")
 
         return {"ok": True}
     except Exception as e:
-        logger.error(f"Teams: Unhandled exception in webhook handler for agent {agent_id}: {e}", exc_info=True)
+        logger.exception(f"Teams: Unhandled exception in webhook handler for agent {agent_id}: {e}")
         return Response(status_code=500, content="Internal server error")
