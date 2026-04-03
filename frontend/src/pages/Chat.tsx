@@ -54,6 +54,101 @@ interface Message {
     timestamp?: string;
 }
 
+function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
+    const [expanded, setExpanded] = useState(false);
+    const count = toolCalls.length;
+    return (
+        <div style={{
+            borderRadius: '8px',
+            background: 'rgba(99,102,241,0.06)',
+            border: '1px solid rgba(99,102,241,0.18)',
+            fontSize: '12px',
+            overflow: 'hidden',
+            marginBottom: '6px',
+        }}>
+            <button
+                onClick={() => setExpanded(v => !v)}
+                style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    width: '100%', display: 'flex', alignItems: 'center', gap: '6px',
+                    padding: '7px 10px',
+                    color: 'var(--accent-text, #818cf8)',
+                }}
+            >
+                {Icons.tool}
+                <span style={{ flex: 1, textAlign: 'left', fontWeight: 500 }}>
+                    Tool Call Chain
+                </span>
+                <span style={{
+                    background: 'rgba(99,102,241,0.18)', color: '#818cf8',
+                    borderRadius: '10px', padding: '1px 7px',
+                    fontSize: '10px', fontWeight: 600, marginRight: '2px',
+                }}>
+                    {count}
+                </span>
+                <span style={{
+                    fontSize: '10px', color: 'var(--text-tertiary)',
+                    transition: 'transform 0.2s', display: 'inline-block',
+                    transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                }}>▶</span>
+            </button>
+            {!expanded && count > 0 && (
+                <div style={{ padding: '0 10px 7px 10px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                    {toolCalls.map((tc, i) => (
+                        <span key={i} style={{
+                            background: 'rgba(99,102,241,0.10)',
+                            border: '1px solid rgba(99,102,241,0.15)',
+                            borderRadius: '4px', padding: '1px 6px',
+                            fontSize: '10px', color: '#a5b4fc',
+                            fontFamily: 'var(--font-mono)',
+                        }}>
+                            {tc.name}
+                        </span>
+                    ))}
+                </div>
+            )}
+            {expanded && (
+                <div style={{ borderTop: '1px solid rgba(99,102,241,0.15)' }}>
+                    {toolCalls.map((tc, i) => (
+                        <div key={i} style={{
+                            padding: '7px 10px',
+                            borderBottom: i < toolCalls.length - 1 ? '1px solid rgba(99,102,241,0.10)' : 'none',
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '4px' }}>
+                                <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#818cf8', flexShrink: 0 }} />
+                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#818cf8', fontWeight: 600 }}>
+                                    {tc.name}
+                                </span>
+                            </div>
+                            {tc.args && Object.keys(tc.args).length > 0 && (
+                                <div style={{
+                                    fontFamily: 'var(--font-mono)', fontSize: '10px',
+                                    color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all', maxHeight: '80px', overflowY: 'auto',
+                                    background: 'rgba(0,0,0,0.12)', borderRadius: '4px',
+                                    padding: '4px 6px', marginBottom: tc.result ? '4px' : 0,
+                                }}>
+                                    {JSON.stringify(tc.args, null, 2)}
+                                </div>
+                            )}
+                            {tc.result && (
+                                <div style={{
+                                    fontSize: '10px', color: 'var(--text-secondary)',
+                                    whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                    maxHeight: '80px', overflowY: 'auto',
+                                    borderTop: '1px solid rgba(99,102,241,0.10)', paddingTop: '4px',
+                                }}>
+                                    {tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 export default function Chat() {
     const { t } = useTranslation();
     const { id } = useParams<{ id: string }>();
@@ -471,44 +566,7 @@ export default function Chat() {
                                     </details>
                                 )}
                                 {msg.toolCalls && msg.toolCalls.length > 0 && (
-                                    <details style={{
-                                        marginBottom: '8px', fontSize: '12px',
-                                        background: 'var(--accent-subtle)', borderRadius: '6px',
-                                        padding: '0',
-                                    }}>
-                                        <summary style={{
-                                            padding: '6px 10px', cursor: 'pointer',
-                                            color: 'var(--accent-text)', fontWeight: 500,
-                                            userSelect: 'none',
-                                        }}>
-                                            {Icons.tool} {msg.toolCalls.length} tool call{msg.toolCalls.length > 1 ? 's' : ''}
-                                        </summary>
-                                        <div style={{ padding: '4px 10px 8px' }}>
-                                            {msg.toolCalls.map((tc, j) => (
-                                                <div key={j} style={{
-                                                    marginBottom: j < msg.toolCalls!.length - 1 ? '6px' : 0,
-                                                    borderBottom: j < msg.toolCalls!.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-                                                    paddingBottom: j < msg.toolCalls!.length - 1 ? '6px' : 0,
-                                                }}>
-                                                    <div style={{ fontWeight: 600, color: 'var(--accent-text)', marginBottom: '2px' }}>
-                                                        {tc.name}
-                                                    </div>
-                                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                                                        {JSON.stringify(tc.args)}
-                                                    </div>
-                                                    {tc.result && (
-                                                        <div style={{
-                                                            marginTop: '4px', fontSize: '11px', color: 'var(--text-secondary)',
-                                                            fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                                                            maxHeight: '120px', overflow: 'auto',
-                                                        }}>
-                                                            {tc.result}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </details>
+                                    <ChatToolChain toolCalls={msg.toolCalls} />
                                 )}
                                 {msg.role === 'assistant' ? (
                                     streaming && !msg.content && i === messages.length - 1 ? (
