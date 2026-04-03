@@ -351,16 +351,7 @@
       "cancel": "Cancel",
       "toolName": "Tool Name",
       "enabled": "Enabled",
-      "disabled": "Disabled",
-      "skillFormat": "Skill Format:",
-      "importFromGithub": "Import from GitHub URL",
-      "githubUrlDesc": "Paste a GitHub URL pointing to a skill directory (must contain SKILL.md).",
-      "importPreset": "Import from Presets",
-      "importDesc": "Select a preset skill to import into this agent. All skill files will be copied to the agent's skills folder.",
-      "importedSuccess": "Imported \"{{name}}\" ({{count}} files)",
-      "importFailed": "Import failed",
-      "importing": "Importing...",
-      "importBtn": "Import"
+      "disabled": "Disabled"
     },
     "skillNames": {
       "web-research": "Web Research",
@@ -872,34 +863,6 @@
       "roleDescTooLong": "Role description cannot exceed 500 characters (current: {{count}})",
       "tokenLimitInvalid": "Please enter a valid positive integer",
       "modelRequired": "Please select a primary model"
-    },
-    "templates": {
-      "Project Manager": "Project Manager",
-      "Designer": "Designer",
-      "Product Intern": "Product Intern",
-      "Market Researcher": "Market Researcher",
-      "templateData": {
-        "Project Manager": {
-          "description": "Manages project timelines, task delegation, cross-team coordination, and progress reporting",
-          "personality": "- Organized, proactive, and detail-oriented\n- Strong communicator who keeps all stakeholders aligned\n- Balances urgency with quality, prioritizes ruthlessly",
-          "boundaries": "- Strategic decisions require leadership approval\n- Budget approvals must follow formal process\n- External communications on behalf of the company need sign-off"
-        },
-        "Designer": {
-          "description": "Assists with design requirements, design system maintenance, asset management, and competitive UI analysis",
-          "personality": "- Detail-oriented with strong visual aesthetics\n- Translates business requirements into design language\n- Proactively organizes design resources and maintains consistency",
-          "boundaries": "- Final design deliverables require design lead approval\n- Brand element modifications must go through review\n- Design source file management follows team conventions"
-        },
-        "Product Intern": {
-          "description": "Supports product managers with requirements analysis, competitive research, user feedback analysis, and documentation",
-          "personality": "- Eager learner, proactive, and inquisitive\n- Sensitive to user experience and product details\n- Thorough and well-structured in output",
-          "boundaries": "- Product recommendations should be labeled \"for reference only\"\n- Does not directly modify product specs without PM approval\n- User privacy data must be anonymized"
-        },
-        "Market Researcher": {
-          "description": "Focuses on market research, industry analysis, competitive intelligence tracking, and trend insights",
-          "personality": "- Rigorous, data-driven, and logically clear\n- Extracts key insights from complex data sets\n- Reports focus on actionable recommendations, not just data",
-          "boundaries": "- Analysis conclusions must be supported by data/sources\n- Commercially sensitive information must be labeled with confidentiality level\n- External research reports require approval before distribution"
-        }
-      }
     }
   },
   "task": {
@@ -1095,12 +1058,7 @@
       "testing": "Testing...",
       "testSuccess": "OK ({{latency}}ms)",
       "testFailed": "Test failed: {{error}}\n\nLatency: {{latency}}ms",
-      "testError": "Test error: {{message}}",
-      "editModel": "Edit Model",
-      "vision": "Vision",
-      "temperature": "Temperature",
-      "temperaturePlaceholder": "e.g. 0.7 or 1.0 (Leave empty for default)",
-      "temperatureDesc": "Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0"
+      "testError": "Test error: {{message}}"
     },
     "users": {
       "user": "User",
@@ -1506,16 +1464,6 @@
       "dingtalk": "DingTalk",
       "wecom": "WeCom"
     },
-    "searching": "Searching...",
-    "upload": "⬆ Upload",
-    "apply": "Apply",
-    "reset": "Reset",
-    "copy": "Copy",
-    "copied": "Copied",
-    "lightMode": "Light Mode",
-    "darkMode": "Dark Mode",
-    "collapseSidebar": "Collapse Sidebar",
-    "expandSidebar": "Expand Sidebar",
     "deleting": "Deleting..."
   },
   "platformDashboard": {

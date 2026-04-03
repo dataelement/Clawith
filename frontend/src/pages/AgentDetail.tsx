@@ -4000,7 +4000,7 @@ function AgentDetailInner() {
                                                 </select>
                                             </div>
                                             {/* Loading skeleton */}
-                                            {allSessionsLoading ? (
+                                            {allSessionsLoading && (
                                                 <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                                     {[...Array(6)].map((_, i) => (
                                                         <div key={i} style={{ padding: '6px 0', animation: 'pulse 1.5s ease-in-out infinite', animationDelay: `${i * 0.1}s` }}>

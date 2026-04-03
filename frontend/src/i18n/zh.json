@@ -358,16 +358,7 @@
       "cancel": "取消",
       "toolName": "工具名称",
       "enabled": "已启用",
-      "disabled": "已禁用",
-      "skillFormat": "技能格式：",
-      "importFromGithub": "从 GitHub URL 导入",
-      "githubUrlDesc": "粘贴指向技能目录的 GitHub URL（必须包含 SKILL.md）。",
-      "importPreset": "从预设导入",
-      "importDesc": "选择一个预设技能导入到此数字员工。所有技能文件将被复制到数字员工的技能文件夹。",
-      "importedSuccess": "已导入 \"{{name}}\" ({{count}} 个文件)",
-      "importFailed": "导入失败",
-      "importing": "导入中...",
-      "importBtn": "导入"
+      "disabled": "已禁用"
     },
     "skillNames": {
       "web-research": "网络研究",
@@ -675,30 +666,6 @@
         "success": "上传成功",
         "failed": "上传失败",
         "uploading": "上传中..."
-      },
-      "approvals": {
-        "title": "审批",
-        "pending": "{{count}} 个待审批",
-        "approve": "批准",
-        "reject": "拒绝",
-        "history": "审批历史",
-        "noRecords": "暂无审批记录"
-      },
-      "triggerLimits": {
-        "title": "触发器限制",
-        "description": "控制该 Agent 可以创建的触发器数量和行为限制",
-        "maxTriggers": "最大触发器数",
-        "maxTriggersDesc": "Agent 最多可同时拥有的触发器数量",
-        "minPollInterval": "Poll 最短间隔 (分钟)",
-        "minPollIntervalDesc": "定时轮询外部接口的最短间隔",
-        "webhookRateLimit": "Webhook 频率限制 (次/分钟)",
-        "webhookRateLimitDesc": "外部系统每分钟最多可调用的 Webhook 次数"
-      },
-      "welcomeMessage": {
-        "title": "欢迎语",
-        "description": "当用户在网页端发起新对话时，Agent 会自动发送的欢迎语。支持 Markdown 语法。留空则不发送。",
-        "saved": "已保存",
-        "placeholder": "例如：你好！我是你的 AI 助手，有什么可以帮你的吗？"
       }
     },
     "credentials": {
@@ -1193,12 +1160,7 @@
       "testing": "测试中...",
       "testSuccess": "OK ({{latency}}ms)",
       "testFailed": "测试失败: {{error}}\n\n延迟: {{latency}}ms",
-      "testError": "测试错误: {{message}}",
-      "editModel": "编辑模型",
-      "vision": "视觉",
-      "temperature": "模型温度",
-      "temperaturePlaceholder": "例如 0.7 或 1.0（留空使用默认值）",
-      "temperatureDesc": "留空使用提供商默认值。o1/o3 推理模型通常需要 1.0"
+      "testError": "测试错误: {{message}}"
     },
     "users": {
       "user": "用户",
@@ -1608,14 +1570,6 @@
       "dingtalk": "钉钉",
       "wecom": "企业微信"
     },
-    "searching": "搜索中...",
-    "upload": "⬆ 上传",
-    "copy": "复制",
-    "copied": "已复制",
-    "lightMode": "浅色模式",
-    "darkMode": "深色模式",
-    "collapseSidebar": "折叠侧边栏",
-    "expandSidebar": "展开侧边栏",
     "deleting": "删除中..."
   },
   "admin": {
@@ -1669,22 +1623,7 @@
     "noFilterResults": "没有符合当前筛选条件的公司。",
     "showing": "第 {{start}}-{{end}} 条，共 {{total}} 条",
     "prev": "上一页",
-    "next": "下一页",
-    "tab": {
-      "dashboard": "平台仪表盘",
-      "platform": "️ 平台设置",
-      "companies": "公司管理"
-    },
-    "platformSettingsDesc": "管理平台级设置和公司租户。",
-    "settingUpdated": "设置已更新",
-    "sso": "SSO",
-    "orgAdmin": "管理员邮箱",
-    "createdAt": "创建时间",
-    "action": "️ 操作",
-    "all": "全部",
-    "filterStatus": "按状态筛选",
-    "enable": "启用",
-    "noFilterResults": "没有符合当前筛选条件的公司。"
+    "next": "下一页"
   },
   "companySetup": {
     "title": "设置你的公司",
