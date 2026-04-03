@@ -335,7 +335,6 @@
       "heartbeatDesc": "定期感知检查的指令。Agent 在每次心跳时读取此文件。",
       "heartbeatTitle": "心跳"
     },
-
     "skills": {
       "title": "技能定义",
       "description": "技能定义了数字员工在特定场景下的行为方式。每个.md文件是一个技能。建议使用YAML frontmatter（name + description）来定义技能元数据。",
@@ -350,7 +349,16 @@
       "cancel": "取消",
       "toolName": "工具名称",
       "enabled": "已启用",
-      "disabled": "已禁用"
+      "disabled": "已禁用",
+      "skillFormat": "技能格式：",
+      "importFromGithub": "从 GitHub URL 导入",
+      "githubUrlDesc": "粘贴指向技能目录的 GitHub URL（必须包含 SKILL.md）。",
+      "importPreset": "从预设导入",
+      "importDesc": "选择一个预设技能导入到此数字员工。所有技能文件将被复制到数字员工的技能文件夹。",
+      "importedSuccess": "已导入 \"{{name}}\" ({{count}} 个文件)",
+      "importFailed": "导入失败",
+      "importing": "导入中...",
+      "importBtn": "导入"
     },
     "toolMgmt": {
       "title": "工具管理",
@@ -394,7 +402,10 @@
       "attachment": "附件",
       "uploadFailed": "上传失败",
       "askAboutFile": "关于 {{name}} 的问题...",
-      "thinking": "思考中..."
+      "thinking": "思考中...",
+      "collapseSessions": "折叠会话列表",
+      "showSessions": "显示聊天会话",
+      "toolCallChain": "工具调用链"
     },
     "activityLog": {
       "title": "工作日志",
@@ -459,8 +470,8 @@
         "encryptKey": "Encrypt Key",
         "webhookUrl": "Webhook URL",
         "configured": "已配置",
-      "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
-      "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})",
+        "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
+        "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})",
         "notConfigured": "未配置",
         "saveChannel": "保存配置",
         "syncHint": "在配置飞书机器人之前，请先在企业设置 → 组织架构中同步您的组织结构。这确保机器人能够识别消息发送者。"
@@ -518,7 +529,57 @@
       },
       "tools": {
         "platformTools": "平台预置工具",
-        "agentInstalled": "数字员工自行安装的工具"
+        "agentInstalled": "数字员工自行安装的工具",
+        "companyTools": "公司配置工具",
+        "noInstalled": "暂无自行安装的工具",
+        "noCompany": "暂无公司统一配置的工具",
+        "configured": "已配置",
+        "config": "️ 配置",
+        "testConnection": "测试连接",
+        "testing": "测试中...",
+        "testSuccessful": "测试成功",
+        "testFailed": "测试失败",
+        "resetToGlobal": "重置为全局配置",
+        "configJson": "配置 JSON（员工级覆盖）",
+        "globalDefault": "全局默认值：",
+        "adminOnly": "（仅管理员）",
+        "company": "（公司：{{val}}）",
+        "sharedCategoryConfig": "共享分类配置（影响此分类下的所有工具）",
+        "perAgentConfig": "员工级配置（覆盖全局默认值）",
+        "setupGuide": "设置指南",
+        "configureCategory": "配置 {{category}}",
+        "enableDisableAll": "启用/禁用所有 {{category}} 工具",
+        "configurePerAgent": "配置员工级设置",
+        "removeTool": "从员工移除",
+        "confirmDelete": "确定从该员工移除 \"{{name}}\" 吗？",
+        "usingCompanyKey": "使用公司密钥（{{val}}）",
+        "usingCompanyConfig": "使用公司配置（{{val}}）",
+        "leaveBlankDefault": "留空使用全局默认值",
+        "saveFailed": "保存失败",
+        "deleteFailed": "删除失败",
+        "expired": "已过期",
+        "noPresetSkills": "暂无可用的预设技能",
+        "importedFiles": "已导入 {{count}} 个文件",
+        "importFailed": "导入失败",
+        "importing": "导入中...",
+        "import": "导入",
+        "importFromUrl": "从 URL 导入",
+        "browseClawhub": "浏览 ClawHub",
+        "importFromPresets": "从预设导入",
+        "searchSkills": "搜索技能...",
+        "install": "安装",
+        "installing": "安装中...",
+        "installed": "已安装",
+        "browseClawhubTitle": "浏览 ClawHub",
+        "browseClawhubDesc": "从 ClawHub 搜索并安装技能到此数字员工的工作区。",
+        "searchClawhubHint": "搜索 ClawHub 以查找技能",
+        "installedSuccess": "已安装 \"{{name}}\" ({{count}} 个文件)",
+        "somethingWentWrong": "出现问题",
+        "unexpectedError": "加载页面时发生意外错误。",
+        "reloadPage": "重新加载页面",
+        "selectAgent": "— 选择数字员工 —",
+        "failedToCreateSession": "创建会话失败",
+        "failed": "失败"
       },
       "toolCategories": {
         "file": "文件操作",
@@ -527,12 +588,42 @@
         "search": "搜索",
         "custom": "自定义",
         "general": "通用",
-        "email": "邮件"
+        "email": "邮件",
+        "aware": "感知与触发器",
+        "social": "社交",
+        "code": "代码与执行",
+        "discovery": "发现",
+        "feishu": "飞书",
+        "agentbay": "AgentBay"
       },
       "upload": {
         "success": "上传成功",
         "failed": "上传失败",
         "uploading": "上传中..."
+      },
+      "approvals": {
+        "title": "审批",
+        "pending": "{{count}} 个待审批",
+        "approve": "批准",
+        "reject": "拒绝",
+        "history": "审批历史",
+        "noRecords": "暂无审批记录"
+      },
+      "triggerLimits": {
+        "title": "触发器限制",
+        "description": "控制该 Agent 可以创建的触发器数量和行为限制",
+        "maxTriggers": "最大触发器数",
+        "maxTriggersDesc": "Agent 最多可同时拥有的触发器数量",
+        "minPollInterval": "Poll 最短间隔 (分钟)",
+        "minPollIntervalDesc": "定时轮询外部接口的最短间隔",
+        "webhookRateLimit": "Webhook 频率限制 (次/分钟)",
+        "webhookRateLimitDesc": "外部系统每分钟最多可调用的 Webhook 次数"
+      },
+      "welcomeMessage": {
+        "title": "欢迎语",
+        "description": "当用户在网页端发起新对话时，Agent 会自动发送的欢迎语。支持 Markdown 语法。留空则不发送。",
+        "saved": "已保存",
+        "placeholder": "例如：你好！我是你的 AI 助手，有什么可以帮你的吗？"
       }
     },
     "tools": {
@@ -543,7 +634,51 @@
       "noCompany": "暂无公司统一配置的工具",
       "configured": "已配置",
       "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
-      "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})"
+      "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})",
+      "config": "️ 配置",
+      "testConnection": "测试连接",
+      "testing": "测试中...",
+      "testSuccessful": "测试成功",
+      "testFailed": "测试失败",
+      "resetToGlobal": "重置为全局配置",
+      "configJson": "配置 JSON（员工级覆盖）",
+      "globalDefault": "全局默认值：",
+      "adminOnly": "（仅管理员）",
+      "company": "（公司：{{val}}）",
+      "sharedCategoryConfig": "共享分类配置（影响此分类下的所有工具）",
+      "perAgentConfig": "员工级配置（覆盖全局默认值）",
+      "setupGuide": "设置指南",
+      "configureCategory": "配置 {{category}}",
+      "enableDisableAll": "启用/禁用所有 {{category}} 工具",
+      "configurePerAgent": "配置员工级设置",
+      "removeTool": "从员工移除",
+      "confirmDelete": "确定从该员工移除 \"{{name}}\" 吗？",
+      "leaveBlankDefault": "留空使用全局默认值",
+      "saveFailed": "保存失败",
+      "deleteFailed": "删除失败",
+      "expired": "已过期",
+      "noPresetSkills": "暂无可用的预设技能",
+      "importedFiles": "已导入 {{count}} 个文件",
+      "importFailed": "导入失败",
+      "importing": "导入中...",
+      "import": "导入",
+      "importFromUrl": "从 URL 导入",
+      "browseClawhub": "浏览 ClawHub",
+      "importFromPresets": "从预设导入",
+      "searchSkills": "搜索技能...",
+      "install": "安装",
+      "installing": "安装中...",
+      "installed": "已安装",
+      "browseClawhubTitle": "浏览 ClawHub",
+      "browseClawhubDesc": "从 ClawHub 搜索并安装技能到此数字员工的工作区。",
+      "searchClawhubHint": "搜索 ClawHub 以查找技能",
+      "installedSuccess": "已安装 \"{{name}}\" ({{count}} 个文件)",
+      "somethingWentWrong": "出现问题",
+      "unexpectedError": "加载页面时发生意外错误。",
+      "reloadPage": "重新加载页面",
+      "selectAgent": "— 选择数字员工 —",
+      "failedToCreateSession": "创建会话失败",
+      "failed": "失败"
     },
     "toolCategories": {
       "file": "文件操作",
@@ -552,12 +687,109 @@
       "search": "搜索",
       "custom": "自定义",
       "general": "通用",
-      "email": "邮件"
+      "email": "邮件",
+      "aware": "感知与触发器",
+      "social": "社交",
+      "code": "代码与执行",
+      "discovery": "发现",
+      "feishu": "飞书",
+      "agentbay": "AgentBay"
     },
     "upload": {
       "success": "上传成功",
       "failed": "上传失败",
       "uploading": "上传中..."
+    },
+    "skillNames": {
+      "web-research": "网络研究",
+      "data-analysis": "数据分析",
+      "content-writing": "内容写作",
+      "competitive-analysis": "竞争分析",
+      "meeting-notes": "会议纪要",
+      "complex-task-executor": "复杂任务执行器",
+      "skill-creator": "技能创建器",
+      "content-research-writer": "内容研究写作",
+      "mcp-installer": "MCP 工具安装器"
+    },
+    "skillDescriptions": {
+      "web-research": "系统性网络搜索和信息综合。适用于：需要从网络获取事实数据、评估信息来源或交叉验证观点。不适用于：简单问答或本地文件搜索。",
+      "data-analysis": "数据解读和结构化报告。适用于：分析 CSV/数据集文件、发现趋势或生成统计摘要。不适用于：编写代码构建数据模型。",
+      "content-writing": "专业内容创作和语调调整。适用于：撰写文章、邮件或具有特定风格要求的营销文案。不适用于：日常聊天回复。",
+      "competitive-analysis": "竞争对手研究和比较框架。适用于：比较公司、产品或进行 SWOT/功能矩阵分析。不适用于：一般学术研究。",
+      "meeting-notes": "会议摘要和跟进追踪。适用于：从会议记录或粗略笔记中提取结构化的行动项和关键决策。不适用于：通用文档摘要。",
+      "complex-task-executor": "用于分解、规划和执行复杂多步骤任务的结构化方法，支持进度跟踪",
+      "skill-creator": "创建新技能、修改和改进现有技能，并衡量技能表现",
+      "content-research-writer": "通过进行研究、添加引用、改进开头、迭代大纲和提供实时章节反馈来协助撰写高质量内容",
+      "mcp-installer": "引导用户在聊天中直接发现、配置和安装 MCP 工具——无需设置页面"
+    },
+    "credentials": {
+      "title": "凭据",
+      "add": "添加",
+      "description": "存储网站的登录凭据和 Cookie。当数字员工通过 AgentBay 打开浏览器时，Cookie 会自动注入。",
+      "empty": "未配置凭据",
+      "loading": "加载中...",
+      "error": "加载凭据失败",
+      "saveError": "保存失败",
+      "deleteError": "删除失败",
+      "platformRequired": "平台名称是必填项",
+      "cookiesInvalid": "Cookie 必须是 JSON 数组格式",
+      "cookiesJsonInvalid": "Cookie 的 JSON 格式无效",
+      "status": {
+        "active": "有效",
+        "expired": "已过期",
+        "needs_relogin": "需要重新登录"
+      },
+      "meta": {
+        "cookies": "Cookie",
+        "injected": "已注入"
+      },
+      "timeAgo": {
+        "justNow": "刚刚",
+        "minutes": "{{count}}分钟前",
+        "hours": "{{count}}小时前",
+        "days": "{{count}}天前"
+      },
+      "actions": {
+        "edit": "编辑",
+        "delete": "删除",
+        "cancel": "取消",
+        "save": "保存",
+        "create": "创建",
+        "update": "更新",
+        "saving": "保存中..."
+      },
+      "deleteConfirm": {
+        "title": "确定删除 {{platform}} 的凭据？",
+        "confirm": "删除"
+      },
+      "modal": {
+        "addTitle": "添加凭据",
+        "editTitle": "编辑凭据",
+        "platform": "平台",
+        "platformPlaceholder": "例如：baidu.com, xiaohongshu.com",
+        "displayName": "显示名称",
+        "displayNamePlaceholder": "例如：营销账号",
+        "type": "类型",
+        "typeOptions": {
+          "website": "网站",
+          "email": "邮箱",
+          "social": "社交",
+          "api_key": "API 密钥"
+        },
+        "username": "用户名",
+        "usernamePlaceholder": "登录用户名或邮箱",
+        "password": "密码",
+        "passwordHint": "（留空则保持当前密码）",
+        "passwordPlaceholder": "登录密码",
+        "loginUrl": "登录 URL",
+        "loginUrlPlaceholder": "https://example.com/login",
+        "cookies": "Cookie JSON",
+        "cookiesHint": "（留空则保持当前 Cookie）",
+        "cookiesPlaceholder": "[\n  { \"name\": \"session\", \"value\": \"abc123\", \"domain\": \".example.com\", \"path\": \"/\" }\n]",
+        "cookiesHelp": "粘贴从",
+        "cookiesHelpLink": "Cookie-Editor",
+        "cookiesHelpSuffix": "或类似浏览器扩展导出的 Cookie。必须是 JSON 数组格式。"
+      }
     }
   },
   "wizard": {
@@ -591,7 +823,29 @@
       "Project Manager": "项目经理",
       "Designer": "设计师",
       "Product Intern": "产品实习生",
-      "Market Researcher": "市场研究员"
+      "Market Researcher": "市场研究员",
+      "templateData": {
+        "Project Manager": {
+          "description": "管理项目进度、任务分配、跨团队协调和进度汇报",
+          "personality": "- 有条理、主动、注重细节\n- 善于沟通，让所有利益相关者保持一致\n- 在紧迫性和质量之间取得平衡，果断优先级排序",
+          "boundaries": "- 战略决策需要领导层批准\n- 预算审批必须遵循正式流程\n- 代表公司的对外沟通需要签字确认"
+        },
+        "Designer": {
+          "description": "协助设计需求、设计系统维护、资产管理和竞品 UI 分析",
+          "personality": "- 注重细节，具有强烈的视觉美感\n- 将业务需求转化为设计语言\n- 主动组织设计资源，保持一致性",
+          "boundaries": "- 最终设计交付物需要设计主管批准\n- 品牌元素修改必须经过审核\n- 设计源文件管理遵循团队规范"
+        },
+        "Product Intern": {
+          "description": "协助产品经理进行需求分析、竞品研究、用户反馈分析和文档撰写",
+          "personality": "- 渴望学习、主动、好奇心强\n- 对用户体验和产品细节敏感\n- 输出详尽、结构清晰",
+          "boundaries": "- 产品建议应标注「仅供参考」\n- 未经产品经理批准不得直接修改产品规格\n- 用户隐私数据必须匿名化处理"
+        },
+        "Market Researcher": {
+          "description": "专注于市场研究、行业分析、竞品情报跟踪和趋势洞察",
+          "personality": "- 严谨、数据驱动、逻辑清晰\n- 从复杂数据中提取关键洞察\n- 报告聚焦可操作建议，而非仅数据罗列",
+          "boundaries": "- 分析结论必须有数据/来源支撑\n- 商业敏感信息必须标注保密等级\n- 对外发布研究报告需经审批"
+        }
+      }
     },
     "step2": {
       "title": "人格与边界",
@@ -612,7 +866,47 @@
       "emailMgmt": "邮件管理",
       "emailMgmtDesc": "邮件收发和日程管理",
       "fileProcessing": "文件处理",
-      "fileProcessingDesc": "文档解析和格式转换"
+      "fileProcessingDesc": "文档解析和格式转换",
+      "required": "必选",
+      "noSkills": "暂无可用技能。请在企业设置中添加技能。",
+      "skills": {
+        "Web Research": {
+          "name": "网络研究",
+          "description": "系统性网络搜索和信息综合。适用于：需要从网络获取事实数据、评估信息来源或交叉验证观点。不适用于：简单问答或本地文件搜索。"
+        },
+        "Data Analysis": {
+          "name": "数据分析",
+          "description": "数据解读和结构化报告。适用于：分析 CSV/数据集文件、发现趋势或生成统计摘要。不适用于：编写代码构建数据模型。"
+        },
+        "Content Writing": {
+          "name": "内容写作",
+          "description": "专业内容创作和语气调整。适用于：撰写文章、邮件或营销文案并具有特定风格要求。不适用于：日常聊天回复。"
+        },
+        "Competitive Analysis": {
+          "name": "竞品分析",
+          "description": "竞争对手研究和比较框架。适用于：被要求比较公司、产品或进行 SWOT/功能矩阵分析。不适用于：一般学术研究。"
+        },
+        "Meeting Notes": {
+          "name": "会议纪要",
+          "description": "会议摘要和跟进追踪。适用于：从会议记录或粗略笔记中提取结构化行动事项和关键决策。不适用于：通用文档摘要。"
+        },
+        "Complex Task Executor": {
+          "name": "复杂任务执行器",
+          "description": "用于分解、规划和执行复杂多步骤任务的结构化方法，包含进度跟踪"
+        },
+        "Skill Creator": {
+          "name": "技能创建器",
+          "description": "创建新技能、修改和改进现有技能，并衡量技能性能"
+        },
+        "Content Research Writer": {
+          "name": "内容研究写作",
+          "description": "通过进行研究、添加引用、改进开头、迭代大纲和提供实时章节反馈来协助撰写高质量内容"
+        },
+        "MCP Tool Installer": {
+          "name": "MCP 工具安装器",
+          "description": "引导用户在聊天中直接发现、配置和安装 MCP 工具——无需访问设置页面"
+        }
+      }
     },
     "step4": {
       "title": "权限设置",
@@ -692,7 +986,27 @@
     "deleteCompany": "删除此公司",
     "timezone": {
       "title": "公司时区",
-      "description": "所有数字员工的默认时区。数字员工可以单独覆盖。"
+      "description": "所有数字员工的默认时区。数字员工可以单独覆盖。",
+      "zones": {
+        "UTC": "UTC (协调世界时)",
+        "Asia/Shanghai": "亚洲/上海 (北京时间, UTC+8)",
+        "Asia/Tokyo": "亚洲/东京 (日本时间, UTC+9)",
+        "Asia/Seoul": "亚洲/首尔 (韩国时间, UTC+9)",
+        "Asia/Singapore": "亚洲/新加坡 (新加坡时间, UTC+8)",
+        "Asia/Kolkata": "亚洲/加尔各答 (印度时间, UTC+5:30)",
+        "Asia/Dubai": "亚洲/迪拜 (海湾时间, UTC+4)",
+        "Europe/London": "欧洲/伦敦 (英国时间, UTC+0/+1)",
+        "Europe/Paris": "欧洲/巴黎 (中欧时间, UTC+1/+2)",
+        "Europe/Berlin": "欧洲/柏林 (中欧时间, UTC+1/+2)",
+        "Europe/Moscow": "欧洲/莫斯科 (莫斯科时间, UTC+3)",
+        "America/New_York": "美洲/纽约 (美国东部时间, UTC-5/-4)",
+        "America/Chicago": "美洲/芝加哥 (美国中部时间, UTC-6/-5)",
+        "America/Denver": "美洲/丹佛 (美国山地时间, UTC-7/-6)",
+        "America/Los_Angeles": "美洲/洛杉矶 (美国太平洋时间, UTC-8/-7)",
+        "America/Sao_Paulo": "美洲/圣保罗 (巴西利亚时间, UTC-3)",
+        "Australia/Sydney": "澳大利亚/悉尼 (澳大利亚东部时间, UTC+10/+11)",
+        "Pacific/Auckland": "太平洋/奥克兰 (新西兰时间, UTC+12/+13)"
+      }
     },
     "systemEmail": {
       "title": "系统邮件配置",
@@ -705,7 +1019,8 @@
       "password": "SMTP 密码 / 应用密码",
       "timeout": "超时时间（秒）",
       "useSsl": "使用 SSL/TLS",
-      "hint": "对于 Gmail，请使用应用密码。对于 QQ/163 邮箱，请使用 SMTP 授权码。"
+      "hint": "对于 Gmail，请使用应用密码。对于 QQ/163 邮箱，请使用 SMTP 授权码。",
+      "sendTest": "发送测试邮件"
     },
     "quotas": {
       "defaultUserQuotas": "默认用户配额",
@@ -769,7 +1084,6 @@
       "disable": "禁用",
       "exportCsv": "导出 CSV"
     },
-
     "stats": {
       "users": "{{count}} 用户",
       "runningAgents": "{{running}}/{{total}} 运行中"
@@ -804,7 +1118,12 @@
       "testing": "测试中...",
       "testSuccess": "OK ({{latency}}ms)",
       "testFailed": "测试失败: {{error}}\n\n延迟: {{latency}}ms",
-      "testError": "测试错误: {{message}}"
+      "testError": "测试错误: {{message}}",
+      "editModel": "编辑模型",
+      "vision": "视觉",
+      "temperature": "模型温度",
+      "temperaturePlaceholder": "例如 0.7 或 1.0（留空使用默认值）",
+      "temperatureDesc": "留空使用提供商默认值。o1/o3 推理模型通常需要 1.0"
     },
     "tools": {
       "title": "全局工具管理",
@@ -868,7 +1187,128 @@
       "githubUrlPlaceholder": "https://github.com/owner/repo/tree/main/skills/my-skill",
       "preview": "预览",
       "loading": "加载中...",
-      "edit": "编辑"
+      "edit": "编辑",
+      "builtIn": "内置",
+      "configured": "已配置",
+      "default": "默认",
+      "toolNames": {
+        "list_files": "列出文件",
+        "read_file": "读取文件",
+        "write_file": "写入文件",
+        "delete_file": "删除文件",
+        "read_document": "读取文档",
+        "set_trigger": "设置触发器",
+        "update_trigger": "更新触发器",
+        "cancel_trigger": "取消触发器",
+        "list_triggers": "列出触发器",
+        "send_file_to_agent": "发送文件",
+        "send_feishu_message": "飞书消息",
+        "send_web_message": "网页消息",
+        "send_message_to_agent": "数字员工消息",
+        "web_search": "网络搜索",
+        "jina_search": "Jina 搜索",
+        "jina_read": "Jina 阅读",
+        "plaza_get_new_posts": "广场：浏览",
+        "plaza_create_post": "广场：发布",
+        "plaza_add_comment": "广场：评论",
+        "execute_code": "代码执行器",
+        "execute_code_e2b": "代码执行器 (E2B 云端)",
+        "upload_image": "上传图片",
+        "generate_image_siliconflow": "生成图片 (SiliconFlow)",
+        "generate_image_openai": "生成图片 (OpenAI)",
+        "generate_image_google": "生成图片 (Google/Vertex)",
+        "discover_resources": "资源发现",
+        "import_mcp_server": "导入 MCP 服务器",
+        "send_email": "发送邮件",
+        "read_emails": "读取邮件",
+        "reply_email": "回复邮件",
+        "publish_page": "发布页面",
+        "list_published_pages": "列出已发布页面",
+        "search_clawhub": "搜索 ClawHub",
+        "install_skill": "安装技能",
+        "agentbay_browser_navigate": "AgentBay: 浏览器访问",
+        "agentbay_browser_screenshot": "AgentBay: 浏览器截图",
+        "agentbay_browser_click": "AgentBay: 浏览器点击",
+        "agentbay_browser_type": "AgentBay: 浏览器输入",
+        "agentbay_browser_extract": "AgentBay: 浏览器提取",
+        "agentbay_browser_observe": "AgentBay: 浏览器观察",
+        "agentbay_browser_login": "AgentBay: 浏览器登录",
+        "agentbay_code_execute": "AgentBay: 代码执行",
+        "agentbay_command_exec": "AgentBay: Shell 命令",
+        "agentbay_computer_screenshot": "AgentBay: 桌面截图",
+        "agentbay_computer_click": "AgentBay: 鼠标点击",
+        "agentbay_computer_input_text": "AgentBay: 键盘输入",
+        "agentbay_computer_press_keys": "AgentBay: 快捷键",
+        "agentbay_computer_scroll": "AgentBay: 滚动",
+        "agentbay_computer_move_mouse": "AgentBay: 鼠标移动",
+        "agentbay_computer_drag_mouse": "AgentBay: 鼠标拖拽",
+        "agentbay_computer_get_screen_size": "AgentBay: 获取屏幕尺寸",
+        "agentbay_computer_start_app": "AgentBay: 启动应用",
+        "agentbay_computer_get_cursor_position": "AgentBay: 获取光标位置",
+        "agentbay_computer_get_active_window": "AgentBay: 获取活动窗口",
+        "agentbay_computer_activate_window": "AgentBay: 激活窗口",
+        "agentbay_computer_list_visible_apps": "AgentBay: 列出运行应用",
+        "atlassian_rovo": "Atlassian Rovo (Jira / Confluence / Compass)"
+      },
+      "toolDescriptions": {
+        "list_files": "列出工作区目录中的文件和文件夹。",
+        "read_file": "从工作区读取文件内容。",
+        "write_file": "在工作区写入或更新文件。",
+        "delete_file": "从工作区删除文件。",
+        "read_document": "读取办公文档内容（PDF、Word、Excel、PPT）并提取文本。",
+        "set_trigger": "设置一个新的触发器，在特定时间或条件下唤醒自己。",
+        "update_trigger": "更新现有触发器的配置或原因。",
+        "cancel_trigger": "按名称取消（禁用）触发器。",
+        "list_triggers": "列出所有活动触发器的详细信息。",
+        "send_file_to_agent": "将文件发送给特定人员或返回当前对话。",
+        "send_feishu_message": "向飞书用户或群组发送消息。",
+        "send_web_message": "在 Clawith 网页平台上向用户发送主动消息。",
+        "send_message_to_agent": "向数字员工同事发送消息并接收回复。",
+        "web_search": "使用可配置的搜索引擎搜索互联网。",
+        "jina_search": "使用 Jina AI 搜索互联网。",
+        "jina_read": "使用 Jina AI Reader 从 URL 读取并提取完整内容。",
+        "plaza_get_new_posts": "从数字员工广场（共享社交动态）获取最新帖子。",
+        "plaza_create_post": "向数字员工广场发布新帖子。",
+        "plaza_add_comment": "为现有广场帖子添加评论。",
+        "execute_code": "在本地沙箱子进程中执行代码（Python、Bash、Node.js）。",
+        "execute_code_e2b": "在安全的 E2B 云沙箱中执行代码（Python、Bash、Node.js）。",
+        "upload_image": "将工作区或 URL 的图片上传到 ImageKit CDN。",
+        "generate_image_siliconflow": "通过 SiliconFlow FLUX 模型生成图片。",
+        "generate_image_openai": "通过 OpenAI DALL-E 模型生成图片。",
+        "generate_image_google": "通过 Google Gemini Image 或 Vertex AI 生成图片。",
+        "discover_resources": "搜索公共 MCP 注册表以查找工具和功能。",
+        "import_mcp_server": "从 Smithery 注册表导入 MCP 服务器到平台。",
+        "send_email": "向一个或多个收件人发送邮件。",
+        "read_emails": "从收件箱读取邮件。",
+        "reply_email": "按 Message-ID 回复邮件。",
+        "publish_page": "将工作区中的 HTML 文件发布为公共页面。",
+        "list_published_pages": "列出此数字员工发布的所有页面。",
+        "search_clawhub": "在 ClawHub 技能注册表中搜索匹配查询的技能。",
+        "install_skill": "将技能安装到此数字员工的工作区。",
+        "agentbay_browser_navigate": "[ENV: Browser] 在 AgentBay 无头浏览器环境中访问指定网址。",
+        "agentbay_browser_screenshot": "[ENV: Browser] 对无头浏览器当前页面进行截图。",
+        "agentbay_browser_click": "[ENV: Browser] 在无头浏览器中点击元素。",
+        "agentbay_browser_type": "[ENV: Browser] 在无头浏览器中输入文本。",
+        "agentbay_browser_extract": "[ENV: Browser] 从当前浏览器页面提取结构化数据。",
+        "agentbay_browser_observe": "[ENV: Browser] 观察并识别页面上的交互元素。",
+        "agentbay_browser_login": "[ENV: Browser] 在无头浏览器中处理登录流程。",
+        "agentbay_code_execute": "[ENV: Code Sandbox] 在 AgentBay 代码沙箱中执行代码（Python、Bash、Node.js）。",
+        "agentbay_command_exec": "[ENV: Code Sandbox] 在 AgentBay 代码沙箱中执行 Shell 命令。",
+        "agentbay_computer_screenshot": "[ENV: Cloud Desktop] 对云桌面进行截图。",
+        "agentbay_computer_click": "[ENV: Cloud Desktop] 在云桌面指定坐标点击。",
+        "agentbay_computer_input_text": "[ENV: Cloud Desktop] 在云桌面中输入文本。",
+        "agentbay_computer_press_keys": "[ENV: Cloud Desktop] 在云桌面中按下快捷键。",
+        "agentbay_computer_scroll": "[ENV: Cloud Desktop] 在云桌面中滚动。",
+        "agentbay_computer_move_mouse": "[ENV: Cloud Desktop] 将鼠标移动到云桌面指定坐标。",
+        "agentbay_computer_drag_mouse": "[ENV: Cloud Desktop] 在云桌面中拖拽鼠标。",
+        "agentbay_computer_get_screen_size": "[ENV: Cloud Desktop] 获取云桌面的屏幕尺寸。",
+        "agentbay_computer_start_app": "[ENV: Cloud Desktop] 在云桌面中启动应用程序。",
+        "agentbay_computer_get_cursor_position": "[ENV: Cloud Desktop] 获取云桌面中当前光标位置。",
+        "agentbay_computer_get_active_window": "[ENV: Cloud Desktop] 获取云桌面中的活动窗口。",
+        "agentbay_computer_activate_window": "[ENV: Cloud Desktop] 将指定窗口切换到云桌面前景。",
+        "agentbay_computer_list_visible_apps": "[ENV: Cloud Desktop] 列出云桌面中正在运行的应用程序。",
+        "atlassian_rovo": "连接到 Atlassian Rovo MCP 服务器以访问 Jira、Confluence 和 Compass。"
+      }
     },
     "org": {
       "feishuSync": "飞书通讯录同步配置",
@@ -977,6 +1417,104 @@
       "textPlaceholder": "输入通知条文案，如：🎉 v2.1 已发布！",
       "description": "在页面顶部显示一行通知条，所有用户（含未登录用户）可见。",
       "preview": "预览"
+    },
+    "emailTemplates": {
+      "title": "邮件模板",
+      "description": "为每种场景自定义邮件内容。使用 {{variable}} 占位符插入动态数据。",
+      "saveTemplates": "保存模板",
+      "availableVars": "可用变量",
+      "subject": "主题",
+      "body": "正文",
+      "resetDefault": "重置为默认值",
+      "saved": "邮件模板已保存",
+      "emailVerification": "邮箱验证码",
+      "emailVerificationDesc": "用户注册并需要验证邮箱地址时发送。",
+      "emailVerificationSubject": "验证您的 Clawith 邮箱地址",
+      "emailVerificationBody": "您好 {{display_name}}，\n\n欢迎来到 Clawith！请使用以下 6 位数字验证码验证您的邮箱地址：\n\n验证码：{{verification_code}}\n\n此验证码将在 {{expiry_minutes}} 分钟后过期。如果您没有创建账号，可以忽略此邮件。",
+      "passwordReset": "密码重置",
+      "passwordResetDesc": "用户请求重置密码时发送。",
+      "passwordResetSubject": "重置您的 Clawith 密码",
+      "passwordResetBody": "您好 {{display_name}}，\n\n我们收到了重置您 Clawith 密码的请求。\n\n重置链接：{{reset_url}}\n\n此链接将在 {{expiry_minutes}} 分钟后过期。如果您没有提出此请求，可以忽略此邮件。",
+      "companyInvitation": "公司邀请",
+      "companyInvitationDesc": "管理员邀请用户加入公司时发送。",
+      "companyInvitationSubject": "{{inviter_name}} 邀请您加入 {{company_name}} 的 Clawith 团队",
+      "companyInvitationBody": "您好，\n\n{{inviter_name}} 邀请您加入他们在 Clawith 的团队\"{{company_name}}\"。\n\n要接受邀请并创建您的账号，请点击以下链接：\n\n{{invite_url}}\n\n如果您不想加入此团队或没有预期此邀请，可以忽略此邮件。"
+    },
+    "users": {
+      "user": "用户",
+      "email": "Email",
+      "joined": "注册时间",
+      "role": "角色",
+      "source": "来源",
+      "msgQuota": "消息配额",
+      "period": "周期",
+      "agents": "数字员工",
+      "ttl": "TTL",
+      "edit": "编辑",
+      "clickToSort": "点击切换排序",
+      "platformAdmin": "平台\n管理员",
+      "orgAdmin": "管理员",
+      "registered": "注册",
+      "permanent": "永久",
+      "daily": "每天",
+      "weekly": "每周",
+      "monthly": "每月"
+    },
+    "identity": {
+      "title": "组织架构与账号同步",
+      "description": "配置企业目录同步和身份提供商设置。",
+      "notConfigured": "未配置",
+      "active": "已启用",
+      "addProvider": "添加同步源",
+      "type": "类型",
+      "name": "显示名称",
+      "config": "配置 (JSON)",
+      "configExample": "配置示例",
+      "deleteConfirm": "确定删除此 OA 账号源吗？",
+      "providers": {
+        "feishu": {
+          "name": "飞书",
+          "desc": "飞书 / Lark 集成"
+        },
+        "wecom": {
+          "name": "企业微信",
+          "desc": "企业微信集成"
+        },
+        "dingtalk": {
+          "name": "钉钉",
+          "desc": "钉钉应用集成"
+        },
+        "oauth2": {
+          "name": "OAuth2",
+          "desc": "通用 OIDC 提供商"
+        }
+      },
+      "providerHints": {
+        "feishu": "飞书：需填写 app_id, app_secret（可选：encrypt_key, verification_token）",
+        "dingtalk": "钉钉：需填写 app_key, app_secret",
+        "wecom": "企业微信：传统模式需 corp_id, secret, agent_id；智能机器人模式需 bot_id, bot_secret",
+        "oauth2": "OAuth2：填写 App ID、App Secret、授权地址、Token地址、用户信息地址",
+        "saml": "SAML：需填写 entry_point, issuer, cert (公钥)",
+        "microsoft_teams": "Microsoft Teams：需填写 client_id, client_secret, tenant_id"
+      },
+      "ssoLoginToggle": "SSO 登录",
+      "ssoLoginToggleHint": "允许用户通过此身份提供商登录。",
+      "ssoSubdomain": "SSO 登录地址",
+      "ssoSubdomainHint": "将此地址分享给团队成员。访问此地址时会显示 SSO 登录按钮。",
+      "callbackUrl": "回调地址（粘贴到应用设置中）",
+      "callbackUrlHint": "将此地址添加到身份提供商应用的 OAuth 回调 URI 中。",
+      "clientId": "客户端 ID",
+      "clientSecret": "客户端密钥",
+      "authorizeUrl": "授权地址",
+      "tokenUrl": "Token 地址",
+      "userInfoUrl": "用户信息地址",
+      "corpId": "企业 ID",
+      "secret": "密钥",
+      "agentId": "应用 ID（可选）",
+      "botId": "机器人 ID（智能机器人）",
+      "botSecret": "机器人密钥",
+      "appKey": "App Key",
+      "appSecret": "App Secret"
     }
   },
   "common": {
@@ -1008,7 +1546,15 @@
       "teams": "Microsoft Teams",
       "dingtalk": "钉钉",
       "wecom": "企业微信"
-    }
+    },
+    "searching": "搜索中...",
+    "upload": "⬆ 上传",
+    "copy": "复制",
+    "copied": "已复制",
+    "lightMode": "浅色模式",
+    "darkMode": "深色模式",
+    "collapseSidebar": "折叠侧边栏",
+    "expandSidebar": "展开侧边栏"
   },
   "admin": {
     "title": "公司管理",
@@ -1044,10 +1590,24 @@
     "ssoDomain": "专属访问域名",
     "ssoDomainPlaceholder": "例如: acme.clawith.com",
     "confirmDisable": "停用此公司？所有用户和数字员工将被暂停。",
-
     "showing": "{{start}}-{{end}} / {{total}}",
     "prev": "上一页",
-    "next": "下一页"
+    "next": "下一页",
+    "tab": {
+      "dashboard": "平台仪表盘",
+      "platform": "️ 平台设置",
+      "companies": "公司管理"
+    },
+    "platformSettingsDesc": "管理平台级设置和公司租户。",
+    "settingUpdated": "设置已更新",
+    "sso": "SSO",
+    "orgAdmin": "管理员邮箱",
+    "createdAt": "创建时间",
+    "action": "️ 操作",
+    "all": "全部",
+    "filterStatus": "按状态筛选",
+    "enable": "启用",
+    "noFilterResults": "没有符合当前筛选条件的公司。"
   },
   "companySetup": {
     "title": "设置你的公司",
@@ -1061,7 +1621,14 @@
     "createDesc": "创建你自己的公司并开始使用",
     "namePlaceholder": "公司名称",
     "create": "创建",
-    "hint": "你可以随时从企业设置中邀请成员加入。"
+    "hint": "你可以随时从企业设置中邀请成员加入。",
+    "inviteCode": "邀请码",
+    "inviteCodePlaceholder": "例如：ABC12345",
+    "joinBtn": "加入公司",
+    "companyName": "公司名称",
+    "companyNamePlaceholder": "公司名称",
+    "createBtn": "创建",
+    "contactAdmin": "请联系平台管理员获取邀请码。"
   },
   "openclaw": {
     "created": "OpenClaw Agent 已创建",
@@ -1193,6 +1760,83 @@
       "wecom": "企业微信：传统模式需 corp_id, secret, agent_id；智能机器人模式需 bot_id, bot_secret",
       "oauth2": "OAuth2：填写 App ID、App Secret、授权地址、Token地址、用户信息地址",
       "saml": "SAML：需填写 entry_point, issuer, cert (公钥)",
-      "microsoft_teams": "Microsoft Teams：需填写 client_id, client_secret, tenant_id"    }
+      "microsoft_teams": "Microsoft Teams：需填写 client_id, client_secret, tenant_id"
+    }
+  },
+  "platformDashboard": {
+    "timeRange": {
+      "last7Days": "最近 7 天",
+      "last30Days": "最近 30 天"
+    },
+    "metrics": {
+      "avgTokensPerSession": {
+        "label": "平均 Token / 会话",
+        "tooltip": "最近 30 天内每个聊天会话的平均 Token 消耗。计算方式：总 Token 数 / 总会话数。"
+      },
+      "retention7Day": {
+        "label": "7 天留存率",
+        "tooltip": "上周活跃且本周仍然活跃的成熟公司（>14 天）的百分比。",
+        "tooltipWithCount": "上周活跃且本周仍然活跃的成熟公司（>14 天）的百分比。{{retained}} / {{total}} 家公司留存。"
+      }
+    },
+    "charts": {
+      "legend": {
+        "cumulative": "累计",
+        "new": "新增",
+        "dau": "DAU",
+        "wau": "WAU",
+        "mau": "MAU",
+        "enabled": "已启用"
+      },
+      "companies": {
+        "title": "公司数量",
+        "tooltip": "累计和每日新增公司注册数"
+      },
+      "users": {
+        "title": "用户数量",
+        "tooltip": "累计和每日新增用户注册数"
+      },
+      "tokenUsage": {
+        "title": "Token 使用量",
+        "tooltip": "所有数字员工的累计和每日 Token 消耗"
+      },
+      "dailySessions": {
+        "title": "每日会话数",
+        "tooltip": "每日新增聊天会话数和累计总数"
+      },
+      "activeUsers": {
+        "title": "活跃用户",
+        "tooltip": "DAU：当天发送至少 1 条消息的不同用户数。WAU：滚动 7 天窗口内的不同活跃用户数。MAU：滚动 30 天窗口内的不同活跃用户数。"
+      },
+      "channelDistribution": {
+        "title": "渠道分布",
+        "tooltip": "最近 30 天内各来源渠道的聊天会话分布"
+      },
+      "toolCategories": {
+        "title": "前 10 工具类别",
+        "tooltip": "所有活跃数字员工配置中最受欢迎的工具类别"
+      }
+    },
+    "churn": {
+      "title": "流失预警",
+      "tooltip": "Token 消耗超过 1000 万但过去 14 天无活动的公司",
+      "company": "公司",
+      "totalTokens": "总 Token 数",
+      "lastActive": "最后活跃",
+      "daysInactive": "未活跃天数",
+      "noWarnings": "无流失预警 — 所有活跃公司状态健康"
+    },
+    "leaderboards": {
+      "topCompanies": {
+        "title": "Token 消耗前 20 公司",
+        "tooltip": "按所有数字员工累计 Token 消耗排名的公司"
+      },
+      "topAgents": {
+        "title": "Token 消耗前 20 数字员工",
+        "tooltip": "按累计 Token 消耗排名的数字员工"
+      }
+    },
+    "loading": "加载中...",
+    "noData": "暂无数据"
   }
 }

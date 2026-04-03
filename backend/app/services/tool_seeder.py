@@ -26,14 +26,16 @@ BUILTIN_TOOLS = [
     {
         "name": "read_file",
         "display_name": "Read File",
-        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/.",
+        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks.",
         "category": "file",
         "icon": "📄",
         "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"}
+                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"},
+                "offset": {"type": "integer", "description": "Starting line number (0-indexed, default 0). Use with limit for pagination."},
+                "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000). Use with offset for pagination."},
             },
             "required": ["path"],
         },
@@ -75,6 +77,65 @@ BUILTIN_TOOLS = [
                 "path": {"type": "string", "description": "File path to delete"}
             },
             "required": ["path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # --- Enhanced file management tools ---
+    {
+        "name": "edit_file",
+        "display_name": "Edit File",
+        "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections.",
+        "category": "file",
+        "icon": "✂️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to edit, e.g.: memory/memory.md, skills/my-skill/SKILL.md"},
+                "old_string": {"type": "string", "description": "Exact text to find and replace. Must match exactly including whitespace and newlines."},
+                "new_string": {"type": "string", "description": "Replacement text"},
+                "replace_all": {"type": "boolean", "description": "Replace all occurrences if true (default: false)"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "search_files",
+        "display_name": "Search Files",
+        "description": "Search for content patterns across files using regex. Returns matching lines with file paths and line numbers. Results capped at 50 per query.",
+        "category": "file",
+        "icon": "🔍",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for, e.g.: 'API_KEY', 'def\\\\s+\\\\w+'"},
+                "path": {"type": "string", "description": "Directory to search in (default: root)"},
+                "file_pattern": {"type": "string", "description": "File pattern to match (default: all files). e.g.: '*.md', '*.py'"},
+                "ignore_case": {"type": "boolean", "description": "Case-insensitive search (default: false)"},
+            },
+            "required": ["pattern"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "find_files",
+        "display_name": "Find Files",
+        "description": "Find files matching glob patterns. Returns file paths with sizes and modification info. Results capped at 100 per query.",
+        "category": "file",
+        "icon": "📁",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to match files, e.g.: '**/*.md', 'skills/*.md'"},
+                "path": {"type": "string", "description": "Base directory for search (default: root)"},
+            },
+            "required": ["pattern"],
         },
         "config": {},
         "config_schema": {},
