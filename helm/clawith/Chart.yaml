@@ -3,7 +3,7 @@ name: clawith
 description: A Helm chart for Clawith application deployment
 type: application
 version: 1.0.0
-appVersion: "v260331"
+appVersion: "1.8.1"
 keywords:
   - clawith
   - agent

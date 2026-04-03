@@ -1,55 +1,137 @@
-# v1.8.0-beta.3
+# v1.8.1 Release Notes
 
-## What's Changed
+> Released: 2026-04-03
 
-### New Features
+This is a stability and polish release built on top of v1.8.0-beta.3, covering security hardening,
+Feishu reliability fixes, a redesigned tool-call visualization, new file-management tools, and
+a first-class Kubernetes deployment option.
 
-- **Split Code Executor into Local and E2B Cloud tools** — The single "Code Executor" tool has been separated into two independent tools. The local tool shows CPU/memory/network config; the E2B Cloud tool only requires an API key. E2B errors are now surfaced explicitly instead of silently falling back to local execution.
-- **MCP Server credential management** — New "Edit Server" UI and `PUT /tools/mcp-server` API endpoint for bulk-updating MCP server URLs and API keys across all tools sharing the same server.
-- **Feishu Wiki document creation** — `feishu_doc_create` now supports creating documents directly inside Wiki knowledge bases, with automatic detection of Wiki node tokens.
-- **Feishu permission JSON UI redesign** — Two-tier segmented control (Basic / Full) with i18n support for Feishu app permission configuration.
-- **Live Preview auto-sizing** — AgentBay Live Preview panel now auto-sizes to 50% of the chat container width.
+---
 
-### Bug Fixes
+## Highlights
 
-- **Plaintext SMTP relay support** — STARTTLS is now auto-negotiated based on server ESMTP capabilities instead of being forced on port 25/587. AUTH is skipped for unauthenticated IP-whitelisted internal relays. Password is no longer a required field in email configuration.
-- **Unified context window size** — Introduced `DEFAULT_CONTEXT_WINDOW_SIZE = 100` constant and unified all 9 communication channels (WebSocket, Feishu, Discord, WeCom, DingTalk, Teams, Slack) to use consistent fallback values.
-- **LLM stream retry** — Added `httpx.RemoteProtocolError` to the stream retry logic to handle upstream connection resets.
-- **Tool config double-encryption** — Fixed a bug where already-encrypted sensitive config fields were encrypted again on save.
-- **Loguru format collision** — Replaced `logger.error(..., exc_info=True)` with `logger.exception(...)` across all channel handlers to prevent crashes when error messages contain special characters.
-- **WeCom message handler** — Fixed `NameError` (`agent` vs `agent_obj`) and migrated user creation to `channel_user_service` to avoid AssociationProxy errors.
-- **Duplicate tool definition** — Removed `send_channel_message` from `_ALWAYS_INCLUDE_CORE` to prevent "Tool names must be unique" LLM errors.
-- **AgentBay connection test** — Fixed test image name (`linux_latest`) and `api_key` lookup in global tool config fallback.
-- **FastAPI route ordering** — Reordered `/tools/mcp-server/bulk` before `/tools/{tool_id}` to prevent 422 validation errors on older FastAPI versions.
-- **Other fixes** — LLM model temperature persistence, org_admin access to GitHub/ClawHub tokens, MCP tool import tenant scoping.
+### Redesigned Tool-Call Visualization (AnalysisCard)
 
-### UI / i18n
+The live chat view now shows agent reasoning and tool calls in a unified **AnalysisCard** that
+groups interleaved thinking and tool-call messages into one collapsible block. The card shows:
+- A pulse LED while the agent is running, turning green on completion
+- The currently-active tool name in collapsed state alongside tool-count badge
+- Individual `<details>` rows per tool for args and result (collapsed by default)
+- Italic thinking-content blocks inline for extended reasoning (deepthink) models
 
-- **Context Window Size terminology** — Corrected misleading "Max Rounds" / "Context Rounds" labels to industry-standard "Context Window Size" with accurate descriptions.
-- **MCP Server group header** — Displays hostname instead of full URL for cleaner display.
+### New File Management Tools
 
-## Upgrade Notes
+Three new built-in tools are available to all agents:
+- **`edit_file`** — targeted line-range edits without rewriting the entire file
+- **`search_files`** — substring or regex search across a workspace
+- **`find_files`** — glob-pattern file lookup
+- **`read_file`** now supports `offset` / `limit` for reading large files in pages
 
-This is a **drop-in upgrade** from v1.8.0-beta.2. No breaking changes.
+### Kubernetes Deployment (Helm Chart)
 
-- **No database migrations required**
-- **No new dependencies**
-- **No environment variable changes**
-- The new `execute_code_e2b` tool will be automatically created by the tool seeder on startup. It is **not** a default tool — agents will not have it unless explicitly added.
-- The existing `execute_code` tool's config schema will be auto-synced (the sandbox type dropdown is removed since it's now always "subprocess").
-
-### Docker Deployment
+A production-ready Helm chart is now included at `helm/clawith/`. Deploy Clawith on any
+Kubernetes cluster in one command:
 ```bash
+helm upgrade --install clawith helm/clawith/ -f values.yaml
+```
+
+### Security Fixes
+
+- **Cross-tenant data leak** — org member and department search was returning results across
+  tenant boundaries. Now strictly scoped to the requesting tenant. (#security)
+- **Platform admin token scope** — `platform_admin` role was not pinned to `tenant_id` in the
+  JWT, allowing cross-tenant privilege escalation. Fixed.
+- **Duplicate OrgMember shell** — channel users could create duplicate OrgMember rows on
+  reconnect. A uniqueness guard has been added.
+
+### Feishu Integration Reliability
+
+- **`feishu_doc_append` intermittent failures** — Markdown `---` dividers were converted to
+  `block_type: 22` which the Feishu batch-children API rejects. They now render as a text
+  separator line (`────────────────────────`), always accepted.
+- **`index: -1` removed** from the children API call — Feishu defaults to append-at-end when
+  `index` is omitted, avoiding `1770001 invalid param` errors.
+- **Stale `websocket_chat` import** — `feishu_doc_create` was trying to import
+  `channel_feishu_sender_open_id` from a deleted module, generating a visible warning. Fixed.
+- **Feishu streaming card stalls** — ordered patch queue now correctly processes streaming
+  updates for Feishu cards without stalling.
+- **Tool status stuck on "running"** — Feishu-channel tool status now correctly transitions
+  from `running` → `done` after tool completion.
+- **Added `wiki:wiki` permission** to the recommended Full permission set in channel config.
+
+### Admin Chat UI
+
+- **Read-only session viewer** — Admins viewing other users' sessions see a clear "Read-only ·
+  username" badge at top-left (fixed overlay, never scrolls away).
+- **Card border** — the entire chat area is now enclosed in a 12px-radius bordered card for
+  visual clarity.
+- **Optimistic relationship deletion** — relationship rows fade out immediately on delete (no wait).
+
+### Cross-Domain Tenant Switch
+
+The `?token=` query param is now consumed on app bootstrap, so users switching between tenant
+instances via a generated link land directly in the correct tenant without requiring a page reload.
+
+### i18n Improvements
+
+- All emoji removed from `en.json` and `zh.json` translation keys (project policy).
+- Hardcoded "Copy", "Upload", and several status strings now properly use `t()`.
+- New i18n key `agent.chat.analysing` for the AnalysisCard header.
+- Credential-related UI strings in zh.json completed.
+
+---
+
+## Upgrade Guide
+
+### No breaking changes. No database migrations required.
+
+#### Option A — Docker Compose
+
+```bash
+cd <clawith-dir>
 git pull origin main
 docker compose down && docker compose up -d --build
 ```
 
-### Source Deployment
+Or the rolling update (no downtime):
+
 ```bash
 git pull origin main
+
+# Frontend
+cd frontend && npm install && npm run build
+cp public/logo.png dist/ && cp public/logo.svg dist/
+cd dist && zip -r ../dist.zip . && cd ../..
+docker cp frontend/dist.zip clawith-frontend-1:/usr/share/nginx/html/dist.zip
+docker exec clawith-frontend-1 sh -c "cd /usr/share/nginx/html && unzip -o dist.zip"
+docker compose restart frontend
+
 # Backend
-pip install -r backend/requirements.txt  # no changes expected, but safe to run
-# Frontend (pre-built dist.zip is included)
-cd frontend && unzip -o dist.zip -d dist/
-# Restart services
+docker cp backend/app clawith-backend-1:/app/
+docker exec clawith-backend-1 find /app -name "__pycache__" -exec rm -rf {} + 2>/dev/null
+docker compose restart backend
 ```
+
+#### Option B — Source Deployment
+
+```bash
+git pull origin main
+cd frontend && npm install && npm run build
+cd ..
+# Restart backend process (e.g. supervisorctl restart clawith-backend)
+```
+
+#### Option C — Kubernetes (Helm)
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+```
+
+No Alembic migration is required for this release.
+
+---
+
+## Full Changelog
+
+See all commits since v1.8.0-beta.3:
+https://github.com/dataelement/Clawith/compare/v1.8.0-beta.3...v1.8.1

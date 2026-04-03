@@ -772,33 +772,48 @@ if (typeof document !== 'undefined' && !document.getElementById(_PULSE_STYLE_ID)
     document.head.appendChild(_s);
 }
 
+
 /**
- * AgentChatToolChain — controlled collapsible card for a group of tool_call messages.
+ * AnalysisCard — unified controlled collapsible card for all agent-internal processing.
  *
- * IMPORTANT: This component is CONTROLLED (expanded + onToggle from parent)
- * to avoid losing state when the parent re-renders during WS streaming.
- * Each sub-item in the expanded view is independently collapsible via <details>.
+ * Covers three scenarios:
+ *   - Thinking only (no tools): agent reasoned before answering directly
+ *   - Tools only: agent called tools without visible thinking
+ *   - Thinking + Tools: interleaved thinking and tool calls (most common)
+ *
+ * CONTROLLED component (expanded + onToggle from parent) to survive WS re-renders.
  */
-interface ToolCallItem { name: string; args: any; status: 'running' | 'done'; result?: string; }
-function AgentChatToolChain({
-    calls, t, expanded, onToggle,
+type AnalysisItem =
+    | { type: 'thinking'; content: string }
+    | { type: 'tool'; name: string; args: any; status: 'running' | 'done'; result?: string };
+
+function AnalysisCard({
+    items, t, expanded, onToggle, isGroupRunning,
 }: {
-    calls: ToolCallItem[];
+    items: AnalysisItem[];
     t: (k: string) => string;
     expanded: boolean;
     onToggle: () => void;
+    /** True when parent isWaiting/isStreaming AND this is the last active group */
+    isGroupRunning: boolean;
 }) {
-    const count = calls.length;
+    const toolItems = items.filter(i => i.type === 'tool') as Extract<AnalysisItem, { type: 'tool' }>[];
+    const thinkingItems = items.filter(i => i.type === 'thinking') as Extract<AnalysisItem, { type: 'thinking' }>[];
+    const hasTools = toolItems.length > 0;
+    const toolCount = toolItems.length;
 
-    // Last tool that is still running
-    const activeIdx = (() => {
-        for (let i = calls.length - 1; i >= 0; i--) {
-            if (calls[i].status === 'running') return i;
-        }
-        return -1;
-    })();
-    const isRunning = activeIdx >= 0;
-    const activeTool = isRunning ? calls[activeIdx] : null;
+    // Check if any tool is still running
+    const hasRunningTool = toolItems.some(tc => tc.status === 'running');
+    const isRunning = hasRunningTool || isGroupRunning;
+
+    // Last running tool name (displayed in header while active)
+    const runningTool = [...toolItems].reverse().find(tc => tc.status === 'running') ?? null;
+
+    // For collapsed thinking-only state: show a one-line preview of thinking content
+    const allThinkingText = thinkingItems.map(it => it.content).join(' ').trim();
+    const thinkingSummary = allThinkingText.length > 55
+        ? allThinkingText.slice(0, 55) + '…'
+        : allThinkingText;
 
     return (
         <div style={{ paddingLeft: '36px', marginBottom: '6px' }}>
@@ -810,7 +825,7 @@ function AgentChatToolChain({
                 overflow: 'hidden',
                 transition: 'border-color 0.3s ease',
             }}>
-                {/* ── Header toggle (calls parent onToggle, no internal state) ── */}
+                {/* ── Header toggle ── */}
                 <button
                     onClick={onToggle}
                     style={{
@@ -820,37 +835,48 @@ function AgentChatToolChain({
                         color: 'var(--accent-text, #818cf8)',
                     }}
                 >
-                    {/* Title + live tool indicator */}
-                    <span style={{ flex: 1, textAlign: 'left', display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
-                        <span style={{ fontWeight: 500, flexShrink: 0 }}>{t('agent.chat.toolCallChain')}</span>
-                        <span style={{ color: 'rgba(99,102,241,0.4)', flexShrink: 0 }}>·</span>
-                        {isRunning && activeTool ? (
-                            <>
-                                {/* Breathing LED dot */}
-                                <span className="cw-running-led" style={{
-                                    display: 'inline-block', width: '6px', height: '6px',
-                                    borderRadius: '50%', background: '#818cf8', flexShrink: 0,
-                                }} />
-                                {/* Active tool name */}
-                                <span style={{
-                                    fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#a5b4fc',
-                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                }}>{activeTool.name}</span>
-                            </>
-                        ) : (
+                    {/* Status indicator: pulse when running, static green when done */}
+                    {isRunning ? (
+                        <span className="cw-running-led" style={{
+                            display: 'inline-block', width: '6px', height: '6px',
+                            borderRadius: '50%', background: '#818cf8', flexShrink: 0,
+                        }} />
+                    ) : (
+                        <span style={{
+                            display: 'inline-block', width: '6px', height: '6px',
+                            borderRadius: '50%', background: '#22c55e', flexShrink: 0, opacity: 0.85,
+                        }} />
+                    )}
+
+                    {/* Title + contextual subtitle */}
+                    <span style={{ flex: 1, textAlign: 'left', display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 }}>
+                        <span style={{ fontWeight: 500, flexShrink: 0 }}>{t('agent.chat.analysing')}</span>
+                        <span style={{ color: 'rgba(99,102,241,0.35)', flexShrink: 0 }}>·</span>
+                        {isRunning ? (
+                            // Running: show current tool name, or 'Thinking...' if no active tool
                             <span style={{
-                                display: 'inline-block', width: '6px', height: '6px',
-                                borderRadius: '50%', background: '#22c55e', flexShrink: 0, opacity: 0.85,
-                            }} />
-                        )}
+                                fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#a5b4fc',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>
+                                {runningTool ? runningTool.name : t('agent.chat.thinking')}
+                            </span>
+                        ) : !hasTools && thinkingSummary ? (
+                            // Done + thinking only: single-line preview
+                            <span style={{
+                                fontSize: '11px', color: 'var(--text-tertiary)',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>{thinkingSummary}</span>
+                        ) : null}
                     </span>
 
-                    {/* Count badge */}
-                    <span style={{
-                        background: 'rgba(99,102,241,0.18)', color: '#818cf8',
-                        borderRadius: '10px', padding: '1px 7px',
-                        fontSize: '10px', fontWeight: 600, flexShrink: 0,
-                    }}>{count}</span>
+                    {/* Tool count badge (hidden when no tools) */}
+                    {toolCount > 0 && (
+                        <span style={{
+                            background: 'rgba(99,102,241,0.18)', color: '#818cf8',
+                            borderRadius: '10px', padding: '1px 7px',
+                            fontSize: '10px', fontWeight: 600, flexShrink: 0,
+                        }}>{toolCount}</span>
+                    )}
 
                     {/* Expand chevron */}
                     <span style={{
@@ -861,10 +887,10 @@ function AgentChatToolChain({
                     }}>▶</span>
                 </button>
 
-                {/* ── Collapsed: tool name pills with per-pill pulse dot ── */}
-                {!expanded && count > 0 && (
+                {/* ── Collapsed: tool name pills (only when tools present) ── */}
+                {!expanded && hasTools && (
                     <div style={{ padding: '0 10px 7px 10px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                        {calls.map((tc, i) => {
+                        {toolItems.map((tc, i) => {
                             const running = tc.status === 'running';
                             return (
                                 <span key={i} style={{
@@ -888,31 +914,48 @@ function AgentChatToolChain({
                     </div>
                 )}
 
-                {/* ── Expanded: each tool as its own <details> (native browser collapse) ── */}
+                {/* ── Expanded: all items in chronological order ── */}
                 {expanded && (
                     <div style={{ borderTop: '1px solid rgba(99,102,241,0.15)' }}>
-                        {calls.map((tc, i) => {
+                        {items.map((item, idx) => {
+                            if (item.type === 'thinking') {
+                                // Thinking block: plain italic text, scrollable
+                                return (
+                                    <div key={idx} style={{
+                                        padding: '8px 12px',
+                                        borderBottom: idx < items.length - 1 ? '1px solid rgba(99,102,241,0.08)' : 'none',
+                                        fontSize: '11px', lineHeight: '1.7',
+                                        color: 'var(--text-tertiary)',
+                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                        maxHeight: '200px', overflowY: 'auto',
+                                        fontStyle: 'italic',
+                                        background: 'rgba(147,130,220,0.04)',
+                                    }}>
+                                        {item.content}
+                                    </div>
+                                );
+                            }
+
+                            // Tool row: native <details> for per-item collapse
+                            const tc = item;
                             const running = tc.status === 'running';
                             const argsStr = tc.args && Object.keys(tc.args).length > 0
                                 ? JSON.stringify(tc.args, null, 2) : '';
                             const hasDetail = !!(argsStr || tc.result);
                             return (
                                 <details
-                                    key={i}
-                                    open={running} // auto-open running items
+                                    key={idx}
+                                    open={running}
                                     style={{
-                                        borderBottom: i < calls.length - 1 ? '1px solid rgba(99,102,241,0.10)' : 'none',
+                                        borderBottom: idx < items.length - 1 ? '1px solid rgba(99,102,241,0.10)' : 'none',
                                     }}
                                 >
-                                    {/* Summary row = tool name + status dot + chevron */}
-                                    <summary
-                                        style={{
-                                            padding: '7px 10px',
-                                            display: 'flex', alignItems: 'center', gap: '5px',
-                                            cursor: hasDetail ? 'pointer' : 'default',
-                                            listStyle: 'none', userSelect: 'none',
-                                        }}
-                                    >
+                                    <summary style={{
+                                        padding: '7px 10px',
+                                        display: 'flex', alignItems: 'center', gap: '5px',
+                                        cursor: hasDetail ? 'pointer' : 'default',
+                                        listStyle: 'none', userSelect: 'none',
+                                    }}>
                                         <span
                                             className={running ? 'cw-running-led' : undefined}
                                             style={{
@@ -922,19 +965,17 @@ function AgentChatToolChain({
                                                 flexShrink: 0,
                                             }}
                                         />
-                                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#818cf8', fontWeight: 600, flex: 1 }}>
-                                            {tc.name}
-                                        </span>
+                                        <span style={{
+                                            fontFamily: 'var(--font-mono)', fontSize: '11px',
+                                            color: '#818cf8', fontWeight: 600, flex: 1,
+                                        }}>{tc.name}</span>
                                         {running && (
                                             <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
                                                 {t('common.loading')}
                                             </span>
                                         )}
-                                        {hasDetail && (
-                                            <span style={{ fontSize: '9px', color: 'var(--text-tertiary)' }}>▶</span>
-                                        )}
+                                        {hasDetail && <span style={{ fontSize: '9px', color: 'var(--text-tertiary)' }}>▶</span>}
                                     </summary>
-                                    {/* Detail content: args + result */}
                                     {hasDetail && (
                                         <div style={{ padding: '0 10px 8px 20px' }}>
                                             {argsStr && (
@@ -968,6 +1009,13 @@ function AgentChatToolChain({
         </div>
     );
 }
+
+
+
+
+
+
+
 
 function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; readOnly?: boolean }) {
     const { t } = useTranslation();
@@ -4264,107 +4312,70 @@ function AgentDetailInner() {
                                                 </div>
                                             )}
                                             {(() => {
-                                                // Group consecutive tool_call messages into a single chain block.
-                                                // IMPORTANT: thinking-only assistant messages (no text content, only .thinking)
-                                                // do NOT break the current tool group — they are held and emitted in-order
-                                                // around the group without splitting it. Only non-empty assistant/user messages
-                                                // flush and close the current group.
-                                                type GroupEntry =
-                                                    | { type: 'tool_group'; calls: ToolCallItem[]; key: number }
+                                                // Build an interleaved AnalysisItem[] from consecutive thinking + tool_call
+                                                // messages. Only real content messages (user text, assistant with content)
+                                                // flush the current group and are rendered as normal chat bubbles.
+                                                type GroupedEntry =
+                                                    | { type: 'analysis_group'; items: AnalysisItem[]; key: number }
                                                     | { type: 'msg'; msg: any; i: number };
-                                                const grouped: GroupEntry[] = [];
-                                                let currentGroup: ToolCallItem[] | null = null;
+
+                                                const grouped: GroupedEntry[] = [];
+                                                let currentGroup: AnalysisItem[] | null = null;
                                                 let groupStartKey = 0;
-                                                // Pending thinking-only messages that arrived between tool calls but
-                                                // shouldn't split the group. Flushed before or after the group boundary.
-                                                const pendingThinking: GroupEntry[] = [];
 
                                                 const flushGroup = () => {
-                                                    if (currentGroup) {
-                                                        grouped.push({ type: 'tool_group', calls: currentGroup, key: groupStartKey });
+                                                    if (currentGroup && currentGroup.length > 0) {
+                                                        grouped.push({ type: 'analysis_group', items: currentGroup, key: groupStartKey });
                                                         currentGroup = null;
                                                     }
-                                                    // Flush any thinking items that followed the group
-                                                    pendingThinking.forEach(e => grouped.push(e));
-                                                    pendingThinking.length = 0;
                                                 };
 
                                                 for (let i = 0; i < chatMessages.length; i++) {
                                                     const msg = chatMessages[i];
                                                     if (msg.role === 'tool_call') {
-                                                        // Emit pending thinking items before we add to the group
-                                                        // (so they appear above the chain)
-                                                        if (pendingThinking.length > 0 && !currentGroup) {
-                                                            pendingThinking.forEach(e => grouped.push(e));
-                                                            pendingThinking.length = 0;
-                                                        } else {
-                                                            // Clear pending: they'll be flushed after the group
-                                                        }
-                                                        const item: ToolCallItem = {
+                                                        // Start a new group at the first tool_call if none open
+                                                        if (!currentGroup) { currentGroup = []; groupStartKey = i; }
+                                                        currentGroup.push({
+                                                            type: 'tool',
                                                             name: msg.toolName || 'tool',
                                                             args: msg.toolArgs || {},
                                                             status: msg.toolStatus === 'running' ? 'running' : 'done',
                                                             result: msg.toolResult || undefined,
-                                                        };
-                                                        if (!currentGroup) {
-                                                            currentGroup = [item];
-                                                            groupStartKey = i;
-                                                        } else {
-                                                            currentGroup.push(item);
-                                                        }
+                                                        });
                                                     } else if (msg.role === 'assistant' && !msg.content?.trim() && msg.thinking) {
-                                                        // Thinking-only message: buffer it, don't break the tool group
-                                                        pendingThinking.push({ type: 'msg', msg, i });
+                                                        // Thinking-only message: also part of the analysis group
+                                                        if (!currentGroup) { currentGroup = []; groupStartKey = i; }
+                                                        currentGroup.push({ type: 'thinking', content: msg.thinking });
                                                     } else {
-                                                        // Real content: flush tool group and all buffered thinking
+                                                        // Real content (user message or assistant with text): flush and emit
                                                         flushGroup();
                                                         grouped.push({ type: 'msg', msg, i });
                                                     }
                                                 }
-                                                // Flush any trailing group + thinking
-                                                flushGroup();
+                                                flushGroup(); // flush any trailing group
 
-                                                return grouped.map((entry) => {
-                                                    if (entry.type === 'tool_group') {
+                                                return grouped.map((entry, entryIdx) => {
+                                                    if (entry.type === 'analysis_group') {
+                                                        // Group is considered running if it has a running tool,
+                                                        // or if it's the very last entry and the agent is still active
+                                                        const isLastEntry = entryIdx === grouped.length - 1;
+                                                        const hasRunningTool = entry.items.some(
+                                                            it => it.type === 'tool' && it.status === 'running'
+                                                        );
+                                                        const groupIsRunning = hasRunningTool || (isLastEntry && (isWaiting || isStreaming));
                                                         return (
-                                                            <AgentChatToolChain
-                                                                key={`tg-${entry.key}`}
-                                                                calls={entry.calls}
+                                                            <AnalysisCard
+                                                                key={`ag-${entry.key}`}
+                                                                items={entry.items}
                                                                 t={t}
                                                                 expanded={!!toolGroupExpandedRef.current.get(entry.key)}
                                                                 onToggle={() => toggleToolGroup(entry.key)}
+                                                                isGroupRunning={groupIsRunning}
                                                             />
                                                         );
                                                     }
                                                     const { msg, i } = entry;
-                                                    {/* Thinking-only or empty assistant message */}
-                                                    if (msg.role === 'assistant' && !msg.content?.trim()) {
-                                                        if (msg.thinking) {
-                                                            return (
-                                                                <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-                                                                    <details style={{
-                                                                        fontSize: '12px',
-                                                                        background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
-                                                                        border: '1px solid rgba(147, 130, 220, 0.15)',
-                                                                    }}>
-                                                                        <summary style={{
-                                                                            padding: '6px 10px', cursor: 'pointer',
-                                                                            color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
-                                                                            userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
-                                                                        }}>Thinking</summary>
-                                                                        <div style={{
-                                                                            padding: '4px 10px 8px',
-                                                                            fontSize: '12px', lineHeight: '1.6',
-                                                                            color: 'var(--text-secondary)',
-                                                                            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                                                            maxHeight: '300px', overflow: 'auto',
-                                                                        }}>{msg.thinking}</div>
-                                                                    </details>
-                                                                </div>
-                                                            );
-                                                        }
-                                                        return null;
-                                                    }
+                                                    // All remaining messages have real content; render as chat bubbles
                                                     return (
                                                         <ChatMessageItem
                                                             key={i}
@@ -4377,7 +4388,8 @@ function AgentDetailInner() {
                                                         />
                                                     );
                                                 });
-                                            })()}
+                                            })()
+                                            }
                                             {isWaiting && (
                                                 <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
                                                     <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
