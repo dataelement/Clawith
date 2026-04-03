@@ -42,6 +42,8 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     for perm in permissions:
         if perm.scope_type == "company":
             return agent, perm.access_level or "use"
+        if perm.scope_type == "team" and perm.scope_id == user.id:
+            return agent, perm.access_level or "use"
         if perm.scope_type == "user" and perm.scope_id == user.id:
             return agent, perm.access_level or "use"
 

@@ -38,7 +38,8 @@ class UserOut(BaseModel):
     agents_count: int = 0
     # Source info
     created_at: str | None = None
-    source: str = 'registered'  # 'registered' | 'feishu'
+    # Format: 'registered' | 'channel:wechat' | 'channel:feishu' | 'channel:dingtalk' etc.
+    source: str = 'registered'
 
     model_config = {"from_attributes": True}
 

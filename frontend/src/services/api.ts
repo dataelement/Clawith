@@ -364,6 +364,14 @@ export const enterpriseApi = {
         }),
 };
 
+// ─── Organization ──────────────────────────────────────
+export const organizationApi = {
+    users: () => {
+        const tid = localStorage.getItem('current_tenant_id');
+        return request<any[]>(`/org/users${tid ? `?tenant_id=${tid}` : ''}`);
+    },
+};
+
 // ─── Activity Logs ────────────────────────────────────
 export const activityApi = {
     list: (agentId: string, limit = 50) =>

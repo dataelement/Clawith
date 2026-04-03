@@ -11,6 +11,7 @@ export default function CompanySetup() {
     const { user, setAuth, logout } = useAuthStore();
     const [allowCreate, setAllowCreate] = useState(true);
     const [loading, setLoading] = useState(false);
+    const [submitted, setSubmitted] = useState(false);
     const [error, setError] = useState('');
 
     // Check if coming from registration flow.
@@ -44,6 +45,18 @@ export default function CompanySetup() {
         }
     }, [user, navigate, fromRegister, fromTenantSelection]);
 
+    // Auto-redirect after successful submission if user refreshes or navigates back
+    useEffect(() => {
+        if (submitted && user?.tenant_id) {
+            // User has already been assigned a company, redirect to appropriate page
+            if (fromRegister) {
+                navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true }, replace: true });
+            } else {
+                navigate('/', { replace: true });
+            }
+        }
+    }, [submitted, user, fromRegister, navigate]);
+
     const refreshUser = async () => {
         try {
             const me = await authApi.me();
@@ -55,14 +68,23 @@ export default function CompanySetup() {
 
     const handleJoin = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (submitted) return;
         setError('');
         setLoading(true);
         try {
-            await tenantApi.join(inviteCode);
+            const result = await tenantApi.join(inviteCode);
+            setSubmitted(true);
+
+            // Update auth state with new token if provided (multi-tenant switch)
+            if (result.access_token && user) {
+                // Create updated user object with new tenant info
+                const updatedUser = { ...user, tenant_id: result.tenant.id, role: result.role };
+                setAuth(updatedUser, result.access_token);
+            }
 
             if (fromRegister) {
-                // In registration flow: go to verify email
-                navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
+                // In registration flow: force full page reload to home page
+                window.location.href = '/';
             } else {
                 // Normal flow: refresh user and go home
                 await refreshUser();
@@ -70,21 +92,29 @@ export default function CompanySetup() {
             }
         } catch (err: any) {
             setError(err.message || 'Failed to join company');
-        } finally {
             setLoading(false);
         }
     };
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (submitted) return;
         setError('');
         setLoading(true);
         try {
-            await tenantApi.selfCreate({ name: companyName });
+            const result = await tenantApi.selfCreate({ name: companyName });
+            setSubmitted(true);
+
+            // Update auth state with new token if provided (multi-tenant switch)
+            if (result.access_token && user) {
+                // Create updated user object with new tenant info
+                const updatedUser = { ...user, tenant_id: result.tenant.id };
+                setAuth(updatedUser, result.access_token);
+            }
 
             if (fromRegister) {
-                // In registration flow: go to verify email
-                navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
+                // In registration flow: force full page reload to home page
+                window.location.href = '/';
             } else {
                 // Normal flow: refresh user and go to Enterprise Settings
                 await refreshUser();
@@ -92,7 +122,6 @@ export default function CompanySetup() {
             }
         } catch (err: any) {
             setError(err.message || 'Failed to create company');
-        } finally {
             setLoading(false);
         }
     };
@@ -158,11 +187,12 @@ export default function CompanySetup() {
                                 value={inviteCode}
                                 onChange={(e) => setInviteCode(e.target.value)}
                                 required
+                                disabled={submitted}
                                 placeholder={t('companySetup.inviteCodePlaceholder', 'e.g. ABC12345')}
                                 style={{ textTransform: 'uppercase', letterSpacing: '2px', fontFamily: 'monospace' }}
                             />
                         </div>
-                        <button className="login-submit" type="submit" disabled={loading || !inviteCode}>
+                        <button className="login-submit" type="submit" disabled={loading || submitted || !inviteCode}>
                             {loading ? <span className="login-spinner" /> : t('companySetup.joinBtn', 'Join Company')}
                         </button>
                     </form>
@@ -190,10 +220,11 @@ export default function CompanySetup() {
                                         value={companyName}
                                         onChange={(e) => setCompanyName(e.target.value)}
                                         required
+                                        disabled={submitted}
                                         placeholder={t('companySetup.companyNamePlaceholder', 'e.g. Acme Inc.')}
                                     />
                                 </div>
-                                <button className="login-submit" type="submit" disabled={loading || !companyName}>
+                                <button className="login-submit" type="submit" disabled={loading || submitted || !companyName}>
                                     {loading ? <span className="login-spinner" /> : t('companySetup.createBtn', 'Create Company')}
                                 </button>
                             </form>

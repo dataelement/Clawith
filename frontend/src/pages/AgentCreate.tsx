@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { agentApi, channelApi, enterpriseApi, skillApi } from '../services/api';
+import { agentApi, channelApi, enterpriseApi, skillApi, organizationApi } from '../services/api';
 import ChannelConfig from '../components/ChannelConfig';
 import LinearCopyButton from '../components/LinearCopyButton';
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
@@ -80,6 +80,7 @@ export default function AgentCreate() {
         primary_model_id: '' as string,
         fallback_model_id: '' as string,
         permission_scope_type: 'company',
+        permission_scope_ids: [] as string[],
         permission_access_level: 'use',
         template_id: '' as string,
         max_tokens_per_day: '',
@@ -98,6 +99,12 @@ export default function AgentCreate() {
     const { data: templates = [] } = useQuery({
         queryKey: ['templates'],
         queryFn: enterpriseApi.templates,
+    });
+
+    // Fetch users for team visibility
+    const { data: users = [] } = useQuery({
+        queryKey: ['users'],
+        queryFn: organizationApi.users,
     });
 
     // Fetch global skills for step 3
@@ -260,6 +267,7 @@ export default function AgentCreate() {
             fallback_model_id: agentType === 'native' ? (form.fallback_model_id || undefined) : undefined,
             template_id: form.template_id || undefined,
             permission_scope_type: form.permission_scope_type,
+            permission_scope_ids: form.permission_scope_type === 'team' ? form.permission_scope_ids : undefined,
             max_tokens_per_day: form.max_tokens_per_day ? Number(form.max_tokens_per_day) : undefined,
             max_tokens_per_month: form.max_tokens_per_month ? Number(form.max_tokens_per_month) : undefined,
             skill_ids: agentType === 'native' ? form.skill_ids : [],
@@ -481,6 +489,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                         <div style={{ display: 'flex', gap: '8px' }}>
                             {[
                                 { value: 'company', label: t('wizard.step4.companyWide'), desc: t('wizard.step4.companyWideDesc') },
+                                { value: 'team', label: t('wizard.step4.teamVisible'), desc: t('wizard.step4.teamVisibleDesc') },
                                 { value: 'user', label: t('wizard.step4.selfOnly'), desc: t('wizard.step4.selfOnlyDesc') },
                             ].map((scope) => (
                                 <label key={scope.value} style={{
@@ -490,7 +499,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                     borderRadius: '8px', cursor: 'pointer',
                                 }}>
                                     <input type="radio" name="scope" checked={form.permission_scope_type === scope.value}
-                                        onChange={() => setForm({ ...form, permission_scope_type: scope.value })} />
+                                        onChange={() => setForm({ ...form, permission_scope_type: scope.value, permission_scope_ids: [] })} />
                                     <div>
                                         <div style={{ fontWeight: 500, fontSize: '13px' }}>{scope.label}</div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{scope.desc}</div>
@@ -498,6 +507,42 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                 </label>
                             ))}
                         </div>
+
+                        {/* Team member selector */}
+                        {form.permission_scope_type === 'team' && (
+                            <div style={{ marginTop: '16px' }}>
+                                <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
+                                    {t('wizard.step4.selectTeamMembers')}
+                                </label>
+                                <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid var(--border-default)', borderRadius: '8px', padding: '8px' }}>
+                                    {users.filter((u: any) => {
+                                        const currentUser = localStorage.getItem('user');
+                                        const currentUserId = currentUser ? JSON.parse(currentUser).id : null;
+                                        return u.id !== currentUserId;
+                                    }).map((u: any) => (
+                                        <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', cursor: 'pointer' }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={form.permission_scope_ids.includes(u.id)}
+                                                onChange={(e) => {
+                                                    if (e.target.checked) {
+                                                        setForm({ ...form, permission_scope_ids: [...form.permission_scope_ids, u.id] });
+                                                    } else {
+                                                        setForm({ ...form, permission_scope_ids: form.permission_scope_ids.filter((id: string) => id !== u.id) });
+                                                    }
+                                                }}
+                                            />
+                                            <span style={{ fontSize: '13px' }}>{u.display_name || u.username}</span>
+                                        </label>
+                                    ))}
+                                    {users.length <= 1 && (
+                                        <div style={{ padding: '8px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                            {t('common.noData', 'No other users available')}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Actions */}
@@ -760,6 +805,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
                             {[
                                 { value: 'company', label: t('wizard.step4.companyWide'), desc: t('wizard.step4.companyWideDesc') },
+                                { value: 'team', label: t('wizard.step4.teamVisible'), desc: t('wizard.step4.teamVisibleDesc') },
                                 { value: 'user', label: t('wizard.step4.selfOnly'), desc: t('wizard.step4.selfOnlyDesc') },
                             ].map((scope) => (
                                 <label key={scope.value} style={{
@@ -769,7 +815,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                     borderRadius: '8px', cursor: 'pointer',
                                 }}>
                                     <input type="radio" name="scope" checked={form.permission_scope_type === scope.value}
-                                        onChange={() => setForm({ ...form, permission_scope_type: scope.value })} />
+                                        onChange={() => setForm({ ...form, permission_scope_type: scope.value, permission_scope_ids: [] })} />
 
                                     <div>
                                         <div style={{ fontWeight: 500, fontSize: '13px' }}>{scope.label}</div>
@@ -778,6 +824,42 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                 </label>
                             ))}
                         </div>
+
+                        {/* Team member selector */}
+                        {form.permission_scope_type === 'team' && (
+                            <div style={{ marginBottom: '20px' }}>
+                                <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
+                                    {t('wizard.step4.selectTeamMembers')}
+                                </label>
+                                <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid var(--border-default)', borderRadius: '8px', padding: '8px' }}>
+                                    {users.filter((u: any) => {
+                                        const currentUser = localStorage.getItem('user');
+                                        const currentUserId = currentUser ? JSON.parse(currentUser).id : null;
+                                        return u.id !== currentUserId;
+                                    }).map((u: any) => (
+                                        <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', cursor: 'pointer' }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={form.permission_scope_ids.includes(u.id)}
+                                                onChange={(e) => {
+                                                    if (e.target.checked) {
+                                                        setForm({ ...form, permission_scope_ids: [...form.permission_scope_ids, u.id] });
+                                                    } else {
+                                                        setForm({ ...form, permission_scope_ids: form.permission_scope_ids.filter((id: string) => id !== u.id) });
+                                                    }
+                                                }}
+                                            />
+                                            <span style={{ fontSize: '13px' }}>{u.display_name || u.username}</span>
+                                        </label>
+                                    ))}
+                                    {users.length <= 1 && (
+                                        <div style={{ padding: '8px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                            {t('common.noData', 'No other users available')}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
 
                         {/* Access Level — only for company scope */}
                         {form.permission_scope_type === 'company' && (

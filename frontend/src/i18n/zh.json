@@ -511,6 +511,9 @@
         "description": "控制谁可以查看和与这个数字员工互动。只有创建者或管理员可以更改此设置。",
         "companyWide": "全公司",
         "companyWideDesc": "组织中的所有用户都可以使用此数字员工",
+        "teamVisible": "团队可见",
+        "teamVisibleDesc": "仅创建者和被授权的团队成员可使用",
+        "selectTeamMembers": "选择团队成员",
         "onlyMe": "仅我可见",
         "onlyMeDesc": "只有创建者可以使用此数字员工",
         "defaultAccess": "默认访问级别",
@@ -904,6 +907,9 @@
       "title": "权限设置",
       "companyWide": "全公司可见",
       "companyWideDesc": "所有人都可以使用此数字员工",
+      "teamVisible": "团队可见",
+      "teamVisibleDesc": "仅创建者和被授权的团队成员可使用",
+      "selectTeamMembers": "选择团队成员",
       "department": "指定部门",
       "departmentDesc": "仅选定部门成员可使用",
       "selfOnly": "仅自己",
@@ -1741,10 +1747,9 @@
       "ws_note": "WebSocket 长连接模式无需公网 IP、回调地址或域名备案（ICP），连接由系统自动管理。"
     },
     "wechat": {
-      "step1": "确保 wechat-gateway 服务已启动（Docker 容器或本地运行）",
-      "step2": "点击「扫码登录微信」按钮，将弹出一个包含二维码的窗口",
-      "step3": "打开手机微信，扫描二维码并确认登录",
-      "step4": "登录成功后，该 Agent 将自动接收并回复发送给此微信账号的消息",
+      "step1": "点击「扫码登录微信」按钮，将弹出一个包含二维码的窗口",
+      "step2": "打开手机微信，扫描二维码并确认登录",
+      "step3": "登录成功后，该 Agent 将自动接收并回复发送给此微信账号的消息",
       "note": "个人微信通过 iLink 协议连接，无需注册开发者账号。登录凭证安全存储在服务器本地。"
     },
     "agentbay": {

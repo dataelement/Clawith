@@ -138,6 +138,13 @@ async def self_create_company(
         access_token = create_access_token(str(new_user.id), new_user.role)
     else:
         # Registration flow: user has no tenant yet, assign directly
+        # Prevent race condition: double-check user still has no tenant
+        await db.refresh(current_user)
+        if current_user.tenant_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="You have already been assigned to a company. Please refresh the page."
+            )
         current_user.tenant_id = tenant.id
         current_user.role = "org_admin" if current_user.role == "member" else current_user.role
         # Inherit quota defaults from new tenant
@@ -146,6 +153,8 @@ async def self_create_company(
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         await db.flush()
+        # Refresh to ensure in-memory object reflects the changes
+        await db.refresh(current_user)
 
     return SelfCreateResponse(
         tenant=TenantOut.model_validate(tenant),
@@ -261,6 +270,13 @@ async def join_company(
         final_role = new_user.role
     else:
         # Registration flow: user has no tenant yet, assign directly
+        # Prevent race condition: double-check user still has no tenant
+        await db.refresh(current_user)
+        if current_user.tenant_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="You have already been assigned to a company. Please refresh the page."
+            )
         current_user.tenant_id = tenant.id
         if current_user.role == "member":
             current_user.role = assigned_role
@@ -270,6 +286,8 @@ async def join_company(
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         final_role = current_user.role
+        # Refresh to ensure in-memory object reflects the changes
+        await db.refresh(current_user)
 
     # Increment invitation code usage
     code_obj.used_count += 1

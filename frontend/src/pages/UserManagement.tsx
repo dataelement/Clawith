@@ -335,15 +335,41 @@ export default function UserManagement() {
                                     )}
                                 </div>
                                 <div>
-                                    {user.source === 'feishu' ? (
-                                        <span style={{ fontSize: '10px', background: 'rgba(58,132,255,0.12)', color: '#3a84ff', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
-                                            飞书
-                                        </span>
-                                    ) : (
-                                        <span style={{ fontSize: '10px', background: 'rgba(0,180,120,0.12)', color: 'var(--success)', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
-                                            {isChinese ? '注册' : 'Reg'}
-                                        </span>
-                                    )}
+                                    {(() => {
+                                        const source = user.source || '';
+                                        // Handle "channel:xxx" format for channel users
+                                        if (source.startsWith('channel:')) {
+                                            const channel = source.replace('channel:', '');
+                                            const channelLabels: Record<string, { label: string; labelZh: string; bg: string; color: string }> = {
+                                                wechat: { label: 'WeChat', labelZh: '微信', bg: 'rgba(16,185,129,0.12)', color: '#10b981' },
+                                                feishu: { label: 'Feishu', labelZh: '飞书', bg: 'rgba(58,132,255,0.12)', color: '#3a84ff' },
+                                                dingtalk: { label: 'DingTalk', labelZh: '钉钉', bg: 'rgba(16,185,129,0.12)', color: '#10b981' },
+                                                wecom: { label: 'WeCom', labelZh: '企微', bg: 'rgba(245,158,11,0.12)', color: '#f59e0b' },
+                                                slack: { label: 'Slack', labelZh: 'Slack', bg: 'rgba(236,72,153,0.12)', color: '#ec4899' },
+                                                discord: { label: 'Discord', labelZh: 'Discord', bg: 'rgba(99,102,241,0.12)', color: '#6366f1' },
+                                            };
+                                            const info = channelLabels[channel] || { label: channel, labelZh: channel, bg: 'rgba(107,114,128,0.12)', color: '#6b7280' };
+                                            return (
+                                                <span style={{ fontSize: '10px', background: info.bg, color: info.color, borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                                                    {isChinese ? `${info.labelZh}渠道` : info.label}
+                                                </span>
+                                            );
+                                        }
+                                        // Legacy format (e.g., "feishu" without prefix)
+                                        if (source === 'feishu') {
+                                            return (
+                                                <span style={{ fontSize: '10px', background: 'rgba(58,132,255,0.12)', color: '#3a84ff', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                                                    {isChinese ? '飞书渠道' : 'Feishu'}
+                                                </span>
+                                            );
+                                        }
+                                        // Default: direct registration
+                                        return (
+                                            <span style={{ fontSize: '10px', background: 'rgba(0,180,120,0.12)', color: 'var(--success)', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                                                {isChinese ? '注册' : 'Reg'}
+                                            </span>
+                                        );
+                                    })()}
                                 </div>
                                 <div>
                                     <span style={{ fontSize: '13px', fontWeight: 500 }}>{user.quota_messages_used}</span>

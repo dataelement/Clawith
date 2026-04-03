@@ -12,7 +12,7 @@ import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import AgentCredentials from '../components/AgentCredentials';
-import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
+import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, organizationApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
@@ -2082,6 +2082,24 @@ function AgentDetailInner() {
         queryFn: () => fetchAuth<any>(`/agents/${id}/permissions`),
         enabled: !!id && activeTab === 'settings',
     });
+
+    // ─── Users for team selection ───────────────────────
+    const { data: users = [] } = useQuery({
+        queryKey: ['organization-users'],
+        queryFn: () => organizationApi.users(),
+        enabled: !!id && activeTab === 'settings',
+    });
+
+    const [selectedTeamMembers, setSelectedTeamMembers] = useState<string[]>([]);
+
+    // Sync selected members with permData
+    useEffect(() => {
+        if (permData?.scope_type === 'team' && permData?.scope_ids) {
+            setSelectedTeamMembers(permData.scope_ids);
+        } else {
+            setSelectedTeamMembers([]);
+        }
+    }, [permData]);
 
     // ─── Soul editor ─────────────────────────────────────
     const [soulEditing, setSoulEditing] = useState(false);
@@ -4589,15 +4607,29 @@ function AgentDetailInner() {
                                 {(() => {
                                     const scopeLabels: Record<string, string> = {
                                         company: '🏢 ' + t('agent.settings.perm.companyWide', 'Company-wide'),
+                                        team: '👥 ' + t('agent.settings.perm.teamVisible', 'Team'),
                                         user: '👤 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
                                     };
 
                                     const handleScopeChange = async (newScope: string) => {
                                         try {
+                                            // For team scope, use selected members; for others, use empty array
+                                            let scopeIds: string[] = [];
+                                            if (newScope === 'team') {
+                                                // If switching to team and no members selected, add current user
+                                                scopeIds = selectedTeamMembers.length > 0
+                                                    ? selectedTeamMembers
+                                                    : (currentUser?.id ? [currentUser.id] : []);
+                                            }
+
                                             await fetchAuth(`/agents/${id}/permissions`, {
                                                 method: 'PUT',
                                                 headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ scope_type: newScope, scope_ids: [], access_level: permData?.access_level || 'use' }),
+                                                body: JSON.stringify({
+                                                    scope_type: newScope,
+                                                    scope_ids: scopeIds,
+                                                    access_level: permData?.access_level || 'use'
+                                                }),
                                             });
                                             queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
                                             queryClient.invalidateQueries({ queryKey: ['agent', id] });
@@ -4633,7 +4665,7 @@ function AgentDetailInner() {
 
                                             {/* Scope Selection */}
                                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-                                                {(['company', 'user'] as const).map((scope) => (
+                                                {(['company', 'team', 'user'] as const).map((scope) => (
                                                     <label
                                                         key={scope}
                                                         style={{
@@ -4665,12 +4697,81 @@ function AgentDetailInner() {
                                                             <div style={{ fontWeight: 500, fontSize: '13px' }}>{scopeLabels[scope]}</div>
                                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                                                                 {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
+                                                                {scope === 'team' && t('agent.settings.perm.teamVisibleDesc', 'Only creator and authorized team members can use this agent')}
                                                                 {scope === 'user' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
                                                             </div>
                                                         </div>
                                                     </label>
                                                 ))}
                                             </div>
+
+                                            {/* Team member selector */}
+                                            {currentScope === 'team' && isOwner && (
+                                                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
+                                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
+                                                        {t('agent.settings.perm.selectTeamMembers', 'Select Team Members')}
+                                                    </label>
+                                                    <div style={{
+                                                        maxHeight: '200px',
+                                                        overflowY: 'auto',
+                                                        border: '1px solid var(--border-default)',
+                                                        borderRadius: '8px',
+                                                        padding: '8px',
+                                                        background: 'var(--bg-elevated)'
+                                                    }}>
+                                                        {users.filter((u: any) => u.id !== currentUser?.id).map((u: any) => (
+                                                            <label key={u.id} style={{
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                gap: '8px',
+                                                                padding: '6px 8px',
+                                                                cursor: 'pointer',
+                                                                borderRadius: '4px',
+                                                            }}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={selectedTeamMembers.includes(u.id)}
+                                                                    onChange={(e) => {
+                                                                        if (e.target.checked) {
+                                                                            setSelectedTeamMembers([...selectedTeamMembers, u.id]);
+                                                                        } else {
+                                                                            setSelectedTeamMembers(selectedTeamMembers.filter((id: string) => id !== u.id));
+                                                                        }
+                                                                    }}
+                                                                />
+                                                                <span style={{ fontSize: '13px' }}>{u.display_name || u.username}</span>
+                                                            </label>
+                                                        ))}
+                                                        {users.length <= 1 && (
+                                                            <div style={{ padding: '8px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                                                {t('common.noData', 'No other users available')}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <button
+                                                        className="btn btn-secondary"
+                                                        style={{ marginTop: '8px', fontSize: '12px', padding: '6px 12px' }}
+                                                        onClick={async () => {
+                                                            try {
+                                                                await fetchAuth(`/agents/${id}/permissions`, {
+                                                                    method: 'PUT',
+                                                                    headers: { 'Content-Type': 'application/json' },
+                                                                    body: JSON.stringify({
+                                                                        scope_type: 'team',
+                                                                        scope_ids: selectedTeamMembers.length > 0 ? selectedTeamMembers : [currentUser?.id].filter(Boolean),
+                                                                        access_level: permData?.access_level || 'use'
+                                                                    }),
+                                                                });
+                                                                queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
+                                                            } catch (e) {
+                                                                console.error('Failed to update team members', e);
+                                                            }
+                                                        }}
+                                                    >
+                                                        {t('common.save', 'Save')}
+                                                    </button>
+                                                </div>
+                                            )}
 
                                             {/* Access Level for company scope */}
                                             {currentScope === 'company' && isOwner && (

@@ -3,15 +3,20 @@
 This module implements the WeChat channel for Clawith, enabling each agent
 to interact with users via personal WeChat through the wechatbot SDK.
 
-Architecture:
-    Python Backend <--HTTP--> Node.js Gateway <--iLink--> WeChat
+Architecture (Python SDK Integration):
+    Python Backend (FastAPI)
+           │
+           ├── WeChatBotManager
+           │        │
+           │        └── WeChatBot (SDK) ──► WeChat iLink API
 
-The Node.js gateway service manages WeChat connections and forwards
-messages to this Python backend for LLM processing.
+Each agent can have its own WeChat bot instance with independent credentials.
 """
 
 import os
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -26,6 +31,10 @@ from app.database import get_db
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
+from app.services.agent_tools import WORKSPACE_ROOT, channel_file_sender
+from app.services.channel_session import find_or_create_channel_session
+from app.services.channel_user_service import channel_user_service
+from app.services.wechatbot.types import MediaExtensions, WeChatConstants
 
 router = APIRouter(tags=["wechat"])
 
@@ -41,6 +50,7 @@ class WeChatConfigResponse(BaseModel):
     extra_config: dict | None = None
     qr_url: str | None = None
     error: str | None = None
+    is_logged_in: bool | None = None
 
     model_config = {"from_attributes": True}
 
@@ -58,74 +68,91 @@ async def configure_wechat_channel(
 ):
     """Configure WeChat personal channel for an agent.
 
-    The configuration initiates a QR login flow handled by the Node.js gateway.
-    After scanning the QR code, the gateway stores credentials and starts polling.
+    The configuration initiates a QR login flow. After scanning the QR code,
+    the bot stores credentials and starts polling for messages.
 
     Request body (optional):
         - storage_dir: Custom directory for credential storage
         - auto_reconnect: Enable automatic reconnection on session expiry (default: true)
+        - force: Force re-login even if already logged in
 
     Returns:
         - is_configured: Whether the channel is configured
         - qr_url: QR code URL for WeChat login (scan with WeChat app)
     """
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can configure channel")
+    try:
+        agent, _ = await check_agent_access(db, current_user, agent_id)
+        if not is_agent_creator(current_user, agent):
+            raise HTTPException(status_code=403, detail="Only creator can configure channel")
 
-    storage_dir = data.get("storage_dir", "").strip()
-    auto_reconnect = data.get("auto_reconnect", True)
-    force_login = data.get("force", False)
+        storage_dir = data.get("storage_dir", "").strip()
+        auto_reconnect = data.get("auto_reconnect", True)
+        force_login = data.get("force", False)
 
-    extra_config = {
-        "storage_dir": storage_dir,
-        "auto_reconnect": auto_reconnect,
-        "connection_mode": "gateway",
-    }
+        extra_config = {
+            "storage_dir": storage_dir,
+            "auto_reconnect": auto_reconnect,
+            "connection_mode": "python_sdk",
+        }
 
-    # Check for existing config
-    result = await db.execute(
-        select(ChannelConfig).where(
-            ChannelConfig.agent_id == agent_id,
-            ChannelConfig.channel_type == "wechat",
+        # Check for existing config
+        result = await db.execute(
+            select(ChannelConfig).where(
+                ChannelConfig.agent_id == agent_id,
+                ChannelConfig.channel_type == "wechat",
+            )
         )
-    )
-    existing = result.scalar_one_or_none()
+        existing = result.scalar_one_or_none()
 
-    if existing:
-        existing.extra_config = extra_config
-        existing.is_configured = True
-        await db.flush()
-        config = existing
-    else:
-        config = ChannelConfig(
-            agent_id=agent_id,
-            channel_type="wechat",
-            extra_config=extra_config,
-            is_configured=True,
+        if existing:
+            existing.extra_config = extra_config
+            existing.is_configured = True
+            await db.flush()
+            config = existing
+        else:
+            config = ChannelConfig(
+                agent_id=agent_id,
+                channel_type="wechat",
+                extra_config=extra_config,
+                is_configured=True,
+            )
+            db.add(config)
+            await db.flush()
+
+        await db.commit()
+
+        # Initiate login via Python SDK
+        logger.info(f"[WeChat] Initiating login for agent {agent_id}, force={force_login}")
+        from app.services.wechat_bot_manager import wechat_bot_manager
+        qr_url, error_msg = await wechat_bot_manager.initiate_login(agent_id, storage_dir, force=force_login)
+
+        # Get login status
+        status = await wechat_bot_manager.get_status(agent_id)
+        is_logged_in = status.get("is_logged_in", False)
+
+        if error_msg:
+            logger.warning(f"[WeChat] Failed to initiate login for agent {agent_id}: {error_msg}")
+        elif not qr_url:
+            logger.info(f"[WeChat] Login not needed or already logged in for agent {agent_id}")
+        else:
+            logger.info(f"[WeChat] QR code ready for agent {agent_id}")
+
+        return WeChatConfigResponse(
+            id=config.id,
+            agent_id=config.agent_id,
+            channel_type=config.channel_type,
+            is_configured=config.is_configured,
+            extra_config=config.extra_config,
+            qr_url=qr_url,
+            error=error_msg,
+            is_logged_in=is_logged_in,
         )
-        db.add(config)
-        await db.flush()
 
-    # Request QR login from Node.js gateway
-    from app.services.wechat_gateway import wechat_gateway_manager
-    qr_url, error_msg = await wechat_gateway_manager.initiate_login(agent_id, storage_dir, force=force_login)
-
-    if error_msg:
-        logger.warning(f"[WeChat] Failed to initiate login for agent {agent_id}: {error_msg}")
-    elif not qr_url:
-        logger.info(f"[WeChat] Login not needed or already logged in for agent {agent_id}")
-
-    # Return config with qr_url for frontend to display
-    return WeChatConfigResponse(
-        id=config.id,
-        agent_id=config.agent_id,
-        channel_type=config.channel_type,
-        is_configured=config.is_configured,
-        extra_config=config.extra_config,
-        qr_url=qr_url,
-        error=error_msg,
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[WeChat] Error configuring channel for agent {agent_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"WeChat login failed: {str(e)}") from e
 
 
 @router.get("/agents/{agent_id}/wechat-channel", response_model=ChannelConfigOut)
@@ -163,8 +190,8 @@ async def get_wechat_channel_status(
     """
     await check_agent_access(db, current_user, agent_id)
 
-    from app.services.wechat_gateway import wechat_gateway_manager
-    status = await wechat_gateway_manager.get_status(agent_id)
+    from app.services.wechat_bot_manager import wechat_bot_manager
+    status = await wechat_bot_manager.get_status(agent_id)
 
     return status
 
@@ -181,8 +208,8 @@ async def get_wechat_qr_code(
     """
     await check_agent_access(db, current_user, agent_id)
 
-    from app.services.wechat_gateway import wechat_gateway_manager
-    qr_url = await wechat_gateway_manager.get_qr_url(agent_id)
+    from app.services.wechat_bot_manager import wechat_bot_manager
+    qr_url = await wechat_bot_manager.get_qr_url(agent_id)
 
     if not qr_url:
         raise HTTPException(status_code=404, detail="No QR code available. Initiate login first.")
@@ -201,12 +228,12 @@ async def delete_wechat_channel(
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove channel")
 
-    # Remove the gateway client first (stops and clears credentials)
+    # Remove the bot instance (stops and clears credentials)
     try:
-        from app.services.wechat_gateway import wechat_gateway_manager
-        await wechat_gateway_manager.remove_client(agent_id)
+        from app.services.wechat_bot_manager import wechat_bot_manager
+        await wechat_bot_manager.remove_client(agent_id)
     except Exception as e:
-        logger.warning(f"[WeChat] Error removing gateway bot: {e}")
+        logger.warning(f"[WeChat] Error removing bot: {e}")
 
     # Delete config from database
     result = await db.execute(
@@ -222,235 +249,248 @@ async def delete_wechat_channel(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Message Ingestion (called by Node.js gateway)
+# Message Processing (called by Bot Manager when messages arrive)
 # ═══════════════════════════════════════════════════════════════════════
 
-@router.post("/channel/wechat/{agent_id}/message")
-async def wechat_message_webhook(
+async def process_incoming_wechat_message(
     agent_id: uuid.UUID,
-    request: Request,
-):
-    """Receive messages from the Node.js WeChat gateway.
-
-    This endpoint is called by the Node.js gateway when a WeChat message
-    is received. It processes the message through the agent's LLM pipeline
-    and returns the reply.
-
-    Request body:
-        {
-            "user_id": "wxid_xxx",
-            "user_name": "Display Name",
-            "text": "Message content",
-            "message_type": "text" | "image" | "file" | "video" | "voice",
-            "is_group": false,
-            "group_id": "xxx@chatroom" (if group message),
-            "timestamp": "2024-01-01T00:00:00Z"
-        }
-    """
-    from app.database import async_session
-
-    body = await request.json()
-
-    user_id = body.get("user_id", "")
-    user_name = body.get("user_name", "")
-    text = body.get("text", "")
-    message_type = body.get("message_type", "text")
-    is_group = body.get("is_group", False)
-    group_id = body.get("group_id", "")
-
-    if not user_id:
-        return Response(content="Missing user_id", status_code=400)
-
-    logger.info(f"[WeChat] Message from {user_name} ({user_id}): {text[:80]}")
-
-    # Process message through agent LLM pipeline (uses its own db session)
-    async with async_session() as db:
-        result = await _process_wechat_message(
-            db=db,
-            agent_id=agent_id,
-            user_id=user_id,
-            user_name=user_name,
-            text=text,
-            is_group=is_group,
-            group_id=group_id,
-        )
-
-    return result
-
-
-async def _process_wechat_message(
-    db: AsyncSession,
-    agent_id: uuid.UUID,
-    user_id: str,
-    user_name: str,
-    text: str,
-    is_group: bool,
-    group_id: str,
+    msg,
 ) -> dict:
     """Process a WeChat message through the agent's LLM pipeline.
+
+    Called by the WeChatBotManager when a message is received.
+
+    Args:
+        agent_id: The agent UUID
+        msg: IncomingMessage from wechatbot SDK
 
     Returns:
         dict with keys:
             - reply: str, the text reply
             - files: list of dict with file info (path, file_name, type, caption)
     """
+    from app.database import async_session
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel, DEFAULT_CONTEXT_WINDOW_SIZE
     from app.api.feishu import _call_agent_llm
-    from app.services.channel_session import find_or_create_channel_session
-    from app.services.channel_user_service import channel_user_service
-    from app.services.agent_tools import WORKSPACE_ROOT, channel_file_sender
-    from app.services.wechat_gateway import wechat_gateway_manager
-    from datetime import datetime, timezone
-    from pathlib import Path
+    from app.services.wechat_bot_manager import wechat_bot_manager
+
+    # Detect group message from userId format (group IDs end with @chatroom)
+    is_group = msg.user_id.endswith(WeChatConstants.GROUP_ID_SUFFIX)
+    group_id = msg.user_id if is_group else ""
+
+    user_id = msg.user_id
+    user_name = msg.user_id  # WeChat doesn't always provide display name in message
+    text = msg.text or ""
+
+    logger.info(f"[WeChat] Message from {user_name} ({user_id}): {text[:80]}")
+
+    # Download and save media files to workspace
+    saved_files = []
+    bot_instance = wechat_bot_manager._bots.get(agent_id)
+
+    if bot_instance and (msg.images or msg.files or msg.videos):
+        workspace_path = WORKSPACE_ROOT / str(agent_id) / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        # Download media using SDK
+        try:
+            downloaded = await bot_instance.download_media(msg)
+            if downloaded:
+                file_data = downloaded.data
+
+                # File validation: check size
+                if len(file_data) == 0:
+                    logger.warning("[WeChat] Skipping empty media file")
+                elif len(file_data) > WeChatConstants.MAX_FILE_SIZE:
+                    logger.warning(
+                        f"[WeChat] File too large: {len(file_data)} bytes "
+                        f"(max: {WeChatConstants.MAX_FILE_SIZE})"
+                    )
+                else:
+                    file_name = downloaded.file_name or f"media_{int(datetime.now().timestamp())}"
+
+                    # Determine file extension by type
+                    if downloaded.type == "image":
+                        if not any(file_name.endswith(ext) for ext in MediaExtensions.IMAGE):
+                            file_name = file_name + ".png"
+                    elif downloaded.type == "video":
+                        if not any(file_name.endswith(ext) for ext in MediaExtensions.VIDEO):
+                            file_name = file_name + ".mp4"
+
+                    # Handle duplicate filenames
+                    file_path = workspace_path / file_name
+                    counter = 1
+                    original_stem = file_path.stem
+                    original_suffix = file_path.suffix
+                    while file_path.exists():
+                        file_path = workspace_path / f"{original_stem}_{counter}{original_suffix}"
+                        counter += 1
+
+                    file_path.write_bytes(file_data)
+                    saved_files.append({
+                        "path": f"workspace/{file_path.name}",
+                        "file_name": file_path.name,
+                        "type": downloaded.type,
+                    })
+                    logger.info(f"[WeChat] Saved media: {file_path.name} ({len(file_data)} bytes)")
+        except Exception as e:
+            logger.error(f"[WeChat] Failed to download media: {e}")
 
     # Set channel_file_sender ContextVar so agent can send files directly to user
     async def _wechat_file_sender(file_path, msg: str = ""):
-        """Send file to WeChat user via gateway."""
+        """Send file to WeChat user via bot."""
         try:
-            await wechat_gateway_manager.send_file(agent_id, user_id, file_path, caption=msg)
+            await wechat_bot_manager.send_file(agent_id, user_id, file_path, caption=msg)
         except Exception as e:
             logger.error(f"[WeChat] Failed to send file: {e}")
             raise
 
     _cfs_token = channel_file_sender.set(_wechat_file_sender)
-    logger.info(f"[WeChat] Set channel_file_sender for agent={agent_id}, user={user_id}")
 
-    try:  # Ensure ContextVar is reset after processing
-        # Load agent
-        agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-        agent_obj = agent_r.scalar_one_or_none()
-        if not agent_obj:
-            return {"reply": "Agent not found.", "files": []}
+    try:
+        # Use a new db session for message processing
+        async with async_session() as db:
+            # Load agent
+            agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            agent_obj = agent_r.scalar_one_or_none()
+            if not agent_obj:
+                return {"reply": "Agent not found.", "files": []}
 
-        creator_id = agent_obj.creator_id
-        ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
+            creator_id = agent_obj.creator_id
+            ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
 
-        # Resolve or create platform user
-        display_name = user_name or f"WeChat User {user_id[:8]}"
-        _extra_info = {"name": display_name, "wechat_id": user_id}
+            # Resolve or create platform user
+            display_name = user_name or f"WeChat User {user_id[:8]}"
+            _extra_info = {"name": display_name, "wechat_id": user_id}
 
-        platform_user = await channel_user_service.resolve_channel_user(
-            db=db,
-            agent=agent_obj,
-            channel_type="wechat",
-            external_user_id=user_id,
-            extra_info=_extra_info,
-        )
+            platform_user = await channel_user_service.resolve_channel_user(
+                db=db,
+                agent=agent_obj,
+                channel_type="wechat",
+                external_user_id=user_id,
+                extra_info=_extra_info,
+            )
 
-        # Update display name if better name available
-        if user_name and platform_user.display_name and platform_user.display_name.startswith("WeChat User "):
-            platform_user.display_name = display_name
-            await db.flush()
+            # Update display name if better name available
+            if user_name and platform_user.display_name and platform_user.display_name.startswith("WeChat User "):
+                platform_user.display_name = display_name
+                await db.flush()
 
-        platform_user_id = platform_user.id
+            platform_user_id = platform_user.id
 
-        # Build conversation ID
-        if is_group and group_id:
-            conv_id = f"wechat_group_{group_id}"
-            group_name = f"WeChat Group {group_id[:8]}"
-        else:
-            conv_id = f"wechat_dm_{user_id}"
-            group_name = None
+            # Build conversation ID
+            if is_group and group_id:
+                conv_id = f"wechat_group_{group_id}"
+                group_name = f"WeChat Group {group_id[:8]}"
+            else:
+                conv_id = f"wechat_dm_{user_id}"
+                group_name = None
 
-        # Find or create session
-        sess = await find_or_create_channel_session(
-            db=db,
-            agent_id=agent_id,
-            user_id=creator_id if is_group else platform_user_id,
-            external_conv_id=conv_id,
-            source_channel="wechat",
-            first_message_title=text,
-            is_group=is_group,
-            group_name=group_name,
-        )
-        session_conv_id = str(sess.id)
+            # Find or create session
+            sess = await find_or_create_channel_session(
+                db=db,
+                agent_id=agent_id,
+                user_id=creator_id if is_group else platform_user_id,
+                external_conv_id=conv_id,
+                source_channel="wechat",
+                first_message_title=text,
+                is_group=is_group,
+                group_name=group_name,
+            )
+            session_conv_id = str(sess.id)
 
-        # Load history
-        history_r = await db.execute(
-            select(ChatMessage)
-            .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
-            .order_by(ChatMessage.created_at.desc())
-            .limit(ctx_size)
-        )
-        history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
+            # Load history
+            history_r = await db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
+                .order_by(ChatMessage.created_at.desc())
+                .limit(ctx_size)
+            )
+            history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
-        # Save user message
-        db.add(ChatMessage(
-            agent_id=agent_id,
-            user_id=platform_user_id,
-            role="user",
-            content=text,
-            conversation_id=session_conv_id,
-        ))
-        sess.last_message_at = datetime.now(timezone.utc)
-        await db.commit()
+            # Save user message
+            db.add(ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="user",
+                content=text,
+                conversation_id=session_conv_id,
+            ))
+            sess.last_message_at = datetime.now(timezone.utc)
+            await db.commit()
 
-        # Track workspace files before LLM call (to detect new files)
-        workspace_path = WORKSPACE_ROOT / str(agent_id) / "workspace"
-        existing_files: set = set()
-        if workspace_path.exists():
-            existing_files = {f.relative_to(workspace_path) for f in workspace_path.rglob("*") if f.is_file()}
+            # Track workspace files before LLM call (to detect new files)
+            workspace_path = WORKSPACE_ROOT / str(agent_id) / "workspace"
+            existing_files: set = set()
+            if workspace_path.exists():
+                existing_files = {f.relative_to(workspace_path) for f in workspace_path.rglob("*") if f.is_file()}
 
-        # Call LLM
-        try:
-            reply_text = await _call_agent_llm(db, agent_id, text, history=history)
-        except Exception as e:
-            logger.exception(f"[WeChat] LLM error: {e}")
-            reply_text = f"处理消息时发生错误: {str(e)[:100]}"
+            # Call LLM
+            try:
+                reply_text = await _call_agent_llm(db, agent_id, text, history=history)
+            except Exception as e:
+                logger.exception(f"[WeChat] LLM error: {e}")
+                reply_text = f"处理消息时发生错误: {str(e)[:100]}"
 
-        # Detect new files created during LLM processing
-        new_files: list[dict] = []
-        if workspace_path.exists():
-            current_files = {f.relative_to(workspace_path) for f in workspace_path.rglob("*") if f.is_file()}
-            new_file_paths = current_files - existing_files
+            # Detect new files created during LLM processing
+            new_files: list[dict] = []
+            if workspace_path.exists():
+                current_files = {f.relative_to(workspace_path) for f in workspace_path.rglob("*") if f.is_file()}
+                new_file_paths = current_files - existing_files
 
-            # Media file extensions for auto-detection
-            image_exts = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif'}
-            video_exts = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp', '.m4v'}
+                for file_rel in sorted(new_file_paths):
+                    file_path = workspace_path / file_rel
+                    file_name = file_path.name
+                    ext = file_path.suffix.lower()
 
-            for file_rel in sorted(new_file_paths):
-                file_path = workspace_path / file_rel
-                file_name = file_path.name
-                ext = file_path.suffix.lower()
+                    # Skip hidden files and temp files
+                    if file_name.startswith('.') or file_name.endswith('.tmp'):
+                        continue
 
-                # Skip hidden files and temp files
-                if file_name.startswith('.') or file_name.endswith('.tmp'):
-                    continue
+                    # Determine media type using constants
+                    if ext in MediaExtensions.IMAGE:
+                        file_type = 'image'
+                    elif ext in MediaExtensions.VIDEO:
+                        file_type = 'video'
+                    else:
+                        file_type = 'file'
 
-                # Determine media type
-                if ext in image_exts:
-                    file_type = 'image'
-                elif ext in video_exts:
-                    file_type = 'video'
-                else:
-                    file_type = 'file'
+                    new_files.append({
+                        "path": f"workspace/{file_rel}",
+                        "file_name": file_name,
+                        "type": file_type,
+                    })
+                    logger.info(f"[WeChat] New file detected: {file_rel} ({file_type})")
 
-                new_files.append({
-                    "path": f"workspace/{file_rel}",
-                    "file_name": file_name,
-                    "type": file_type,
-                })
-                logger.info(f"[WeChat] New file detected: {file_rel} ({file_type})")
+                # Limit to avoid sending too many files at once
+                if len(new_files) > WeChatConstants.MAX_ATTACHED_FILES:
+                    new_files = new_files[:WeChatConstants.MAX_ATTACHED_FILES]
+                    logger.warning(f"[WeChat] Too many new files, limiting to {WeChatConstants.MAX_ATTACHED_FILES}")
 
-            # Limit to avoid sending too many files at once
-            if len(new_files) > 3:
-                new_files = new_files[:3]
-                logger.warning(f"[WeChat] Too many new files, limiting to 3")
+            # Save reply
+            db.add(ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="assistant",
+                content=reply_text,
+                conversation_id=session_conv_id,
+            ))
+            sess.last_message_at = datetime.now(timezone.utc)
+            await db.commit()
 
-        # Save reply
-        db.add(ChatMessage(
-            agent_id=agent_id,
-            user_id=platform_user_id,
-            role="assistant",
-            content=reply_text,
-            conversation_id=session_conv_id,
-        ))
-        sess.last_message_at = datetime.now(timezone.utc)
-        await db.commit()
+            logger.info(f"[WeChat] Reply to {user_id}: {reply_text[:80]}, files: {len(new_files)}")
 
-        logger.info(f"[WeChat] Reply to {user_id}: {reply_text[:80]}, files: {len(new_files)}")
-        return {"reply": reply_text, "files": new_files}
+            # Send reply and files via bot
+            if reply_text:
+                await wechat_bot_manager.send_text(agent_id, user_id, reply_text)
+
+            for file_info in new_files:
+                file_path = WORKSPACE_ROOT / agent_id / file_info["path"]
+                await wechat_bot_manager.send_file(agent_id, user_id, file_path)
+
+            return {"reply": reply_text, "files": new_files}
+
     finally:
         # Reset ContextVar to avoid affecting other requests
         channel_file_sender.reset(_cfs_token)

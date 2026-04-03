@@ -480,6 +480,9 @@
         "description": "Control who can see and interact with this agent. Only the creator or admin can change this.",
         "companyWide": "Company-wide",
         "companyWideDesc": "All users in the organization can use this agent",
+        "teamVisible": "Team",
+        "teamVisibleDesc": "Only creator and authorized team members can use this agent",
+        "selectTeamMembers": "Select Team Members",
         "onlyMe": "Only Me",
         "onlyMeDesc": "Only the creator can use this agent",
         "defaultAccess": "Default Access Level",
@@ -795,6 +798,9 @@
       "title": "Permissions",
       "companyWide": "Company-wide",
       "companyWideDesc": "Everyone can use this digital employee",
+      "teamVisible": "Team",
+      "teamVisibleDesc": "Only creator and authorized team members can use",
+      "selectTeamMembers": "Select Team Members",
       "department": "Department",
       "departmentDesc": "Only selected department members can use",
       "selfOnly": "Self Only",
@@ -1568,10 +1574,9 @@
       "ws_note": "WebSocket mode requires no public IP, callback URL, or domain verification (ICP). The connection is managed automatically."
     },
     "wechat": {
-      "step1": "Ensure the wechat-gateway service is running (Docker container or local)",
-      "step2": "Click the 'Start Login' button to open a window with a QR code",
-      "step3": "Open WeChat on your phone, scan the QR code, and confirm login",
-      "step4": "After successful login, this Agent will automatically receive and reply to messages sent to this WeChat account",
+      "step1": "Click the 'Start Login' button to open a window with a QR code",
+      "step2": "Open WeChat on your phone, scan the QR code, and confirm login",
+      "step3": "After successful login, this Agent will automatically receive and reply to messages sent to this WeChat account",
       "note": "Personal WeChat connects via iLink protocol. No developer account registration required. Credentials are securely stored locally on the server."
     },
     "agentbay": {

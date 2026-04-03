@@ -72,7 +72,8 @@ async def lifespan(app: FastAPI):
     from app.services.dingtalk_stream import dingtalk_stream_manager
     from app.services.wecom_stream import wecom_stream_manager
     from app.services.discord_gateway import discord_gateway_manager
-    from app.services.wechat_gateway import wechat_gateway_manager
+    from app.services.wechat_bot_manager import wechat_bot_manager
+    from app.api.wechat import process_incoming_wechat_message
 
     # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
     try:
@@ -188,6 +189,10 @@ async def lifespan(app: FastAPI):
     # Start background tasks (always, even if seeding failed)
     try:
         logger.info("[startup] starting background tasks...")
+
+        # Set up WeChat message handler before starting bots
+        wechat_bot_manager.set_message_handler(process_incoming_wechat_message)
+        logger.info("[startup] WeChat message handler configured")
         from app.services.audit_logger import write_audit_log
         await write_audit_log("server_startup", {"pid": os.getpid()})
 
@@ -208,7 +213,7 @@ async def lifespan(app: FastAPI):
             ("dingtalk_stream", dingtalk_stream_manager.start_all()),
             ("wecom_stream", wecom_stream_manager.start_all()),
             ("discord_gw", discord_gateway_manager.start_all()),
-            ("wechat_gw", wechat_gateway_manager.start_all()),
+            ("wechat_bot", wechat_bot_manager.start_all()),
         ]:
             task = asyncio.create_task(coro, name=name)
             task.add_done_callback(_bg_task_error)

@@ -14,6 +14,10 @@ async function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || `HTTP ${response.status}`);
     }
+    // Handle 204 No Content responses (e.g., DELETE requests)
+    if (response.status === 204) {
+        return undefined as T;
+    }
     return response.json();
 }
 
@@ -489,10 +493,16 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             return fetchAuth(`/agents/${agentId}/${ch.apiSlug}`, { method: 'DELETE' });
         },
         onSuccess: (_d, { ch }) => {
-            const keys = ch.useChannelApi
-                ? [['channel', agentId]]
-                : [[`${ch.apiSlug}`, agentId]];
-            keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
+            // Invalidate queries based on channel type
+            if (ch.useChannelApi) {
+                queryClient.invalidateQueries({ queryKey: ['channel', agentId] });
+            } else {
+                queryClient.invalidateQueries({ queryKey: [`${ch.apiSlug}`, agentId] });
+                // For WeChat, also invalidate the status query
+                if (ch.id === 'wechat') {
+                    queryClient.invalidateQueries({ queryKey: ['wechat-status', agentId] });
+                }
+            }
             if (ch.id === 'atlassian') setAtlassianTestResult(null);
             if (ch.id === 'agentbay') setAgentbayTestResult(null);
         },
@@ -916,7 +926,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
                                             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: wechatStatus?.is_running ? '#07C160' : 'var(--text-tertiary)', display: 'inline-block' }}></span>
                                             <span style={{ color: 'var(--text-secondary)' }}>
-                                                {wechatStatus?.is_running ? '已连接 (iLink Gateway)' : wechatStatus?.is_logged_in ? '已登录 (未运行)' : '未连接'}
+                                                {wechatStatus?.is_running ? '运行中' : wechatStatus?.is_logged_in ? '已登录 (未运行)' : '未连接'}
                                             </span>
                                         </div>
                                         {wechatStatus?.error && (
@@ -964,7 +974,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                     } else if (res.error) {
                                                         setWechatLoginError(res.error);
                                                     } else {
-                                                        setWechatLoginError('获取二维码失败，请检查 WeChat Gateway 是否运行。');
+                                                        setWechatLoginError('获取二维码失败，请稍后重试。');
                                                     }
                                                     queryClient.invalidateQueries({ queryKey: ['wechat-channel', agentId] });
                                                     queryClient.invalidateQueries({ queryKey: ['wechat-status', agentId] });
@@ -1118,7 +1128,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                         } else if (res.error) {
                                                             setWechatLoginError(res.error);
                                                         } else {
-                                                            setWechatLoginError('获取二维码失败，请检查 WeChat Gateway 是否运行。');
+                                                            setWechatLoginError('获取二维码失败，请稍后重试。');
                                                         }
                                                         queryClient.invalidateQueries({ queryKey: ['wechat-channel', agentId] });
                                                         queryClient.invalidateQueries({ queryKey: ['wechat-status', agentId] });

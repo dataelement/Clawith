@@ -38,6 +38,7 @@ dependencies = [
     "wuying-agentbay-sdk>=0.18.0",
     "pypinyin>=0.52.0",
     "Pillow>=10.0.0",
+    "aiohttp>=3.9.0",
 ]
 
 [project.optional-dependencies]

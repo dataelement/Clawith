@@ -37,12 +37,13 @@ class ChannelUserService:
         1. OrgMember already linked to User → return existing User
         2. OrgMember exists but not linked → create User and link
         3. User matched by email/mobile → return User and link OrgMember
-        4. No match → create new User and OrgMember (lazy registration)
+        4. For non-org channels (wechat, discord, slack): find existing User by channel-specific ID
+        5. No match → create new User and OrgMember (lazy registration)
 
         Args:
             db: Database session
             agent: Agent receiving the message (for tenant_id)
-            channel_type: "dingtalk" | "wecom" | "feishu"
+            channel_type: "dingtalk" | "wecom" | "feishu" | "wechat" | "discord" | "slack"
             external_user_id: User ID from external platform (staff_id/userid/open_id)
             extra_info: Optional name/avatar/mobile/email from platform API
 
@@ -70,6 +71,39 @@ class ChannelUserService:
                 logger.debug(
                     f"[{channel_type}] Found user via linked OrgMember: {user.id}"
                 )
+                return user
+
+        # Step 2.5: For non-org channels, try to find existing User by channel-specific identifier
+        # This prevents duplicate user creation for channels like wechat, discord, slack
+        if not user and channel_type not in ("feishu", "dingtalk", "wecom"):
+            # Generate the unique username that would be used for this user
+            email = extra_info.get("email")
+            if email:
+                username = email.split("@")[0]
+            else:
+                username = f"{channel_type}_{external_user_id[:12]}"
+
+            # Try to find existing User with this username/identity
+            from app.models.user import User, Identity
+            query = (
+                select(User)
+                .join(User.identity)
+                .where(
+                    Identity.username == username,
+                    User.tenant_id == tenant_id if tenant_id else True,
+                )
+            )
+            existing = await db.execute(query)
+            user = existing.scalar_one_or_none()
+
+            if user:
+                logger.debug(
+                    f"[{channel_type}] Found existing user by username: {user.id}"
+                )
+                # Update display name if better info available
+                if extra_info.get("name") and user.display_name.startswith(f"{channel_type.capitalize()} "):
+                    user.display_name = extra_info["name"]
+                await db.flush()
                 return user
 
         # Step 4: Try to find User by email/mobile from extra_info
@@ -284,12 +318,15 @@ class ChannelUserService:
 
 
         # Step 2: Create tenant-scoped User linked to Identity
+        # Use "channel" prefix to distinguish channel users from direct registration
+        # This helps frontend display "渠道" (channel) instead of "注册" (registration)
         user = User(
             identity_id=identity.id,
             display_name=name,
             avatar_url=extra_info.get("avatar_url"),
             role="member",
-            registration_source=channel_type,
+            # Format: "channel:wechat", "channel:feishu" for better UI display
+            registration_source=f"channel:{channel_type}",
             tenant_id=tenant_id,
             is_active=True,
         )
@@ -391,7 +428,8 @@ async def get_platform_user_by_org_member(
         display_name=name,
         avatar_url=org_member.avatar_url,
         role="member",
-        registration_source=channel_type,
+        # Use "channel" prefix for consistency with _create_channel_user
+        registration_source=f"channel:{channel_type}",
         tenant_id=agent_tenant_id,
         is_active=True,
     )

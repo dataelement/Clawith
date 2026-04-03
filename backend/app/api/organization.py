@@ -24,11 +24,12 @@ async def list_users(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List users, optionally filtered by tenant."""
+    """List users, optionally filtered by tenant. Only returns registered web users (not channel users)."""
     query = (
         select(User)
         .options(selectinload(User.identity))
         .where(User.is_active == True)
+        .where(User.registration_source == 'web')  # Only show registered web users
     )
 
     target_tenant_id = current_user.tenant_id

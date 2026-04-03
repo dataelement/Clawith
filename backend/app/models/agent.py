@@ -137,7 +137,7 @@ class AgentPermission(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
     scope_type: Mapped[str] = mapped_column(
-        Enum("company", "department", "user", name="permission_scope_enum"),
+        Enum("company", "department", "team", "user", name="permission_scope_enum"),
         nullable=False,
     )
     # scope_id: null for company, user_id for user scope

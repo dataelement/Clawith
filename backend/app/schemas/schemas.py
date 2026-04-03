@@ -216,7 +216,7 @@ class AgentCreate(BaseModel):
     primary_model_id: uuid.UUID | None = None
     fallback_model_id: uuid.UUID | None = None
     # Permissions
-    permission_scope_type: str = "company"  # company | user
+    permission_scope_type: str = "company"  # company | team | user
     permission_scope_ids: list[uuid.UUID] = []
     permission_access_level: str = "use"  # use | manage
     # Target tenant (admin-only override; otherwise ignored)
