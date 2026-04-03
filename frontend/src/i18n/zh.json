@@ -194,49 +194,49 @@
       "creating": "创建中",
       "error": "异常",
       "disconnected": "已断开",
-      "24hActions": "⏰ 24h 活动",
+      "24hActions": "24h 活动",
       "24hActionsTooltip": "过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等",
-      "llmCallsToday": "🤖 今日 LLM 调用",
+      "llmCallsToday": "今日 LLM 调用",
       "max": "上限",
-      "totalToken": "📊 总 Token",
-      "pending": "⏳ 待处理"
+      "totalToken": "总 Token",
+      "pending": "待处理"
     },
     "tabs": {
-      "status": "📊 状态",
-      "tasks": "📋 任务",
-      "aware": "🧠 自我意识",
-      "mind": "💭 心智",
-      "tools": "🔧 工具",
-      "skills": "⚡ 技能",
-      "relationships": "🔗 关系",
-      "workspace": "📁 工作区",
-      "chat": "💬 聊天",
-      "activityLog": "📝 工作日志",
-      "approvals": "✅ 审批",
-      "settings": "⚙️ 设置"
+      "status": "状态",
+      "tasks": "任务",
+      "aware": "自我意识",
+      "mind": "心智",
+      "tools": "工具",
+      "skills": "技能",
+      "relationships": "关系",
+      "workspace": "工作区",
+      "chat": "聊天",
+      "activityLog": "工作日志",
+      "approvals": "审批",
+      "settings": "设置"
     },
     "fields": {
-      "name": "📛 名称",
-      "role": "👤 角色",
+      "name": "名称",
+      "role": "角色",
       "avatar": "头像",
-      "personality": "🧠 人格设定",
-      "boundaries": "🚧 行为边界",
+      "personality": "人格设定",
+      "boundaries": "行为边界",
       "lastActive": "最后活跃",
       "tasksInProgress": "进行中",
       "supervisions": "督办",
-      "createdBy": "👨‍💼 创建者"
+      "createdBy": "创建者"
     },
     "profile": {
-      "title": "📋 Agent 档案",
-      "created": "📅 创建时间",
-      "lastActive": "⏰ 最后活跃",
-      "timezone": "🌐 时区"
+      "title": "Agent 档案",
+      "created": "创建时间",
+      "lastActive": "最后活跃",
+      "timezone": "时区"
     },
     "modelConfig": {
-      "title": "🤖 模型配置",
-      "model": "🧠 模型",
-      "provider": "🏢 提供商",
-      "contextRounds": "🔄 上下文窗口"
+      "title": "模型配置",
+      "model": "模型",
+      "provider": "提供商",
+      "contextRounds": "上下文窗口"
     },
     "actions": {
       "start": "启动",
@@ -335,7 +335,6 @@
       "heartbeatDesc": "定期感知检查的指令。Agent 在每次心跳时读取此文件。",
       "heartbeatTitle": "心跳"
     },
-
     "skills": {
       "title": "技能定义",
       "description": "技能定义了数字员工在特定场景下的行为方式。每个.md文件是一个技能。建议使用YAML frontmatter（name + description）来定义技能元数据。",
@@ -485,20 +484,20 @@
         "encryptKey": "Encrypt Key",
         "webhookUrl": "Webhook URL",
         "configured": "已配置",
-      "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
-      "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})",
+        "usingCompanyKey": "使用公司主密钥 ({{val}})",
+        "usingCompanyConfig": "使用公司默认配置 ({{val}})",
         "notConfigured": "未配置",
         "saveChannel": "保存配置",
         "syncHint": "在配置飞书机器人之前，请先在企业设置 → 组织架构中同步您的组织结构。这确保机器人能够识别消息发送者。"
       },
       "timezone": {
         "label": "时区",
-        "title": "🌐 时区",
+        "title": "时区",
         "description": "此数字员工的调度、活跃时间和时间感知使用的时区。如果未设置，默认为公司时区。",
         "current": "数字员工时区",
         "override": "此数字员工的自定义时区",
         "inherited": "使用公司默认时区",
-        "default": "↩ 公司默认",
+        "default": "公司默认",
         "zones": {
           "UTC": "UTC (协调世界时)",
           "Asia/Shanghai": "亚洲/上海 (北京时间, UTC+8)",
@@ -594,11 +593,11 @@
         "noInstalled": "暂无自行安装的工具",
         "noCompany": "暂无公司统一配置的工具",
         "configured": "已配置",
-        "config": "⚙️ 配置",
+        "config": "配置",
         "testConnection": "测试连接",
         "testing": "测试中...",
-        "testSuccessful": "✅ 测试成功",
-        "testFailed": "❌ 测试失败",
+        "testSuccessful": "测试成功",
+        "testFailed": "测试失败",
         "resetToGlobal": "重置为全局配置",
         "configJson": "配置 JSON（员工级覆盖）",
         "globalDefault": "全局默认值：",
@@ -725,7 +724,7 @@
         "loginUrlPlaceholder": "https://example.com/login",
         "cookies": "Cookie JSON",
         "cookiesHint": "（留空则保持当前 Cookie）",
-        "cookiesPlaceholder": "[\n  { \"name\": \"session\", \"value\": \"abc123\", \"domain\": \".example.com\", \"path\": \"/\" }\n]",
+        "cookiesPlaceholder": "[\n { \"name\": \"session\", \"value\": \"abc123\", \"domain\": \".example.com\", \"path\": \"/\" }\n]",
         "cookiesHelp": "粘贴从",
         "cookiesHelpLink": "Cookie-Editor",
         "cookiesHelpSuffix": "或类似浏览器扩展导出的 Cookie。必须是 JSON 数组格式。"
@@ -753,11 +752,11 @@
       "noInstalled": "暂无自行安装的工具",
       "noCompany": "暂无公司统一配置的工具",
       "configured": "已配置",
-      "config": "⚙️ 配置",
+      "config": "配置",
       "testConnection": "测试连接",
       "testing": "测试中...",
-      "testSuccessful": "✅ 测试成功",
-      "testFailed": "❌ 测试失败",
+      "testSuccessful": "测试成功",
+      "testFailed": "测试失败",
       "resetToGlobal": "重置为全局配置",
       "configJson": "配置 JSON（员工级覆盖）",
       "globalDefault": "全局默认值：",
@@ -816,23 +815,23 @@
     "roleHint": "描述它的角色定位",
     "step1": {
       "title": "基础信息与模型选择",
-      "selectTemplate": "📋 选择模板（可选）",
+      "selectTemplate": "选择模板（可选）",
       "custom": "自定义",
-      "primaryModel": "🤖 主模型",
+      "primaryModel": "主模型",
       "noModels": "暂无可用模型，请先在",
       "enterpriseSettings": "企业设置",
       "addModels": "中添加 LLM 模型",
-      "dailyTokenLimit": "📅 每日 Token 上限",
-      "monthlyTokenLimit": "📆 每月 Token 上限",
+      "dailyTokenLimit": "每日 Token 上限",
+      "monthlyTokenLimit": "每月 Token 上限",
       "unlimited": "不限制",
       "namePlaceholder": "例：小智",
       "importFromJson": "从 JSON 导入"
     },
     "templates": {
-      "Project Manager": "👔 项目经理",
-      "Designer": "🎨 设计师",
-      "Product Intern": "🌱 产品实习生",
-      "Market Researcher": "📊 市场研究员",
+      "Project Manager": "项目经理",
+      "Designer": "设计师",
+      "Product Intern": "产品实习生",
+      "Market Researcher": "市场研究员",
       "templateData": {
         "Project Manager": {
           "description": "管理项目进度、任务分配、跨团队协调和进度汇报",
@@ -918,12 +917,12 @@
       }
     },
     "step4": {
-      "title": "🔐 权限设置",
-      "companyWide": "🌐 全公司可见",
+      "title": "权限设置",
+      "companyWide": "全公司可见",
       "companyWideDesc": "所有人都可以使用此数字员工",
       "department": "指定部门",
       "departmentDesc": "仅选定部门成员可使用",
-      "selfOnly": "🔒 仅自己",
+      "selfOnly": "仅自己",
       "selfOnlyDesc": "仅创建者本人可使用",
       "accessLevel": "默认访问级别",
       "useLevel": "使用",
@@ -990,7 +989,7 @@
   },
   "enterprise": {
     "title": "企业设置",
-    "dangerZone": "⚠️ 危险区域",
+    "dangerZone": "危险区域",
     "deleteCompanyDesc": "永久删除此公司及其所有数据，包括数字员工、模型、工具和技能。此操作无法撤销。",
     "deleteCompany": "删除此公司",
     "systemEmail": {
@@ -1059,19 +1058,19 @@
       "maxWebhookRateDesc": "全公司上限：每个数字员工每分钟的最大 Webhook 点击次数"
     },
     "tabs": {
-      "llm": "🤖 模型池",
-      "tools": "🔧 工具",
-      "org": "🏛️ 组织管理",
-      "info": "🏢 公司信息",
-      "audit": "📋 审计日志",
-      "config": "⚙️ 平台配置",
-      "kb": "📚 公司知识库",
-      "approvals": "✅ 审批",
-      "skills": "⚡ 技能管理",
-      "quotas": "📊 配额",
-      "users": "👥 用户",
-      "invites": "🎫 邀请码",
-      "identity": "🔐 OA管理"
+      "llm": "模型池",
+      "tools": "工具",
+      "org": "组织管理",
+      "info": "公司信息",
+      "audit": "审计日志",
+      "config": "平台配置",
+      "kb": "公司知识库",
+      "approvals": "审批",
+      "skills": "技能管理",
+      "quotas": "配额",
+      "users": "用户",
+      "invites": "邀请码",
+      "identity": "OA管理"
     },
     "invites": {
       "pageTitle": "邀请码",
@@ -1091,7 +1090,6 @@
       "disable": "禁用",
       "exportCsv": "导出 CSV"
     },
-
     "stats": {
       "users": "{{count}} 用户",
       "runningAgents": "{{running}}/{{total}} 运行中"
@@ -1149,7 +1147,7 @@
       "delete": "删除",
       "edit": "编辑",
       "cancel": "取消",
-      "supportsVision": "👁 支持视觉（多模态）",
+      "supportsVision": "支持视觉（多模态）",
       "supportsVisionDesc": "— 为能够分析图像的模型启用（GPT-4o、Claude、Qwen-VL 等）",
       "test": "测试",
       "testing": "测试中...",
@@ -1414,10 +1412,10 @@
       "maxRoundsPlaceholder": "默认 20",
       "save": "保存",
       "saved": "已保存",
-      "themeColor": "🎨 主题色"
+      "themeColor": "主题色"
     },
     "broadcast": {
-      "title": "📢 广播通知",
+      "title": "广播通知",
       "description": "向本公司所有用户和数字员工发送通知。",
       "titlePlaceholder": "通知标题",
       "bodyPlaceholder": "可选补充说明...",
@@ -1426,16 +1424,16 @@
       "sentWithEmail": "已发送给 {{users}} 位用户、{{agents}} 个数字员工，并投递到 {{emails}} 个邮箱"
     },
     "companyName": {
-      "title": "🏢 公司名称",
+      "title": "公司名称",
       "placeholder": "输入公司名称"
     },
     "companyIntro": {
-      "title": "📝 公司简介",
+      "title": "公司简介",
       "description": "描述你的公司使命、产品和文化。此信息会作为上下文包含在每次 Agent 对话中。",
       "hint": "此内容会出现在每个 Agent 的系统提示词中"
     },
     "kb": {
-      "title": "📚 公司知识库",
+      "title": "公司知识库",
       "description": "共享文件，所有 Agent 可通过 enterprise_info/ 目录访问。",
       "rootDir": "根目录",
       "uploadFile": "上传文件",
@@ -1466,7 +1464,7 @@
       "title": "顶部通知条",
       "enabled": "启用通知条",
       "text": "通知文案",
-      "textPlaceholder": "输入通知条文案，如：🎉 v2.1 已发布！",
+      "textPlaceholder": "输入通知条文案，如： v2.1 已发布！",
       "description": "在页面顶部显示一行通知条，所有用户（含未登录用户）可见。",
       "preview": "预览"
     },
@@ -1548,7 +1546,7 @@
     "all": "全部",
     "none": "无",
     "download": "下载",
-    "upload": "⬆ 上传",
+    "upload": "上传",
     "apply": "应用",
     "reset": "重置",
     "copy": "复制",
@@ -1570,9 +1568,9 @@
     "title": "公司管理",
     "desc": "管理所有公司，创建新公司，配置平台级设置。",
     "tab": {
-      "dashboard": "📊 平台仪表盘",
-      "platform": "⚙️ 平台设置",
-      "companies": "🏢 公司管理"
+      "dashboard": "平台仪表盘",
+      "platform": "平台设置",
+      "companies": "公司管理"
     },
     "createCompany": "创建公司",
     "platformSettings": "平台设置",
@@ -1592,15 +1590,15 @@
     "copyCode": "复制邀请码",
     "copied": "已复制",
     "cannotDisableDefault": "无法停用默认公司 -- 平台管理员将无法登录",
-    "company": "🏢 公司",
-    "sso": "🔐 SSO",
-    "orgAdmin": "📧 管理员邮箱",
-    "users": "👥 用户数",
-    "agents": "🤖 数字员工数",
-    "tokens": "📊 Token 用量",
-    "createdAt": "📅 创建时间",
-    "status": "⚡ 状态",
-    "action": "⚙️ 操作",
+    "company": "公司",
+    "sso": "SSO",
+    "orgAdmin": "管理员邮箱",
+    "users": "用户数",
+    "agents": "数字员工数",
+    "tokens": "Token 用量",
+    "createdAt": "创建时间",
+    "status": "状态",
+    "action": "操作",
     "active": "活跃",
     "disabled": "已禁用",
     "all": "全部",
@@ -1744,14 +1742,14 @@
     "feishuPermBasicDesc": "仅聊天和消息收发",
     "feishuPermFullDesc": "包含文档、云空间、多维表格、日历、审批等全部功能",
     "feishuPermCopy": "复制",
-    "feishuPermCopied": "✓ 已复制",
+    "feishuPermCopied": "已复制",
     "slack": {
       "step1": "打开 api.slack.com/apps → 点击 Create New App → 选择 From Scratch → 填写应用名称并选择你的 Workspace → 点击 Create App",
       "step2": "左侧菜单点击 OAuth & Permissions → 向下滚动到 Scopes → 在 Bot Token Scopes 下点击 Add an OAuth Scope → 依次添加：chat:write、im:history、app_mentions:read",
       "step3": "回到 OAuth & Permissions 顶部 → 点击 Install to Workspace → 点击 Allow → 复制 Bot User OAuth Token（以 xoxb- 开头）",
       "step4": "左侧菜单 → Basic Information → 滚动到 App Credentials → 点击 Signing Secret 旁的 Show → 复制",
       "step5": "将 Bot Token 和 Signing Secret 填入上方 → 点击保存配置 → 复制出现的 Webhook URL",
-      "step6": "左侧菜单 → Event Subscriptions → 打开 Enable Events 开关 → 将 Webhook URL 粘贴到 Request URL 框中（显示 Verified ✓ 后继续）→ 在 Subscribe to bot events 下点击 Add Bot User Event，依次添加：app_mention、message.im → 点击 Save Changes",
+      "step6": "左侧菜单 → Event Subscriptions → 打开 Enable Events 开关 → 将 Webhook URL 粘贴到 Request URL 框中（显示 Verified 后继续）→ 在 Subscribe to bot events 下点击 Add Bot User Event，依次添加：app_mention、message.im → 点击 Save Changes",
       "step7": "页面顶部会出现黄色横幅：点击 reinstall your app 并重新授权",
       "step8": "在 Slack 中找到你的 Bot，发一条私信测试是否正常回复",
       "note": "服务器必须能被公网访问，Slack 才能将消息推送到 Webhook URL。"
