@@ -974,6 +974,19 @@ async def websocket_chat(
                 await db.commit()
             logger.info("[WS] Assistant message saved")
 
+            # Distill conversation turn into long-term memory via OpenViking (fire-and-forget)
+            try:
+                import asyncio as _aio_ov
+                from app.services.openviking_client import commit_conversation_turn
+                _aio_ov.create_task(commit_conversation_turn(
+                    agent_id=str(agent_id),
+                    conv_id=conv_id,
+                    user_message=content,
+                    assistant_message=assistant_response,
+                ))
+            except Exception:
+                pass
+
             # Send done signal with final content (for non-streaming clients)
             await websocket.send_json({
                 "type": "done",
