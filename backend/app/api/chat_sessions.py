@@ -116,12 +116,12 @@ async def list_sessions(
                 # Group chat session — display group name instead of username
                 display = session.group_name or session.title or "Group Chat"
             else:
-                # Human session — resolve username via Identity join
+                # Human session — resolve username
+                # Note: User.username is an association_proxy, so we need to join through Identity
                 from app.models.user import Identity
                 user_r = await db.execute(
                     select(func.coalesce(User.display_name, Identity.username))
-                    .select_from(User)
-                    .outerjoin(Identity, User.identity_id == Identity.id)
+                    .join(Identity, User.identity_id == Identity.id)
                     .where(User.id == session.user_id)
                 )
                 display = user_r.scalar_one_or_none() or "Unknown"

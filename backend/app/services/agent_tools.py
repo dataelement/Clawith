@@ -215,7 +215,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write or update a file in the workspace. Can update memory/memory.md, focus.md, task_history.md, create documents in workspace/, create skills in skills/.",
+            "description": "Create or fully overwrite a file in the workspace. Use this when writing a new file or replacing the entire content. For targeted edits to an existing file (change one section without rewriting everything), prefer edit_file instead. Can update memory/memory.md, focus.md, task_history.md, create documents in workspace/, create skills in skills/.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -254,7 +254,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "Perform surgical string replacement in a file without rewriting the entire content. Use this for targeted edits to avoid overwriting concurrent changes. The old_string must match exactly (including whitespace).",
+            "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections — it avoids accidentally overwriting content outside the edit target and is safer in multi-agent scenarios. The old_string must match exactly (including all whitespace and newlines).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3332,7 +3332,7 @@ def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "
                     display_line = line.strip()[:100]
                     results.append(f"{rel_path}:{i}: {display_line}")
                     total_matches += 1
-                    if len(results) >= 50:  # Limit results
+                    if len(results) >= 50:  # Limit results per query
                         break
         except Exception:
             continue
@@ -3343,7 +3343,10 @@ def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "
     if not results:
         return f"No matches found for pattern '{pattern}' in {files_searched} file(s)"
 
-    header = f"🔍 Found {total_matches} match(es) in {files_searched} file(s) for pattern '{pattern}':\n"
+    # Warn the LLM if results were capped so it knows to refine the search.
+    truncated = total_matches > len(results)
+    truncation_note = f" (showing first {len(results)} of {total_matches}+ — refine pattern or path for more)" if truncated else ""
+    header = f"🔍 Found {total_matches}+ match(es) in {files_searched} file(s) for pattern '{pattern}'{truncation_note}:\n"
     return header + "\n".join(results)
 
 

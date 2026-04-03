@@ -230,7 +230,7 @@ async def slack_event_webhook(
     agent_obj = agent_r.scalar_one_or_none()
     creator_id = agent_obj.creator_id if agent_obj else agent_id
     from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
-    ctx_size = agent_obj.context_window_size if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
+    ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
     # Find-or-create platform user for this Slack sender via unified service
     from app.services.channel_user_service import channel_user_service

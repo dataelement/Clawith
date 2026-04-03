@@ -85,7 +85,7 @@ BUILTIN_TOOLS = [
     {
         "name": "edit_file",
         "display_name": "Edit File",
-        "description": "Perform surgical string replacement in a file without rewriting the entire content. Use this for targeted edits to avoid overwriting concurrent changes.",
+        "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections.",
         "category": "file",
         "icon": "✂️",
         "is_default": True,
@@ -105,7 +105,7 @@ BUILTIN_TOOLS = [
     {
         "name": "search_files",
         "display_name": "Search Files",
-        "description": "Search for content patterns across files using regex. Returns matching lines with file paths and line numbers.",
+        "description": "Search for content patterns across files using regex. Returns matching lines with file paths and line numbers. Results capped at 50 per query.",
         "category": "file",
         "icon": "🔍",
         "is_default": True,
@@ -125,7 +125,7 @@ BUILTIN_TOOLS = [
     {
         "name": "find_files",
         "display_name": "Find Files",
-        "description": "Find files matching glob patterns. Returns file paths with sizes and modification info.",
+        "description": "Find files matching glob patterns. Returns file paths with sizes and modification info. Results capped at 100 per query.",
         "category": "file",
         "icon": "📁",
         "is_default": True,
