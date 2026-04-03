@@ -1151,10 +1151,24 @@ async def list_org_departments(
     db: AsyncSession = Depends(get_db),
 ):
     """List all departments, optionally filtered by tenant or provider."""
-    # Authorization: non-platform admins can only see their own tenant's data
-    if tenant_id and current_user.role != "platform_admin":
-        if str(current_user.tenant_id) != tenant_id:
+    # Tenant isolation rules:
+    # 1. If tenant_id param is explicitly provided:
+    #    - non-platform-admins: must match their own tenant_id
+    #    - platform_admin with a tenant in token: must match that tenant
+    #    - platform_admin without a tenant (global view): any tenant allowed
+    # 2. If tenant_id param is NOT provided:
+    #    - auto-scope to current_user.tenant_id when it is set (applies to ALL roles)
+    #    - only a platform_admin with NO tenant_id in token can query unrestricted
+    effective_tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    is_global_admin = (current_user.role == "platform_admin" and not effective_tenant_id)
+
+    if tenant_id:
+        # Validate requested tenant against user context
+        if not is_global_admin and effective_tenant_id and effective_tenant_id != tenant_id:
             raise HTTPException(status_code=403, detail="Cannot access other tenant's data")
+    else:
+        # Auto-scope: use the user's own tenant when available
+        tenant_id = effective_tenant_id  # None only for true global admin
 
     query = select(OrgDepartment, IdentityProvider.name.label("provider_name"), IdentityProvider.provider_type).outerjoin(
         IdentityProvider, OrgDepartment.provider_id == IdentityProvider.id
@@ -1206,10 +1220,24 @@ async def list_org_members(
     db: AsyncSession = Depends(get_db),
 ):
     """List org members, optionally filtered by department, search, tenant, or provider."""
-    # Authorization: non-platform admins can only see their own tenant's data
-    if tenant_id and current_user.role != "platform_admin":
-        if str(current_user.tenant_id) != tenant_id:
+    # Tenant isolation rules:
+    # 1. If tenant_id param is explicitly provided:
+    #    - non-platform-admins: must match their own tenant_id
+    #    - platform_admin with a tenant in token: must match that tenant
+    #    - platform_admin without a tenant (global view): any tenant allowed
+    # 2. If tenant_id param is NOT provided:
+    #    - auto-scope to current_user.tenant_id when it is set (applies to ALL roles)
+    #    - only a platform_admin with NO tenant_id in token can query unrestricted
+    effective_tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    is_global_admin = (current_user.role == "platform_admin" and not effective_tenant_id)
+
+    if tenant_id:
+        # Validate requested tenant against user context
+        if not is_global_admin and effective_tenant_id and effective_tenant_id != tenant_id:
             raise HTTPException(status_code=403, detail="Cannot access other tenant's data")
+    else:
+        # Auto-scope: use the user's own tenant when available
+        tenant_id = effective_tenant_id  # None only for true global admin
 
     query = select(OrgMember, IdentityProvider.name.label("provider_name"), IdentityProvider.provider_type).outerjoin(
         IdentityProvider, OrgMember.provider_id == IdentityProvider.id

@@ -122,9 +122,32 @@ export default function App() {
         const savedTheme = localStorage.getItem('theme') || 'dark';
         document.documentElement.setAttribute('data-theme', savedTheme);
 
-        if (token && !user) {
+        // Cross-domain tenant switch: the backend appends ?token=<jwt> to the redirect URL
+        // so the new domain receives a fresh scoped token. Consume it here (before any other
+        // auth logic) so it always takes precedence over a stale token in localStorage.
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlToken = urlParams.get('token');
+        let effectiveToken = token;
+
+        if (urlToken) {
+            // Persist the new token and update the zustand store's in-memory value
+            localStorage.setItem('token', urlToken);
+            useAuthStore.setState({ token: urlToken, user: null });
+            effectiveToken = urlToken;
+
+            // Remove token from URL to prevent it from leaking into browser history
+            // and to avoid re-applying it on a manual page refresh.
+            urlParams.delete('token');
+            const cleanSearch = urlParams.toString();
+            const cleanUrl = window.location.pathname
+                + (cleanSearch ? `?${cleanSearch}` : '')
+                + window.location.hash;
+            window.history.replaceState({}, '', cleanUrl);
+        }
+
+        if (effectiveToken && !user) {
             authApi.me()
-                .then((u) => setAuth(u, token))
+                .then((u) => setAuth(u, effectiveToken!))
                 .catch(() => useAuthStore.getState().logout())
                 .finally(() => setLoading(false));
         } else {

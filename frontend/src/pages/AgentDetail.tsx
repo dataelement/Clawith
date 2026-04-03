@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Component, ErrorInfo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Component, ErrorInfo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -360,7 +360,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                             </span>
                                         </label>
                                     ) : (
-                                        <span style={{ fontSize: '11px', color: tool.enabled ? '#22c55e' : 'var(--text-tertiary)', fontWeight: 500 }}>
+                                        <span style={{ fontSize: '11px', color: tool.enabled ? 'var(--accent-primary)' : 'var(--text-tertiary)', fontWeight: 500 }}>
                                             {tool.enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
                                         </span>
                                     )}
@@ -479,7 +479,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                             />
                                                             <span style={{
                                                                 position: 'absolute', inset: 0,
-                                                                background: (configData[field.key] ?? field.default) ? '#22c55e' : 'var(--bg-tertiary)',
+                                                                background: (configData[field.key] ?? field.default) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
                                                                 borderRadius: '11px', transition: 'background 0.2s', opacity: isReadOnly ? 0.6 : 1,
                                                             }}>
                                                                 <span style={{
@@ -757,6 +757,203 @@ function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     }).then(r => r.json());
 }
 
+// ── Pulse LED keyframe (shared with Chat.tsx, guarded by ID) ──────────────
+const _PULSE_STYLE_ID = 'cw-tool-pulse-style';
+if (typeof document !== 'undefined' && !document.getElementById(_PULSE_STYLE_ID)) {
+    const _s = document.createElement('style');
+    _s.id = _PULSE_STYLE_ID;
+    _s.textContent = `
+        @keyframes cw-pulse-led {
+            0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(99,102,241,0.6); }
+            50%       { opacity: 0.55; transform: scale(1.5); box-shadow: 0 0 0 4px rgba(99,102,241,0); }
+        }
+        .cw-running-led { animation: cw-pulse-led 1.4s ease-in-out infinite; }
+    `;
+    document.head.appendChild(_s);
+}
+
+/**
+ * AgentChatToolChain — renders a group of consecutive tool_call messages
+ * as a single collapsible card with a pulse LED in the header when running.
+ *
+ * Each item in `calls` corresponds to one tool_call ChatMsg with:
+ *   toolName, toolArgs, toolStatus ('running'|'done'), toolResult
+ */
+interface ToolCallItem { name: string; args: any; status: 'running' | 'done'; result?: string; }
+function AgentChatToolChain({ calls, t }: { calls: ToolCallItem[]; t: (k: string) => string }) {
+    const [expanded, setExpanded] = useState(false);
+    const count = calls.length;
+
+    // Last tool that is still running (no result yet)
+    const activeIdx = (() => {
+        for (let i = calls.length - 1; i >= 0; i--) {
+            if (calls[i].status === 'running') return i;
+        }
+        return -1;
+    })();
+    const isRunning = activeIdx >= 0;
+    const activeTool = isRunning ? calls[activeIdx] : null;
+
+    return (
+        <div style={{
+            paddingLeft: '36px',
+            marginBottom: '6px',
+        }}>
+            <div style={{
+                borderRadius: '8px',
+                background: 'rgba(99,102,241,0.06)',
+                border: `1px solid ${isRunning ? 'rgba(99,102,241,0.32)' : 'rgba(99,102,241,0.18)'}`,
+                fontSize: '12px',
+                overflow: 'hidden',
+                transition: 'border-color 0.3s ease',
+            }}>
+                {/* ── Header toggle ── */}
+                <button
+                    onClick={() => setExpanded(v => !v)}
+                    style={{
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        width: '100%', display: 'flex', alignItems: 'center', gap: '6px',
+                        padding: '7px 10px',
+                        color: 'var(--accent-text, #818cf8)',
+                    }}
+                >
+                    {/* Wrench icon */}
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                        <path d="M10.5 10.5L14 14M4.5 2a2.5 2.5 0 00-1.8 4.2l5.1 5.1A2.5 2.5 0 1012 7.2L6.8 2.2A2.5 2.5 0 004.5 2z" />
+                    </svg>
+
+                    {/* Title + live tool indicator */}
+                    <span style={{ flex: 1, textAlign: 'left', display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                        <span style={{ fontWeight: 500, flexShrink: 0 }}>{t('agent.chat.toolCallChain')}</span>
+                        <span style={{ color: 'rgba(99,102,241,0.4)', flexShrink: 0 }}>·</span>
+                        {isRunning && activeTool ? (
+                            <>
+                                {/* Breathing LED dot */}
+                                <span className="cw-running-led" style={{
+                                    display: 'inline-block', width: '6px', height: '6px',
+                                    borderRadius: '50%', background: '#818cf8', flexShrink: 0,
+                                }} />
+                                {/* Active tool name */}
+                                <span style={{
+                                    fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#a5b4fc',
+                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                }}>{activeTool.name}</span>
+                            </>
+                        ) : (
+                            /* Static green dot when all done */
+                            <span style={{
+                                display: 'inline-block', width: '6px', height: '6px',
+                                borderRadius: '50%', background: '#22c55e', flexShrink: 0, opacity: 0.85,
+                            }} />
+                        )}
+                    </span>
+
+                    {/* Count badge */}
+                    <span style={{
+                        background: 'rgba(99,102,241,0.18)', color: '#818cf8',
+                        borderRadius: '10px', padding: '1px 7px',
+                        fontSize: '10px', fontWeight: 600, flexShrink: 0,
+                    }}>{count}</span>
+
+                    {/* Expand chevron */}
+                    <span style={{
+                        fontSize: '10px', color: 'var(--text-tertiary)',
+                        transition: 'transform 0.2s', display: 'inline-block',
+                        transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                        flexShrink: 0,
+                    }}>▶</span>
+                </button>
+
+                {/* ── Collapsed: tool name pills with per-pill pulse dot ── */}
+                {!expanded && count > 0 && (
+                    <div style={{ padding: '0 10px 7px 10px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                        {calls.map((tc, i) => {
+                            const running = tc.status === 'running';
+                            return (
+                                <span key={i} style={{
+                                    background: running ? 'rgba(99,102,241,0.14)' : 'rgba(99,102,241,0.08)',
+                                    border: `1px solid ${running ? 'rgba(99,102,241,0.28)' : 'rgba(99,102,241,0.14)'}`,
+                                    borderRadius: '4px', padding: '1px 6px',
+                                    fontSize: '10px', color: running ? '#818cf8' : '#a5b4fc',
+                                    fontFamily: 'var(--font-mono)',
+                                    display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                }}>
+                                    {running && (
+                                        <span className="cw-running-led" style={{
+                                            display: 'inline-block', width: '4px', height: '4px',
+                                            borderRadius: '50%', background: '#818cf8', flexShrink: 0,
+                                        }} />
+                                    )}
+                                    {tc.name}
+                                </span>
+                            );
+                        })}
+                    </div>
+                )}
+
+                {/* ── Expanded: full detail for each tool ── */}
+                {expanded && (
+                    <div style={{ borderTop: '1px solid rgba(99,102,241,0.15)' }}>
+                        {calls.map((tc, i) => {
+                            const running = tc.status === 'running';
+                            const argsStr = tc.args && Object.keys(tc.args).length > 0
+                                ? JSON.stringify(tc.args, null, 2) : '';
+                            return (
+                                <div key={i} style={{
+                                    padding: '7px 10px',
+                                    borderBottom: i < calls.length - 1 ? '1px solid rgba(99,102,241,0.10)' : 'none',
+                                }}>
+                                    {/* Tool name row with status dot */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: argsStr || tc.result ? '4px' : 0 }}>
+                                        <span
+                                            className={running ? 'cw-running-led' : undefined}
+                                            style={{
+                                                display: 'inline-block', width: '5px', height: '5px',
+                                                borderRadius: '50%',
+                                                background: running ? '#f59e0b' : '#22c55e',
+                                                flexShrink: 0,
+                                            }}
+                                        />
+                                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#818cf8', fontWeight: 600 }}>
+                                            {tc.name}
+                                        </span>
+                                        {running && (
+                                            <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+                                                {t('common.loading')}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {/* Args block */}
+                                    {argsStr && (
+                                        <div style={{
+                                            fontFamily: 'var(--font-mono)', fontSize: '10px',
+                                            color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-all', maxHeight: '80px', overflowY: 'auto',
+                                            background: 'rgba(0,0,0,0.12)', borderRadius: '4px',
+                                            padding: '4px 6px', marginBottom: tc.result ? '4px' : 0,
+                                        }}>{argsStr}</div>
+                                    )}
+                                    {/* Result block */}
+                                    {tc.result && (
+                                        <div style={{
+                                            fontSize: '10px', color: 'var(--text-secondary)',
+                                            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                            maxHeight: '120px', overflowY: 'auto',
+                                            borderTop: '1px solid rgba(99,102,241,0.10)', paddingTop: '4px',
+                                        }}>
+                                            {tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; readOnly?: boolean }) {
     const { t } = useTranslation();
     const qc = useQueryClient();
@@ -777,6 +974,8 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
     const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
     const [editAgentRelation, setEditAgentRelation] = useState('');
     const [editAgentDescription, setEditAgentDescription] = useState('');
+    // Track which rows are being deleted (for optimistic UI)
+    const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
     const { data: relationships = [], refetch } = useQuery({
         queryKey: ['relationships', agentId],
@@ -809,8 +1008,18 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         refetch();
     };
     const removeRelationship = async (relId: string) => {
-        await fetchAuth(`/agents/${agentId}/relationships/${relId}`, { method: 'DELETE' });
-        refetch();
+        // Optimistic update: mark as deleting immediately so the row fades out
+        setDeletingIds(prev => new Set(prev).add(relId));
+        try {
+            await fetchAuth(`/agents/${agentId}/relationships/${relId}`, { method: 'DELETE' });
+            refetch();
+        } catch {
+            // Rollback on failure
+            setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
+            refetch();
+        } finally {
+            setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
+        }
     };
     const startEditRelationship = (r: any) => {
         setEditingId(r.id);
@@ -836,8 +1045,18 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         refetchAgentRels();
     };
     const removeAgentRelationship = async (relId: string) => {
-        await fetchAuth(`/agents/${agentId}/relationships/agents/${relId}`, { method: 'DELETE' });
-        refetchAgentRels();
+        // Optimistic update: mark as deleting immediately so the row fades out
+        setDeletingIds(prev => new Set(prev).add(relId));
+        try {
+            await fetchAuth(`/agents/${agentId}/relationships/agents/${relId}`, { method: 'DELETE' });
+            refetchAgentRels();
+        } catch {
+            // Rollback on failure
+            setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
+            refetchAgentRels();
+        } finally {
+            setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
+        }
     };
     const startEditAgentRelationship = (r: any) => {
         setEditingAgentId(r.id);
@@ -864,7 +1083,14 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                 {relationships.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {relationships.map((r: any) => (
-                            <div key={r.id} style={{ borderRadius: '8px', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
+                            <div key={r.id} style={{
+                                    borderRadius: '8px', border: '1px solid var(--border-subtle)',
+                                    overflow: 'hidden',
+                                    // Fade out row while delete is in-flight
+                                    opacity: deletingIds.has(r.id) ? 0.4 : 1,
+                                    transition: 'opacity 0.2s ease',
+                                    pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
+                                }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 600, flexShrink: 0 }}>{r.member?.name?.[0] || '?'}</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -878,7 +1104,14 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                                     {!readOnly && editingId !== r.id && (
                                         <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
                                             <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => startEditRelationship(r)}>{t('common.edit', 'Edit')}</button>
-                                            <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={() => removeRelationship(r.id)}>{t('common.delete')}</button>
+                                            <button
+                                                className="btn btn-ghost"
+                                                style={{ color: deletingIds.has(r.id) ? 'var(--text-tertiary)' : 'var(--error)', fontSize: '12px' }}
+                                                disabled={deletingIds.has(r.id)}
+                                                onClick={() => removeRelationship(r.id)}
+                                            >
+                                                {deletingIds.has(r.id) ? t('common.deleting', 'Deleting...') : t('common.delete')}
+                                            </button>
                                         </div>
                                     )}
                                 </div>
@@ -949,7 +1182,14 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                 {agentRelationships.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {agentRelationships.map((r: any) => (
-                            <div key={r.id} style={{ borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)', background: 'rgba(16,185,129,0.05)', overflow: 'hidden' }}>
+                            <div key={r.id} style={{
+                                    borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)',
+                                    background: 'rgba(16,185,129,0.05)', overflow: 'hidden',
+                                    // Fade out row while delete is in-flight
+                                    opacity: deletingIds.has(r.id) ? 0.4 : 1,
+                                    transition: 'opacity 0.2s ease',
+                                    pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
+                                }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: 0 }}>A</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -960,7 +1200,14 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                                     {!readOnly && editingAgentId !== r.id && (
                                         <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
                                             <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => startEditAgentRelationship(r)}>{t('common.edit', 'Edit')}</button>
-                                            <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={() => removeAgentRelationship(r.id)}>{t('common.delete')}</button>
+                                            <button
+                                                className="btn btn-ghost"
+                                                style={{ color: deletingIds.has(r.id) ? 'var(--text-tertiary)' : 'var(--error)', fontSize: '12px' }}
+                                                disabled={deletingIds.has(r.id)}
+                                                onClick={() => removeAgentRelationship(r.id)}
+                                            >
+                                                {deletingIds.has(r.id) ? t('common.deleting', 'Deleting...') : t('common.delete')}
+                                            </button>
                                         </div>
                                     )}
                                 </div>
@@ -1131,6 +1378,11 @@ function AgentDetailInner() {
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
     const isAdmin = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin';
+    /** Chat sidebar: who may list all sessions & read others' threads (matches backend scope=all). */
+    const canViewAllAgentChatSessions =
+        currentUser?.role === 'platform_admin' ||
+        currentUser?.role === 'org_admin' ||
+        currentUser?.role === 'agent_admin';
     type SessionRuntimeKey = string;
     const wsMapRef = useRef<Record<SessionRuntimeKey, WebSocket>>({});
     const reconnectTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setTimeout> | null>>({});
@@ -1165,14 +1417,99 @@ function AgentDetailInner() {
         sessionUiStateRef.current[key] = { ...prev, ...next };
     };
 
-    const isWritableSession = (sess: any) => {
+    /** Normalize IDs — API/JSON may use number vs string; loose equality was breaking "own session" detection. */
+    const sessionUserIdStr = (s: any) => (s?.user_id == null ? '' : String(s.user_id));
+    const viewerUserIdStr = () => (currentUser?.id == null ? '' : String(currentUser.id));
+
+    /** Ensure session shape from POST/list so P2P "mine" is never mistaken for read-only or agent thread. */
+    const normalizeChatSession = (sess: any) => {
+        if (!sess || typeof sess !== 'object') return sess;
+        const vu = viewerUserIdStr();
+        const rawUid =
+            sess.user_id != null && String(sess.user_id).trim() !== '' ? String(sess.user_id) : vu;
+        return {
+            ...sess,
+            id: String(sess.id),
+            agent_id: sess.agent_id != null ? String(sess.agent_id) : sess.agent_id,
+            user_id: rawUid,
+            source_channel:
+                typeof sess.source_channel === 'string' && sess.source_channel.trim()
+                    ? sess.source_channel
+                    : 'web',
+            participant_type:
+                typeof sess.participant_type === 'string' && sess.participant_type.trim()
+                    ? sess.participant_type
+                    : 'user',
+            is_group: Boolean(sess.is_group),
+        };
+    };
+
+    const isWritableSession = (sess: any, scopeOverride: 'mine' | 'all' = chatScope) => {
         if (!sess) return false;
-        const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
-        if (isAgentSession) return false;
-        if (sess.user_id && currentUser && sess.user_id !== String(currentUser.id)) return false;
+        const sc = String(sess.source_channel || 'web').toLowerCase();
+        const pt = String(sess.participant_type || 'user').toLowerCase();
+        if (sc === 'agent' || pt === 'agent') return false;
+        if (sess.is_group) return false;
+        if (canViewAllAgentChatSessions && scopeOverride === 'all') return false;
+        const su = sessionUserIdStr(sess);
+        const vu = viewerUserIdStr();
+        if (su && vu && su !== vu) return false;
         return true;
     };
 
+    const isViewingOtherUsersSessions = canViewAllAgentChatSessions && chatScope === 'all';
+
+    /** Sessions in scope=all that are not the current viewer's own P2P rows (for admin「其他用户」tab). */
+    const otherUsersSessions = useMemo(() => {
+        const vu = viewerUserIdStr();
+        return allSessions.filter((s: any) => {
+            const su = sessionUserIdStr(s);
+            if (vu && su === vu) return false;
+            return true;
+        });
+    }, [allSessions, currentUser?.id]);
+
+    const otherUserPickerOptions = useMemo(() => {
+        const m = new Map<string, string>();
+        for (const s of otherUsersSessions) {
+            const uid = sessionUserIdStr(s);
+            if (!uid) continue;
+            if (!m.has(uid)) m.set(uid, String(s.username || s.user_id || uid));
+        }
+        return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    }, [otherUsersSessions]);
+
+    const othersListForPicker = useMemo(() => {
+        if (!allUserFilter) return otherUsersSessions;
+        return otherUsersSessions.filter((s: any) => sessionUserIdStr(s) === allUserFilter);
+    }, [otherUsersSessions, allUserFilter]);
+
+    useEffect(() => {
+        if (!canViewAllAgentChatSessions && chatScope === 'all') setChatScope('mine');
+    }, [canViewAllAgentChatSessions, chatScope]);
+
+    const clearChatSelection = () => {
+        activeSessionIdRef.current = null;
+        setActiveSession(null);
+        setChatMessages([]);
+        setHistoryMsgs([]);
+        setWsConnected(false);
+        setIsStreaming(false);
+        setIsWaiting(false);
+    };
+
+    const onAdminTabMine = () => {
+        setChatScope('mine');
+        setAllUserFilter('');
+        if (activeSession && sessionUserIdStr(activeSession) !== viewerUserIdStr()) clearChatSelection();
+    };
+
+    const onAdminTabOthers = () => {
+        setChatScope('all');
+        setAllUserFilter('');
+        fetchAllSessions();
+        if (activeSession && sessionUserIdStr(activeSession) === viewerUserIdStr()) clearChatSelection();
+    };
     const syncActiveSocketState = (sess: any | null = activeSession, agentId: string | undefined = id) => {
         if (!sess || !agentId) {
             wsRef.current = null;
@@ -1192,7 +1529,7 @@ function AgentDetailInner() {
             const tkn = localStorage.getItem('token');
             const res = await fetch(`/api/agents/${agentId}/sessions?scope=mine`, { headers: { Authorization: `Bearer ${tkn}` } });
             if (res.ok) {
-                const data = await res.json();
+                const data = (await res.json()).map((row: any) => normalizeChatSession(row));
                 if (currentAgentIdRef.current === agentId) setSessions(data);
                 if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
                 return data;
@@ -1203,22 +1540,32 @@ function AgentDetailInner() {
     };
 
     const fetchAllSessions = async () => {
-        if (!id) return;
+        if (!id || !canViewAllAgentChatSessions) return;
         setAllSessionsLoading(true);
         try {
             const tkn = localStorage.getItem('token');
             const res = await fetch(`/api/agents/${id}/sessions?scope=all`, { headers: { Authorization: `Bearer ${tkn}` } });
+            if (!currentAgentIdRef.current || currentAgentIdRef.current !== id) return;
             if (res.ok) {
-                const all = await res.json();
-                if (currentAgentIdRef.current === id) {
-                    setAllSessions(all.filter((s: any) => s.source_channel !== 'trigger'));
+                const all = (await res.json())
+                    .filter((s: any) => String(s.source_channel || 'direct').toLowerCase() !== 'trigger')
+                    .map((row: any) => normalizeChatSession(row));
+                setAllSessions(all);
+            } else {
+                setAllSessions([]);
+                if (res.status === 403) {
+                    console.warn('[chat] scope=all sessions forbidden (need org/platform/agent admin)');
                 }
             }
-        } catch { }
-        setAllSessionsLoading(false);
+        } catch {
+            if (currentAgentIdRef.current === id) setAllSessions([]);
+        } finally {
+            setAllSessionsLoading(false);
+        }
     };
 
-    const selectSession = async (sess: any) => {
+    const selectSession = async (rawSess: any, scopeOverride: 'mine' | 'all' = chatScope) => {
+        const sess = normalizeChatSession(rawSess);
         const targetAgentId = id;
         if (!targetAgentId) return;
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, String(sess.id));
@@ -1248,7 +1595,6 @@ function AgentDetailInner() {
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sess.id) return;
-            const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
             const preParsed = msgs.map((m: any) => parseChatMsg({
                 role: m.role, content: m.content || '',
                 ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult }),
@@ -1257,7 +1603,7 @@ function AgentDetailInner() {
                 ...(m.id && { id: m.id }),
             }));
 
-            if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
+            if (isWritableSession(sess, scopeOverride)) {
                 setChatMessages(preParsed);
             } else {
                 setHistoryMsgs(preParsed);
@@ -1277,11 +1623,12 @@ function AgentDetailInner() {
                 body: JSON.stringify({}),
             });
             if (res.ok) {
-                const newSess = await res.json();
-                setSessions(prev => [newSess, ...prev]);
+                const newSess = normalizeChatSession(await res.json());
+                setChatScope('mine');
+                setSessions((prev) => [newSess, ...prev]);
                 setIsStreaming(false);
                 setIsWaiting(false);
-                await selectSession(newSess);
+                await selectSession(newSess, 'mine');
             } else {
                 const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
                 console.error('Failed to create session:', err);
@@ -1310,7 +1657,7 @@ function AgentDetailInner() {
                 setIsWaiting(false);
             }
             await fetchMySessions(false, id);
-            await fetchAllSessions();
+            if (canViewAllAgentChatSessions) await fetchAllSessions();
         } catch (e: any) {
             alert(e.message || 'Delete failed');
         }
@@ -1366,6 +1713,7 @@ function AgentDetailInner() {
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const chatInputRef = useRef<HTMLTextAreaElement>(null);
+    const chatInputAreaRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Settings form local state
@@ -1474,18 +1822,48 @@ function AgentDetailInner() {
         setWsConnected(false);
         wsRef.current = null;
         setChatScope('mine');
+        setAllUserFilter('');
+        setSessions([]);
+        setAllSessions([]);
         setAgentExpired(false);
         settingsInitRef.current = false;
     }, [id]);
+
+    // Switching login account or token must not leave another user's sessions/messages in memory.
+    useEffect(() => {
+        setSessions([]);
+        setAllSessions([]);
+        setAllUserFilter('');
+        setChatScope('mine');
+        sessionMsgAbortRef.current?.abort();
+        activeSessionIdRef.current = null;
+        setActiveSession(null);
+        setChatMessages([]);
+        setHistoryMsgs([]);
+        setWsConnected(false);
+        setIsStreaming(false);
+        setIsWaiting(false);
+        setSessionsLoading(false);
+        setAllSessionsLoading(false);
+        Object.keys(reconnectDisabledRef.current).forEach((k) => {
+            reconnectDisabledRef.current[k] = true;
+        });
+        Object.keys(wsMapRef.current).forEach((k) => {
+            const ws = wsMapRef.current[k];
+            if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+        });
+        wsMapRef.current = {};
+        wsRef.current = null;
+    }, [currentUser?.id, token]);
 
     useEffect(() => {
         if (!id || !token || activeTab !== 'chat') return;
         fetchMySessions(false, id).then((data: any) => {
             if (currentAgentIdRef.current !== id) return;
             setSessionsLoading(false);
-            if (data && data.length > 0) selectSession(data[0]);
+            if (data && data.length > 0) selectSession(data[0], 'mine');
         });
-    }, [id, token, activeTab]);
+    }, [id, token, activeTab, currentUser?.id]);
 
     const ensureSessionSocket = (sess: any, agentId: string, authToken: string) => {
         const sessionId = String(sess.id);
@@ -1656,7 +2034,7 @@ function AgentDetailInner() {
         }
         ensureSessionSocket(activeSession, id, token);
         syncActiveSocketState(activeSession, id);
-    }, [id, token, activeTab, activeSession?.id]);
+    }, [id, token, activeTab, activeSession?.id, chatScope, canViewAllAgentChatSessions]);
 
     useEffect(() => {
         return () => {
@@ -1675,6 +2053,7 @@ function AgentDetailInner() {
     const isNearBottom = useRef(true);
     const isFirstLoad = useRef(true);
     const [showScrollBtn, setShowScrollBtn] = useState(false);
+    const [chatScrollBtnBottom, setChatScrollBtnBottom] = useState(96);
     // Read-only history scroll-to-bottom
     const historyContainerRef = useRef<HTMLDivElement>(null);
     const [showHistoryScrollBtn, setShowHistoryScrollBtn] = useState(false);
@@ -1701,10 +2080,23 @@ function AgentDetailInner() {
         return () => clearTimeout(timer);
     }, [historyMsgs, activeSession?.id]);
     // Memoized component for each chat message to avoid re-renders while typing
-    const ChatMessageItem = React.useMemo(() => React.memo(({ msg, i, isLeft, t }: { msg: any, i: number, isLeft: boolean, t: any }) => {
+    const ChatMessageItem = React.useMemo(() => React.memo(({
+        msg, i, isLeft, t, senderLabel, avatarText, forceSenderLabel = false,
+    }: {
+        msg: any;
+        i: number;
+        isLeft: boolean;
+        t: any;
+        senderLabel?: string;
+        avatarText?: string;
+        forceSenderLabel?: boolean;
+    }) => {
         const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
         const fi = fe === 'pdf' ? '📄' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '📊' : (fe === 'docx' || fe === 'doc') ? '📝' : '📎';
         const isImage = msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
+        const resolvedSenderLabel = msg.sender_name || senderLabel;
+        const resolvedAvatarText = avatarText || (resolvedSenderLabel ? resolvedSenderLabel[0] : (isLeft ? 'A' : 'U'));
+        const showSenderLabel = !!resolvedSenderLabel && (forceSenderLabel || !!msg.sender_name);
 
         const timestampHtml = msg.timestamp ? (() => {
             const d = new Date(msg.timestamp);
@@ -1725,9 +2117,9 @@ function AgentDetailInner() {
 
         return (
             <div key={i} style={{ display: 'flex', flexDirection: isLeft ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
-                <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{isLeft ? (msg.sender_name ? msg.sender_name[0] : 'A') : 'U'}</div>
+                <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{resolvedAvatarText}</div>
                 <div style={{ maxWidth: '75%', padding: '8px 12px', borderRadius: '12px', background: isLeft ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.1)', fontSize: '13px', lineHeight: '1.5', wordBreak: 'break-word' }}>
-                    {isLeft && msg.sender_name && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600 }}>🤖 {msg.sender_name}</div>}
+                    {showSenderLabel && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600 }}>{resolvedSenderLabel}</div>}
                     {isImage ? (
                         <div style={{ marginBottom: '4px' }}>
                             <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} loading="lazy" />
@@ -1775,8 +2167,6 @@ function AgentDetailInner() {
             // First load: instant jump to bottom, no animation
             chatEndRef.current.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
             isFirstLoad.current = false;
-            // Auto-focus the input
-            setTimeout(() => chatInputRef.current?.focus(), 100);
             return;
         }
         if (isNearBottom.current) {
@@ -1784,13 +2174,20 @@ function AgentDetailInner() {
         }
     }, [chatMessages]);
 
-    // Auto-focus input when switching sessions and connection is ready
     useEffect(() => {
-        if (activeSession && activeTab === 'chat' && wsConnected) {
-            // Tiny timeout to ensure React has enabled the textarea before focusing
-            setTimeout(() => chatInputRef.current?.focus(), 50);
-        }
-    }, [activeSession?.id, activeTab, wsConnected]);
+        const gapAboveComposer = 14;
+        const updateScrollButtonOffset = () => {
+            const composerAreaHeight = chatInputAreaRef.current?.offsetHeight ?? 82;
+            setChatScrollBtnBottom(composerAreaHeight + gapAboveComposer);
+        };
+
+        updateScrollButtonOffset();
+        if (typeof ResizeObserver === 'undefined' || !chatInputAreaRef.current) return;
+
+        const observer = new ResizeObserver(() => updateScrollButtonOffset());
+        observer.observe(chatInputAreaRef.current);
+        return () => observer.disconnect();
+    }, [activeSession?.id, activeTab, chatUploadDrafts.length, attachedFiles.length]);
 
     const sendChatMsg = () => {
         if (!id || !activeSession?.id) return;
@@ -1848,6 +2245,10 @@ function AgentDetailInner() {
         }));
 
         setChatInput('');
+        // Reset textarea height after clearing content
+        if (chatInputRef.current) {
+            chatInputRef.current.style.height = 'auto';
+        }
         setAttachedFiles([]);
     };
 
@@ -3421,7 +3822,7 @@ function AgentDetailInner() {
                                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillModal(false)}>
                                         <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                                <h3>📦 {t('agent.skills.importPreset', 'Import from Presets')}</h3>
+                                                <h3>{t('agent.skills.importPreset', 'Import from Presets')}</h3>
                                                 <button onClick={() => setShowImportSkillModal(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
                                             </div>
                                             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px' }}>
@@ -3514,7 +3915,18 @@ function AgentDetailInner() {
 
                 {
                     activeTab === 'chat' && (
-                        <div style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)' }}>
+                        <div
+                            style={{
+                                display: 'flex',
+                                gap: 0,
+                                flex: 1,
+                                minHeight: 0,
+                                height: 'calc(100vh - 206px)',
+                                border: '1px solid color-mix(in srgb, var(--border-subtle) 55%, var(--bg-primary))',
+                                borderRadius: '12px',
+                                overflow: 'hidden',
+                            }}
+                        >
                             {/* ── Left: session sidebar ── */}
                             <div className={`session-sidebar ${sessionListCollapsed ? 'collapsed' : ''}`} style={{ width: sessionListCollapsed ? '0px' : '220px', transition: 'width 0.2s ease', flexShrink: 0, borderRight: sessionListCollapsed ? 'none' : '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                                 {/* Tab row */}
@@ -3536,61 +3948,43 @@ function AgentDetailInner() {
                                     )}
                                 </div>
 
-                                {/* Actions row */}
-                                {chatScope === 'mine' && (
-                                    <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
-                                        <button onClick={createNewSession}
-                                            style={{ width: '100%', padding: '5px 8px', background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '6px' }}
-                                            onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-secondary)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-                                            onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-secondary)'; }}>
-                                            + {t('agent.chat.newSession')}
-                                        </button>
+                                {canViewAllAgentChatSessions && (
+                                    <div className="tabs session-sidebar-session-tabs" role="tablist">
+                                        <div
+                                            role="tab"
+                                            tabIndex={0}
+                                            aria-selected={chatScope === 'mine'}
+                                            className={`tab ${chatScope === 'mine' ? 'active' : ''}`}
+                                            onClick={onAdminTabMine}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    onAdminTabMine();
+                                                }
+                                            }}
+                                        >
+                                            {t('agent.chat.mySessions')}
+                                        </div>
+                                        <div
+                                            role="tab"
+                                            tabIndex={0}
+                                            aria-selected={chatScope === 'all'}
+                                            className={`tab ${chatScope === 'all' ? 'active' : ''}`}
+                                            onClick={onAdminTabOthers}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    onAdminTabOthers();
+                                                }
+                                            }}
+                                        >
+                                            {t('agent.chat.otherUsersTab')}
+                                        </div>
                                     </div>
                                 )}
 
-                                {/* Session list */}
-                                <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
-                                    {chatScope === 'mine' ? (
-                                        sessionsLoading ? (
-                                            <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>
-                                        ) : sessions.length === 0 ? (
-                                            <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.chat.noSessionsYet')}<br />{t('agent.chat.clickToStart')}</div>
-                                        ) : sessions.map((s: any) => {
-                                            const isActive = activeSession?.id === s.id;
-                                            const channelLabel: Record<string, string> = {
-                                                feishu: t('common.channels.feishu'),
-                                                discord: t('common.channels.discord'),
-                                                slack: t('common.channels.slack'),
-                                                dingtalk: t('common.channels.dingtalk'),
-                                                wecom: t('common.channels.wecom'),
-                                            };
-                                            const chLabel = channelLabel[s.source_channel];
-                                            return (
-                                                <div key={s.id} onClick={() => selectSession(s)}
-                                                    className="session-item"
-                                                    style={{ padding: '8px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', marginBottom: '1px', position: 'relative' }}
-                                                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0.5'; }}
-                                                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0'; }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
-                                                        <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.title}</div>
-                                                        {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
-                                                    </div>
-                                                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                        {s.last_message_at
-                                                            ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                                                            : new Date(s.created_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
-                                                        {s.message_count > 0 && <span style={{ marginLeft: 'auto' }}>{s.message_count}</span>}
-                                                    </div>
-                                                    <button className="del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
-                                                        style={{ position: 'absolute', top: '4px', right: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', opacity: 0, fontSize: '14px', color: 'var(--text-tertiary)', lineHeight: 1, transition: 'opacity 0.15s' }}
-                                                        onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--status-error)'; }}
-                                                        onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
-                                                        title={t('chat.deleteSession', 'Delete session')}>×</button>
-                                                </div>
-                                            );
-                                        })
-                                    ) : (
-                                        /* All Users tab — user filter dropdown + flat list */
+                                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                    {(!canViewAllAgentChatSessions || chatScope === 'mine') ? (
                                         <>
                                             {/* User filter dropdown */}
                                             <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
@@ -3615,43 +4009,37 @@ function AgentDetailInner() {
                                                         </div>
                                                     ))}
                                                 </div>
-                                            ) : allSessions.length === 0 ? (
-                                                <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('agent.chat.noSessionsYet')}</div>
-                                            ) : null}
-                                            {/* Filtered session list */}
-                                            {!allSessionsLoading && allSessions
-                                                .filter((s: any) => !allUserFilter || (s.username || s.user_id) === allUserFilter)
-                                                .map((s: any) => {
-                                                    const isActive = activeSession?.id === s.id;
+                                            )}
+                                            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 0' }}>
+                                                {sessionsLoading ? (
+                                                    <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>
+                                                ) : sessions.length === 0 ? (
+                                                    <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.chat.noSessionsYet')}<br />{t('agent.chat.clickToStart')}</div>
+                                                ) : sessions.map((s: any) => {
+                                                    const isActive = activeSession?.id === s.id && (chatScope === 'mine' || !canViewAllAgentChatSessions);
+                                                    const channelLabel: Record<string, string> = {
+                                                        feishu: t('common.channels.feishu'),
+                                                        discord: t('common.channels.discord'),
+                                                        slack: t('common.channels.slack'),
+                                                        dingtalk: t('common.channels.dingtalk'),
+                                                        wecom: t('common.channels.wecom'),
+                                                    };
+                                                    const chLabel = channelLabel[s.source_channel];
                                                     return (
-                                                        <div key={s.id} onClick={() => selectSession(s)}
+                                                        <div key={s.id} onClick={() => { setChatScope('mine'); selectSession(s, 'mine'); }}
                                                             className="session-item"
-                                                            style={{ padding: '6px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', position: 'relative' }}
+                                                            style={{ padding: '8px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', marginBottom: '1px', position: 'relative' }}
                                                             onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0.5'; }}
                                                             onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0'; }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '1px' }}>
-                                                                <div style={{ fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1 }}>{s.title}</div>
-                                                                {({
-                                                                    feishu: t('common.channels.feishu'),
-                                                                    discord: t('common.channels.discord'),
-                                                                    slack: t('common.channels.slack'),
-                                                                    dingtalk: t('common.channels.dingtalk'),
-                                                                    wecom: t('common.channels.wecom'),
-                                                                } as Record<string, string>)[s.source_channel] && (
-                                                                        <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>
-                                                                            {({
-                                                                                feishu: t('common.channels.feishu'),
-                                                                                discord: t('common.channels.discord'),
-                                                                                slack: t('common.channels.slack'),
-                                                                                dingtalk: t('common.channels.dingtalk'),
-                                                                                wecom: t('common.channels.wecom'),
-                                                                            } as Record<string, string>)[s.source_channel]}
-                                                                        </span>
-                                                                    )}
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
+                                                                <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.title}</div>
+                                                                {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
                                                             </div>
-                                                            <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', gap: '4px' }}>
-                                                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.username || ''}</span>
-                                                                <span style={{ flexShrink: 0 }}>{s.last_message_at ? new Date(s.last_message_at).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}{s.message_count > 0 ? ` · ${s.message_count}` : ''}</span>
+                                                            <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                                {s.last_message_at
+                                                                    ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                                                    : new Date(s.created_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
+                                                                {s.message_count > 0 && <span style={{ marginLeft: 'auto' }}>{s.message_count}</span>}
                                                             </div>
                                                             <button className="del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
                                                                 style={{ position: 'absolute', top: '4px', right: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', opacity: 0, fontSize: '14px', color: 'var(--text-tertiary)', lineHeight: 1, transition: 'opacity 0.15s' }}
@@ -3661,6 +4049,64 @@ function AgentDetailInner() {
                                                         </div>
                                                     );
                                                 })}
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div style={{ padding: '0 12px 8px', flexShrink: 0 }}>
+                                                <select
+                                                    value={allUserFilter}
+                                                    onChange={(e) => setAllUserFilter(e.target.value)}
+                                                    style={{ width: '100%', height: '28px', padding: '0 8px', fontSize: '12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer' }}
+                                                >
+                                                    <option value="">{t('agent.chat.allUsers')}</option>
+                                                    {otherUserPickerOptions.map(([uid, label]) => (
+                                                        <option key={uid} value={uid}>{label}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 0' }}>
+                                                {allSessionsLoading ? (
+                                                    <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                        {[...Array(3)].map((_, i) => (
+                                                            <div key={i} style={{ padding: '6px 0', animation: 'pulse 1.5s ease-in-out infinite', animationDelay: `${i * 0.1}s` }}>
+                                                                <div style={{ height: '12px', width: `${70 + (i % 3) * 10}%`, background: 'var(--bg-tertiary)', borderRadius: '4px', marginBottom: '6px' }} />
+                                                                <div style={{ height: '10px', width: `${40 + (i % 4) * 8}%`, background: 'var(--bg-tertiary)', borderRadius: '3px', opacity: 0.6 }} />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : othersListForPicker.length === 0 ? (
+                                                    <div style={{ padding: '16px 12px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('agent.chat.noSessionsYet')}</div>
+                                                ) : (
+                                                    othersListForPicker.map((s: any) => {
+                                                        const isActive = activeSession?.id === s.id && chatScope === 'all';
+                                                        const channelLabel: Record<string, string> = {
+                                                            feishu: t('common.channels.feishu'),
+                                                            discord: t('common.channels.discord'),
+                                                            slack: t('common.channels.slack'),
+                                                            dingtalk: t('common.channels.dingtalk'),
+                                                            wecom: t('common.channels.wecom'),
+                                                        };
+                                                        const chLabel = channelLabel[s.source_channel];
+                                                        return (
+                                                            <div key={s.id} onClick={() => selectSession(s, 'all')}
+                                                                className="session-item"
+                                                                style={{ padding: '6px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', position: 'relative' }}
+                                                                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; }}
+                                                                onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '1px' }}>
+                                                                    <div style={{ fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1 }}>{s.title}</div>
+                                                                    {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
+                                                                </div>
+                                                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', gap: '4px' }}>
+                                                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.username || ''}</span>
+                                                                    <span style={{ flexShrink: 0 }}>{s.last_message_at ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}{s.message_count > 0 ? ` · ${s.message_count}` : ''}</span>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
                                         </>
                                     )}
                                 </div>
@@ -3677,19 +4123,35 @@ function AgentDetailInner() {
                                 {!activeSession ? (
                                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
                                         <div>{t('agent.chat.noSessionSelected')}</div>
-                                        <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
+                                        {!isViewingOtherUsersSessions && (
+                                            <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
+                                        )}
                                     </div>
-                                ) : (activeSession.user_id && currentUser && activeSession.user_id !== String(currentUser.id)) || activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent' ? (
+                                ) : !isWritableSession(activeSession) ? (
                                     /* ── Read-only history view (other user's session or agent-to-agent) ── */
                                     <>
-                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px', padding: '4px 8px', background: 'var(--bg-secondary)', borderRadius: '4px', display: 'inline-block' }}>
-                                                {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
-                                            </div>
+                                        <div
+                                            style={{
+                                                position: 'absolute',
+                                                top: '12px',
+                                                left: sessionListCollapsed ? '52px' : '16px',
+                                                zIndex: 10,
+                                                fontSize: '11px',
+                                                color: 'var(--text-tertiary)',
+                                                padding: '4px 8px',
+                                                background: 'var(--bg-secondary)',
+                                                borderRadius: '4px',
+                                                pointerEvents: 'none',
+                                            }}
+                                        >
+                                            {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                                        </div>
+                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
                                             {(() => {
                                                 // For A2A sessions, determine which participant is "this agent" (left side)
                                                 // Use agent.name matching against sender_name from messages
                                                 const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
+                                                const isHumanReadonly = !isA2A && !activeSession.is_group;
                                                 const thisAgentName = (agent as any)?.name;
                                                 // Find this agent's participant_id from loaded messages
                                                 const thisAgentPid = isA2A && thisAgentName
@@ -3748,13 +4210,22 @@ function AgentDetailInner() {
                                                         return null;
                                                     }
                                                     return (
-                                                        <ChatMessageItem key={i} msg={m} i={i} isLeft={isLeft} t={t} />
+                                                        <ChatMessageItem
+                                                            key={i}
+                                                            msg={m}
+                                                            i={i}
+                                                            isLeft={isLeft}
+                                                            t={t}
+                                                            senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
+                                                            avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
+                                                            forceSenderLabel={isHumanReadonly}
+                                                        />
                                                     );
                                                 });
                                             })()}
                                         </div>
                                         {showHistoryScrollBtn && (
-                                            <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                            <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
                                         )}
                                     </>
                                 ) : (
@@ -3768,54 +4239,99 @@ function AgentDetailInner() {
                                                     <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                                                 </div>
                                             )}
-                                            {chatMessages.map((msg, i) => {
-                                                if (msg.role === 'tool_call') {
-                                                    return (
-                                                        <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
-                                                            <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
-                                                                <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
-                                                                    <span style={{ fontSize: '13px' }}>{msg.toolStatus === 'running' ? '⏳' : '⚡'}</span>
-                                                                    <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{msg.toolName}</span>
-                                                                    {msg.toolArgs && Object.keys(msg.toolArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(msg.toolArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
-                                                                    {msg.toolStatus === 'running' && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', marginLeft: 'auto' }}>{t('common.loading')}</span>}
-                                                                </summary>
-                                                                {msg.toolResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{msg.toolResult}</div></div>}
-                                                            </details>
-                                                        </div>
-                                                    );
+                                            {(() => {
+                                                // Pre-group consecutive tool_call messages into blocks.
+                                                // Non-tool messages are emitted as-is.
+                                                // A user or assistant text message breaks a group.
+                                                const grouped: Array<
+                                                    | { type: 'tool_group'; calls: ToolCallItem[]; key: number }
+                                                    | { type: 'msg'; msg: any; i: number }
+                                                > = [];
+                                                let currentGroup: ToolCallItem[] | null = null;
+                                                let groupStartKey = 0;
+
+                                                for (let i = 0; i < chatMessages.length; i++) {
+                                                    const msg = chatMessages[i];
+                                                    if (msg.role === 'tool_call') {
+                                                        const item: ToolCallItem = {
+                                                            name: msg.toolName || 'tool',
+                                                            args: msg.toolArgs || {},
+                                                            status: msg.toolStatus === 'running' ? 'running' : 'done',
+                                                            result: msg.toolResult || undefined,
+                                                        };
+                                                        if (!currentGroup) {
+                                                            // Start a new group
+                                                            currentGroup = [item];
+                                                            groupStartKey = i;
+                                                        } else {
+                                                            currentGroup.push(item);
+                                                        }
+                                                    } else {
+                                                        // Flush any pending tool group first
+                                                        if (currentGroup) {
+                                                            grouped.push({ type: 'tool_group', calls: currentGroup, key: groupStartKey });
+                                                            currentGroup = null;
+                                                        }
+                                                        grouped.push({ type: 'msg', msg, i });
+                                                    }
                                                 }
-                                                {/* Assistant message with no text content: show inline thinking or skip */ }
-                                                if (msg.role === 'assistant' && !msg.content?.trim()) {
-                                                    if (msg.thinking) {
+                                                // Flush trailing group
+                                                if (currentGroup) {
+                                                    grouped.push({ type: 'tool_group', calls: currentGroup, key: groupStartKey });
+                                                }
+
+                                                return grouped.map((entry) => {
+                                                    if (entry.type === 'tool_group') {
                                                         return (
-                                                            <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-                                                                <details style={{
-                                                                    fontSize: '12px',
-                                                                    background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
-                                                                    border: '1px solid rgba(147, 130, 220, 0.15)',
-                                                                }}>
-                                                                    <summary style={{
-                                                                        padding: '6px 10px', cursor: 'pointer',
-                                                                        color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
-                                                                        userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
-                                                                    }}>Thinking</summary>
-                                                                    <div style={{
-                                                                        padding: '4px 10px 8px',
-                                                                        fontSize: '12px', lineHeight: '1.6',
-                                                                        color: 'var(--text-secondary)',
-                                                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                                                        maxHeight: '300px', overflow: 'auto',
-                                                                    }}>{msg.thinking}</div>
-                                                                </details>
-                                                            </div>
+                                                            <AgentChatToolChain
+                                                                key={`tg-${entry.key}`}
+                                                                calls={entry.calls}
+                                                                t={t}
+                                                            />
                                                         );
                                                     }
-                                                    return null;
-                                                }
-                                                return (
-                                                    <ChatMessageItem key={i} msg={msg} i={i} isLeft={msg.role === 'assistant'} t={t} />
-                                                );
-                                            })}
+                                                    const { msg, i } = entry;
+                                                    {/* Assistant message with no text content: show inline thinking or skip */}
+                                                    if (msg.role === 'assistant' && !msg.content?.trim()) {
+                                                        if (msg.thinking) {
+                                                            return (
+                                                                <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
+                                                                    <details style={{
+                                                                        fontSize: '12px',
+                                                                        background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
+                                                                        border: '1px solid rgba(147, 130, 220, 0.15)',
+                                                                    }}>
+                                                                        <summary style={{
+                                                                            padding: '6px 10px', cursor: 'pointer',
+                                                                            color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
+                                                                            userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
+                                                                        }}>Thinking</summary>
+                                                                        <div style={{
+                                                                            padding: '4px 10px 8px',
+                                                                            fontSize: '12px', lineHeight: '1.6',
+                                                                            color: 'var(--text-secondary)',
+                                                                            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                                                            maxHeight: '300px', overflow: 'auto',
+                                                                        }}>{msg.thinking}</div>
+                                                                    </details>
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    }
+                                                    return (
+                                                        <ChatMessageItem
+                                                            key={i}
+                                                            msg={msg}
+                                                            i={i}
+                                                            isLeft={msg.role === 'assistant'}
+                                                            t={t}
+                                                            senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
+                                                            avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
+                                                        />
+                                                    );
+                                                });
+                                            })()}
                                             {isWaiting && (
                                                 <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
                                                     <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
@@ -3832,20 +4348,20 @@ function AgentDetailInner() {
                                             <div ref={chatEndRef} />
                                         </div>
                                         {showScrollBtn && (
-                                            <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: '70px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                            <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: `${chatScrollBtnBottom}px`, right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
                                         )}
                                         {agentExpired ? (
                                             <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
                                                 <span>u23f8</span>
                                                 <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
                                             </div>
-                                        ) : !wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? (
+                                        ) : !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
                                             <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                                 <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
                                                 Connecting...
                                             </div>
                                         ) : null}
-                                        <div className="chat-input-area" style={{ flexShrink: 0 }}>
+                                        <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
                                             <div className="chat-composer">
                                             {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
                                                 <div className="chat-composer-attachments">
@@ -3908,7 +4424,13 @@ function AgentDetailInner() {
                                                     ref={chatInputRef}
                                                     className="chat-input"
                                                     value={chatInput}
-                                                    onChange={e => setChatInput(e.target.value)}
+                                                    onChange={e => {
+                                                        setChatInput(e.target.value);
+                                                        // Auto-grow: reset height then expand to scrollHeight
+                                                        const el = e.target;
+                                                        el.style.height = 'auto';
+                                                        el.style.height = el.scrollHeight + 'px';
+                                                    }}
                                                     onKeyDown={e => {
                                                         // Enter sends the message; Shift+Enter inserts a newline
                                                         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
@@ -3917,10 +4439,9 @@ function AgentDetailInner() {
                                                         }
                                                     }}
                                                     onPaste={handlePaste}
-                                                    placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : t('chat.placeholder')}
+                                                    placeholder={!wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? 'Connecting...' : t('chat.placeholder')}
                                                     disabled={!wsConnected}
                                                     rows={1}
-                                                    autoFocus
                                                 />
                                             </div>
                                             <div className="chat-composer-toolbar">

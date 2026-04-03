@@ -97,7 +97,11 @@ class User(Base):
     quota_agent_ttl_hours: Mapped[int] = mapped_column(Integer, default=48)
 
     # Relationships
-    identity: Mapped["Identity"] = relationship(back_populates="tenant_users")
+    # lazy="selectin" is required because association_proxy fields (email, username,
+    # password_hash, email_verified, primary_mobile) delegate to this relationship.
+    # Without eager loading, any proxy access in an async context triggers a synchronous
+    # IO call inside a greenlet, raising sqlalchemy.exc.MissingGreenlet.
+    identity: Mapped["Identity"] = relationship(back_populates="tenant_users", lazy="selectin")
 
     # Association proxies for backward compatibility
     email = association_proxy("identity", "email")

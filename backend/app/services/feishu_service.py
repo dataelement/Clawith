@@ -1,6 +1,7 @@
 """Feishu (Lark) OAuth and API integration service."""
 
 import httpx
+from loguru import logger
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,41 @@ class FeishuService:
         self.app_id = settings.FEISHU_APP_ID
         self.app_secret = settings.FEISHU_APP_SECRET
         self._app_access_token: str | None = None
+
+    @staticmethod
+    def _parse_api_response(
+        resp: httpx.Response,
+        *,
+        stage: str,
+        message_id: str | None = None,
+    ) -> dict:
+        """Parse Feishu API response and verify both HTTP status and business code."""
+        try:
+            data = resp.json()
+        except Exception as e:
+            logger.warning(
+                f"[Feishu] {stage} returned non-JSON response "
+                f"(http_status={resp.status_code}, message_id={message_id}): {e}"
+            )
+            raise RuntimeError(f"Feishu {stage} returned invalid JSON")
+
+        if resp.status_code >= 400:
+            logger.warning(
+                f"[Feishu] {stage} HTTP failure "
+                f"(http_status={resp.status_code}, message_id={message_id}, body={str(data)[:300]})"
+            )
+            raise RuntimeError(f"Feishu {stage} HTTP {resp.status_code}")
+
+        code = data.get("code")
+        msg = data.get("msg", "")
+        if code is not None and code != 0:
+            logger.warning(
+                f"[Feishu] {stage} business failure "
+                f"(message_id={message_id}, code={code}, msg={msg})"
+            )
+            raise RuntimeError(f"Feishu {stage} failed: code={code}, msg={msg}")
+
+        return data
 
     async def get_app_access_token(self) -> str:
         """Get or refresh the app-level access token. Deprecated: Use get_tenant_access_token instead."""
@@ -213,8 +249,16 @@ class FeishuService:
         return user, token
 
 
-    async def send_message(self, app_id: str, app_secret: str, receive_id: str,
-                           msg_type: str, content: str, receive_id_type: str = "open_id") -> dict:
+    async def send_message(
+        self,
+        app_id: str,
+        app_secret: str,
+        receive_id: str,
+        msg_type: str,
+        content: str,
+        receive_id_type: str = "open_id",
+        stage: str = "send_message",
+    ) -> dict:
         """Send a message via a specific Feishu bot (per-agent credentials).
 
         Args:
@@ -242,9 +286,17 @@ class FeishuService:
                 },
                 headers={"Authorization": f"Bearer {app_token}"},
             )
-            return resp.json()
+            data = self._parse_api_response(resp, stage=stage)
+            return data
 
-    async def patch_message(self, app_id: str, app_secret: str, message_id: str, content: str) -> dict:
+    async def patch_message(
+        self,
+        app_id: str,
+        app_secret: str,
+        message_id: str,
+        content: str,
+        stage: str = "patch_message",
+    ) -> dict:
         """Patch an existing message (e.g. updating an interactive card for streaming)."""
         async with httpx.AsyncClient() as client:
             token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
@@ -260,7 +312,8 @@ class FeishuService:
                 },
                 headers={"Authorization": f"Bearer {app_token}"},
             )
-            return resp.json()
+            data = self._parse_api_response(resp, stage=stage, message_id=message_id)
+            return data
 
     async def resolve_open_id(self, app_id: str, app_secret: str,
                                email: str | None = None, mobile: str | None = None) -> str | None:

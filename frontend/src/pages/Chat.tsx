@@ -52,6 +52,213 @@ interface Message {
     thinking?: string;
     imageUrl?: string;
     timestamp?: string;
+    _isToolGroup?: boolean;
+}
+
+// CSS keyframe for the pulse/breathing LED — injected once into <head>
+const PULSE_STYLE_ID = 'cw-tool-pulse-style';
+if (typeof document !== 'undefined' && !document.getElementById(PULSE_STYLE_ID)) {
+    const s = document.createElement('style');
+    s.id = PULSE_STYLE_ID;
+    s.textContent = `
+        @keyframes cw-pulse-led {
+            0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(99,102,241,0.6); }
+            50%       { opacity: 0.55; transform: scale(1.5); box-shadow: 0 0 0 4px rgba(99,102,241,0); }
+        }
+        .cw-running-led { animation: cw-pulse-led 1.4s ease-in-out infinite; }
+    `;
+    document.head.appendChild(s);
+}
+
+function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
+    const { t } = useTranslation();
+    const [expanded, setExpanded] = useState(false);
+    const count = toolCalls.length;
+
+    // Find the last tool without a result — that is the currently-executing one.
+    const activeIdx = (() => {
+        for (let i = toolCalls.length - 1; i >= 0; i--) {
+            if (!toolCalls[i].result) return i;
+        }
+        return -1; // -1 = all done
+    })();
+    const isRunning = activeIdx >= 0;
+    const activeTool = isRunning ? toolCalls[activeIdx] : null;
+
+    return (
+        <div style={{
+            borderRadius: '8px',
+            background: 'rgba(99,102,241,0.06)',
+            border: `1px solid ${isRunning ? 'rgba(99,102,241,0.32)' : 'rgba(99,102,241,0.18)'}`,
+            fontSize: '12px',
+            overflow: 'hidden',
+            marginBottom: '6px',
+            transition: 'border-color 0.3s ease',
+        }}>
+            {/* ── Header / toggle row ── */}
+            <button
+                onClick={() => setExpanded(v => !v)}
+                style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    width: '100%', display: 'flex', alignItems: 'center', gap: '6px',
+                    padding: '7px 10px',
+                    color: 'var(--accent-text, #818cf8)',
+                }}
+            >
+                {Icons.tool}
+
+                {/* Left label: title + running-tool indicator */}
+                <span style={{ flex: 1, textAlign: 'left', display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                    <span style={{ fontWeight: 500, flexShrink: 0 }}>{t('agent.chat.toolCallChain')}</span>
+                    <span style={{ color: 'rgba(99,102,241,0.4)', flexShrink: 0 }}>·</span>
+                    {isRunning && activeTool ? (
+                        <>
+                            {/* Pulse LED: breathing dot while a tool runs */}
+                            <span
+                                className="cw-running-led"
+                                style={{
+                                    display: 'inline-block',
+                                    width: '6px', height: '6px',
+                                    borderRadius: '50%',
+                                    background: '#818cf8',
+                                    flexShrink: 0,
+                                }}
+                            />
+                            {/* Currently-running tool name */}
+                            <span style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: '11px',
+                                color: '#a5b4fc',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                            }}>
+                                {activeTool.name}
+                            </span>
+                        </>
+                    ) : (
+                        /* Static green dot when all tools are done */
+                        <span style={{
+                            display: 'inline-block',
+                            width: '6px', height: '6px',
+                            borderRadius: '50%',
+                            background: '#22c55e',
+                            flexShrink: 0,
+                            opacity: 0.85,
+                        }} />
+                    )}
+                </span>
+
+                {/* Count badge */}
+                <span style={{
+                    background: 'rgba(99,102,241,0.18)', color: '#818cf8',
+                    borderRadius: '10px', padding: '1px 7px',
+                    fontSize: '10px', fontWeight: 600, flexShrink: 0,
+                }}>
+                    {count}
+                </span>
+
+                {/* Expand chevron */}
+                <span style={{
+                    fontSize: '10px', color: 'var(--text-tertiary)',
+                    transition: 'transform 0.2s', display: 'inline-block',
+                    transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                    flexShrink: 0,
+                }}>▶</span>
+            </button>
+
+            {/* ── Collapsed: pills with individual run-state dots ── */}
+            {!expanded && count > 0 && (
+                <div style={{ padding: '0 10px 7px 10px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                    {toolCalls.map((tc, i) => {
+                        const running = !tc.result;
+                        return (
+                            <span key={i} style={{
+                                background: running ? 'rgba(99,102,241,0.14)' : 'rgba(99,102,241,0.08)',
+                                border: `1px solid ${running ? 'rgba(99,102,241,0.28)' : 'rgba(99,102,241,0.14)'}`,
+                                borderRadius: '4px', padding: '1px 6px',
+                                fontSize: '10px', color: running ? '#818cf8' : '#a5b4fc',
+                                fontFamily: 'var(--font-mono)',
+                                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                            }}>
+                                {running && (
+                                    <span
+                                        className="cw-running-led"
+                                        style={{
+                                            display: 'inline-block',
+                                            width: '4px', height: '4px',
+                                            borderRadius: '50%',
+                                            background: '#818cf8',
+                                            flexShrink: 0,
+                                        }}
+                                    />
+                                )}
+                                {tc.name}
+                            </span>
+                        );
+                    })}
+                </div>
+            )}
+
+            {/* ── Expanded: each tool's full detail row ── */}
+            {expanded && (
+                <div style={{ borderTop: '1px solid rgba(99,102,241,0.15)' }}>
+                    {toolCalls.map((tc, i) => {
+                        const running = !tc.result;
+                        return (
+                            <div key={i} style={{
+                                padding: '7px 10px',
+                                borderBottom: i < toolCalls.length - 1 ? '1px solid rgba(99,102,241,0.10)' : 'none',
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '4px' }}>
+                                    {/* Status dot: amber + pulse = running; green = done */}
+                                    <span
+                                        className={running ? 'cw-running-led' : undefined}
+                                        style={{
+                                            display: 'inline-block',
+                                            width: '5px', height: '5px',
+                                            borderRadius: '50%',
+                                            background: running ? '#f59e0b' : '#22c55e',
+                                            flexShrink: 0,
+                                        }}
+                                    />
+                                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#818cf8', fontWeight: 600 }}>
+                                        {tc.name}
+                                    </span>
+                                    {running && (
+                                        <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+                                            {t('common.loading')}
+                                        </span>
+                                    )}
+                                </div>
+                                {tc.args && Object.keys(tc.args).length > 0 && (
+                                    <div style={{
+                                        fontFamily: 'var(--font-mono)', fontSize: '10px',
+                                        color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap',
+                                        wordBreak: 'break-all', maxHeight: '80px', overflowY: 'auto',
+                                        background: 'rgba(0,0,0,0.12)', borderRadius: '4px',
+                                        padding: '4px 6px', marginBottom: tc.result ? '4px' : 0,
+                                    }}>
+                                        {JSON.stringify(tc.args, null, 2)}
+                                    </div>
+                                )}
+                                {tc.result && (
+                                    <div style={{
+                                        fontSize: '10px', color: 'var(--text-secondary)',
+                                        whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                        maxHeight: '80px', overflowY: 'auto',
+                                        borderTop: '1px solid rgba(99,102,241,0.10)', paddingTop: '4px',
+                                    }}>
+                                        {tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
 }
 
 export default function Chat() {
@@ -127,11 +334,40 @@ export default function Chat() {
         })
             .then(r => r.json())
             .then((history: any[]) => {
-                if (history.length > 0) setMessages(history.map(h => {
-                    const msg = parseMessage({ role: h.role, content: h.content, fileName: h.fileName, toolCalls: h.toolCalls, thinking: h.thinking, imageUrl: h.imageUrl });
-                    msg.timestamp = h.created_at || undefined;
-                    return msg;
-                }));
+                if (history.length > 0) {
+                    // Group consecutive tool_call entries into _isToolGroup messages
+                    const processed: Message[] = [];
+                    for (const h of history) {
+                        if (h.role === 'tool_call') {
+                            const tc: ToolCall = {
+                                name: h.toolName || h.tool_name || '',
+                                args: h.toolArgs || h.tool_args || {},
+                                result: h.toolResult || h.tool_result || '',
+                            };
+                            const last = processed[processed.length - 1];
+                            if (last && last._isToolGroup) {
+                                // Merge into existing tool group
+                                last.toolCalls = [...(last.toolCalls || []), tc];
+                            } else if (last && last.role === 'assistant' && !(last.content && last.content.trim())) {
+                                // Previous is empty assistant — convert to tool group
+                                last._isToolGroup = true;
+                                last.toolCalls = [...(last.toolCalls || []), tc];
+                            } else {
+                                // Start new tool group
+                                processed.push({
+                                    role: 'assistant', content: '', toolCalls: [tc],
+                                    timestamp: h.created_at || undefined,
+                                    _isToolGroup: true,
+                                });
+                            }
+                        } else {
+                            const msg = parseMessage({ role: h.role, content: h.content, fileName: h.fileName, toolCalls: h.toolCalls, thinking: h.thinking, imageUrl: h.imageUrl });
+                            msg.timestamp = h.created_at || undefined;
+                            processed.push(msg);
+                        }
+                    }
+                    setMessages(processed);
+                }
             })
             .catch(() => { /* ignore */ });
     }, [id, token]);
@@ -227,15 +463,72 @@ export default function Chat() {
                         return [...prev, { role: 'assistant', content: streamContent.current, timestamp: new Date().toISOString() }];
                     });
                 } else if (data.type === 'tool_call') {
-                    // Debug: log all tool_call events to verify frontend code is current
-                    console.log('[ToolCall]', data.name, data.status, 'keys:', Object.keys(data).join(','));
-                    if (data.status === 'done') {
-                        pendingToolCalls.current.push({ name: data.name, args: data.args, result: data.result });
+                    console.log('[ToolCall]', data.name, data.status);
+                    if (data.status === 'running') {
+                        // Tool execution started — show in-progress in tool group
+                        const tc: ToolCall = { name: data.name, args: data.args || {} };
+                        pendingToolCalls.current.push(tc);
+                        const now = new Date().toISOString();
+                        setMessages(prev => {
+                            let msgs = [...prev];
+                            // Remove trailing empty assistant messages (stream placeholders)
+                            while (msgs.length > 0) {
+                                const last = msgs[msgs.length - 1];
+                                if (last.role === 'assistant' && !last._isToolGroup && !(last.content && last.content.trim())) {
+                                    msgs.pop();
+                                } else break;
+                            }
+                            // Merge into existing tool group, but stop at user messages (new turn)
+                            for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 5); i--) {
+                                if (msgs[i].role === 'user') break;
+                                if (msgs[i]._isToolGroup) {
+                                    msgs[i] = { ...msgs[i], toolCalls: [...(msgs[i].toolCalls || []), tc], timestamp: now };
+                                    return msgs;
+                                }
+                            }
+                            return [...msgs, { role: 'assistant', content: '', toolCalls: [tc], timestamp: now, _isToolGroup: true }];
+                        });
+                    } else if (data.status === 'done') {
+                        // Tool execution finished — update result
+                        streamContent.current = '';
+                        thinkingContent.current = '';
+                        const newCall: ToolCall = { name: data.name, args: data.args, result: data.result || '' };
+                        // Update pending: replace running entry or add new
+                        const idx = pendingToolCalls.current.findIndex(tc => tc.name === data.name && !tc.result);
+                        if (idx >= 0) {
+                            pendingToolCalls.current[idx] = newCall;
+                        } else {
+                            pendingToolCalls.current.push(newCall);
+                        }
+                        const now = new Date().toISOString();
+                        setMessages(prev => {
+                            let msgs = [...prev];
+                            // Remove trailing empty assistant messages
+                            while (msgs.length > 0) {
+                                const last = msgs[msgs.length - 1];
+                                if (last.role === 'assistant' && !last._isToolGroup && !(last.content && last.content.trim())) {
+                                    msgs.pop();
+                                } else break;
+                            }
+                            // Find recent tool group, but stop at user messages (new turn)
+                            for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 5); i--) {
+                                if (msgs[i].role === 'user') break;
+                                if (msgs[i]._isToolGroup) {
+                                    // Update the matching tool call with result, or add new
+                                    const existing = (msgs[i].toolCalls || []).map(tc =>
+                                        tc.name === data.name && !tc.result ? newCall : tc
+                                    );
+                                    const hasIt = existing.some(tc => tc.name === data.name && tc.result);
+                                    msgs[i] = { ...msgs[i], toolCalls: hasIt ? existing : [...existing, newCall], timestamp: now };
+                                    return msgs;
+                                }
+                            }
+                            return [...msgs, { role: 'assistant', content: '', toolCalls: [newCall], timestamp: now, _isToolGroup: true }];
+                        });
 
                         // ── AgentBay live preview (embedded in tool_call) ──
                         if (data.live_preview) {
                             const lp = data.live_preview;
-                            console.log('[LivePreview] Got from tool_call:', lp.env, lp.screenshot_url?.substring(0, 60));
                             setLiveState(prev => {
                                 const next = { ...prev };
                                 if ((lp.env === 'desktop' || lp.env === 'browser') && lp.screenshot_url) {
@@ -429,7 +722,19 @@ export default function Chat() {
                             <div style={{ fontSize: '12px', marginTop: '8px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                         </div>
                     )}
-                    {messages.map((msg, i) => (
+                    {messages.filter(m => {
+                        // Skip empty assistant messages (stream placeholders)
+                        if (m.role === 'assistant' && !m._isToolGroup && !(m.content && m.content.trim()) && !m.toolCalls?.length && !m.thinking) return false;
+                        return true;
+                    }).map((msg, i) => (
+                        msg._isToolGroup ? (
+                            /* Tool call group — compact display without avatar bubble */
+                            <div key={i} style={{ marginLeft: '48px', marginBottom: '8px' }}>
+                                {msg.toolCalls && msg.toolCalls.length > 0 && (
+                                    <ChatToolChain toolCalls={msg.toolCalls} />
+                                )}
+                            </div>
+                        ) :
                         <div key={i} className={`chat-message ${msg.role}`}>
                             <div className="chat-avatar" style={{ color: 'var(--text-tertiary)' }}>
                                 {msg.role === 'user' ? Icons.user : Icons.bot}
@@ -471,44 +776,7 @@ export default function Chat() {
                                     </details>
                                 )}
                                 {msg.toolCalls && msg.toolCalls.length > 0 && (
-                                    <details style={{
-                                        marginBottom: '8px', fontSize: '12px',
-                                        background: 'var(--accent-subtle)', borderRadius: '6px',
-                                        padding: '0',
-                                    }}>
-                                        <summary style={{
-                                            padding: '6px 10px', cursor: 'pointer',
-                                            color: 'var(--accent-text)', fontWeight: 500,
-                                            userSelect: 'none',
-                                        }}>
-                                            {Icons.tool} {msg.toolCalls.length} tool call{msg.toolCalls.length > 1 ? 's' : ''}
-                                        </summary>
-                                        <div style={{ padding: '4px 10px 8px' }}>
-                                            {msg.toolCalls.map((tc, j) => (
-                                                <div key={j} style={{
-                                                    marginBottom: j < msg.toolCalls!.length - 1 ? '6px' : 0,
-                                                    borderBottom: j < msg.toolCalls!.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-                                                    paddingBottom: j < msg.toolCalls!.length - 1 ? '6px' : 0,
-                                                }}>
-                                                    <div style={{ fontWeight: 600, color: 'var(--accent-text)', marginBottom: '2px' }}>
-                                                        {tc.name}
-                                                    </div>
-                                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                                                        {JSON.stringify(tc.args)}
-                                                    </div>
-                                                    {tc.result && (
-                                                        <div style={{
-                                                            marginTop: '4px', fontSize: '11px', color: 'var(--text-secondary)',
-                                                            fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                                                            maxHeight: '120px', overflow: 'auto',
-                                                        }}>
-                                                            {tc.result}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </details>
+                                    <ChatToolChain toolCalls={msg.toolCalls} />
                                 )}
                                 {msg.role === 'assistant' ? (
                                     streaming && !msg.content && i === messages.length - 1 ? (

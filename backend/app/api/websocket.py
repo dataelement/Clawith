@@ -516,16 +516,26 @@ async def websocket_chat(
             from datetime import datetime as _dt, timezone as _tz
             conv_id = session_id
             if conv_id:
-                # Validate the session belongs to this agent
-                _sr = await db.execute(
-                    _sel(ChatSession).where(
-                        ChatSession.id == uuid.UUID(conv_id),
-                        ChatSession.agent_id == agent_id,
+                # Validate the session belongs to this agent and to this user (no hijacking others' sessions).
+                try:
+                    _sid = uuid.UUID(conv_id)
+                except (ValueError, TypeError):
+                    conv_id = None
+                    _existing = None
+                else:
+                    _sr = await db.execute(
+                        _sel(ChatSession).where(
+                            ChatSession.id == _sid,
+                            ChatSession.agent_id == agent_id,
+                        )
                     )
-                )
-                _existing = _sr.scalar_one_or_none()
-                if not _existing:
-                    conv_id = None  # fall through to create
+                    _existing = _sr.scalar_one_or_none()
+                    if not _existing:
+                        conv_id = None
+                    elif _existing.source_channel != "agent" and str(_existing.user_id) != str(user_id):
+                        await websocket.send_json({"type": "error", "content": "Not authorized for this session"})
+                        await websocket.close(code=4003)
+                        return
             if not conv_id:
                 # Find most recent session for this user+agent
                 _sr = await db.execute(
