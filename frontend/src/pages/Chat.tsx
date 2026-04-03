@@ -105,8 +105,6 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
                     color: 'var(--accent-text, #818cf8)',
                 }}
             >
-                {Icons.tool}
-
                 {/* Left label: title + running-tool indicator */}
                 <span style={{ flex: 1, textAlign: 'left', display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
                     <span style={{ fontWeight: 500, flexShrink: 0 }}>{t('agent.chat.toolCallChain')}</span>
