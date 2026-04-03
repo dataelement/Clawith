@@ -353,28 +353,6 @@
       "enabled": "Enabled",
       "disabled": "Disabled"
     },
-    "skillNames": {
-      "web-research": "Web Research",
-      "data-analysis": "Data Analysis",
-      "content-writing": "Content Writing",
-      "competitive-analysis": "Competitive Analysis",
-      "meeting-notes": "Meeting Notes",
-      "complex-task-executor": "Complex Task Executor",
-      "skill-creator": "Skill Creator",
-      "content-research-writer": "Content Research Writer",
-      "mcp-installer": "MCP Tool Installer"
-    },
-    "skillDescriptions": {
-      "web-research": "Systematic web searching and information synthesis. Use when: needing factual data from the web, evaluating sources, or cross-referencing claims. NOT for: simple trivia or local file search.",
-      "data-analysis": "Data interpretation and structured reporting. Use when: analyzing CSV/dataset files, finding trends, or generating statistical summaries. NOT for: writing code to build data models.",
-      "content-writing": "Professional content creation and tone adaptation. Use when: drafting articles, emails, or marketing copy with specific stylistic requirements. NOT for: casual chat responses.",
-      "competitive-analysis": "Competitor research and comparison frameworks. Use when: asked to compare companies, products, or perform SWOT/feature matrix analysis. NOT for: general academic research.",
-      "meeting-notes": "Meeting summarization and follow-up tracking. Use when: given meeting transcripts or rough notes to extract structured action items and key decisions. NOT for: generic document summarization.",
-      "complex-task-executor": "Structured methodology for decomposing, planning, and executing complex multi-step tasks with progress tracking",
-      "skill-creator": "Create new skills, modify and improve existing skills, and measure skill performance",
-      "content-research-writer": "Assists in writing high-quality content by conducting research, adding citations, improving hooks, iterating on outlines, and providing real-time section feedback",
-      "mcp-installer": "Guide users through discovering, configuring, and installing MCP tools directly in chat — no Settings page required"
-    },
     "toolMgmt": {
       "title": "Tool Management",
       "description": "Enable or disable tools available to this agent."
@@ -955,16 +933,10 @@
       "saved": "Email templates saved",
       "emailVerification": "Email Verification Code",
       "emailVerificationDesc": "Sent when a user registers and needs to verify their email address.",
-      "emailVerificationSubject": "Verify your Clawith email address",
-      "emailVerificationBody": "Hello {{display_name}},\n\nWelcome to Clawith! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.",
       "passwordReset": "Password Reset",
       "passwordResetDesc": "Sent when a user requests to reset their password.",
-      "passwordResetSubject": "Reset your Clawith password",
-      "passwordResetBody": "Hello {{display_name}},\n\nWe received a request to reset your Clawith password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.",
       "companyInvitation": "Company Invitation",
-      "companyInvitationDesc": "Sent when an admin invites a user to join their company.",
-      "companyInvitationSubject": "{{inviter_name}} invited you to join {{company_name}} on Clawith",
-      "companyInvitationBody": "Hello,\n\n{{inviter_name}} has invited you to join their team '{{company_name}}' on Clawith.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don't want to join this team or didn't expect this invitation, you can ignore this email."
+      "companyInvitationDesc": "Sent when an admin invites a user to join their company."
     },
     "quotas": {
       "defaultUserQuotas": "Default User Quotas",

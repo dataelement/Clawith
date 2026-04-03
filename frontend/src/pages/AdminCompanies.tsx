@@ -184,31 +184,8 @@ function PlatformTab() {
         // Load email templates
         fetchJson<any>('/enterprise/email-templates')
             .then(d => {
-                if (d.templates) {
-                    // Use localized defaults for empty templates
-                    const localizedDefaults: Record<string, { subject: string; body: string }> = {
-                        email_verification: {
-                            subject: t('enterprise.emailTemplates.emailVerificationSubject', 'Verify your Clawith email address'),
-                            body: t('enterprise.emailTemplates.emailVerificationBody', 'Hello {{display_name}},\n\nWelcome to Clawith! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.')
-                        },
-                        password_reset: {
-                            subject: t('enterprise.emailTemplates.passwordResetSubject', 'Reset your Clawith password'),
-                            body: t('enterprise.emailTemplates.passwordResetBody', 'Hello {{display_name}},\n\nWe received a request to reset your Clawith password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.')
-                        },
-                        company_invitation: {
-                            subject: t('enterprise.emailTemplates.companyInvitationSubject', '{{inviter_name}} invited you to join {{company_name}} on Clawith'),
-                            body: t('enterprise.emailTemplates.companyInvitationBody', 'Hello,\n\n{{inviter_name}} has invited you to join their team \'{{company_name}}\' on Clawith.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don\'t want to join this team or didn\'t expect this invitation, you can ignore this email.')
-                        }
-                    };
-                    
-                    const templatesWithDefaults = { ...d.templates };
-                    Object.keys(localizedDefaults).forEach(key => {
-                        if (!templatesWithDefaults[key] || !templatesWithDefaults[key].subject || !templatesWithDefaults[key].body) {
-                            templatesWithDefaults[key] = localizedDefaults[key];
-                        }
-                    });
-                    
-                    setEmailTemplates(templatesWithDefaults);
+                if (d.defaults && d.templates) {
+                    setEmailTemplates({ ...d.defaults, ...d.templates });
                 }
                 if (d.variables) setEmailTemplateVars(d.variables);
                 if (d.defaults) setEmailTemplateDefaults(d.defaults);
@@ -294,24 +271,8 @@ function PlatformTab() {
     };
 
     const resetTemplate = (key: string) => {
-        // Use localized default templates
-        const localizedDefaults: Record<string, { subject: string; body: string }> = {
-            email_verification: {
-                subject: t('enterprise.emailTemplates.emailVerificationSubject', 'Verify your Clawith email address'),
-                body: t('enterprise.emailTemplates.emailVerificationBody', 'Hello {{display_name}},\n\nWelcome to Clawith! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.')
-            },
-            password_reset: {
-                subject: t('enterprise.emailTemplates.passwordResetSubject', 'Reset your Clawith password'),
-                body: t('enterprise.emailTemplates.passwordResetBody', 'Hello {{display_name}},\n\nWe received a request to reset your Clawith password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.')
-            },
-            company_invitation: {
-                subject: t('enterprise.emailTemplates.companyInvitationSubject', '{{inviter_name}} invited you to join {{company_name}} on Clawith'),
-                body: t('enterprise.emailTemplates.companyInvitationBody', 'Hello,\n\n{{inviter_name}} has invited you to join their team \'{{company_name}}\' on Clawith.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don\'t want to join this team or didn\'t expect this invitation, you can ignore this email.')
-            }
-        };
-        
-        if (localizedDefaults[key]) {
-            setEmailTemplates(prev => ({ ...prev, [key]: { ...localizedDefaults[key] } }));
+        if (emailTemplateDefaults[key]) {
+            setEmailTemplates(prev => ({ ...prev, [key]: { ...emailTemplateDefaults[key] } }));
         }
     };
 

@@ -360,28 +360,6 @@
       "enabled": "已启用",
       "disabled": "已禁用"
     },
-    "skillNames": {
-      "web-research": "网络研究",
-      "data-analysis": "数据分析",
-      "content-writing": "内容写作",
-      "competitive-analysis": "竞争分析",
-      "meeting-notes": "会议纪要",
-      "complex-task-executor": "复杂任务执行器",
-      "skill-creator": "技能创建器",
-      "content-research-writer": "内容研究写作",
-      "mcp-installer": "MCP 工具安装器"
-    },
-    "skillDescriptions": {
-      "web-research": "系统性网络搜索和信息综合。适用于：需要从网络获取事实数据、评估信息来源或交叉验证观点。不适用于：简单问答或本地文件搜索。",
-      "data-analysis": "数据解读和结构化报告。适用于：分析 CSV/数据集文件、发现趋势或生成统计摘要。不适用于：编写代码构建数据模型。",
-      "content-writing": "专业内容创作和语调调整。适用于：撰写文章、邮件或具有特定风格要求的营销文案。不适用于：日常聊天回复。",
-      "competitive-analysis": "竞争对手研究和比较框架。适用于：比较公司、产品或进行 SWOT/功能矩阵分析。不适用于：一般学术研究。",
-      "meeting-notes": "会议摘要和跟进追踪。适用于：从会议记录或粗略笔记中提取结构化的行动项和关键决策。不适用于：通用文档摘要。",
-      "complex-task-executor": "用于分解、规划和执行复杂多步骤任务的结构化方法，支持进度跟踪",
-      "skill-creator": "创建新技能、修改和改进现有技能，并衡量技能表现",
-      "content-research-writer": "通过进行研究、添加引用、改进开头、迭代大纲和提供实时章节反馈来协助撰写高质量内容",
-      "mcp-installer": "引导用户在聊天中直接发现、配置和安装 MCP 工具——无需设置页面"
-    },
     "toolMgmt": {
       "title": "工具管理",
       "description": "管理此数字员工可使用的工具。"
@@ -1024,16 +1002,10 @@
       "saved": "邮件模板已保存",
       "emailVerification": "邮箱验证码",
       "emailVerificationDesc": "用户注册并需要验证邮箱地址时发送。",
-      "emailVerificationSubject": "验证您的 Clawith 邮箱地址",
-      "emailVerificationBody": "您好 {{display_name}}，\n\n欢迎来到 Clawith！请使用以下 6 位数字验证码验证您的邮箱地址：\n\n验证码：{{verification_code}}\n\n此验证码将在 {{expiry_minutes}} 分钟后过期。如果您没有创建账号，可以忽略此邮件。",
       "passwordReset": "密码重置",
       "passwordResetDesc": "用户请求重置密码时发送。",
-      "passwordResetSubject": "重置您的 Clawith 密码",
-      "passwordResetBody": "您好 {{display_name}}，\n\n我们收到了重置您 Clawith 密码的请求。\n\n重置链接：{{reset_url}}\n\n此链接将在 {{expiry_minutes}} 分钟后过期。如果您没有提出此请求，可以忽略此邮件。",
       "companyInvitation": "公司邀请",
-      "companyInvitationDesc": "管理员邀请用户加入公司时发送。",
-      "companyInvitationSubject": "{{inviter_name}} 邀请您加入 {{company_name}} 的 Clawith 团队",
-      "companyInvitationBody": "您好，\n\n{{inviter_name}} 邀请您加入他们在 Clawith 的团队\"{{company_name}}\"。\n\n要接受邀请并创建您的账号，请点击以下链接：\n\n{{invite_url}}\n\n如果您不想加入此团队或没有预期此邀请，可以忽略此邮件。"
+      "companyInvitationDesc": "管理员邀请用户加入公司时发送。"
     },
     "quotas": {
       "defaultUserQuotas": "默认用户配额",

@@ -182,7 +182,7 @@ export default function UserManagement() {
         };
         const s = styles[role];
         if (!s) return null;
-        const labelText = t(s.labelKey, role === 'platform_admin' ? 'Platform\nAdmin' : 'Admin');
+        const labelText = t(s.labelKey, role === 'platform_admin' ? 'Platform Admin' : 'Admin');
         return (
             <span style={{ 
                 fontSize: '10px', 
@@ -191,7 +191,6 @@ export default function UserManagement() {
                 borderRadius: '4px', 
                 padding: '1px 6px', 
                 fontWeight: 500,
-                whiteSpace: 'pre-line',
                 lineHeight: '1.3',
                 width: 'fit-content'
             }}>
