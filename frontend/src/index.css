@@ -2074,6 +2074,7 @@ select:focus {
   width: 100%;
   min-width: 0;
   min-height: 0;
+  max-height: 180px;
   background: var(--bg-primary);
   border: none;
   border-radius: 0;
@@ -2421,4 +2422,3 @@ select:focus {
 .login-qr-back:hover {
     text-decoration: underline;
 }
-

@@ -1133,6 +1133,7 @@ function AgentDetailInner() {
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
+    const chatInputAreaRef = useRef<HTMLDivElement>(null);
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
 
@@ -1165,6 +1166,8 @@ function AgentDetailInner() {
         if (sess.user_id && currentUser && sess.user_id !== String(currentUser.id)) return false;
         return true;
     };
+
+    const isViewingOtherUsersSessions = isAdmin && chatScope === 'all';
 
     const syncActiveSocketState = (sess: any | null = activeSession, agentId: string | undefined = id) => {
         if (!sess || !agentId) {
@@ -1668,6 +1671,7 @@ function AgentDetailInner() {
     const isNearBottom = useRef(true);
     const isFirstLoad = useRef(true);
     const [showScrollBtn, setShowScrollBtn] = useState(false);
+    const [chatScrollBtnBottom, setChatScrollBtnBottom] = useState(96);
     // Read-only history scroll-to-bottom
     const historyContainerRef = useRef<HTMLDivElement>(null);
     const [showHistoryScrollBtn, setShowHistoryScrollBtn] = useState(false);
@@ -1768,8 +1772,6 @@ function AgentDetailInner() {
             // First load: instant jump to bottom, no animation
             chatEndRef.current.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
             isFirstLoad.current = false;
-            // Auto-focus the input
-            setTimeout(() => chatInputRef.current?.focus(), 100);
             return;
         }
         if (isNearBottom.current) {
@@ -1777,13 +1779,20 @@ function AgentDetailInner() {
         }
     }, [chatMessages]);
 
-    // Auto-focus input when switching sessions and connection is ready
     useEffect(() => {
-        if (activeSession && activeTab === 'chat' && wsConnected) {
-            // Tiny timeout to ensure React has enabled the textarea before focusing
-            setTimeout(() => chatInputRef.current?.focus(), 50);
-        }
-    }, [activeSession?.id, activeTab, wsConnected]);
+        const gapAboveComposer = 14;
+        const updateScrollButtonOffset = () => {
+            const composerAreaHeight = chatInputAreaRef.current?.offsetHeight ?? 82;
+            setChatScrollBtnBottom(composerAreaHeight + gapAboveComposer);
+        };
+
+        updateScrollButtonOffset();
+        if (typeof ResizeObserver === 'undefined' || !chatInputAreaRef.current) return;
+
+        const observer = new ResizeObserver(() => updateScrollButtonOffset());
+        observer.observe(chatInputAreaRef.current);
+        return () => observer.disconnect();
+    }, [activeSession?.id, activeTab]);
 
     const sendChatMsg = () => {
         if (!id || !activeSession?.id) return;
@@ -1841,6 +1850,9 @@ function AgentDetailInner() {
         }));
 
         setChatInput('');
+        if (chatInputRef.current) {
+            chatInputRef.current.style.height = 'auto';
+        }
         setAttachedFiles([]);
     };
 
@@ -3533,7 +3545,7 @@ function AgentDetailInner() {
                                 {chatScope === 'mine' && (
                                     <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
                                         <button onClick={createNewSession}
-                                            style={{ width: '100%', padding: '5px 8px', background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '6px' }}
+                                            style={{ width: '100%', padding: '5px 8px', background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
                                             onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-secondary)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
                                             onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-secondary)'; }}>
                                             + {t('agent.chat.newSession')}
@@ -3670,15 +3682,33 @@ function AgentDetailInner() {
                                 {!activeSession ? (
                                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
                                         <div>{t('agent.chat.noSessionSelected')}</div>
-                                        <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
+                                        {!isViewingOtherUsersSessions && (
+                                            <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
+                                        )}
                                     </div>
                                 ) : (activeSession.user_id && currentUser && activeSession.user_id !== String(currentUser.id)) || activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent' ? (
                                     /* ── Read-only history view (other user's session or agent-to-agent) ── */
                                     <>
-                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px', padding: '4px 8px', background: 'var(--bg-secondary)', borderRadius: '4px', display: 'inline-block' }}>
-                                                {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
-                                            </div>
+                                        <div
+                                            style={{
+                                                position: 'absolute',
+                                                top: '12px',
+                                                left: sessionListCollapsed ? '48px' : '16px',
+                                                zIndex: 8,
+                                                fontSize: '11px',
+                                                color: 'var(--text-tertiary)',
+                                                padding: '4px 8px',
+                                                background: 'color-mix(in srgb, var(--bg-secondary) 92%, transparent)',
+                                                border: '1px solid var(--border-subtle)',
+                                                borderRadius: '4px',
+                                                boxShadow: 'var(--shadow-sm)',
+                                                backdropFilter: 'blur(6px)',
+                                                pointerEvents: 'none',
+                                            }}
+                                        >
+                                            {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                                        </div>
+                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '52px 16px 12px' }}>
                                             {(() => {
                                                 // For A2A sessions, determine which participant is "this agent" (left side)
                                                 // Use agent.name matching against sender_name from messages
@@ -3747,7 +3777,7 @@ function AgentDetailInner() {
                                             })()}
                                         </div>
                                         {showHistoryScrollBtn && (
-                                            <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                            <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
                                         )}
                                     </>
                                 ) : (
@@ -3825,7 +3855,7 @@ function AgentDetailInner() {
                                             <div ref={chatEndRef} />
                                         </div>
                                         {showScrollBtn && (
-                                            <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: '70px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                            <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: `${chatScrollBtnBottom}px`, right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
                                         )}
                                         {agentExpired ? (
                                             <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
@@ -3838,7 +3868,7 @@ function AgentDetailInner() {
                                                 Connecting...
                                             </div>
                                         ) : null}
-                                        <div className="chat-input-area" style={{ flexShrink: 0 }}>
+                                        <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
                                             <div className="chat-composer">
                                             {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
                                                 <div className="chat-composer-attachments">
@@ -3901,7 +3931,12 @@ function AgentDetailInner() {
                                                     ref={chatInputRef}
                                                     className="chat-input"
                                                     value={chatInput}
-                                                    onChange={e => setChatInput(e.target.value)}
+                                                    onChange={e => {
+                                                        setChatInput(e.target.value);
+                                                        const el = e.target;
+                                                        el.style.height = 'auto';
+                                                        el.style.height = el.scrollHeight + 'px';
+                                                    }}
                                                     onKeyDown={e => {
                                                         // Enter sends the message; Shift+Enter inserts a newline
                                                         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
@@ -3913,7 +3948,6 @@ function AgentDetailInner() {
                                                     placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : t('chat.placeholder')}
                                                     disabled={!wsConnected}
                                                     rows={1}
-                                                    autoFocus
                                                 />
                                             </div>
                                             <div className="chat-composer-toolbar">
