@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Component, ErrorInfo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Component, ErrorInfo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -354,7 +354,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                             </span>
                                         </label>
                                     ) : (
-                                        <span style={{ fontSize: '11px', color: tool.enabled ? '#22c55e' : 'var(--text-tertiary)', fontWeight: 500 }}>
+                                        <span style={{ fontSize: '11px', color: tool.enabled ? 'var(--accent-primary)' : 'var(--text-tertiary)', fontWeight: 500 }}>
                                             {tool.enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
                                         </span>
                                     )}
@@ -473,7 +473,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                             />
                                                             <span style={{
                                                                 position: 'absolute', inset: 0,
-                                                                background: (configData[field.key] ?? field.default) ? '#22c55e' : 'var(--bg-tertiary)',
+                                                                background: (configData[field.key] ?? field.default) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
                                                                 borderRadius: '11px', transition: 'background 0.2s', opacity: isReadOnly ? 0.6 : 1,
                                                             }}>
                                                                 <span style={{
@@ -1124,6 +1124,11 @@ function AgentDetailInner() {
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
     const isAdmin = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin';
+    /** Chat sidebar: who may list all sessions & read others' threads (matches backend scope=all). */
+    const canViewAllAgentChatSessions =
+        currentUser?.role === 'platform_admin' ||
+        currentUser?.role === 'org_admin' ||
+        currentUser?.role === 'agent_admin';
     type SessionRuntimeKey = string;
     const wsMapRef = useRef<Record<SessionRuntimeKey, WebSocket>>({});
     const reconnectTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setTimeout> | null>>({});
@@ -1133,7 +1138,6 @@ function AgentDetailInner() {
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
-    const chatInputAreaRef = useRef<HTMLDivElement>(null);
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
 
@@ -1159,16 +1163,99 @@ function AgentDetailInner() {
         sessionUiStateRef.current[key] = { ...prev, ...next };
     };
 
-    const isWritableSession = (sess: any) => {
+    /** Normalize IDs — API/JSON may use number vs string; loose equality was breaking "own session" detection. */
+    const sessionUserIdStr = (s: any) => (s?.user_id == null ? '' : String(s.user_id));
+    const viewerUserIdStr = () => (currentUser?.id == null ? '' : String(currentUser.id));
+
+    /** Ensure session shape from POST/list so P2P "mine" is never mistaken for read-only or agent thread. */
+    const normalizeChatSession = (sess: any) => {
+        if (!sess || typeof sess !== 'object') return sess;
+        const vu = viewerUserIdStr();
+        const rawUid =
+            sess.user_id != null && String(sess.user_id).trim() !== '' ? String(sess.user_id) : vu;
+        return {
+            ...sess,
+            id: String(sess.id),
+            agent_id: sess.agent_id != null ? String(sess.agent_id) : sess.agent_id,
+            user_id: rawUid,
+            source_channel:
+                typeof sess.source_channel === 'string' && sess.source_channel.trim()
+                    ? sess.source_channel
+                    : 'web',
+            participant_type:
+                typeof sess.participant_type === 'string' && sess.participant_type.trim()
+                    ? sess.participant_type
+                    : 'user',
+            is_group: Boolean(sess.is_group),
+        };
+    };
+
+    const isWritableSession = (sess: any, scopeOverride: 'mine' | 'all' = chatScope) => {
         if (!sess) return false;
-        const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
-        if (isAgentSession) return false;
-        if (sess.user_id && currentUser && sess.user_id !== String(currentUser.id)) return false;
+        const sc = String(sess.source_channel || 'web').toLowerCase();
+        const pt = String(sess.participant_type || 'user').toLowerCase();
+        if (sc === 'agent' || pt === 'agent') return false;
+        if (sess.is_group) return false;
+        if (canViewAllAgentChatSessions && scopeOverride === 'all') return false;
+        const su = sessionUserIdStr(sess);
+        const vu = viewerUserIdStr();
+        if (su && vu && su !== vu) return false;
         return true;
     };
 
-    const isViewingOtherUsersSessions = isAdmin && chatScope === 'all';
+    const isViewingOtherUsersSessions = canViewAllAgentChatSessions && chatScope === 'all';
 
+    /** Sessions in scope=all that are not the current viewer's own P2P rows (for admin「其他用户」tab). */
+    const otherUsersSessions = useMemo(() => {
+        const vu = viewerUserIdStr();
+        return allSessions.filter((s: any) => {
+            const su = sessionUserIdStr(s);
+            if (vu && su === vu) return false;
+            return true;
+        });
+    }, [allSessions, currentUser?.id]);
+
+    const otherUserPickerOptions = useMemo(() => {
+        const m = new Map<string, string>();
+        for (const s of otherUsersSessions) {
+            const uid = sessionUserIdStr(s);
+            if (!uid) continue;
+            if (!m.has(uid)) m.set(uid, String(s.username || s.user_id || uid));
+        }
+        return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    }, [otherUsersSessions]);
+
+    const othersListForPicker = useMemo(() => {
+        if (!allUserFilter) return otherUsersSessions;
+        return otherUsersSessions.filter((s: any) => sessionUserIdStr(s) === allUserFilter);
+    }, [otherUsersSessions, allUserFilter]);
+
+    useEffect(() => {
+        if (!canViewAllAgentChatSessions && chatScope === 'all') setChatScope('mine');
+    }, [canViewAllAgentChatSessions, chatScope]);
+
+    const clearChatSelection = () => {
+        activeSessionIdRef.current = null;
+        setActiveSession(null);
+        setChatMessages([]);
+        setHistoryMsgs([]);
+        setWsConnected(false);
+        setIsStreaming(false);
+        setIsWaiting(false);
+    };
+
+    const onAdminTabMine = () => {
+        setChatScope('mine');
+        setAllUserFilter('');
+        if (activeSession && sessionUserIdStr(activeSession) !== viewerUserIdStr()) clearChatSelection();
+    };
+
+    const onAdminTabOthers = () => {
+        setChatScope('all');
+        setAllUserFilter('');
+        fetchAllSessions();
+        if (activeSession && sessionUserIdStr(activeSession) === viewerUserIdStr()) clearChatSelection();
+    };
     const syncActiveSocketState = (sess: any | null = activeSession, agentId: string | undefined = id) => {
         if (!sess || !agentId) {
             wsRef.current = null;
@@ -1188,7 +1275,7 @@ function AgentDetailInner() {
             const tkn = localStorage.getItem('token');
             const res = await fetch(`/api/agents/${agentId}/sessions?scope=mine`, { headers: { Authorization: `Bearer ${tkn}` } });
             if (res.ok) {
-                const data = await res.json();
+                const data = (await res.json()).map((row: any) => normalizeChatSession(row));
                 if (currentAgentIdRef.current === agentId) setSessions(data);
                 if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
                 return data;
@@ -1199,22 +1286,32 @@ function AgentDetailInner() {
     };
 
     const fetchAllSessions = async () => {
-        if (!id) return;
+        if (!id || !canViewAllAgentChatSessions) return;
         setAllSessionsLoading(true);
         try {
             const tkn = localStorage.getItem('token');
             const res = await fetch(`/api/agents/${id}/sessions?scope=all`, { headers: { Authorization: `Bearer ${tkn}` } });
+            if (!currentAgentIdRef.current || currentAgentIdRef.current !== id) return;
             if (res.ok) {
-                const all = await res.json();
-                if (currentAgentIdRef.current === id) {
-                    setAllSessions(all.filter((s: any) => s.source_channel !== 'trigger'));
+                const all = (await res.json())
+                    .filter((s: any) => String(s.source_channel || 'direct').toLowerCase() !== 'trigger')
+                    .map((row: any) => normalizeChatSession(row));
+                setAllSessions(all);
+            } else {
+                setAllSessions([]);
+                if (res.status === 403) {
+                    console.warn('[chat] scope=all sessions forbidden (need org/platform/agent admin)');
                 }
             }
-        } catch { }
-        setAllSessionsLoading(false);
+        } catch {
+            if (currentAgentIdRef.current === id) setAllSessions([]);
+        } finally {
+            setAllSessionsLoading(false);
+        }
     };
 
-    const selectSession = async (sess: any) => {
+    const selectSession = async (rawSess: any, scopeOverride: 'mine' | 'all' = chatScope) => {
+        const sess = normalizeChatSession(rawSess);
         const targetAgentId = id;
         if (!targetAgentId) return;
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, String(sess.id));
@@ -1244,7 +1341,6 @@ function AgentDetailInner() {
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sess.id) return;
-            const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
             const preParsed = msgs.map((m: any) => parseChatMsg({
                 role: m.role, content: m.content || '',
                 ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult }),
@@ -1253,7 +1349,7 @@ function AgentDetailInner() {
                 ...(m.id && { id: m.id }),
             }));
 
-            if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
+            if (isWritableSession(sess, scopeOverride)) {
                 setChatMessages(preParsed);
             } else {
                 setHistoryMsgs(preParsed);
@@ -1273,11 +1369,12 @@ function AgentDetailInner() {
                 body: JSON.stringify({}),
             });
             if (res.ok) {
-                const newSess = await res.json();
-                setSessions(prev => [newSess, ...prev]);
+                const newSess = normalizeChatSession(await res.json());
+                setChatScope('mine');
+                setSessions((prev) => [newSess, ...prev]);
                 setIsStreaming(false);
                 setIsWaiting(false);
-                await selectSession(newSess);
+                await selectSession(newSess, 'mine');
             } else {
                 const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
                 console.error('Failed to create session:', err);
@@ -1306,7 +1403,7 @@ function AgentDetailInner() {
                 setIsWaiting(false);
             }
             await fetchMySessions(false, id);
-            await fetchAllSessions();
+            if (canViewAllAgentChatSessions) await fetchAllSessions();
         } catch (e: any) {
             alert(e.message || 'Delete failed');
         }
@@ -1362,6 +1459,7 @@ function AgentDetailInner() {
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const chatInputRef = useRef<HTMLTextAreaElement>(null);
+    const chatInputAreaRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Settings form local state
@@ -1470,18 +1568,48 @@ function AgentDetailInner() {
         setWsConnected(false);
         wsRef.current = null;
         setChatScope('mine');
+        setAllUserFilter('');
+        setSessions([]);
+        setAllSessions([]);
         setAgentExpired(false);
         settingsInitRef.current = false;
     }, [id]);
+
+    // Switching login account or token must not leave another user's sessions/messages in memory.
+    useEffect(() => {
+        setSessions([]);
+        setAllSessions([]);
+        setAllUserFilter('');
+        setChatScope('mine');
+        sessionMsgAbortRef.current?.abort();
+        activeSessionIdRef.current = null;
+        setActiveSession(null);
+        setChatMessages([]);
+        setHistoryMsgs([]);
+        setWsConnected(false);
+        setIsStreaming(false);
+        setIsWaiting(false);
+        setSessionsLoading(false);
+        setAllSessionsLoading(false);
+        Object.keys(reconnectDisabledRef.current).forEach((k) => {
+            reconnectDisabledRef.current[k] = true;
+        });
+        Object.keys(wsMapRef.current).forEach((k) => {
+            const ws = wsMapRef.current[k];
+            if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+        });
+        wsMapRef.current = {};
+        wsRef.current = null;
+    }, [currentUser?.id, token]);
 
     useEffect(() => {
         if (!id || !token || activeTab !== 'chat') return;
         fetchMySessions(false, id).then((data: any) => {
             if (currentAgentIdRef.current !== id) return;
             setSessionsLoading(false);
-            if (data && data.length > 0) selectSession(data[0]);
+            if (data && data.length > 0) selectSession(data[0], 'mine');
         });
-    }, [id, token, activeTab]);
+    }, [id, token, activeTab, currentUser?.id]);
 
     const ensureSessionSocket = (sess: any, agentId: string, authToken: string) => {
         const sessionId = String(sess.id);
@@ -1652,7 +1780,7 @@ function AgentDetailInner() {
         }
         ensureSessionSocket(activeSession, id, token);
         syncActiveSocketState(activeSession, id);
-    }, [id, token, activeTab, activeSession?.id]);
+    }, [id, token, activeTab, activeSession?.id, chatScope, canViewAllAgentChatSessions]);
 
     useEffect(() => {
         return () => {
@@ -1698,10 +1826,23 @@ function AgentDetailInner() {
         return () => clearTimeout(timer);
     }, [historyMsgs, activeSession?.id]);
     // Memoized component for each chat message to avoid re-renders while typing
-    const ChatMessageItem = React.useMemo(() => React.memo(({ msg, i, isLeft, t }: { msg: any, i: number, isLeft: boolean, t: any }) => {
+    const ChatMessageItem = React.useMemo(() => React.memo(({
+        msg, i, isLeft, t, senderLabel, avatarText, forceSenderLabel = false,
+    }: {
+        msg: any;
+        i: number;
+        isLeft: boolean;
+        t: any;
+        senderLabel?: string;
+        avatarText?: string;
+        forceSenderLabel?: boolean;
+    }) => {
         const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
         const fi = fe === 'pdf' ? '📄' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '📊' : (fe === 'docx' || fe === 'doc') ? '📝' : '📎';
         const isImage = msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
+        const resolvedSenderLabel = msg.sender_name || senderLabel;
+        const resolvedAvatarText = avatarText || (resolvedSenderLabel ? resolvedSenderLabel[0] : (isLeft ? 'A' : 'U'));
+        const showSenderLabel = !!resolvedSenderLabel && (forceSenderLabel || !!msg.sender_name);
 
         const timestampHtml = msg.timestamp ? (() => {
             const d = new Date(msg.timestamp);
@@ -1722,9 +1863,9 @@ function AgentDetailInner() {
 
         return (
             <div key={i} style={{ display: 'flex', flexDirection: isLeft ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
-                <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{isLeft ? (msg.sender_name ? msg.sender_name[0] : 'A') : 'U'}</div>
+                <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{resolvedAvatarText}</div>
                 <div style={{ maxWidth: '75%', padding: '8px 12px', borderRadius: '12px', background: isLeft ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.1)', fontSize: '13px', lineHeight: '1.5', wordBreak: 'break-word' }}>
-                    {isLeft && msg.sender_name && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600 }}>🤖 {msg.sender_name}</div>}
+                    {showSenderLabel && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600 }}>{resolvedSenderLabel}</div>}
                     {isImage ? (
                         <div style={{ marginBottom: '4px' }}>
                             <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} loading="lazy" />
@@ -1792,7 +1933,7 @@ function AgentDetailInner() {
         const observer = new ResizeObserver(() => updateScrollButtonOffset());
         observer.observe(chatInputAreaRef.current);
         return () => observer.disconnect();
-    }, [activeSession?.id, activeTab]);
+    }, [activeSession?.id, activeTab, chatUploadDrafts.length, attachedFiles.length]);
 
     const sendChatMsg = () => {
         if (!id || !activeSession?.id) return;
@@ -1850,6 +1991,7 @@ function AgentDetailInner() {
         }));
 
         setChatInput('');
+        // Reset textarea height after clearing content
         if (chatInputRef.current) {
             chatInputRef.current.style.height = 'auto';
         }
@@ -3519,144 +3661,230 @@ function AgentDetailInner() {
 
                 {
                     activeTab === 'chat' && (
-                        <div style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)' }}>
+                        <div
+                            style={{
+                                display: 'flex',
+                                gap: 0,
+                                flex: 1,
+                                minHeight: 0,
+                                height: 'calc(100vh - 206px)',
+                                border: '1px solid color-mix(in srgb, var(--border-subtle) 55%, var(--bg-primary))',
+                                borderRadius: '12px',
+                                overflow: 'hidden',
+                            }}
+                        >
                             {/* ── Left: session sidebar ── */}
-                            <div className={`session-sidebar ${sessionListCollapsed ? 'collapsed' : ''}`} style={{ width: sessionListCollapsed ? '0px' : '220px', transition: 'width 0.2s ease', flexShrink: 0, borderRight: sessionListCollapsed ? 'none' : '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                                {/* Tab row */}
-                                <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px 0', gap: '4px', borderBottom: '1px solid var(--border-subtle)', position: 'relative' }}>
-                                    {!sessionListCollapsed && (
-                                        <button onClick={() => setSessionListCollapsed(true)} className="session-sidebar-collapseBtn" style={{ position: 'absolute', top: '6px', right: '4px', zIndex: 10, background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', padding: '4px', borderRadius: '4px' }} title="Collapse sessions" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='none'}>
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-                                        </button>
-                                    )}
-                                    <button onClick={() => setChatScope('mine')}
-                                        style={{ flex: 1, padding: '5px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: chatScope === 'mine' ? 600 : 400, color: chatScope === 'mine' ? 'var(--text-primary)' : 'var(--text-tertiary)', borderBottom: chatScope === 'mine' ? '2px solid var(--accent-primary)' : '2px solid transparent', paddingBottom: '8px' }}>
-                                        {t('agent.chat.mySessions')}
-                                    </button>
-                                    {isAdmin && (
-                                        <button onClick={() => { setChatScope('all'); fetchAllSessions(); }}
-                                            style={{ flex: 1, padding: '5px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: chatScope === 'all' ? 600 : 400, color: chatScope === 'all' ? 'var(--text-primary)' : 'var(--text-tertiary)', borderBottom: chatScope === 'all' ? '2px solid var(--accent-primary)' : '2px solid transparent', paddingBottom: '8px' }}>
-                                            {t('agent.chat.allUsers')}
-                                        </button>
+                            <div className={`session-sidebar ${sessionListCollapsed ? 'collapsed' : ''}`} style={{ width: sessionListCollapsed ? '0px' : '220px', transition: 'width 0.2s ease', flexShrink: 0, minHeight: 0, borderRight: sessionListCollapsed ? 'none' : '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                {/* ── Header: title + collapse, then new session ── */}
+                                <div style={{ flexShrink: 0 }}>
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'space-between',
+                                            gap: '8px',
+                                            padding: '10px 12px 8px',
+                                            minHeight: '40px',
+                                            boxSizing: 'border-box',
+                                        }}
+                                    >
+                                        <span
+                                            style={{
+                                                fontSize: '14px',
+                                                fontWeight: 600,
+                                                color: 'var(--text-primary)',
+                                                lineHeight: '1.25',
+                                                flex: 1,
+                                                minWidth: 0,
+                                            }}
+                                        >
+                                            {t('agent.chat.sessionListTitle')}
+                                        </span>
+                                        {!sessionListCollapsed && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setSessionListCollapsed(true)}
+                                                className="session-sidebar-collapseBtn"
+                                                style={{
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    background: 'none',
+                                                    border: 'none',
+                                                    color: 'var(--text-tertiary)',
+                                                    cursor: 'pointer',
+                                                    padding: '4px',
+                                                    borderRadius: '4px',
+                                                    flexShrink: 0,
+                                                    lineHeight: 0,
+                                                }}
+                                                title={t('agent.chat.collapseSidebar')}
+                                                onMouseEnter={(e) => {
+                                                    e.currentTarget.style.background = 'var(--bg-secondary)';
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    e.currentTarget.style.background = 'none';
+                                                }}
+                                            >
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                                    <path d="M15 18l-6-6 6-6" />
+                                                </svg>
+                                            </button>
+                                        )}
+                                    </div>
+                                    {!canViewAllAgentChatSessions && (
+                                        <div style={{ padding: '0 12px 10px' }}>
+                                            <button
+                                                type="button"
+                                                onClick={createNewSession}
+                                                style={{
+                                                    width: '100%',
+                                                    height: '28px',
+                                                    padding: '0 10px',
+                                                    background: 'none',
+                                                    border: '1px solid var(--border-subtle)',
+                                                    borderRadius: '6px',
+                                                    cursor: 'pointer',
+                                                    fontSize: '12px',
+                                                    color: 'var(--text-secondary)',
+                                                    textAlign: 'left',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '6px',
+                                                    transition: 'all 0.15s ease',
+                                                    boxSizing: 'border-box',
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    e.currentTarget.style.background = 'var(--bg-secondary)';
+                                                    e.currentTarget.style.color = 'var(--text-primary)';
+                                                    e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    e.currentTarget.style.background = 'none';
+                                                    e.currentTarget.style.color = 'var(--text-secondary)';
+                                                    e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                                                }}
+                                            >
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                                    <line x1="12" y1="5" x2="12" y2="19" />
+                                                    <line x1="5" y1="12" x2="19" y2="12" />
+                                                </svg>
+                                                {t('agent.chat.newSession')}
+                                            </button>
+                                        </div>
                                     )}
                                 </div>
 
-                                {/* Actions row */}
-                                {chatScope === 'mine' && (
-                                    <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
-                                        <button onClick={createNewSession}
-                                            style={{ width: '100%', padding: '5px 8px', background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-                                            onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-secondary)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-                                            onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-secondary)'; }}>
-                                            + {t('agent.chat.newSession')}
-                                        </button>
+                                {canViewAllAgentChatSessions && (
+                                    <div className="tabs session-sidebar-session-tabs" role="tablist">
+                                        <div
+                                            role="tab"
+                                            tabIndex={0}
+                                            aria-selected={chatScope === 'mine'}
+                                            className={`tab ${chatScope === 'mine' ? 'active' : ''}`}
+                                            onClick={onAdminTabMine}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    onAdminTabMine();
+                                                }
+                                            }}
+                                        >
+                                            {t('agent.chat.mySessions')}
+                                        </div>
+                                        <div
+                                            role="tab"
+                                            tabIndex={0}
+                                            aria-selected={chatScope === 'all'}
+                                            className={`tab ${chatScope === 'all' ? 'active' : ''}`}
+                                            onClick={onAdminTabOthers}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    onAdminTabOthers();
+                                                }
+                                            }}
+                                        >
+                                            {t('agent.chat.otherUsersTab')}
+                                        </div>
                                     </div>
                                 )}
 
-                                {/* Session list */}
-                                <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
-                                    {chatScope === 'mine' ? (
-                                        sessionsLoading ? (
-                                            <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>
-                                        ) : sessions.length === 0 ? (
-                                            <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.chat.noSessionsYet')}<br />{t('agent.chat.clickToStart')}</div>
-                                        ) : sessions.map((s: any) => {
-                                            const isActive = activeSession?.id === s.id;
-                                            const channelLabel: Record<string, string> = {
-                                                feishu: t('common.channels.feishu'),
-                                                discord: t('common.channels.discord'),
-                                                slack: t('common.channels.slack'),
-                                                dingtalk: t('common.channels.dingtalk'),
-                                                wecom: t('common.channels.wecom'),
-                                            };
-                                            const chLabel = channelLabel[s.source_channel];
-                                            return (
-                                                <div key={s.id} onClick={() => selectSession(s)}
-                                                    className="session-item"
-                                                    style={{ padding: '8px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', marginBottom: '1px', position: 'relative' }}
-                                                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0.5'; }}
-                                                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0'; }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
-                                                        <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.title}</div>
-                                                        {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
-                                                    </div>
-                                                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                        {s.last_message_at
-                                                            ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                                                            : new Date(s.created_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
-                                                        {s.message_count > 0 && <span style={{ marginLeft: 'auto' }}>{s.message_count}</span>}
-                                                    </div>
-                                                    <button className="del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
-                                                        style={{ position: 'absolute', top: '4px', right: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', opacity: 0, fontSize: '14px', color: 'var(--text-tertiary)', lineHeight: 1, transition: 'opacity 0.15s' }}
-                                                        onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--status-error)'; }}
-                                                        onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
-                                                        title={t('chat.deleteSession', 'Delete session')}>×</button>
-                                                </div>
-                                            );
-                                        })
-                                    ) : (
-                                        /* All Users tab — user filter dropdown + flat list */
+                                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                    {(!canViewAllAgentChatSessions || chatScope === 'mine') ? (
                                         <>
-                                            {/* User filter dropdown */}
-                                            <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
-                                                <select
-                                                    value={allUserFilter}
-                                                    onChange={e => setAllUserFilter(e.target.value)}
-                                                    style={{ width: '100%', padding: '4px 6px', fontSize: '11px', background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '5px', color: 'var(--text-primary)', cursor: 'pointer' }}
-                                                >
-                                                    <option value="">All Users</option>
-                                                    {Array.from(new Set(allSessions.map((s: any) => s.username || s.user_id))).filter(Boolean).map((u: any) => (
-                                                        <option key={u} value={u}>{u}</option>
-                                                    ))}
-                                                </select>
-                                            </div>
-                                            {/* Loading skeleton */}
-                                            {allSessionsLoading ? (
-                                                <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                                    {[...Array(6)].map((_, i) => (
-                                                        <div key={i} style={{ padding: '6px 0', animation: 'pulse 1.5s ease-in-out infinite', animationDelay: `${i * 0.1}s` }}>
-                                                            <div style={{ height: '12px', width: `${70 + (i % 3) * 10}%`, background: 'var(--bg-tertiary)', borderRadius: '4px', marginBottom: '6px' }} />
-                                                            <div style={{ height: '10px', width: `${40 + (i % 4) * 8}%`, background: 'var(--bg-tertiary)', borderRadius: '3px', opacity: 0.6 }} />
-                                                        </div>
-                                                    ))}
+                                            {canViewAllAgentChatSessions && (
+                                                <div style={{ padding: '0 12px 8px', flexShrink: 0 }}>
+                                                    <button
+                                                        type="button"
+                                                        onClick={createNewSession}
+                                                        style={{
+                                                            width: '100%',
+                                                            height: '28px',
+                                                            padding: '0 10px',
+                                                            background: 'none',
+                                                            border: '1px solid var(--border-subtle)',
+                                                            borderRadius: '6px',
+                                                            cursor: 'pointer',
+                                                            fontSize: '12px',
+                                                            color: 'var(--text-secondary)',
+                                                            textAlign: 'center',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'center',
+                                                            gap: '6px',
+                                                            transition: 'all 0.15s ease',
+                                                            boxSizing: 'border-box',
+                                                        }}
+                                                        onMouseEnter={(e) => {
+                                                            e.currentTarget.style.background = 'var(--bg-secondary)';
+                                                            e.currentTarget.style.color = 'var(--text-primary)';
+                                                            e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                                                        }}
+                                                        onMouseLeave={(e) => {
+                                                            e.currentTarget.style.background = 'none';
+                                                            e.currentTarget.style.color = 'var(--text-secondary)';
+                                                            e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                                                        }}
+                                                    >
+                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                                            <line x1="12" y1="5" x2="12" y2="19" />
+                                                            <line x1="5" y1="12" x2="19" y2="12" />
+                                                        </svg>
+                                                        {t('agent.chat.newSession')}
+                                                    </button>
                                                 </div>
-                                            ) : allSessions.length === 0 ? (
-                                                <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('agent.chat.noSessionsYet')}</div>
-                                            ) : null}
-                                            {/* Filtered session list */}
-                                            {!allSessionsLoading && allSessions
-                                                .filter((s: any) => !allUserFilter || (s.username || s.user_id) === allUserFilter)
-                                                .map((s: any) => {
-                                                    const isActive = activeSession?.id === s.id;
+                                            )}
+                                            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 0' }}>
+                                                {sessionsLoading ? (
+                                                    <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>
+                                                ) : sessions.length === 0 ? (
+                                                    <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.chat.noSessionsYet')}<br />{t('agent.chat.clickToStart')}</div>
+                                                ) : sessions.map((s: any) => {
+                                                    const isActive = activeSession?.id === s.id && (chatScope === 'mine' || !canViewAllAgentChatSessions);
+                                                    const channelLabel: Record<string, string> = {
+                                                        feishu: t('common.channels.feishu'),
+                                                        discord: t('common.channels.discord'),
+                                                        slack: t('common.channels.slack'),
+                                                        dingtalk: t('common.channels.dingtalk'),
+                                                        wecom: t('common.channels.wecom'),
+                                                    };
+                                                    const chLabel = channelLabel[s.source_channel];
                                                     return (
-                                                        <div key={s.id} onClick={() => selectSession(s)}
+                                                        <div key={s.id} onClick={() => { setChatScope('mine'); selectSession(s, 'mine'); }}
                                                             className="session-item"
-                                                            style={{ padding: '6px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', position: 'relative' }}
+                                                            style={{ padding: '8px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', marginBottom: '1px', position: 'relative' }}
                                                             onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0.5'; }}
                                                             onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0'; }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '1px' }}>
-                                                                <div style={{ fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1 }}>{s.title}</div>
-                                                                {({
-                                                                    feishu: t('common.channels.feishu'),
-                                                                    discord: t('common.channels.discord'),
-                                                                    slack: t('common.channels.slack'),
-                                                                    dingtalk: t('common.channels.dingtalk'),
-                                                                    wecom: t('common.channels.wecom'),
-                                                                } as Record<string, string>)[s.source_channel] && (
-                                                                        <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>
-                                                                            {({
-                                                                                feishu: t('common.channels.feishu'),
-                                                                                discord: t('common.channels.discord'),
-                                                                                slack: t('common.channels.slack'),
-                                                                                dingtalk: t('common.channels.dingtalk'),
-                                                                                wecom: t('common.channels.wecom'),
-                                                                            } as Record<string, string>)[s.source_channel]}
-                                                                        </span>
-                                                                    )}
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
+                                                                <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.title}</div>
+                                                                {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
                                                             </div>
-                                                            <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', gap: '4px' }}>
-                                                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.username || ''}</span>
-                                                                <span style={{ flexShrink: 0 }}>{s.last_message_at ? new Date(s.last_message_at).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}{s.message_count > 0 ? ` · ${s.message_count}` : ''}</span>
+                                                            <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                                {s.last_message_at
+                                                                    ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                                                    : new Date(s.created_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
+                                                                {s.message_count > 0 && <span style={{ marginLeft: 'auto' }}>{s.message_count}</span>}
                                                             </div>
                                                             <button className="del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
                                                                 style={{ position: 'absolute', top: '4px', right: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', opacity: 0, fontSize: '14px', color: 'var(--text-tertiary)', lineHeight: 1, transition: 'opacity 0.15s' }}
@@ -3666,6 +3894,64 @@ function AgentDetailInner() {
                                                         </div>
                                                     );
                                                 })}
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div style={{ padding: '0 12px 8px', flexShrink: 0 }}>
+                                                <select
+                                                    value={allUserFilter}
+                                                    onChange={(e) => setAllUserFilter(e.target.value)}
+                                                    style={{ width: '100%', height: '28px', padding: '0 8px', fontSize: '12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer' }}
+                                                >
+                                                    <option value="">{t('agent.chat.allUsers')}</option>
+                                                    {otherUserPickerOptions.map(([uid, label]) => (
+                                                        <option key={uid} value={uid}>{label}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 0' }}>
+                                                {allSessionsLoading ? (
+                                                    <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                        {[...Array(3)].map((_, i) => (
+                                                            <div key={i} style={{ padding: '6px 0', animation: 'pulse 1.5s ease-in-out infinite', animationDelay: `${i * 0.1}s` }}>
+                                                                <div style={{ height: '12px', width: `${70 + (i % 3) * 10}%`, background: 'var(--bg-tertiary)', borderRadius: '4px', marginBottom: '6px' }} />
+                                                                <div style={{ height: '10px', width: `${40 + (i % 4) * 8}%`, background: 'var(--bg-tertiary)', borderRadius: '3px', opacity: 0.6 }} />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : othersListForPicker.length === 0 ? (
+                                                    <div style={{ padding: '16px 12px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('agent.chat.noSessionsYet')}</div>
+                                                ) : (
+                                                    othersListForPicker.map((s: any) => {
+                                                        const isActive = activeSession?.id === s.id && chatScope === 'all';
+                                                        const channelLabel: Record<string, string> = {
+                                                            feishu: t('common.channels.feishu'),
+                                                            discord: t('common.channels.discord'),
+                                                            slack: t('common.channels.slack'),
+                                                            dingtalk: t('common.channels.dingtalk'),
+                                                            wecom: t('common.channels.wecom'),
+                                                        };
+                                                        const chLabel = channelLabel[s.source_channel];
+                                                        return (
+                                                            <div key={s.id} onClick={() => selectSession(s, 'all')}
+                                                                className="session-item"
+                                                                style={{ padding: '6px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', position: 'relative' }}
+                                                                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; }}
+                                                                onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '1px' }}>
+                                                                    <div style={{ fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1 }}>{s.title}</div>
+                                                                    {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
+                                                                </div>
+                                                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', gap: '4px' }}>
+                                                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.username || ''}</span>
+                                                                    <span style={{ flexShrink: 0 }}>{s.last_message_at ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}{s.message_count > 0 ? ` · ${s.message_count}` : ''}</span>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
                                         </>
                                     )}
                                 </div>
@@ -3675,7 +3961,7 @@ function AgentDetailInner() {
                             <div className={`agent-chat-area ${ !!(liveState.desktop || liveState.browser || liveState.code) ? 'has-live-panel' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'row', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
                                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
                                     {sessionListCollapsed && (
-                                        <button onClick={() => setSessionListCollapsed(false)} style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, width: '28px', height: '28px', borderRadius: '6px', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }} title="Show chat sessions" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='var(--bg-elevated)'}>
+                                        <button onClick={() => setSessionListCollapsed(false)} style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, width: '28px', height: '28px', borderRadius: '6px', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', cursor: 'pointer' }} title="Show chat sessions" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='var(--bg-elevated)'}>
                                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
                                         </button>
                                     )}
@@ -3686,33 +3972,31 @@ function AgentDetailInner() {
                                             <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
                                         )}
                                     </div>
-                                ) : (activeSession.user_id && currentUser && activeSession.user_id !== String(currentUser.id)) || activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent' ? (
+                                ) : !isWritableSession(activeSession) ? (
                                     /* ── Read-only history view (other user's session or agent-to-agent) ── */
                                     <>
                                         <div
                                             style={{
                                                 position: 'absolute',
                                                 top: '12px',
-                                                left: sessionListCollapsed ? '48px' : '16px',
-                                                zIndex: 8,
+                                                left: sessionListCollapsed ? '52px' : '16px',
+                                                zIndex: 10,
                                                 fontSize: '11px',
                                                 color: 'var(--text-tertiary)',
                                                 padding: '4px 8px',
-                                                background: 'color-mix(in srgb, var(--bg-secondary) 92%, transparent)',
-                                                border: '1px solid var(--border-subtle)',
+                                                background: 'var(--bg-secondary)',
                                                 borderRadius: '4px',
-                                                boxShadow: 'var(--shadow-sm)',
-                                                backdropFilter: 'blur(6px)',
                                                 pointerEvents: 'none',
                                             }}
                                         >
                                             {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
                                         </div>
-                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '52px 16px 12px' }}>
+                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
                                             {(() => {
                                                 // For A2A sessions, determine which participant is "this agent" (left side)
                                                 // Use agent.name matching against sender_name from messages
                                                 const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
+                                                const isHumanReadonly = !isA2A && !activeSession.is_group;
                                                 const thisAgentName = (agent as any)?.name;
                                                 // Find this agent's participant_id from loaded messages
                                                 const thisAgentPid = isA2A && thisAgentName
@@ -3771,7 +4055,16 @@ function AgentDetailInner() {
                                                         return null;
                                                     }
                                                     return (
-                                                        <ChatMessageItem key={i} msg={m} i={i} isLeft={isLeft} t={t} />
+                                                        <ChatMessageItem
+                                                            key={i}
+                                                            msg={m}
+                                                            i={i}
+                                                            isLeft={isLeft}
+                                                            t={t}
+                                                            senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
+                                                            avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
+                                                            forceSenderLabel={isHumanReadonly}
+                                                        />
                                                     );
                                                 });
                                             })()}
@@ -3836,7 +4129,15 @@ function AgentDetailInner() {
                                                     return null;
                                                 }
                                                 return (
-                                                    <ChatMessageItem key={i} msg={msg} i={i} isLeft={msg.role === 'assistant'} t={t} />
+                                                    <ChatMessageItem
+                                                        key={i}
+                                                        msg={msg}
+                                                        i={i}
+                                                        isLeft={msg.role === 'assistant'}
+                                                        t={t}
+                                                        senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
+                                                        avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
+                                                    />
                                                 );
                                             })}
                                             {isWaiting && (
@@ -3862,7 +4163,7 @@ function AgentDetailInner() {
                                                 <span>u23f8</span>
                                                 <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
                                             </div>
-                                        ) : !wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? (
+                                        ) : !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
                                             <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                                 <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
                                                 Connecting...
@@ -3933,6 +4234,7 @@ function AgentDetailInner() {
                                                     value={chatInput}
                                                     onChange={e => {
                                                         setChatInput(e.target.value);
+                                                        // Auto-grow: reset height then expand to scrollHeight
                                                         const el = e.target;
                                                         el.style.height = 'auto';
                                                         el.style.height = el.scrollHeight + 'px';
@@ -3945,7 +4247,7 @@ function AgentDetailInner() {
                                                         }
                                                     }}
                                                     onPaste={handlePaste}
-                                                    placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : t('chat.placeholder')}
+                                                    placeholder={!wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? 'Connecting...' : t('chat.placeholder')}
                                                     disabled={!wsConnected}
                                                     rows={1}
                                                 />
