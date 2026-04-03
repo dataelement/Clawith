@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { enterpriseApi, skillApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import PromptModal from '../components/PromptModal';
+import ConfirmModal from '../components/ConfirmModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
@@ -1882,6 +1883,15 @@ export default function EnterpriseSettings() {
     };
     const [toolsView, setToolsView] = useState<'global' | 'agent-installed'>('global');
     const [agentInstalledTools, setAgentInstalledTools] = useState<any[]>([]);
+    const [selectedToolIds, setSelectedToolIds] = useState<Set<string>>(new Set());
+    const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState<number | null>(null);
+    const [singleDeleteConfirm, setSingleDeleteConfirm] = useState<{ agentToolId: string; name: string } | null>(null);
+    const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+    const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+        setToast({ message, type });
+        setTimeout(() => setToast(null), 3000);
+    };
     const loadAllTools = async () => {
         const tid = selectedTenantId;
         const data = await fetchJson<any[]>(`/tools${tid ? `?tenant_id=${tid}` : ''}`);
@@ -1892,6 +1902,7 @@ export default function EnterpriseSettings() {
             const tid = selectedTenantId;
             const data = await fetchJson<any[]>(`/tools/agent-installed${tid ? `?tenant_id=${tid}` : ''}`);
             setAgentInstalledTools(data);
+            setSelectedToolIds(new Set()); // Reset selection on load
         } catch { }
     };
     useEffect(() => { if (activeTab === 'tools') { loadAllTools(); loadAgentInstalledTools(); } }, [activeTab, selectedTenantId]);
@@ -2735,31 +2746,165 @@ export default function EnterpriseSettings() {
                                 {agentInstalledTools.length === 0 ? (
                                     <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('enterprise.tools.noAgentInstalledTools')}</div>
                                 ) : (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                        {agentInstalledTools.map((row: any) => (
-                                            <div key={row.agent_tool_id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px' }}>
-                                                <div style={{ flex: 1, minWidth: 0 }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                        <span style={{ fontWeight: 500, fontSize: '13px' }}>🔌 {row.tool_display_name}</span>
-                                                        {row.mcp_server_name && <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>}
-                                                    </div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                        🤖 {row.installed_by_agent_name || 'Unknown Agent'}
-                                                        {row.installed_at && <span> · {new Date(row.installed_at).toLocaleString()}</span>}
-                                                    </div>
+                                    <>
+                                        {/* Bulk actions bar */}
+                                        <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', marginBottom: '12px' }}>
+                                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedToolIds.size === agentInstalledTools.length && agentInstalledTools.length > 0}
+                                                    onChange={(e) => {
+                                                        if (e.target.checked) {
+                                                            setSelectedToolIds(new Set(agentInstalledTools.map((r: any) => r.agent_tool_id)));
+                                                        } else {
+                                                            setSelectedToolIds(new Set());
+                                                        }
+                                                    }}
+                                                    style={{ opacity: 0, width: 0, height: 0, position: 'absolute' }}
+                                                />
+                                                <span style={{
+                                                    position: 'relative', display: 'inline-block', width: '36px', height: '20px',
+                                                    background: selectedToolIds.size === agentInstalledTools.length && agentInstalledTools.length > 0 ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                                    borderRadius: '10px', transition: 'background 0.2s', flexShrink: 0,
+                                                }}>
+                                                    <span style={{
+                                                        position: 'absolute', left: selectedToolIds.size === agentInstalledTools.length && agentInstalledTools.length > 0 ? '18px' : '2px', top: '2px',
+                                                        width: '16px', height: '16px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s',
+                                                        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+                                                    }} />
+                                                </span>
+                                                {t('enterprise.tools.selectAll')}
+                                            </label>
+                                            {selectedToolIds.size > 0 ? (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                        {t('enterprise.tools.selectedCount', { count: selectedToolIds.size })}
+                                                    </span>
+                                                    <button
+                                                        className="btn btn-ghost"
+                                                        style={{ color: 'var(--error)', fontSize: '12px', padding: '4px 12px' }}
+                                                        onClick={() => setBulkDeleteConfirm(selectedToolIds.size)}
+                                                    >
+                                                        🗑️ {t('enterprise.tools.bulkDelete')}
+                                                    </button>
                                                 </div>
-                                                <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={async () => {
-                                                    if (!confirm(t('enterprise.tools.removeFromAgent', { name: row.tool_display_name }))) return;
-                                                    try {
-                                                        await fetchJson(`/tools/agent-tool/${row.agent_tool_id}`, { method: 'DELETE' });
-                                                    } catch {
-                                                        // Already deleted (e.g. removed via Global Tools) — just refresh
+                                            ) : (
+                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                    {agentInstalledTools.length} {t('enterprise.tools.toolsCount', '个工具')}
+                                                </span>
+                                            )}
+                                        </div>
+                                        {/* Tool list with checkboxes */}
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                            {agentInstalledTools.map((row: any) => (
+                                                <div key={row.agent_tool_id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+                                                        <label style={{ position: 'relative', display: 'inline-block', width: '36px', height: '20px', cursor: 'pointer', flexShrink: 0 }}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={selectedToolIds.has(row.agent_tool_id)}
+                                                                onChange={(e) => {
+                                                                    const newSet = new Set(selectedToolIds);
+                                                                    if (e.target.checked) {
+                                                                        newSet.add(row.agent_tool_id);
+                                                                    } else {
+                                                                        newSet.delete(row.agent_tool_id);
+                                                                    }
+                                                                    setSelectedToolIds(newSet);
+                                                                }}
+                                                                style={{ opacity: 0, width: 0, height: 0 }}
+                                                            />
+                                                            <span style={{
+                                                                position: 'absolute', inset: 0,
+                                                                background: selectedToolIds.has(row.agent_tool_id) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                                                borderRadius: '10px', transition: 'background 0.2s',
+                                                            }}>
+                                                                <span style={{
+                                                                    position: 'absolute', left: selectedToolIds.has(row.agent_tool_id) ? '18px' : '2px', top: '2px',
+                                                                    width: '16px', height: '16px', background: '#fff',
+                                                                    borderRadius: '50%', transition: 'left 0.2s',
+                                                                    boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+                                                                }} />
+                                                            </span>
+                                                        </label>
+                                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                <span style={{ fontWeight: 500, fontSize: '13px' }}>🔌 {row.tool_display_name}</span>
+                                                                {row.mcp_server_name && <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>}
+                                                            </div>
+                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                                                                🤖 {row.installed_by_agent_name || 'Unknown Agent'}
+                                                                {row.installed_at && <span> · {new Date(row.installed_at).toLocaleString()}</span>}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={() => setSingleDeleteConfirm({ agentToolId: row.agent_tool_id, name: row.tool_display_name })}>🗑️ {t('enterprise.tools.delete')}</button>
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        {/* Bulk Delete Confirm Modal */}
+                                        <ConfirmModal
+                                            open={!!bulkDeleteConfirm}
+                                            title={t('enterprise.tools.bulkDelete', '批量删除')}
+                                            message={t('enterprise.tools.bulkDeleteConfirm', { count: bulkDeleteConfirm || 0 })}
+                                            confirmLabel={t('common.delete', '删除')}
+                                            danger
+                                            onCancel={() => setBulkDeleteConfirm(null)}
+                                            onConfirm={async () => {
+                                                setBulkDeleteConfirm(null);
+                                                try {
+                                                    const result = await fetchJson<{ deleted: number; errors?: Array<{ id: string; error: string }> }>('/tools/agent-tools/bulk', {
+                                                        method: 'DELETE',
+                                                        body: JSON.stringify({ agent_tool_ids: Array.from(selectedToolIds) }),
+                                                    });
+                                                    if (result.errors && result.errors.length > 0) {
+                                                        showToast(`${t('enterprise.tools.bulkDeleteSuccess', { count: result.deleted })} (${result.errors.length} ${t('enterprise.tools.deleteFailed', '部分失败')})`, result.deleted > 0 ? 'success' : 'error');
+                                                    } else {
+                                                        showToast(t('enterprise.tools.bulkDeleteSuccess', { count: result.deleted }));
                                                     }
-                                                    loadAgentInstalledTools();
-                                                }}>🗑️ {t('enterprise.tools.delete')}</button>
+                                                } catch (e: any) {
+                                                    showToast(e.message || t('enterprise.tools.deleteFailed', '删除失败'), 'error');
+                                                }
+                                                loadAgentInstalledTools();
+                                            }}
+                                        />
+
+                                        {/* Single Delete Confirm Modal */}
+                                        <ConfirmModal
+                                            open={!!singleDeleteConfirm}
+                                            title={t('enterprise.tools.delete', '删除')}
+                                            message={t('enterprise.tools.removeFromAgent', { name: singleDeleteConfirm?.name })}
+                                            confirmLabel={t('common.delete', '删除')}
+                                            danger
+                                            onCancel={() => setSingleDeleteConfirm(null)}
+                                            onConfirm={async () => {
+                                                const target = singleDeleteConfirm;
+                                                setSingleDeleteConfirm(null);
+                                                if (!target) return;
+                                                try {
+                                                    await fetchJson(`/tools/agent-tool/${target.agentToolId}`, { method: 'DELETE' });
+                                                    showToast(t('enterprise.tools.deleteSuccess', '删除成功'));
+                                                } catch {
+                                                    showToast(t('enterprise.tools.deleteFailed', '删除失败'), 'error');
+                                                }
+                                                loadAgentInstalledTools();
+                                            }}
+                                        />
+
+                                        {/* Toast */}
+                                        {toast && (
+                                            <div style={{
+                                                position: 'fixed', bottom: '20px', right: '20px',
+                                                background: toast.type === 'error' ? 'var(--error)' : 'var(--accent-primary)',
+                                                color: '#fff', padding: '12px 20px', borderRadius: '8px',
+                                                boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 10000,
+                                                fontSize: '13px', fontWeight: 500,
+                                            }}>
+                                                {toast.message}
                                             </div>
-                                        ))}
-                                    </div>
+                                        )}
+                                    </>
                                 )}
                             </div>
                         )}

@@ -1,6 +1,10 @@
 """Tool management API — CRUD for tools and per-agent assignments."""
 
 import uuid
+import logging
+from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -553,6 +557,77 @@ async def delete_agent_tool(
             await db.delete(tool)
     await db.commit()
     return {"ok": True}
+
+
+class BulkDeleteAgentToolsRequest(BaseModel):
+    agent_tool_ids: list[str]
+
+    # Validation: limit to 50 items per request to prevent abuse
+    model_config = {"json_schema_extra": {"maxItems": 50}}
+
+
+class BulkDeleteResult(BaseModel):
+    deleted: int
+    errors: list[dict] = []
+
+
+@router.delete("/agent-tools/bulk", response_model=BulkDeleteResult)
+async def delete_agent_tools_bulk(
+    request: BulkDeleteAgentToolsRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin: bulk delete agent-tool assignments. Also deletes tool records if no other agents use them."""
+    # Admin check
+    if current_user.role not in ("admin", "super_admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    deleted_count = 0
+    errors: list[dict] = []
+    tools_to_check: set[uuid.UUID] = set()
+
+    for agent_tool_id_str in request.agent_tool_ids:
+        try:
+            agent_tool_id = uuid.UUID(agent_tool_id_str)
+        except ValueError:
+            errors.append({"id": agent_tool_id_str, "error": "Invalid ID"})
+            continue
+
+        at_r = await db.execute(select(AgentTool).where(AgentTool.id == agent_tool_id))
+        at = at_r.scalar_one_or_none()
+        if not at:
+            errors.append({"id": agent_tool_id_str, "error": "Not found"})
+            continue
+
+        # Check ownership (admin can only delete within their tenant)
+        if current_user.role != "super_admin" and at.agent.tenant_id != current_user.tenant_id:
+            errors.append({"id": agent_tool_id_str, "error": "Access denied"})
+            continue
+
+        tools_to_check.add(at.tool_id)
+        await db.delete(at)
+        deleted_count += 1
+
+    await db.flush()
+
+    # Log the bulk delete operation for audit trail
+    logger.info(
+        f"[{datetime.now(timezone.utc).isoformat()}] Bulk delete agent-tools: user={current_user.id}, tenant={current_user.tenant_id}, "
+        f"deleted={deleted_count}, errors={len(errors)}, tools_cleaned={len(tools_to_check)}"
+    )
+
+    # Check if any tools should be deleted (no remaining agents use them)
+    for tool_id in tools_to_check:
+        remaining_r = await db.execute(select(AgentTool).where(AgentTool.tool_id == tool_id).limit(1))
+        if not remaining_r.scalar_one_or_none():
+            tool_r = await db.execute(select(Tool).where(Tool.id == tool_id))
+            tool = tool_r.scalar_one_or_none()
+            if tool and tool.type == "mcp":
+                await db.delete(tool)
+
+    await db.commit()
+    return BulkDeleteResult(deleted=deleted_count, errors=errors)
 
 
 # ─── Per-Agent Tool Config ───────────────────────────────────
