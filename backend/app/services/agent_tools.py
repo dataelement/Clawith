@@ -641,7 +641,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_code",
-            "description": "Execute code (Python, Bash, or Node.js) in a local sandboxed subprocess within the agent's root directory. Useful for data processing, calculations, file transformations, and automation scripts. Code runs with the agent root as the working directory, so you can access skills/, workspace/, memory/ etc. directly. Security restrictions apply: no network access commands, no system-level operations, 30-second timeout.",
+            "description": "Execute code (Python, Bash, or Node.js) in a local sandboxed subprocess within the agent's root directory. Useful for data processing, calculations, file transformations, and automation scripts. Code runs with the agent root as the working directory, so you can access skills/, workspace/, memory/ etc. directly. Supports pip install for Python packages (persistent across executions).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -652,11 +652,20 @@ AGENT_TOOLS = [
                     },
                     "code": {
                         "type": "string",
-                        "description": "Code to execute. For Python, you can import standard libraries (json, csv, math, re, collections, etc.). Working directory is the agent root (skills/, workspace/, memory/ are accessible).",
+                        "description": "Code to execute. For Python, you can import standard libraries and use 'pip install' to install packages. Working directory is the agent root (skills/, workspace/, memory/ are accessible).",
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Max execution time in seconds (default 30, max 60)",
+                        "description": "Max execution time in seconds (default 30). Max depends on mode: 60s (normal), 300s (extended), 1800s (long_task).",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["normal", "extended", "long_task"],
+                        "description": "Execution mode: normal (max 60s), extended (max 5min for data processing), long_task (max 30min for heavy computation). Default: normal.",
+                    },
+                    "use_venv": {
+                        "type": "boolean",
+                        "description": "Use shared virtual environment for Python (enables persistent pip packages). Default: true.",
                     },
                 },
                 "required": ["language", "code"],
@@ -2441,11 +2450,14 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
 
     # Priority 2: channel-initiated (ContextVar set by channel webhook handler)
     sender = channel_file_sender.get()
+    logger.info(f"[send_channel_file] ContextVar sender={sender is not None}, file={file_path.name}")
     if sender is not None:
         try:
+            logger.info(f"[send_channel_file] Calling sender with file_path={file_path}, msg={accompany_msg[:50] if accompany_msg else ''}")
             await sender(file_path, accompany_msg)
             return f"File '{file_path.name}' sent to user via channel."
         except Exception as e:
+            logger.error(f"[send_channel_file] Sender failed: {e}")
             return f"Failed to send file: {e}"
 
     # Priority 3: Web chat fallback — return download URL
@@ -4911,7 +4923,7 @@ def _check_code_safety(language: str, code: str) -> str | None:
 async def _execute_code(
     agent_id: Optional[uuid.UUID],
     ws: Path,
-    arguments: dict,
+    arguments: dict | list,
     *,
     tool_name: str = "execute_code",
 ) -> str:
@@ -4920,20 +4932,38 @@ async def _execute_code(
     Args:
         agent_id: The agent's UUID (used to fetch per-agent tool config).
         ws: Agent workspace root path.
-        arguments: Tool call arguments (language, code, timeout).
+        arguments: Tool call arguments (language, code, timeout, mode).
         tool_name: The originating tool name — either 'execute_code' (local)
                    or 'execute_code_e2b' (cloud).  Used to look up the
                    correct per-agent tool config entry in the database.
     """
+    # Handle case where LLM returns a list instead of dict
+    if isinstance(arguments, list):
+        logger.warning(f"[Sandbox] arguments is a list, converting to dict: {arguments}")
+        # Try to convert list to dict if it looks like key-value pairs
+        if len(arguments) == 2 and all(isinstance(x, str) for x in arguments):
+            arguments = {"language": arguments[0], "code": arguments[1]}
+        else:
+            # Try to extract from list of dicts
+            arguments = arguments[0] if arguments and isinstance(arguments[0], dict) else {}
+            if not arguments:
+                return "❌ Invalid arguments format: expected object, got list"
+
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
-    timeout = min(arguments.get("timeout", 30), 60)  # Max 60 seconds
+    timeout = max(1, min(arguments.get("timeout", 30), 7200))  # 1s - 2h
+    mode = arguments.get("mode", "normal")  # normal, extended, long_task
+    use_venv = arguments.get("use_venv", True)
 
     if not code.strip():
         return "❌ No code provided"
 
     if language not in ("python", "bash", "node"):
         return f"❌ Unsupported language: {language}. Use: python, bash, or node"
+
+    # Validate mode
+    if mode not in ("normal", "extended", "long_task"):
+        mode = "normal"
 
     # Working directory is the agent's root directory (must be absolute).
     # This allows code to access skills/, workspace/, memory/ etc. directly.
@@ -4961,13 +4991,55 @@ async def _execute_code(
             sandbox_config = fallback_config
             logger.info(f"[Sandbox] No per-agent config found for '{tool_name}', using fallback")
 
-        backend = get_sandbox_backend(sandbox_config)
-        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name})")
+        # Determine max timeout based on mode
+        max_timeouts = {
+            "normal": sandbox_config.max_timeout,
+            "extended": sandbox_config.extended_timeout,
+            "long_task": sandbox_config.long_task_timeout,
+        }
+        max_timeout = max_timeouts.get(mode, sandbox_config.max_timeout)
+        timeout = min(timeout, max_timeout)
+
+        # Auto-enable network for pip install if needed
+        code_lower = code.lower()
+        needs_network = (
+            "pip install" in code_lower or
+            "pip3 install" in code_lower or
+            "npm install" in code_lower or
+            "yarn add" in code_lower
+        )
+        if needs_network and sandbox_config.allow_pip_install and not sandbox_config.allow_network:
+            logger.info(f"[Sandbox] Auto-enabling network for package installation")
+            # Create a modified config with network enabled
+            sandbox_config = SandboxConfig(
+                type=sandbox_config.type,
+                enabled=sandbox_config.enabled,
+                cpu_limit=sandbox_config.cpu_limit,
+                memory_limit=sandbox_config.memory_limit,
+                allow_network=True,  # Enable network for pip install
+                api_key=sandbox_config.api_key,
+                api_url=sandbox_config.api_url,
+                default_timeout=sandbox_config.default_timeout,
+                max_timeout=sandbox_config.max_timeout,
+                extended_timeout=sandbox_config.extended_timeout,
+                long_task_timeout=sandbox_config.long_task_timeout,
+                shared_venv_path=sandbox_config.shared_venv_path,
+                allow_pip_install=sandbox_config.allow_pip_install,
+                allow_npm_install=sandbox_config.allow_npm_install,
+                pip_index_url=sandbox_config.pip_index_url,
+                pip_black_list=sandbox_config.pip_black_list,
+            )
+
+        # Create backend with agent_data_dir for shared venv support
+        backend = get_sandbox_backend(sandbox_config, agent_data_dir=str(WORKSPACE_ROOT))
+        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name}, mode={mode}, timeout={timeout}s)")
         result = await backend.execute(
             code=code,
             language=language,
             timeout=timeout,
             work_dir=str(work_dir),
+            use_venv=use_venv,
+            mode=mode,
         )
 
         # Format result for user display
@@ -4994,9 +5066,16 @@ async def _execute_code(
             return f"❌ Execution error: {str(e)[:200]}"
 
 
-async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
+async def _execute_code_legacy(ws: Path, arguments: dict | list) -> str:
     """Legacy subprocess-based code execution (fallback)."""
     import asyncio
+
+    # Handle list arguments (should already be converted, but be safe)
+    if isinstance(arguments, list):
+        if len(arguments) >= 2:
+            arguments = {"language": arguments[0], "code": arguments[1]}
+        else:
+            return "❌ Invalid arguments format"
 
     language = arguments.get("language", "python")
     code = arguments.get("code", "")

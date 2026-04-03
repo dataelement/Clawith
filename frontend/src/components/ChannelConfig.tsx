@@ -4,12 +4,17 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { channelApi } from '../services/api';
 import LinearCopyButton from './LinearCopyButton';
 // ─── Shared fetchAuth (same as AgentDetail) ─────────────
-function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
+async function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
-    return fetch(`/api${url}`, {
+    const response = await fetch(`/api${url}`, {
         ...options,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    }).then(r => r.json());
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `HTTP ${response.status}`);
+    }
+    return response.json();
 }
 
 // ─── Types ──────────────────────────────────────────────
@@ -81,6 +86,8 @@ const DingTalkIcon = <img src="/dingtalk.png" alt="DingTalk" width="20" height="
 const AtlassianIcon = <img src="/atlassian.png" alt="Atlassian" width="20" height="20" style={{ borderRadius: '4px' }} />;
 
 const AgentBayIcon = <span style={{ fontSize: '16px' }}>🌩️</span>;
+
+const WeChatIcon = <span style={{ fontSize: '16px' }}>💬</span>;
 
 // Eye icons for password toggle
 const EyeOpen = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
@@ -223,6 +230,18 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         ],
         guide: { prefix: 'channelGuide.agentbay', steps: 3 },
     },
+    {
+        id: 'wechat',
+        icon: WeChatIcon,
+        nameKey: 'common.channels.wechat',
+        nameFallback: 'WeChat',
+        desc: '个人微信 (iLink)',
+        apiSlug: 'wechat-channel',
+        hasTestConnection: false,
+        editOnly: false,
+        fields: [],
+        guide: { prefix: 'channelGuide.wechat', steps: 4 },
+    },
 ];
 
 // ─── Feishu Permission JSON ─────────────────────────────
@@ -331,6 +350,11 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [agentbayTesting, setAgentbayTesting] = useState(false);
     const [agentbayTestResult, setAgentbayTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null);
 
+    // WeChat login state
+    const [wechatLoginLoading, setWechatLoginLoading] = useState(false);
+    const [wechatLoginError, setWechatLoginError] = useState<string | null>(null);
+    const [wechatQrUrl, setWechatQrUrl] = useState<string | null>(null);
+
     // ─── Edit mode: queries for each channel ────────────
     const enabled = mode === 'edit' && !!agentId;
 
@@ -399,6 +423,16 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         queryFn: () => fetchAuth<any>(`/agents/${agentId}/agentbay-channel`).catch(() => null),
         enabled: enabled,
     });
+    const { data: wechatConfig } = useQuery({
+        queryKey: ['wechat-channel', agentId],
+        queryFn: () => fetchAuth<any>(`/agents/${agentId}/wechat-channel`).catch(() => null),
+        enabled: enabled,
+    });
+    const { data: wechatStatus } = useQuery({
+        queryKey: ['wechat-status', agentId],
+        queryFn: () => fetchAuth<any>(`/agents/${agentId}/wechat-channel/status`).catch(() => null),
+        enabled: enabled && !!wechatConfig?.is_configured,
+    });
 
     // Helper: get config data for a channel
     const getConfig = (id: string): any => {
@@ -411,6 +445,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             case 'wecom': return wecomConfig;
             case 'atlassian': return atlassianConfig;
             case 'agentbay': return agentbayConfig;
+            case 'wechat': return wechatConfig;
             default: return null;
         }
     };
@@ -875,6 +910,21 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     </div>
                                 )}
 
+                                {/* WeChat status */}
+                                {ch.id === 'wechat' && (
+                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: wechatStatus?.is_running ? '#07C160' : 'var(--text-tertiary)', display: 'inline-block' }}></span>
+                                            <span style={{ color: 'var(--text-secondary)' }}>
+                                                {wechatStatus?.is_running ? '已连接 (iLink Gateway)' : wechatStatus?.is_logged_in ? '已登录 (未运行)' : '未连接'}
+                                            </span>
+                                        </div>
+                                        {wechatStatus?.error && (
+                                            <div style={{ fontSize: '11px', color: 'rgb(220,38,38)', marginTop: '4px' }}>{wechatStatus.error}</div>
+                                        )}
+                                    </div>
+                                )}
+
                                 {/* Setup guide in configured view */}
                                 {renderGuide(ch.guide, !!(ch.connectionMode && configConnMode === 'websocket'), ch)}
 
@@ -889,6 +939,49 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                         <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAgentBay} disabled={agentbayTesting}>
                                             {agentbayTesting ? 'Testing...' : 'Test Connection'}
                                         </button>
+                                    )}
+                                    {/* WeChat login button */}
+                                    {ch.id === 'wechat' && (
+                                        <button
+                                            className="btn btn-primary"
+                                            style={{ fontSize: '12px', padding: '4px 12px' }}
+                                            disabled={wechatLoginLoading}
+                                            onClick={async () => {
+                                                setWechatLoginLoading(true);
+                                                setWechatLoginError(null);
+                                                try {
+                                                    // Force new login to always get a fresh QR code
+                                                    const res = await fetchAuth<{ qr_url?: string; is_logged_in?: boolean; error?: string }>(`/agents/${agentId}/wechat-channel`, {
+                                                        method: 'POST',
+                                                        body: JSON.stringify({ force: true }),
+                                                    });
+                                                    if (res.qr_url) {
+                                                        // Open QR code in popup window automatically
+                                                        window.open(res.qr_url, '_blank', 'width=400,height=500,scrollbars=no,resizable=no');
+                                                    } else if (res.is_logged_in) {
+                                                        // Already logged in with stored credentials
+                                                        queryClient.invalidateQueries({ queryKey: ['wechat-status', agentId] });
+                                                    } else if (res.error) {
+                                                        setWechatLoginError(res.error);
+                                                    } else {
+                                                        setWechatLoginError('获取二维码失败，请检查 WeChat Gateway 是否运行。');
+                                                    }
+                                                    queryClient.invalidateQueries({ queryKey: ['wechat-channel', agentId] });
+                                                    queryClient.invalidateQueries({ queryKey: ['wechat-status', agentId] });
+                                                } catch (e: any) {
+                                                    console.error('WeChat login error:', e);
+                                                    setWechatLoginError(e?.message || '登录失败');
+                                                } finally {
+                                                    setWechatLoginLoading(false);
+                                                }
+                                            }}>
+                                            {wechatLoginLoading ? '加载中...' : (wechatStatus?.is_logged_in ? '重新登录' : '扫码登录')}
+                                        </button>
+                                    )}
+                                    {wechatLoginError && ch.id === 'wechat' && (
+                                        <div style={{ fontSize: '11px', color: 'rgb(220,38,38)', marginTop: '4px', width: '100%' }}>
+                                            {wechatLoginError}
+                                        </div>
                                     )}
                                     <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }}
                                         onClick={() => {
@@ -995,6 +1088,56 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                         </div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Leave Base URL empty to use the default endpoint</div>
                                     </>
+                                )}
+
+                                {/* WeChat login UI (no form fields needed) */}
+                                {ch.id === 'wechat' && (
+                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '12px', marginTop: '8px' }}>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                            个人微信通过扫描二维码登录，无需填写配置信息。
+                                        </div>
+
+                                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                            <button
+                                                className="btn btn-primary"
+                                                style={{ fontSize: '12px' }}
+                                                disabled={wechatLoginLoading}
+                                                onClick={async () => {
+                                                    setWechatLoginLoading(true);
+                                                    setWechatLoginError(null);
+                                                    try {
+                                                        const res = await fetchAuth<{ qr_url?: string; is_logged_in?: boolean; error?: string }>(`/agents/${agentId}/wechat-channel`, {
+                                                            method: 'POST',
+                                                            body: JSON.stringify({ force: true }),
+                                                        });
+                                                        if (res.qr_url) {
+                                                            // Auto popup QR code window
+                                                            window.open(res.qr_url, '_blank', 'width=400,height=500,scrollbars=no,resizable=no');
+                                                        } else if (res.is_logged_in) {
+                                                            queryClient.invalidateQueries({ queryKey: ['wechat-status', agentId] });
+                                                        } else if (res.error) {
+                                                            setWechatLoginError(res.error);
+                                                        } else {
+                                                            setWechatLoginError('获取二维码失败，请检查 WeChat Gateway 是否运行。');
+                                                        }
+                                                        queryClient.invalidateQueries({ queryKey: ['wechat-channel', agentId] });
+                                                        queryClient.invalidateQueries({ queryKey: ['wechat-status', agentId] });
+                                                    } catch (e: any) {
+                                                        console.error('WeChat login error:', e);
+                                                        setWechatLoginError(e?.message || '登录失败');
+                                                    } finally {
+                                                        setWechatLoginLoading(false);
+                                                    }
+                                                }}>
+                                                {wechatLoginLoading ? '加载中...' : '扫码登录微信'}
+                                            </button>
+                                        </div>
+                                        {wechatLoginError && (
+                                            <div style={{ fontSize: '11px', color: 'rgb(220,38,38)', marginTop: '8px' }}>
+                                                {wechatLoginError}
+                                            </div>
+                                        )}
+                                    </div>
                                 )}
 
                                 {/* Save / Cancel buttons */}

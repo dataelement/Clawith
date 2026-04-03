@@ -1000,7 +1000,10 @@
       "slack": "Slack",
       "teams": "Microsoft Teams",
       "dingtalk": "钉钉",
-      "wecom": "企业微信"
+      "wecom": "企业微信",
+      "wechat": "个人微信",
+      "atlassian": "Atlassian",
+      "agentbay": "AgentBay"
     }
   },
   "admin": {
@@ -1170,6 +1173,19 @@
       "ws_step5": "复制生成的 Bot ID 和 Secret → 填入上方 → 点击保存配置",
       "ws_step6": "在企业微信中找到机器人，发送消息测试",
       "ws_note": "WebSocket 长连接模式无需公网 IP、回调地址或域名备案（ICP），连接由系统自动管理。"
+    },
+    "wechat": {
+      "step1": "确保 wechat-gateway 服务已启动（Docker 容器或本地运行）",
+      "step2": "点击「扫码登录微信」按钮，将弹出一个包含二维码的窗口",
+      "step3": "打开手机微信，扫描二维码并确认登录",
+      "step4": "登录成功后，该 Agent 将自动接收并回复发送给此微信账号的消息",
+      "note": "个人微信通过 iLink 协议连接，无需注册开发者账号。登录凭证安全存储在服务器本地。"
+    },
+    "agentbay": {
+      "step1": "访问阿里云 AgentBay 控制台获取 API Key",
+      "step2": "将 API Key 填入上方 → 可选填写自定义 Base URL",
+      "step3": "点击保存配置 → Agent 将获得浏览器操作和代码执行能力",
+      "note": "AgentBay 提供云端浏览器和代码执行环境，适合需要自动化操作的场景。"
     }
   },
   "identity": {

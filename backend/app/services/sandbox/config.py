@@ -37,6 +37,19 @@ class SandboxConfig(BaseModel):
     default_timeout: int = Field(default=30, ge=1, le=300)
     max_timeout: int = Field(default=60, ge=1, le=300)
 
+    # Extended timeout for long-running tasks
+    extended_timeout: int = Field(default=300, ge=60, le=1800)  # 5 minutes max
+    long_task_timeout: int = Field(default=1800, ge=300, le=7200)  # 30 minutes max
+
+    # Shared virtual environment for dependency installation
+    shared_venv_path: str = ""  # Empty = auto-create under AGENT_DATA_DIR
+    allow_pip_install: bool = True
+    allow_npm_install: bool = True
+    pip_index_url: str = "https://pypi.tuna.tsinghua.edu.cn/simple"  # Default to Tsinghua mirror
+    pip_black_list: list[str] = Field(default_factory=lambda: [
+        "subprocess", "ptyprocess", "pexpect", "pwntools", "capstone", "keystone-engine"
+    ])
+
     # Language mapping for API sandboxes
     # Maps our internal language names to API-specific language IDs
     language_mapping: dict[str, str] = Field(default_factory=lambda: {
@@ -106,5 +119,14 @@ class SandboxConfig(BaseModel):
             allow_network=get_value("allow_network", False),
             default_timeout=get_value("default_timeout", 30),
             max_timeout=get_value("max_timeout", 60),
+            extended_timeout=get_value("extended_timeout", 300),
+            long_task_timeout=get_value("long_task_timeout", 1800),
+            shared_venv_path=get_value("shared_venv_path", ""),
+            allow_pip_install=get_value("allow_pip_install", True),
+            allow_npm_install=get_value("allow_npm_install", True),
+            pip_index_url=get_value("pip_index_url", "https://pypi.tuna.tsinghua.edu.cn/simple"),
+            pip_black_list=get_value("pip_black_list", [
+                "subprocess", "ptyprocess", "pexpect", "pwntools", "capstone", "keystone-engine"
+            ]),
         )
         return result

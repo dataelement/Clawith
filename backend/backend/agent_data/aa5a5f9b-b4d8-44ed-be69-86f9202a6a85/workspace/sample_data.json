@@ -1,0 +1,18 @@
+{
+  "test_id": "TEST-001-MODIFIED",
+  "timestamp": "2026-04-03T01:53:50Z",
+  "status": "active",
+  "data": {
+    "users": [
+      {"id": 1, "name": "Alice", "role": "admin"},
+      {"id": 2, "name": "Bob", "role": "user"},
+      {"id": 3, "name": "Charlie", "role": "guest"}
+    ],
+    "metrics": {
+      "total_users": 3,
+      "active_users": 2,
+      "success_rate": 95.5
+    }
+  },
+  "notes": "这是一个测试用的JSON文件"
+}

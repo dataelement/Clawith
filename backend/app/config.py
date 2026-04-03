@@ -100,6 +100,19 @@ class Settings(BaseSettings):
     SANDBOX_DEFAULT_TIMEOUT: int = 30
     SANDBOX_MAX_TIMEOUT: int = 60
 
+    # Sandbox extended timeout (for long-running tasks)
+    SANDBOX_EXTENDED_TIMEOUT: int = 300  # 5 minutes
+    SANDBOX_LONG_TASK_TIMEOUT: int = 1800  # 30 minutes
+
+    # Shared virtual environment for dependency installation
+    SANDBOX_SHARED_VENV_PATH: str = ""  # Empty = auto-create under AGENT_DATA_DIR
+    SANDBOX_ALLOW_PIP_INSTALL: bool = True
+    SANDBOX_ALLOW_NPM_INSTALL: bool = True
+    SANDBOX_PIP_INDEX_URL: str = "https://pypi.tuna.tsinghua.edu.cn/simple"  # Tsinghua mirror
+    SANDBOX_PIP_BLACK_LIST: list[str] = [
+        "subprocess", "ptyprocess", "pexpect", "pwntools", "capstone", "keystone-engine"
+    ]
+
     model_config = {
         "env_file": [".env", "../.env"],
         "env_file_encoding": "utf-8",
@@ -127,4 +140,11 @@ def get_sandbox_config() -> SandboxConfig:
         allow_network=settings.SANDBOX_ALLOW_NETWORK,
         default_timeout=settings.SANDBOX_DEFAULT_TIMEOUT,
         max_timeout=settings.SANDBOX_MAX_TIMEOUT,
+        extended_timeout=settings.SANDBOX_EXTENDED_TIMEOUT,
+        long_task_timeout=settings.SANDBOX_LONG_TASK_TIMEOUT,
+        shared_venv_path=settings.SANDBOX_SHARED_VENV_PATH,
+        allow_pip_install=settings.SANDBOX_ALLOW_PIP_INSTALL,
+        allow_npm_install=settings.SANDBOX_ALLOW_NPM_INSTALL,
+        pip_index_url=settings.SANDBOX_PIP_INDEX_URL,
+        pip_black_list=settings.SANDBOX_PIP_BLACK_LIST,
     )

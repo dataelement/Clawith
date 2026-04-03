@@ -7,7 +7,7 @@ from app.services.sandbox.base import SandboxBackend
 from app.services.sandbox.config import SandboxConfig, SandboxType
 
 
-def get_sandbox_backend(config: SandboxConfig) -> SandboxBackend:
+def get_sandbox_backend(config: SandboxConfig, agent_data_dir: str | None = None) -> SandboxBackend:
     """
     Factory function: create sandbox backend instance based on config.
 
@@ -16,6 +16,7 @@ def get_sandbox_backend(config: SandboxConfig) -> SandboxBackend:
 
     Args:
         config: SandboxConfig describing which backend to create
+        agent_data_dir: Optional path to agent data directory (for shared venv)
 
     Returns:
         SandboxBackend instance
@@ -30,7 +31,12 @@ def get_sandbox_backend(config: SandboxConfig) -> SandboxBackend:
     if not backend_class:
         raise ValueError(f"Unknown sandbox type: {config.type}")
 
-    return backend_class(config)
+    # Pass agent_data_dir to backends that support it (e.g., SubprocessBackend)
+    try:
+        return backend_class(config, agent_data_dir=agent_data_dir)
+    except TypeError:
+        # Backend doesn't accept agent_data_dir, use default constructor
+        return backend_class(config)
 
 
 # Registry mapping - populated at module load time

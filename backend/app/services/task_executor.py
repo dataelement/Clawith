@@ -191,6 +191,15 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
                     except Exception:
                         args = {}
 
+                    # Ensure args is a dict, not a list
+                    if isinstance(args, list):
+                        logger.warning(f"[TaskExec] Tool {tool_name} received list args, converting: {args}")
+                        # Try to convert list to dict for common patterns
+                        if tool_name in ("execute_code", "execute_code_e2b") and len(args) >= 2:
+                            args = {"language": args[0] if isinstance(args[0], str) else "python", "code": args[1]}
+                        else:
+                            args = {"items": args}
+
                     tool_result = await execute_tool(tool_name, args, agent_id, creator_id)
                     messages.append(LLMMessage(
                         role="tool",

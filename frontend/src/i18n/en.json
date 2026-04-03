@@ -931,7 +931,10 @@
       "slack": "Slack",
       "teams": "Microsoft Teams",
       "dingtalk": "DingTalk",
-      "wecom": "WeCom"
+      "wecom": "WeCom",
+      "wechat": "WeChat",
+      "atlassian": "Atlassian",
+      "agentbay": "AgentBay"
     }
   },
   "openclaw": {
@@ -1039,6 +1042,19 @@
       "ws_step5": "Copy the Bot ID and Secret that are generated → paste them above → click Save Config",
       "ws_step6": "Find the bot in WeCom and send a test message",
       "ws_note": "WebSocket mode requires no public IP, callback URL, or domain verification (ICP). The connection is managed automatically."
+    },
+    "wechat": {
+      "step1": "Ensure the wechat-gateway service is running (Docker container or local)",
+      "step2": "Click the 'Start Login' button to open a window with a QR code",
+      "step3": "Open WeChat on your phone, scan the QR code, and confirm login",
+      "step4": "After successful login, this Agent will automatically receive and reply to messages sent to this WeChat account",
+      "note": "Personal WeChat connects via iLink protocol. No developer account registration required. Credentials are securely stored locally on the server."
+    },
+    "agentbay": {
+      "step1": "Visit Aliyun AgentBay Console to get your API Key",
+      "step2": "Paste the API Key above — optionally set a custom Base URL",
+      "step3": "Click Save Config — the Agent will gain browser automation and code execution capabilities",
+      "note": "AgentBay provides cloud browser and code execution environments, ideal for automation scenarios."
     }
   }
 }

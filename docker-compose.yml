@@ -2,6 +2,8 @@ services:
   postgres:
     image: postgres:15-alpine
     restart: unless-stopped
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_USER: clawith
       POSTGRES_PASSWORD: clawith
@@ -17,6 +19,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    ports:
+      - "6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -45,6 +49,8 @@ services:
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       DOCKER_NETWORK: clawith_network
       SS_CONFIG_FILE: /data/ss-nodes.json
+      # WeChat Gateway URL (Node.js microservice)
+      WECHAT_GATEWAY_URL: http://wechat-gateway:3100
       # Public base URL for constructing OAuth callback URLs and email links.
       # Required when deployed behind a reverse proxy (e.g. Nginx, Cloudflare).
       # If not set, the server infers the URL from the incoming request host.
@@ -79,9 +85,33 @@ services:
     depends_on:
       - backend
 
+  # WeChat Gateway - Node.js microservice for personal WeChat connections
+  wechat-gateway:
+    build:
+      context: ./wechat-gateway
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    environment:
+      PORT: 3100
+      BACKEND_URL: http://backend:8000
+      API_PREFIX: /api
+      NODE_ENV: production
+    volumes:
+      - wechat-data:/data
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
 volumes:
   pgdata:
   redisdata:
+  wechat-data:
 
 
 networks:
