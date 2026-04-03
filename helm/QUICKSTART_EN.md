@@ -21,6 +21,15 @@ helm/
 └── QUICKSTART.md              # This Document
 ```
 
+## ⚠️ Important Notice
+
+**K8s Deployment Limitations:**
+- ✅ Current Helm Chart **only supports Native Agent deployment mode**
+- ❌ **Does NOT support OpenClaw Agent hosting mode**
+- If you need to use OpenClaw Agent hosting, please use Docker Compose or other deployment methods
+
+Native Agent is the built-in proxy mode of Clawith, suitable for Kubernetes environments. OpenClaw Agent hosting mode is currently only supported in Docker Compose environments.
+
 ## 🚀 Quick Start
 
 ### 1. Edit Configuration File

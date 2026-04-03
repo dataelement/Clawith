@@ -21,6 +21,15 @@ helm/
 └── QUICKSTART.md              # 本文档
 ```
 
+## ⚠️ 重要说明
+
+**K8s 部署方式限制：**
+- ✅ 当前 Helm Chart **仅支持 Native Agent 部署方式**
+- ❌ **不支持 OpenClaw Agent 托管模式**
+- 如需使用 OpenClaw Agent 托管，请采用 Docker Compose 或其他部署方式
+
+Native Agent 是 Clawith 内置的代理模式，适用于 Kubernetes 环境。OpenClaw Agent 托管模式目前仅在 Docker Compose 环境中支持。
+
 ## 🚀 快速开始
 
 ### 1. 编辑配置文件
