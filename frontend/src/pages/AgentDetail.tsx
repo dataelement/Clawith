@@ -2347,6 +2347,13 @@ function AgentDetailInner() {
             }).trim();
         }
 
+        // For A2A sessions, determine which participant is "this agent" (left side)
+        const resolvedAvatarText = isLeft
+            ? (thisAgentName && msg.sender_name === thisAgentName ? thisAgentName[0] : (msg.sender_name ? msg.sender_name[0] : 'A'))
+            : 'U';
+        const showSenderLabel = isLeft && msg.sender_name && msg.sender_name !== thisAgentName;
+        const resolvedSenderLabel = msg.sender_name;
+
         const timestampHtml = msg.timestamp ? (() => {
             const d = new Date(msg.timestamp);
             const now = new Date();
@@ -2411,7 +2418,7 @@ function AgentDetailInner() {
                 </div>
             </div>
         );
-    }), [t]);
+    }), [t, thisAgentName]);
 
     const handleChatScroll = () => {
         const el = chatContainerRef.current;
