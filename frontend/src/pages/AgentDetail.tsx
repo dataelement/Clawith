@@ -1242,13 +1242,28 @@ function AgentDetailInner() {
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sess.id) return;
             const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
-            const preParsed = msgs.map((m: any) => parseChatMsg({
+            const rawParsed = msgs.map((m: any) => parseChatMsg({
                 role: m.role, content: m.content || '',
                 ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult }),
                 ...(m.thinking && { thinking: m.thinking }),
                 ...(m.created_at && { timestamp: m.created_at }),
                 ...(m.id && { id: m.id }),
             }));
+            // Group consecutive tool_call messages into _isToolGroup
+            const preParsed: any[] = [];
+            for (const m of rawParsed) {
+                if ((m as any).role === 'tool_call') {
+                    const tc = { name: (m as any).toolName || '', args: (m as any).toolArgs || {}, result: (m as any).toolResult || '' };
+                    const last = preParsed[preParsed.length - 1];
+                    if (last && (last as any)._isToolGroup) {
+                        last.toolCalls = [...(last.toolCalls || []), tc];
+                    } else {
+                        preParsed.push({ role: 'assistant', content: '', toolCalls: [tc], _isToolGroup: true });
+                    }
+                } else {
+                    preParsed.push(m);
+                }
+            }
 
             if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
                 setChatMessages(preParsed);
@@ -1342,7 +1357,7 @@ function AgentDetailInner() {
         } catch (e) { alert('Failed: ' + e); }
         setExpirySaving(false);
     };
-    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
+    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; _isToolGroup?: boolean; toolCalls?: { name: string; args: any; result?: string }[]; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [livePanelVisible, setLivePanelVisible] = useState(false);
@@ -1593,15 +1608,51 @@ function AgentDetailInner() {
                     setSessionListCollapsed(true);
                     useAppStore.setState({ sidebarCollapsed: true });
                 }
-                setChatMessages(prev => {
-                    const toolMsg: ChatMsg = { role: 'tool_call', content: '', toolName: d.name, toolArgs: d.args, toolStatus: d.status, toolResult: d.result };
-                    if (d.status === 'done') {
-                        const lastIdx = prev.length - 1;
-                        const last = prev[lastIdx];
-                        if (last && last.role === 'tool_call' && last.toolName === d.name && last.toolStatus === 'running') return [...prev.slice(0, lastIdx), toolMsg];
-                    }
-                    return [...prev, toolMsg];
-                });
+                if (d.status === 'running') {
+                    setChatMessages(prev => {
+                        let msgs = [...prev];
+                        while (msgs.length > 0) {
+                            const last = msgs[msgs.length - 1];
+                            if (last.role === 'assistant' && !(last as any)._isToolGroup && !(last as any)._streaming && !(last.content && last.content.trim()) && !last.thinking) {
+                                msgs.pop();
+                            } else break;
+                        }
+                        const tc = { name: d.name, args: d.args || {} };
+                        // Find recent tool group to merge into, but stop at user messages (new turn boundary)
+                        for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 5); i--) {
+                            if (msgs[i].role === 'user') break; // New conversation turn — don't merge across
+                            if ((msgs[i] as any)._isToolGroup) {
+                                msgs[i] = { ...msgs[i], toolCalls: [...(msgs[i].toolCalls || []), tc] } as any;
+                                return msgs;
+                            }
+                        }
+                        return [...msgs, { role: 'assistant', content: '', toolCalls: [tc], _isToolGroup: true } as any];
+                    });
+                } else {
+                    setChatMessages(prev => {
+                        let msgs = [...prev];
+                        while (msgs.length > 0) {
+                            const last = msgs[msgs.length - 1];
+                            if (last.role === 'assistant' && !(last as any)._isToolGroup && !(last as any)._streaming && !(last.content && last.content.trim()) && !last.thinking) {
+                                msgs.pop();
+                            } else break;
+                        }
+                        const newCall = { name: d.name, args: d.args, result: d.result || '' };
+                        // Find recent tool group, but stop at user messages (new turn boundary)
+                        for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 5); i--) {
+                            if (msgs[i].role === 'user') break; // New conversation turn — don't merge across
+                            if ((msgs[i] as any)._isToolGroup) {
+                                const existing = (msgs[i].toolCalls || []).map((tc: any) =>
+                                    tc.name === d.name && !tc.result ? newCall : tc
+                                );
+                                const hasIt = existing.some((tc: any) => tc.name === d.name && tc.result);
+                                msgs[i] = { ...msgs[i], toolCalls: hasIt ? existing : [...existing, newCall] } as any;
+                                return msgs;
+                            }
+                        }
+                        return [...msgs, { role: 'assistant', content: '', toolCalls: [newCall], _isToolGroup: true } as any];
+                    });
+                }
             } else if (d.type === 'chunk') {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
@@ -3017,7 +3068,76 @@ function AgentDetailInner() {
                                                                     <div style={{ padding: '12px 0', fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading...</div>
                                                                 ) : (
                                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-                                                                        {msgs.map((msg: any, mi: number) => {
+                                                                        {msgs.filter((msg: any) => !(msg.role === 'assistant' && !msg._isToolGroup && !(msg.content && msg.content.trim()))).map((msg: any, mi: number) => {
+                                                                            if (msg._isToolGroup && msg.toolCalls?.length > 0) {
+                                                                                return (
+                                                                                    <details key={mi} style={{ borderRadius: '6px', background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+                                                                                        <summary style={{
+                                                                                            padding: '5px 10px', fontSize: '11px', cursor: 'pointer',
+                                                                                            display: 'flex', alignItems: 'center', gap: '8px',
+                                                                                            listStyle: 'none', WebkitAppearance: 'none',
+                                                                                        } as any}>
+                                                                                            <span style={{ fontSize: '8px', color: 'var(--text-tertiary)', flexShrink: 0 }}>&#9654;</span>
+                                                                                            <span style={{
+                                                                                                fontWeight: 600, fontSize: '10px', color: 'var(--text-tertiary)',
+                                                                                                padding: '1px 6px', borderRadius: '3px',
+                                                                                                background: 'var(--bg-tertiary, rgba(0,0,0,0.06))',
+                                                                                                flexShrink: 0,
+                                                                                            }}>{msg.toolCalls.length} tool{msg.toolCalls.length > 1 ? 's' : ''}</span>
+                                                                                            <span style={{ display: 'flex', gap: '4px', overflow: 'hidden', flexWrap: 'nowrap' }}>
+                                                                                                {msg.toolCalls.slice(0, 4).map((tc: any, ti: number) => (
+                                                                                                    <span key={ti} style={{
+                                                                                                        fontFamily: 'monospace', fontSize: '10px', color: 'var(--text-primary)',
+                                                                                                        padding: '1px 5px', borderRadius: '3px',
+                                                                                                        background: 'var(--bg-tertiary, rgba(0,0,0,0.06))',
+                                                                                                        flexShrink: 0,
+                                                                                                    }}>{tc.name}</span>
+                                                                                                ))}
+                                                                                                {msg.toolCalls.length > 4 && <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>+{msg.toolCalls.length - 4}</span>}
+                                                                                            </span>
+                                                                                        </summary>
+                                                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '6px 10px', borderTop: '1px solid var(--border-subtle)' }}>
+                                                                                            {msg.toolCalls.map((tc: any, ti: number) => {
+                                                                                                const argsStr = typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args || {}, null, 2);
+                                                                                                const resultStr = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result || '', null, 2);
+                                                                                                return (
+                                                                                                    <details key={ti} style={{ borderRadius: '4px', background: 'var(--bg-primary, var(--bg-secondary))', overflow: 'hidden' }}>
+                                                                                                        <summary style={{
+                                                                                                            padding: '4px 8px', fontSize: '10px', cursor: 'pointer',
+                                                                                                            display: 'flex', alignItems: 'center', gap: '6px',
+                                                                                                            listStyle: 'none', WebkitAppearance: 'none',
+                                                                                                        } as any}>
+                                                                                                            <span style={{ fontSize: '7px', color: 'var(--text-tertiary)', flexShrink: 0 }}>&#9654;</span>
+                                                                                                            <span style={{
+                                                                                                                fontWeight: 600, fontFamily: 'monospace', fontSize: '10px',
+                                                                                                                color: 'var(--text-primary)', flexShrink: 0,
+                                                                                                            }}>{tc.name}</span>
+                                                                                                            <span style={{
+                                                                                                                color: 'var(--text-tertiary)', fontFamily: 'monospace', fontSize: '10px',
+                                                                                                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                                                                            }}>{argsStr.replace(/\n/g, ' ').substring(0, 60)}{argsStr.length > 60 ? '...' : ''}</span>
+                                                                                                        </summary>
+                                                                                                        <div style={{
+                                                                                                            padding: '6px 8px', borderTop: '1px solid var(--border-subtle)',
+                                                                                                            fontFamily: 'monospace', fontSize: '10px', lineHeight: 1.5,
+                                                                                                            whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto',
+                                                                                                            color: 'var(--text-secondary)',
+                                                                                                        }}>
+                                                                                                            {argsStr}
+                                                                                                            {resultStr && (
+                                                                                                                <>
+                                                                                                                    <div style={{ borderTop: '1px dashed var(--border-subtle)', margin: '6px 0', opacity: 0.5 }} />
+                                                                                                                    <span style={{ color: 'var(--text-tertiary)' }}>→ </span>{resultStr.substring(0, 500)}
+                                                                                                                </>
+                                                                                                            )}
+                                                                                                        </div>
+                                                                                                    </details>
+                                                                                                );
+                                                                                            })}
+                                                                                        </div>
+                                                                                    </details>
+                                                                                );
+                                                                            }
                                                                             if (msg.role === 'tool_call') {
                                                                                 const tName = msg.toolName || (() => { try { return JSON.parse(msg.content || '{}').name; } catch { return ''; } })() || 'tool';
                                                                                 const tArgs = msg.toolArgs || (() => { try { return JSON.parse(msg.content || '{}').args; } catch { return {}; } })();
@@ -3762,6 +3882,86 @@ function AgentDetailInner() {
                                                 </div>
                                             )}
                                             {chatMessages.map((msg, i) => {
+                                                {/* Tool call chain — grouped consecutive tool calls */}
+                                                if ((msg as any)._isToolGroup && msg.toolCalls && msg.toolCalls.length > 0) {
+                                                    return (
+                                                        <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
+                                                            <details style={{
+                                                                borderRadius: '8px',
+                                                                background: 'rgba(99,102,241,0.06)',
+                                                                border: '1px solid rgba(99,102,241,0.18)',
+                                                                fontSize: '12px',
+                                                                overflow: 'hidden',
+                                                            }}>
+                                                                <summary style={{
+                                                                    padding: '7px 10px', cursor: 'pointer',
+                                                                    display: 'flex', alignItems: 'center', gap: '6px',
+                                                                    color: 'var(--accent-text, #818cf8)',
+                                                                    userSelect: 'none', listStyle: 'none',
+                                                                }}>
+                                                                    <span style={{ fontSize: '13px' }}>🔧</span>
+                                                                    <span style={{ flex: 1, fontWeight: 500 }}>Tool Call Chain</span>
+                                                                    <span style={{
+                                                                        background: 'rgba(99,102,241,0.18)', color: '#818cf8',
+                                                                        borderRadius: '10px', padding: '1px 7px',
+                                                                        fontSize: '10px', fontWeight: 600,
+                                                                    }}>{msg.toolCalls.length}</span>
+                                                                </summary>
+                                                                {/* Collapsed: tool name pills */}
+                                                                <div style={{ padding: '0 10px 7px 10px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                                                    {msg.toolCalls.map((tc: any, j: number) => (
+                                                                        <span key={j} style={{
+                                                                            background: 'rgba(99,102,241,0.10)',
+                                                                            border: '1px solid rgba(99,102,241,0.15)',
+                                                                            borderRadius: '4px', padding: '1px 6px',
+                                                                            fontSize: '10px', color: '#a5b4fc',
+                                                                            fontFamily: 'var(--font-mono)',
+                                                                        }}>{tc.name}</span>
+                                                                    ))}
+                                                                </div>
+                                                                {/* Expanded: each tool's details */}
+                                                                <div style={{ borderTop: '1px solid rgba(99,102,241,0.15)' }}>
+                                                                    {msg.toolCalls.map((tc: any, j: number) => (
+                                                                        <details key={j} style={{
+                                                                            borderBottom: j < msg.toolCalls!.length - 1 ? '1px solid rgba(99,102,241,0.10)' : 'none',
+                                                                        }}>
+                                                                            <summary style={{
+                                                                                padding: '6px 10px', cursor: 'pointer',
+                                                                                display: 'flex', alignItems: 'center', gap: '5px',
+                                                                                userSelect: 'none', listStyle: 'none', fontSize: '11px',
+                                                                            }}>
+                                                                                <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: tc.result ? '#818cf8' : '#f59e0b', flexShrink: 0 }} />
+                                                                                <span style={{ fontFamily: 'var(--font-mono)', color: '#818cf8', fontWeight: 600 }}>{tc.name}</span>
+                                                                                {!tc.result && <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', marginLeft: 'auto' }}>{t('common.loading')}</span>}
+                                                                            </summary>
+                                                                            <div style={{ padding: '0 10px 6px 10px' }}>
+                                                                                {tc.args && Object.keys(tc.args).length > 0 && (
+                                                                                    <div style={{
+                                                                                        fontFamily: 'var(--font-mono)', fontSize: '10px',
+                                                                                        color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap',
+                                                                                        wordBreak: 'break-all', maxHeight: '80px', overflowY: 'auto',
+                                                                                        background: 'rgba(0,0,0,0.12)', borderRadius: '4px',
+                                                                                        padding: '4px 6px', marginBottom: tc.result ? '4px' : 0,
+                                                                                    }}>{JSON.stringify(tc.args, null, 2)}</div>
+                                                                                )}
+                                                                                {tc.result && (
+                                                                                    <div style={{
+                                                                                        fontSize: '10px', color: 'var(--text-secondary)',
+                                                                                        whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                                                                        maxHeight: '120px', overflowY: 'auto',
+                                                                                        background: 'rgba(0,0,0,0.08)', borderRadius: '4px',
+                                                                                        padding: '4px 6px',
+                                                                                    }}>{tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}</div>
+                                                                                )}
+                                                                            </div>
+                                                                        </details>
+                                                                    ))}
+                                                                </div>
+                                                            </details>
+                                                        </div>
+                                                    );
+                                                }
+                                                {/* Legacy individual tool_call (fallback) */}
                                                 if (msg.role === 'tool_call') {
                                                     return (
                                                         <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
@@ -3778,7 +3978,7 @@ function AgentDetailInner() {
                                                     );
                                                 }
                                                 {/* Assistant message with no text content: show inline thinking or skip */ }
-                                                if (msg.role === 'assistant' && !msg.content?.trim()) {
+                                                if (msg.role === 'assistant' && !(msg as any)._isToolGroup && !msg.content?.trim()) {
                                                     if (msg.thinking) {
                                                         return (
                                                             <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>

@@ -52,6 +52,7 @@ interface Message {
     thinking?: string;
     imageUrl?: string;
     timestamp?: string;
+    _isToolGroup?: boolean;
 }
 
 function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
@@ -222,11 +223,40 @@ export default function Chat() {
         })
             .then(r => r.json())
             .then((history: any[]) => {
-                if (history.length > 0) setMessages(history.map(h => {
-                    const msg = parseMessage({ role: h.role, content: h.content, fileName: h.fileName, toolCalls: h.toolCalls, thinking: h.thinking, imageUrl: h.imageUrl });
-                    msg.timestamp = h.created_at || undefined;
-                    return msg;
-                }));
+                if (history.length > 0) {
+                    // Group consecutive tool_call entries into _isToolGroup messages
+                    const processed: Message[] = [];
+                    for (const h of history) {
+                        if (h.role === 'tool_call') {
+                            const tc: ToolCall = {
+                                name: h.toolName || h.tool_name || '',
+                                args: h.toolArgs || h.tool_args || {},
+                                result: h.toolResult || h.tool_result || '',
+                            };
+                            const last = processed[processed.length - 1];
+                            if (last && last._isToolGroup) {
+                                // Merge into existing tool group
+                                last.toolCalls = [...(last.toolCalls || []), tc];
+                            } else if (last && last.role === 'assistant' && !(last.content && last.content.trim())) {
+                                // Previous is empty assistant — convert to tool group
+                                last._isToolGroup = true;
+                                last.toolCalls = [...(last.toolCalls || []), tc];
+                            } else {
+                                // Start new tool group
+                                processed.push({
+                                    role: 'assistant', content: '', toolCalls: [tc],
+                                    timestamp: h.created_at || undefined,
+                                    _isToolGroup: true,
+                                });
+                            }
+                        } else {
+                            const msg = parseMessage({ role: h.role, content: h.content, fileName: h.fileName, toolCalls: h.toolCalls, thinking: h.thinking, imageUrl: h.imageUrl });
+                            msg.timestamp = h.created_at || undefined;
+                            processed.push(msg);
+                        }
+                    }
+                    setMessages(processed);
+                }
             })
             .catch(() => { /* ignore */ });
     }, [id, token]);
@@ -322,15 +352,72 @@ export default function Chat() {
                         return [...prev, { role: 'assistant', content: streamContent.current, timestamp: new Date().toISOString() }];
                     });
                 } else if (data.type === 'tool_call') {
-                    // Debug: log all tool_call events to verify frontend code is current
-                    console.log('[ToolCall]', data.name, data.status, 'keys:', Object.keys(data).join(','));
-                    if (data.status === 'done') {
-                        pendingToolCalls.current.push({ name: data.name, args: data.args, result: data.result });
+                    console.log('[ToolCall]', data.name, data.status);
+                    if (data.status === 'running') {
+                        // Tool execution started — show in-progress in tool group
+                        const tc: ToolCall = { name: data.name, args: data.args || {} };
+                        pendingToolCalls.current.push(tc);
+                        const now = new Date().toISOString();
+                        setMessages(prev => {
+                            let msgs = [...prev];
+                            // Remove trailing empty assistant messages (stream placeholders)
+                            while (msgs.length > 0) {
+                                const last = msgs[msgs.length - 1];
+                                if (last.role === 'assistant' && !last._isToolGroup && !(last.content && last.content.trim())) {
+                                    msgs.pop();
+                                } else break;
+                            }
+                            // Merge into existing tool group, but stop at user messages (new turn)
+                            for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 5); i--) {
+                                if (msgs[i].role === 'user') break;
+                                if (msgs[i]._isToolGroup) {
+                                    msgs[i] = { ...msgs[i], toolCalls: [...(msgs[i].toolCalls || []), tc], timestamp: now };
+                                    return msgs;
+                                }
+                            }
+                            return [...msgs, { role: 'assistant', content: '', toolCalls: [tc], timestamp: now, _isToolGroup: true }];
+                        });
+                    } else if (data.status === 'done') {
+                        // Tool execution finished — update result
+                        streamContent.current = '';
+                        thinkingContent.current = '';
+                        const newCall: ToolCall = { name: data.name, args: data.args, result: data.result || '' };
+                        // Update pending: replace running entry or add new
+                        const idx = pendingToolCalls.current.findIndex(tc => tc.name === data.name && !tc.result);
+                        if (idx >= 0) {
+                            pendingToolCalls.current[idx] = newCall;
+                        } else {
+                            pendingToolCalls.current.push(newCall);
+                        }
+                        const now = new Date().toISOString();
+                        setMessages(prev => {
+                            let msgs = [...prev];
+                            // Remove trailing empty assistant messages
+                            while (msgs.length > 0) {
+                                const last = msgs[msgs.length - 1];
+                                if (last.role === 'assistant' && !last._isToolGroup && !(last.content && last.content.trim())) {
+                                    msgs.pop();
+                                } else break;
+                            }
+                            // Find recent tool group, but stop at user messages (new turn)
+                            for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 5); i--) {
+                                if (msgs[i].role === 'user') break;
+                                if (msgs[i]._isToolGroup) {
+                                    // Update the matching tool call with result, or add new
+                                    const existing = (msgs[i].toolCalls || []).map(tc =>
+                                        tc.name === data.name && !tc.result ? newCall : tc
+                                    );
+                                    const hasIt = existing.some(tc => tc.name === data.name && tc.result);
+                                    msgs[i] = { ...msgs[i], toolCalls: hasIt ? existing : [...existing, newCall], timestamp: now };
+                                    return msgs;
+                                }
+                            }
+                            return [...msgs, { role: 'assistant', content: '', toolCalls: [newCall], timestamp: now, _isToolGroup: true }];
+                        });
 
                         // ── AgentBay live preview (embedded in tool_call) ──
                         if (data.live_preview) {
                             const lp = data.live_preview;
-                            console.log('[LivePreview] Got from tool_call:', lp.env, lp.screenshot_url?.substring(0, 60));
                             setLiveState(prev => {
                                 const next = { ...prev };
                                 if ((lp.env === 'desktop' || lp.env === 'browser') && lp.screenshot_url) {
@@ -524,7 +611,19 @@ export default function Chat() {
                             <div style={{ fontSize: '12px', marginTop: '8px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                         </div>
                     )}
-                    {messages.map((msg, i) => (
+                    {messages.filter(m => {
+                        // Skip empty assistant messages (stream placeholders)
+                        if (m.role === 'assistant' && !m._isToolGroup && !(m.content && m.content.trim()) && !m.toolCalls?.length && !m.thinking) return false;
+                        return true;
+                    }).map((msg, i) => (
+                        msg._isToolGroup ? (
+                            /* Tool call group — compact display without avatar bubble */
+                            <div key={i} style={{ marginLeft: '48px', marginBottom: '8px' }}>
+                                {msg.toolCalls && msg.toolCalls.length > 0 && (
+                                    <ChatToolChain toolCalls={msg.toolCalls} />
+                                )}
+                            </div>
+                        ) :
                         <div key={i} className={`chat-message ${msg.role}`}>
                             <div className="chat-avatar" style={{ color: 'var(--text-tertiary)' }}>
                                 {msg.role === 'user' ? Icons.user : Icons.bot}
