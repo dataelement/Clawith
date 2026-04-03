@@ -188,11 +188,19 @@ async def configure_wecom_channel(
             detail="Either bot_id+bot_secret (WebSocket) or corp_id+secret+token+encoding_aes_key (Webhook) required"
         )
 
+    # Priority: use explicit connection_mode from frontend, then auto-detect
+    requested_mode = data.get("connection_mode", "").strip()
+    if requested_mode in ("websocket", "webhook"):
+        connection_mode = requested_mode
+    else:
+        # Auto-detect based on available fields (WebSocket takes priority if both present)
+        connection_mode = "websocket" if has_ws_mode else "webhook"
+
     extra_config = {
         "wecom_agent_id": wecom_agent_id,
         "bot_id": bot_id,
         "bot_secret": bot_secret,
-        "connection_mode": "websocket" if has_ws_mode else "webhook",
+        "connection_mode": connection_mode,
     }
 
     result = await db.execute(
@@ -617,7 +625,7 @@ async def _process_wecom_text(
                         logger.info(f"[WeCom KF] send_msg result: {res_send.json()}")
                     else:
                         # Default legacy Send as text
-                        await client.post(
+                        res_send = await client.post(
                             f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
                             json={
                                 "touser": from_user,
@@ -626,6 +634,7 @@ async def _process_wecom_text(
                                 "text": {"content": reply_text},
                             },
                         )
+                        logger.info(f"[WeCom] message/send result: {res_send.json()}")
         except Exception as e:
             logger.error(f"[WeCom] Failed to send reply: {e}")
 

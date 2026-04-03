@@ -396,7 +396,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     });
     const { data: wecomWebhook } = useQuery({
         queryKey: ['wecom-webhook-url', agentId],
-        queryFn: () => fetchAuth<any>(`/agents/${agentId}/wecom-channel/webhook-url`),
+        queryFn: () => fetchAuth<any>(`/agents/${agentId}/wecom-channel/webhook-url`).catch(() => null),
         enabled: enabled,
     });
     const { data: atlassianConfig } = useQuery({
@@ -445,11 +445,12 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             }
             return fetchAuth(`/agents/${agentId}/${ch.apiSlug}`, { method: 'POST', body: JSON.stringify(data) });
         },
-        onSuccess: (_d, { ch }) => {
+        onSuccess: async (_d, { ch }) => {
             const keys = ch.useChannelApi
                 ? [['channel', agentId]]
                 : [[`${ch.apiSlug}`, agentId], [`${ch.id}-webhook-url`, agentId]];
-            keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
+            // Invalidate and wait for refetch to complete
+            await Promise.all(keys.map(k => queryClient.invalidateQueries({ queryKey: k })));
             // Reset form
             setForms(prev => ({ ...prev, [ch.id]: {} }));
             setEditing(ch.id, false);
@@ -840,6 +841,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 {t('agent.settings.channel.websocketDisconnectedHint', 'Reconnect by saving the WeCom WebSocket configuration again.')}
                                             </div>
                                         )}
+                                    </div>
+                                )}
+                                {/* WeCom webhook status */}
+                                {ch.id === 'wecom' && configConnMode === 'webhook' && (
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                        <div style={{ marginBottom: '4px' }}>Mode: <strong>Webhook</strong></div>
+                                        <div>CorpID: <code>{config.app_id}</code></div>
                                     </div>
                                 )}
 
