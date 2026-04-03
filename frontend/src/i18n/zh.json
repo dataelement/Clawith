@@ -379,8 +379,15 @@
       "cancel": "取消"
     },
     "chat": {
+      "sessionListTitle": "会话列表",
+      "collapseSidebar": "收起会话列表",
       "mySessions": "我的会话",
       "allUsers": "所有用户",
+      "viewOtherUsersSessions": "查看其他用户会话",
+      "otherUsersTab": "其他用户",
+      "selectUserToView": "选择用户",
+      "selectUserFirstHint": "请先选择用户，查看其与该数字员工的会话（只读）。",
+      "noOtherUsersSessions": "暂无其他用户与该数字员工的会话。",
       "newSession": "新建会话",
       "noSessionsYet": "还没有会话。",
       "clickToStart": "点击\"新建会话\"开始。",

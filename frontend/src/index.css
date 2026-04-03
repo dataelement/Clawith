@@ -1044,6 +1044,25 @@ select:focus {
   border-bottom-color: var(--accent-primary);
 }
 
+/* Session sidebar admin tabs — same underline pattern as .tabs/.tab, compact for narrow column */
+.tabs.session-sidebar-session-tabs {
+  gap: var(--space-5);
+  margin-bottom: var(--space-2);
+  margin-top: 0;
+  padding: 2px 12px 0;
+  position: relative;
+  background: transparent;
+  z-index: auto;
+  top: auto;
+}
+
+.tabs.session-sidebar-session-tabs .tab {
+  flex: 0 1 auto;
+  padding: var(--space-2) var(--space-1) 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* Page header */
 .page-header {
   display: flex;
@@ -1892,7 +1911,7 @@ select:focus {
   flex-direction: column;
   min-height: 80px;
   border: 1px solid var(--border-default);
-  border-radius: 12px;
+  border-radius: 8px;
   background: var(--bg-primary);
   overflow: hidden;
   transition: border-color 150ms ease, box-shadow 150ms ease;
@@ -2117,7 +2136,7 @@ select:focus {
   min-height: 40px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-default);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 0 14px;
   font-size: 14px;
   color: var(--text-primary);
