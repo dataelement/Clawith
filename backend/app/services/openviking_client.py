@@ -89,14 +89,17 @@ async def search_memory(
 
 async def index_memory_file(agent_id: str, file_path: Path) -> bool:
     """Reindex a memory file under the agent's OpenViking scope (non-blocking)."""
-    if not Path(file_path).exists():
+    file_path = Path(file_path)
+    if not file_path.exists():
         return False
     if not await is_available():
         return False
     try:
+        content = file_path.read_text(encoding="utf-8", errors="replace")
         resp = await _get_client().post(
-            "/api/v1/resources",
-            json={"path": str(file_path), "to": _agent_scope(agent_id), "wait": False},
+            "/api/v1/skills",
+            json={"data": content, "wait": False},
+            headers={"X-OpenViking-Agent": agent_id},
             timeout=OPENVIKING_TIMEOUT * 2,
         )
         return resp.status_code < 300
@@ -189,9 +192,11 @@ async def index_enterprise_info(root_path: Path) -> bool:
         if md_path.name.startswith("."):
             continue
         try:
+            content = md_path.read_text(encoding="utf-8", errors="replace")
             resp = await _get_client().post(
-                "/api/v1/resources",
-                json={"path": str(md_path), "to": _ENTERPRISE_SCOPE, "wait": False},
+                "/api/v1/skills",
+                json={"data": content, "wait": False},
+                headers={"X-OpenViking-Agent": "enterprise"},
                 timeout=OPENVIKING_TIMEOUT * 2,
             )
             if resp.status_code < 300:
@@ -260,9 +265,11 @@ async def index_all_skills(root_path: Path) -> bool:
     success = True
     for skill_file in skill_files:
         try:
+            content = skill_file.read_text(encoding="utf-8", errors="replace")
             resp = await _get_client().post(
-                "/api/v1/resources",
-                json={"path": str(skill_file), "to": _SKILLS_SCOPE, "wait": False},
+                "/api/v1/skills",
+                json={"data": content, "wait": False},
+                headers={"X-OpenViking-Agent": "skills"},
                 timeout=OPENVIKING_TIMEOUT * 2,
             )
             if resp.status_code >= 300:
@@ -317,13 +324,11 @@ async def index_all_agents(clawith_data_root: Path) -> bool:
                     if len(part) == 36 and part.count('-') == 4:
                         doc_agent_id = part
                         break
+                content = doc_path.read_text(encoding="utf-8", errors="replace")
                 resp = await _get_client().post(
-                    "/api/v1/resources",
-                    json={
-                        "path": str(doc_path),
-                        "to": _agent_scope(doc_agent_id),
-                        "wait": False,
-                    },
+                    "/api/v1/skills",
+                    json={"data": content, "wait": False},
+                    headers={"X-OpenViking-Agent": doc_agent_id},
                     timeout=OPENVIKING_TIMEOUT * 2,
                 )
                 if resp.status_code < 300:
