@@ -45,15 +45,28 @@ def send_smtp_email(
 ) -> None:
     """Synchronously send an email via SMTP with IPv4 enforcement.
 
+    Three connection modes are supported depending on ``use_ssl`` and
+    server capabilities:
+
+    * ``use_ssl=True``  -- Direct TLS connection (SMTP_SSL, typically port 465).
+    * ``use_ssl=False`` -- Plain SMTP with auto-negotiated STARTTLS upgrade.
+      If the server advertises STARTTLS support, the connection is upgraded;
+      otherwise transmission proceeds in plaintext (suitable for internal
+      network relays on port 25).
+
+    Authentication is only attempted when both credentials are provided
+    AND the server advertises AUTH support (``use_ssl=False`` path).
+    This allows unauthenticated IP-whitelisted internal relays to work.
+
     Args:
         host: SMTP server host
         port: SMTP server port
-        user: SMTP username
-        password: SMTP password/auth-code
+        user: SMTP username (may be empty for internal relays)
+        password: SMTP password/auth-code (may be empty for internal relays)
         from_addr: Sender email address
         to_addrs: List of recipient email addresses
         msg_string: The full MIME message as a string
-        use_ssl: Whether to use SMTP_SSL (True) or STARTTLS (False)
+        use_ssl: True for direct TLS (port 465), False for plain/STARTTLS
         timeout: Socket timeout in seconds
     """
     with force_ipv4():
@@ -65,8 +78,19 @@ def send_smtp_email(
         else:
             with smtplib.SMTP(host, port, timeout=timeout) as server:
                 server.ehlo()
-                if port == 587 or port == 25:  # Common STARTTLS ports
+
+                # Upgrade to STARTTLS only if the server explicitly advertises
+                # support.  This prevents crashing on plaintext internal relays
+                # that do not support encryption.
+                if "starttls" in server.esmtp_features:
                     server.starttls(context=ssl.create_default_context())
                     server.ehlo()
-                server.login(user, password)
+
+                # Only attempt login when the server supports AUTH and
+                # credentials were provided.  Internal network relays often
+                # whitelist IPs and do not advertise or accept AUTH.
+                if (user or password) and "auth" in server.esmtp_features:
+                    server.login(user, password)
+
                 server.sendmail(from_addr, to_addrs, msg_string)
+

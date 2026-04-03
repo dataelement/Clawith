@@ -615,14 +615,36 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
             except Exception:
                 return config.app_secret
 
-        # 2) Fallback: check global Tool.config.api_key for any agentbay tool
+        # 2) Fallback: check global Tool.config.api_key for agentbay tools.
+        #
+        # Only agentbay_browser_navigate (the "primary" AgentBay tool) has a
+        # config_schema with an api_key field, so it is the only tool whose
+        # config is ever populated with a key via the Company Settings UI.
+        # We therefore query it first, then fall back to scanning all agentbay
+        # tools — this prevents a non-deterministic .limit(1) from returning a
+        # tool with an empty config (e.g. agentbay_computer_screenshot), which
+        # would silently return None even when a key IS configured.
         tool_result = await session.execute(
             select(Tool).where(
-                Tool.category == "agentbay",
+                Tool.name == "agentbay_browser_navigate",
                 Tool.enabled == True,
             ).limit(1)
         )
         tool = tool_result.scalar_one_or_none()
+
+        # Also scan all agentbay tools in case the key was stored differently
+        if not (tool and tool.config and tool.config.get("api_key")):
+            all_result = await session.execute(
+                select(Tool).where(
+                    Tool.category == "agentbay",
+                    Tool.enabled == True,
+                )
+            )
+            for candidate in all_result.scalars().all():
+                if candidate.config and candidate.config.get("api_key"):
+                    tool = candidate
+                    break
+
         if tool and tool.config and tool.config.get("api_key"):
             api_key = tool.config["api_key"]
             # Try to decrypt (global config is encrypted via _encrypt_sensitive_fields)
@@ -647,6 +669,9 @@ async def test_agentbay_channel(agent_id: uuid.UUID, current_user, db) -> dict:
     try:
         from agentbay import AgentBay, CreateSessionParams
         sdk = AgentBay(api_key=key)
+        # Using linux_latest instead of browser_latest. AgentBay tokens may be
+        # scoped/bound to specific instance types, and requesting browser_latest
+        # might trigger an 'InvalidParameter.Authorization' error for this key.
         result = await asyncio.to_thread(sdk.create, CreateSessionParams(image_id="linux_latest"))
         if result.success:
             if result.session:

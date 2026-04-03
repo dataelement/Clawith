@@ -226,9 +226,9 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
 ];
 
 // ─── Feishu Permission JSON ─────────────────────────────
-const FEISHU_PERM_JSON = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource"],"user":[]}}';
+const FEISHU_PERM_BASIC_JSON = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource"],"user":[]}}';
 
-const FEISHU_PERM_DISPLAY = `{
+const FEISHU_PERM_BASIC_DISPLAY = `{
   "scopes": {
     "tenant": [
       "contact:contact.base:readonly",
@@ -246,6 +246,46 @@ const FEISHU_PERM_DISPLAY = `{
   }
 }`;
 
+const FEISHU_PERM_FULL_JSON = '{"scopes":{"tenant":["approval:approval","base:app:create","base:dashboard:create","base:field_group:create","bitable:app","bitable:app:readonly","board:whiteboard:node:create","calendar:calendar.event:create","calendar:calendar.event:delete","calendar:calendar.event:read","calendar:calendar.event:update","calendar:calendar.freebusy:readonly","calendar:calendar:readonly","contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","docx:document","docx:document:create","drive:drive","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource","sheets:spreadsheet:create","slides:presentation:create","slides:presentation:write_only","wiki:wiki","wiki:wiki:readonly"],"user":[]}}';
+
+const FEISHU_PERM_FULL_DISPLAY = `{
+  "scopes": {
+    "tenant": [
+      "approval:approval",
+      "base:app:create",
+      "base:dashboard:create",
+      "base:field_group:create",
+      "bitable:app",
+      "bitable:app:readonly",
+      "board:whiteboard:node:create",
+      "calendar:calendar.event:create",
+      "calendar:calendar.event:delete",
+      "calendar:calendar.event:read",
+      "calendar:calendar.event:update",
+      "calendar:calendar.freebusy:readonly",
+      "calendar:calendar:readonly",
+      "contact:contact.base:readonly",
+      "contact:user.base:readonly",
+      "contact:user.employee_id:readonly",
+      "contact:user.id:readonly",
+      "docx:document",
+      "docx:document:create",
+      "drive:drive",
+      "im:chat",
+      "im:message",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly",
+      "im:message:send_as_bot",
+      "im:resource",
+      "sheets:spreadsheet:create",
+      "slides:presentation:create",
+      "slides:presentation:write_only",
+      "wiki:wiki",
+      "wiki:wiki:readonly"
+    ],
+    "user": []
+  }
+}`;
 
 // CopyBtn is removed, using LinearCopyButton directly
 
@@ -253,6 +293,9 @@ const FEISHU_PERM_DISPLAY = `{
 export default function ChannelConfig({ mode, agentId, canManage = true, values, onChange }: ChannelConfigProps) {
     const { t } = useTranslation();
     const queryClient = useQueryClient();
+
+    // Feishu Permission Mode
+    const [feishuPermMode, setFeishuPermMode] = useState<'basic' | 'full'>('basic');
 
     // Collapsible state per channel
     const [openChannels, setOpenChannels] = useState<Record<string, boolean>>({});
@@ -500,17 +543,39 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 </ol>
                 {ch.showPermJson && (
                     <div style={{ margin: '8px 0', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
-                            <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t('channelGuide.feishuPermJson')}</span>
+                        {/* Segmented control header */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '2px', background: 'var(--bg-primary)', borderRadius: '5px', padding: '2px', border: '1px solid var(--border-color)' }}>
+                                {(['basic', 'full'] as const).map(mode => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        onClick={(e) => { e.preventDefault(); setFeishuPermMode(mode); }}
+                                        style={{
+                                            padding: '3px 10px', fontSize: '10px', borderRadius: '4px', cursor: 'pointer',
+                                            border: 'none', transition: 'all 0.15s ease',
+                                            background: feishuPermMode === mode ? 'var(--accent-primary, #5e6ad2)' : 'transparent',
+                                            color: feishuPermMode === mode ? '#fff' : 'var(--text-tertiary)',
+                                            fontWeight: 500,
+                                        }}>
+                                        {t(`channelGuide.feishuPerm${mode === 'basic' ? 'Basic' : 'Full'}`)}
+                                    </button>
+                                ))}
+                            </div>
                             <LinearCopyButton
-                                textToCopy={FEISHU_PERM_JSON}
-                                label={t('channelGuide.feishuPermCopy', 'Copy')}
-                                copiedLabel={t('channelGuide.feishuPermCopied', 'Copied')}
+                                textToCopy={feishuPermMode === 'basic' ? FEISHU_PERM_BASIC_JSON : FEISHU_PERM_FULL_JSON}
+                                label={t('channelGuide.feishuPermCopy')}
+                                copiedLabel={t('channelGuide.feishuPermCopied')}
                                 className=""
                                 style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
                             />
                         </div>
-                        <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all' }}>{FEISHU_PERM_DISPLAY}</pre>
+                        {/* Description */}
+                        <div style={{ padding: '4px 10px', fontSize: '10px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
+                            {feishuPermMode === 'basic' ? t('channelGuide.feishuPermBasicDesc') : t('channelGuide.feishuPermFullDesc')}
+                        </div>
+                        {/* JSON code block */}
+                        <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all', maxHeight: '200px', overflowY: 'auto' }}>{feishuPermMode === 'basic' ? FEISHU_PERM_BASIC_DISPLAY : FEISHU_PERM_FULL_DISPLAY}</pre>
                     </div>
                 )}
                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>

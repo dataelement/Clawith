@@ -19,7 +19,16 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
     });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Error');
+    if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        // Pydantic validation errors return detail as an array of objects,
+        // each with {loc, msg, type}. Extract readable messages from the array.
+        const detail = body.detail;
+        const msg = Array.isArray(detail)
+            ? detail.map((e: any) => e.msg || JSON.stringify(e)).join('; ')
+            : (typeof detail === 'string' ? detail : 'Error');
+        throw new Error(msg);
+    }
     if (res.status === 204) return undefined as T;
     return res.json();
 }
@@ -1734,12 +1743,20 @@ export default function EnterpriseSettings() {
 
     const [allTools, setAllTools] = useState<any[]>([]);
     const [showAddMCP, setShowAddMCP] = useState(false);
-    const [mcpForm, setMcpForm] = useState({ server_url: '', server_name: '' });
+    const [mcpForm, setMcpForm] = useState({ server_url: '', server_name: '', api_key: '' });
     const [mcpRawInput, setMcpRawInput] = useState('');
     const [mcpTestResult, setMcpTestResult] = useState<any>(null);
     const [mcpTesting, setMcpTesting] = useState(false);
+    // Edit Server modal state — null when closed, otherwise the server to edit
+    const [editingMcpServer, setEditingMcpServer] = useState<{
+        server_name: string;
+        server_url: string;
+        api_key: string;
+    } | null>(null);
+    const [mcpServerSaving, setMcpServerSaving] = useState(false);
     const [editingToolId, setEditingToolId] = useState<string | null>(null);
     const [editingConfig, setEditingConfig] = useState<Record<string, any>>({});
+
     const [configCategory, setConfigCategory] = useState<string | null>(null);
 
     // Category-level config schemas: tools sharing the same key have config on category header
@@ -2588,7 +2605,7 @@ export default function EnterpriseSettings() {
                                                         const name = names[0];
                                                         const cfg = servers[name];
                                                         const url = cfg.url || cfg.uri || '';
-                                                        setMcpForm({ server_name: name, server_url: url });
+                                                        setMcpForm(p => ({ ...p, server_name: name, server_url: url }));
                                                     }
                                                 } catch {
                                                     // Not JSON — treat as plain URL
@@ -2608,16 +2625,40 @@ export default function EnterpriseSettings() {
                                                 <input className="form-input" value={mcpForm.server_name} onChange={e => setMcpForm(p => ({ ...p, server_name: e.target.value }))} placeholder="My MCP Server" />
                                             </div>
                                         )}
+
+                                        {/* Optional standalone API Key — sent as Authorization: Bearer */}
+                                        <div>
+                                            <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>
+                                                API Key <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>(optional)</span>
+                                            </label>
+                                            <input
+                                                type="password"
+                                                className="form-input"
+                                                value={mcpForm.api_key}
+                                                onChange={e => setMcpForm(p => ({ ...p, api_key: e.target.value }))}
+                                                placeholder="Leave blank if the key is already embedded in the URL"
+                                                autoComplete="new-password"
+                                            />
+                                        </div>
+
+                                        {/* Auth explanation for non-obvious behavior */}
+                                        <div style={{ padding: '10px 12px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)', borderRadius: '6px', fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.65' }}>
+                                            <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-primary)' }}>How authentication works</div>
+                                            <div>- If your MCP server embeds the key in the URL (e.g. Tavily uses <code style={{ background: 'rgba(0,0,0,0.06)', padding: '0 3px', borderRadius: '3px' }}>?tavilyApiKey=xxx</code>), leave the field above blank.</div>
+                                            <div>- For servers that use <strong>Bearer token</strong> auth, enter the key here. It is sent as <code style={{ background: 'rgba(0,0,0,0.06)', padding: '0 3px', borderRadius: '3px' }}>Authorization: Bearer ...</code> on every request.</div>
+                                            <div>- If both are provided, the API Key field takes priority. All keys are stored encrypted.</div>
+                                        </div>
+
                                         <div style={{ display: 'flex', gap: '8px' }}>
                                             <button className="btn btn-secondary" disabled={mcpTesting || !mcpForm.server_url} onClick={async () => {
                                                 setMcpTesting(true); setMcpTestResult(null);
                                                 try {
-                                                    const r = await fetchJson<any>('/tools/test-mcp', { method: 'POST', body: JSON.stringify({ server_url: mcpForm.server_url }) });
+                                                    const r = await fetchJson<any>('/tools/test-mcp', { method: 'POST', body: JSON.stringify({ server_url: mcpForm.server_url, api_key: mcpForm.api_key || undefined }) });
                                                     setMcpTestResult(r);
                                                 } catch (e: any) { setMcpTestResult({ ok: false, error: e.message }); }
                                                 setMcpTesting(false);
                                             }}>{mcpTesting ? t('enterprise.tools.testing') : t('enterprise.tools.testConnection')}</button>
-                                            <button className="btn btn-secondary" onClick={() => { setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '' }); setMcpRawInput(''); }}>{t('common.cancel')}</button>
+                                            <button className="btn btn-secondary" onClick={() => { setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '', api_key: '' }); setMcpRawInput(''); }}>{t('common.cancel')}</button>
                                         </div>
                                         {mcpTestResult && (
                                             <div className="card" style={{ padding: '12px', background: mcpTestResult.ok ? 'rgba(0,200,100,0.1)' : 'rgba(255,0,0,0.1)' }}>
@@ -2632,6 +2673,7 @@ export default function EnterpriseSettings() {
                                                                 </div>
                                                                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={async () => {
                                                                     try {
+                                                                        const serverName = mcpForm.server_name || mcpForm.server_url;
                                                                         await fetchJson('/tools', {
                                                                             method: 'POST', body: JSON.stringify({
                                                                                 name: `mcp_${tool.name}`,
@@ -2641,13 +2683,18 @@ export default function EnterpriseSettings() {
                                                                                 category: 'custom',
                                                                                 icon: '·',
                                                                                 mcp_server_url: mcpForm.server_url,
-                                                                                mcp_server_name: mcpForm.server_name || mcpForm.server_url,
+                                                                                mcp_server_name: serverName,
                                                                                 mcp_tool_name: tool.name,
                                                                                 parameters_schema: tool.inputSchema || {},
                                                                                 is_default: false,
+                                                                                tenant_id: selectedTenantId || undefined,
                                                                             })
                                                                         });
-                                                                        loadAllTools();
+                                                                        // Store API key on all tools from this server after creation
+                                                                        if (mcpForm.api_key) {
+                                                                            await fetchJson('/tools/mcp-server', { method: 'PUT', body: JSON.stringify({ server_name: serverName, server_url: mcpForm.server_url, api_key: mcpForm.api_key, tenant_id: selectedTenantId || undefined }) }).catch(() => {});
+                                                                        }
+                                                                        await loadAllTools();
                                                                     } catch (e: any) {
                                                                         alert(`${t('enterprise.tools.importFailed') || 'Import failed'}: ${e.message}`);
                                                                     }
@@ -2659,6 +2706,7 @@ export default function EnterpriseSettings() {
                                                                 const tools = mcpTestResult.tools || [];
                                                                 let successCount = 0;
                                                                 const errors: string[] = [];
+                                                                const serverName = mcpForm.server_name || mcpForm.server_url;
                                                                 for (const tool of tools) {
                                                                     try {
                                                                         await fetchJson('/tools', {
@@ -2670,10 +2718,11 @@ export default function EnterpriseSettings() {
                                                                                 category: 'custom',
                                                                                 icon: '·',
                                                                                 mcp_server_url: mcpForm.server_url,
-                                                                                mcp_server_name: mcpForm.server_name || mcpForm.server_url,
+                                                                                mcp_server_name: serverName,
                                                                                 mcp_tool_name: tool.name,
                                                                                 parameters_schema: tool.inputSchema || {},
                                                                                 is_default: false,
+                                                                                tenant_id: selectedTenantId || undefined,
                                                                             })
                                                                         });
                                                                         successCount++;
@@ -2681,8 +2730,12 @@ export default function EnterpriseSettings() {
                                                                         errors.push(`${tool.name}: ${e.message}`);
                                                                     }
                                                                 }
-                                                                loadAllTools();
-                                                                setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '' }); setMcpRawInput('');
+                                                                // Store API key on all tools from this server in one request
+                                                                if (mcpForm.api_key && successCount > 0) {
+                                                                    await fetchJson('/tools/mcp-server', { method: 'PUT', body: JSON.stringify({ server_name: serverName, server_url: mcpForm.server_url, api_key: mcpForm.api_key, tenant_id: selectedTenantId || undefined }) }).catch(() => {});
+                                                                }
+                                                                await loadAllTools();
+                                                                setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '', api_key: '' }); setMcpRawInput('');
                                                                 if (errors.length > 0) {
                                                                     alert(`Imported ${successCount}/${tools.length} tools.\nFailed:\n${errors.join('\n')}`);
                                                                 }
@@ -2715,6 +2768,145 @@ export default function EnterpriseSettings() {
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                                         {Object.entries(grouped).map(([category, catTools]) => {
                                             const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[category];
+
+                                            // For 'custom' category: sub-group MCP tools by mcp_server_name
+                                            // so that Edit Server is presented once per server, not per tool.
+                                            if (category === 'custom') {
+                                                const mcpByServer: Record<string, any[]> = {};
+                                                const nonMcpTools: any[] = [];
+                                                (catTools as any[]).forEach((t: any) => {
+                                                    if (t.type === 'mcp' && t.mcp_server_name) {
+                                                        (mcpByServer[t.mcp_server_name] = mcpByServer[t.mcp_server_name] || []).push(t);
+                                                    } else {
+                                                        nonMcpTools.push(t);
+                                                    }
+                                                });
+
+                                                return (
+                                                    <div key={category}>
+                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 14px', marginBottom: '8px' }}>
+                                                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                                                {categoryLabels[category] || category}
+                                                            </div>
+                                                        </div>
+                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                                                            {/* MCP servers sub-grouped */}
+                                                            {Object.entries(mcpByServer).map(([serverName, serverTools]) => (
+                                                                <div key={serverName} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden' }}>
+                                                                    {/* Server sub-header */}
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 14px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)' }}>
+                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                                                                            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)' }} title={serverName}>{(() => { try { if (serverName.startsWith('http')) { return new URL(serverName).hostname; } } catch {} return serverName; })()}</span>
+                                                                            <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.12)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
+                                                                            {(serverTools as any[]).some((t: any) => t.config && Object.keys(t.config).length > 0) && (
+                                                                                <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.12)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>Configured</span>
+                                                                            )}
+                                                                        </div>
+                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                            <button
+                                                                                style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 9px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                                                                onClick={() => {
+                                                                                    // Pre-fill with current server URL from first tool
+                                                                                    const firstTool = (serverTools as any[])[0];
+                                                                                    setEditingMcpServer({
+                                                                                        server_name: serverName,
+                                                                                        server_url: firstTool?.mcp_server_url || '',
+                                                                                        api_key: '',
+                                                                                    });
+                                                                                }}
+                                                                            >Edit Server</button>
+                                                                            {/* Server-level enable/disable all toggle */}
+                                                                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${serverName} tools`}>
+                                                                                <input type="checkbox"
+                                                                                    checked={(serverTools as any[]).every(t => t.enabled)}
+                                                                                    onChange={async (e) => {
+                                                                                        const payload = (serverTools as any[]).map(t => ({ tool_id: t.id, enabled: e.target.checked }));
+                                                                                        await fetchJson('/tools/bulk', { method: 'PUT', body: JSON.stringify(payload) });
+                                                                                        loadAllTools();
+                                                                                    }}
+                                                                                    style={{ opacity: 0, width: 0, height: 0 }} />
+                                                                                <span style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: '22px', background: (serverTools as any[]).every(t => t.enabled) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', transition: '0.3s' }}>
+                                                                                    <span style={{ position: 'absolute', left: (serverTools as any[]).every(t => t.enabled) ? '20px' : '2px', top: '2px', width: '18px', height: '18px', borderRadius: '50%', background: '#fff', transition: '0.3s' }} />
+                                                                                </span>
+                                                                            </label>
+                                                                        </div>
+                                                                    </div>
+                                                                    {/* Tools under this server */}
+                                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                                                                        {(serverTools as any[]).map((tool: any, toolIdx: number) => (
+                                                                            <div key={tool.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 14px', borderBottom: toolIdx < serverTools.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+                                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
+                                                                                    <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>·</span>
+                                                                                    <div style={{ minWidth: 0 }}>
+                                                                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</div>
+                                                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.description?.slice(0, 90)}</div>
+                                                                                    </div>
+                                                                                </div>
+                                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                                                                    <button className="btn btn-danger" style={{ padding: '3px 7px', fontSize: '10px' }} onClick={async () => {
+                                                                                        if (!confirm(`${t('common.delete')} ${tool.display_name}?`)) return;
+                                                                                        await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
+                                                                                        await loadAllTools();
+                                                                                    }}>{t('common.delete')}</button>
+                                                                                    <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                                                                                        <input type="checkbox" checked={tool.enabled} onChange={async (e) => {
+                                                                                            await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }) });
+                                                                                            loadAllTools();
+                                                                                        }} style={{ opacity: 0, width: 0, height: 0 }} />
+                                                                                        <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
+                                                                                            <span style={{ position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                                                                        </span>
+                                                                                    </label>
+                                                                                </div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                            {/* Non-MCP custom tools shown normally */}
+                                                            {nonMcpTools.length > 0 && (
+                                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                                                    {nonMcpTools.map((tool: any) => {
+                                                                        const hasOwnConfig = tool.config_schema?.fields?.length > 0;
+                                                                        return (
+                                                                            <div key={tool.id} className="card" style={{ padding: '0', overflow: 'hidden' }}>
+                                                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
+                                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
+                                                                                        <span style={{ fontSize: '18px' }}>{tool.icon}</span>
+                                                                                        <div style={{ minWidth: 0 }}>
+                                                                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</div>
+                                                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.description?.slice(0, 80)}</div>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                                                                        {hasOwnConfig && (
+                                                                                            <button style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }} onClick={() => { setEditingToolId(tool.id); setEditingConfig({ ...tool.config }); }}>Configure</button>
+                                                                                        )}
+                                                                                        <button className="btn btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
+                                                                                            if (!confirm(`${t('common.delete')} ${tool.display_name}?`)) return;
+                                                                                            await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
+                                                                                            loadAllTools();
+                                                                                        }}>{t('common.delete')}</button>
+                                                                                        <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                                                                                            <input type="checkbox" checked={tool.enabled} onChange={async (e) => {
+                                                                                                await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }) });
+                                                                                                loadAllTools();
+                                                                                            }} style={{ opacity: 0, width: 0, height: 0 }} />
+                                                                                            <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
+                                                                                                <span style={{ position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                                                                            </span>
+                                                                                        </label>
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            }
 
                                             return (
                                                 <div key={category}>
@@ -2854,6 +3046,81 @@ export default function EnterpriseSettings() {
                                     </div>
                                 );
                             })()}
+
+                            {/* ─── Edit MCP Server Modal ─── */}
+                            {editingMcpServer && (
+                                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                                    onClick={e => { if (e.target === e.currentTarget) setEditingMcpServer(null); }}>
+                                    <div className="card" style={{ width: '480px', maxWidth: '95vw', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                        <h3 style={{ margin: 0, fontSize: '15px' }}>Edit MCP Server</h3>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', background: 'var(--bg-tertiary)', padding: '6px 10px', borderRadius: '6px' }}>
+                                            <strong>{editingMcpServer.server_name}</strong>
+                                            <span style={{ marginLeft: '8px', color: 'var(--text-tertiary)' }}>Updates all tools from this server at once</span>
+                                        </div>
+
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                            <div>
+                                                <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>Server URL</label>
+                                                <input
+                                                    type="password"
+                                                    className="form-input"
+                                                    value={editingMcpServer.server_url}
+                                                    onChange={e => setEditingMcpServer(s => s ? { ...s, server_url: e.target.value } : null)}
+                                                    placeholder="https://mcp.example.com/sse"
+                                                    autoComplete="off"
+                                                />
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '3px' }}>Stored encrypted. For URL-embedded keys (e.g. Tavily), include the key directly here.</div>
+                                            </div>
+                                            <div>
+                                                <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>
+                                                    API Key <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>(optional)</span>
+                                                </label>
+                                                <input
+                                                    type="password"
+                                                    className="form-input"
+                                                    value={editingMcpServer.api_key}
+                                                    onChange={e => setEditingMcpServer(s => s ? { ...s, api_key: e.target.value } : null)}
+                                                    placeholder="Leave blank to keep existing key"
+                                                    autoComplete="new-password"
+                                                />
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '3px' }}>Sent as <code style={{ background: 'rgba(0,0,0,0.06)', padding: '0 3px', borderRadius: '3px' }}>Authorization: Bearer ...</code> Takes priority over URL-embedded keys.</div>
+                                            </div>
+
+                                            {/* Auth explanation */}
+                                            <div style={{ padding: '10px 12px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)', borderRadius: '6px', fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.65' }}>
+                                                <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-primary)' }}>How authentication works</div>
+                                                <div>- <strong>URL-embedded key</strong> (e.g. Tavily <code style={{ background: 'rgba(0,0,0,0.06)', padding: '0 3px', borderRadius: '3px' }}>?tavilyApiKey=xxx</code>): include in Server URL above, leave API Key blank.</div>
+                                                <div>- <strong>Bearer token</strong> auth: enter in the API Key field. It is injected as an HTTP header on every request — the URL stays clean.</div>
+                                                <div>- If both are present, the API Key field takes priority over any URL-embedded value.</div>
+                                            </div>
+                                        </div>
+
+                                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                            <button className="btn btn-secondary" onClick={() => setEditingMcpServer(null)} disabled={mcpServerSaving}>Cancel</button>
+                                            <button className="btn btn-primary" disabled={mcpServerSaving || !editingMcpServer.server_url} onClick={async () => {
+                                                setMcpServerSaving(true);
+                                                try {
+                                                    await fetchJson('/tools/mcp-server', {
+                                                        method: 'PUT',
+                                                        body: JSON.stringify({
+                                                            server_name: editingMcpServer.server_name,
+                                                            server_url: editingMcpServer.server_url,
+                                                            // Only send api_key if the user typed something; null = keep existing
+                                                            api_key: editingMcpServer.api_key || undefined,
+                                                            tenant_id: selectedTenantId || undefined,
+                                                        })
+                                                    });
+                                                    await loadAllTools();
+                                                    setEditingMcpServer(null);
+                                                } catch (e: any) {
+                                                    alert('Failed to update server: ' + e.message);
+                                                }
+                                                setMcpServerSaving(false);
+                                            }}>{mcpServerSaving ? 'Saving...' : 'Save Changes'}</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Per-Tool Config Modal */}
                             {editingToolId && (() => {

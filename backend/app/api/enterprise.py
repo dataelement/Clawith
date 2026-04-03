@@ -159,6 +159,7 @@ async def add_llm_model(
         api_key_encrypted=data.api_key,  # TODO: encrypt
         base_url=data.base_url,
         label=data.label,
+        temperature=data.temperature,
         max_tokens_per_day=data.max_tokens_per_day,
         enabled=data.enabled,
         supports_vision=data.supports_vision,
@@ -238,6 +239,8 @@ async def update_llm_model(
             model.base_url = data.base_url
         if data.api_key and data.api_key.strip() and not data.api_key.startswith('****'):  # Skip masked values
             model.api_key_encrypted = data.api_key.strip()
+        if data.temperature is not None:
+            model.temperature = data.temperature
         if data.max_tokens_per_day is not None:
             model.max_tokens_per_day = data.max_tokens_per_day
         if data.enabled is not None:

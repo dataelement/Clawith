@@ -1,177 +1,55 @@
-# v1.8.0-beta Release Notes
+# v1.8.0-beta.3
 
-This beta release brings major new capabilities to Clawith, including a fully redesigned identity system, AgentBay cloud computer visual control, a new email notification system, expanded Feishu integrations, platform-wide analytics, and many UX improvements.
+## What's Changed
 
----
+### New Features
 
-## What's New
+- **Split Code Executor into Local and E2B Cloud tools** — The single "Code Executor" tool has been separated into two independent tools. The local tool shows CPU/memory/network config; the E2B Cloud tool only requires an API key. E2B errors are now surfaced explicitly instead of silently falling back to local execution.
+- **MCP Server credential management** — New "Edit Server" UI and `PUT /tools/mcp-server` API endpoint for bulk-updating MCP server URLs and API keys across all tools sharing the same server.
+- **Feishu Wiki document creation** — `feishu_doc_create` now supports creating documents directly inside Wiki knowledge bases, with automatic detection of Wiki node tokens.
+- **Feishu permission JSON UI redesign** — Two-tier segmented control (Basic / Full) with i18n support for Feishu app permission configuration.
+- **Live Preview auto-sizing** — AgentBay Live Preview panel now auto-sizes to 50% of the chat container width.
 
-### 1. AgentBay: Cloud Computer Visual Control
+### Bug Fixes
 
-A major leap in agent-computer interaction:
+- **Plaintext SMTP relay support** — STARTTLS is now auto-negotiated based on server ESMTP capabilities instead of being forced on port 25/587. AUTH is skipped for unauthenticated IP-whitelisted internal relays. Password is no longer a required field in email configuration.
+- **Unified context window size** — Introduced `DEFAULT_CONTEXT_WINDOW_SIZE = 100` constant and unified all 9 communication channels (WebSocket, Feishu, Discord, WeCom, DingTalk, Teams, Slack) to use consistent fallback values.
+- **LLM stream retry** — Added `httpx.RemoteProtocolError` to the stream retry logic to handle upstream connection resets.
+- **Tool config double-encryption** — Fixed a bug where already-encrypted sensitive config fields were encrypted again on save.
+- **Loguru format collision** — Replaced `logger.error(..., exc_info=True)` with `logger.exception(...)` across all channel handlers to prevent crashes when error messages contain special characters.
+- **WeCom message handler** — Fixed `NameError` (`agent` vs `agent_obj`) and migrated user creation to `channel_user_service` to avoid AssociationProxy errors.
+- **Duplicate tool definition** — Removed `send_channel_message` from `_ALWAYS_INCLUDE_CORE` to prevent "Tool names must be unique" LLM errors.
+- **AgentBay connection test** — Fixed test image name (`linux_latest`) and `api_key` lookup in global tool config fallback.
+- **FastAPI route ordering** — Reordered `/tools/mcp-server/bulk` before `/tools/{tool_id}` to prevent 422 validation errors on older FastAPI versions.
+- **Other fixes** — LLM model temperature persistence, org_admin access to GitHub/ClawHub tokens, MCP tool import tenant scoping.
 
-- **Live Preview Panel** — Watch your agent in real time via a draggable sidebar that streams screenshots of the cloud browser or desktop as the agent operates.
-- **Vision Injection** — Browser and desktop screenshots are captured ephemerally (in-memory only, no disk writes) and injected into the LLM as multimodal input, enabling visual reasoning about on-screen state.
-- **Take Control / Save Login State** — Users can seamlessly take over the agent's remote session with keyboard and mouse for manual steps (e.g., CAPTCHA, QR code scanning). Cookie-based login state can be saved and reused by the agent.
-- **16+ New AgentBay Tools** — Browser extract, observe, shell commands, OTP-aware keyboard input, `browser_login`, `agentbay_browser_screenshot`, and more.
-- **Windows Cloud Desktop Support** — Full Windows OS support for AgentBay cloud computer sessions.
+### UI / i18n
 
-### 2. Unified Identity System & Multi-Tenant Auth
+- **Context Window Size terminology** — Corrected misleading "Max Rounds" / "Context Rounds" labels to industry-standard "Context Window Size" with accurate descriptions.
+- **MCP Server group header** — Displays hostname instead of full URL for cleaner display.
 
-A complete redesign of the authentication and user management architecture:
+## Upgrade Notes
 
-- **Global Identity (cross-tenant)** — A new `identities` table unifies credentials across organizations. One email/password works across all companies a user belongs to.
-- **Tenant Switcher Modal** — Redesigned company switcher with inline join/create flow.
-- **Invitation Flow Fix** — When an existing user clicks an invitation link, they are now automatically joined to the invited company after logging in.
-- **SSO Toggle** — Per-channel SSO login enable/disable, with auto-detected subdomain and callback URL generation.
+This is a **drop-in upgrade** from v1.8.0-beta.2. No breaking changes.
 
-### 3. Platform Email System
+- **No database migrations required**
+- **No new dependencies**
+- **No environment variable changes**
+- The new `execute_code_e2b` tool will be automatically created by the tool seeder on startup. It is **not** a default tool — agents will not have it unless explicitly added.
+- The existing `execute_code` tool's config schema will be auto-synced (the sandbox type dropdown is removed since it's now always "subprocess").
 
-- Password recovery via email (full reset flow with branded templates).
-- Broadcast notification emails to all platform users.
-- In-app SMTP configuration UI under **Platform Settings → Email** — no `.env` restart required.
-- Test email button and customizable email templates.
-- Auto-verify email and activate users when SMTP is not configured.
-
-### 4. Feishu Integration Expansion
-
-- **Bitable (多维表格)** — List tables/fields, query/create/update/delete records, create new Bitable apps. Returns clickable links in chat.
-- **Drive Tools** — `feishu_drive_share` (renamed and enhanced) + new `feishu_drive_delete` for automated file permission management and cleanup.
-- **Calendar & Approval** — Full integration of Feishu Calendar scheduling and Approval submission tools.
-- **403 Permission Guidance** — When a Feishu API call fails due to missing permissions, the agent now provides detailed diagnostic guidance inline.
-
-### 5. Platform Admin Dashboard & Analytics
-
-- **Enhanced Metrics** — DAU/WAU/MAU, session counts, user retention, channel distribution, tool category breakdowns, and churn warnings.
-- **Token Usage Leaderboards** — Per-agent, per-tenant daily/monthly token spend tracking backed by a new `daily_token_usage` table.
-- **Org Admin Email** — Platform admins can view and contact organization admin email addresses.
-
-### 6. LLM Engine & Tool Improvements
-
-- **Model Toggle** — Enable/disable individual LLM models in Company Settings; disabled models are filtered from dropdowns and the runtime auto-falls back.
-- **Configurable LLM Request Timeout** — New `request_timeout` setting for local/slow models.
-- **Anthropic Prompt Cache Optimization** — Static and dynamic context are split to maximize cache hit rates; detailed cache metrics are logged.
-- **Image Generation (Multi-Provider)** — `generate_image` tool now supports SiliconFlow, OpenAI DALL-E, and Google Vertex AI as separate configurable providers.
-- **Unified Tool Configuration** — Secure API key management with Agent→Company priority inheritance and schema-aware decryption.
-- **ClawHub Integration** — `search_clawhub` and `install_skill` are now seeded as built-in tools, allowing agents to self-extend from the community marketplace.
-- **Transliteration Search** — Enterprise member search now supports pinyin input for Chinese names.
-
-### 7. UX & UI Improvements
-
-- **Chat shortcut** — `Enter` to send, `Shift+Enter` for newline.
-- **Copy Button** — One-click copy on all chat messages.
-- **User Email Update** — Users can change their own email address from Account Settings.
-- **org_admin Promotion/Demotion** — With last-admin protection to prevent lockout.
-- **Collapsible Session List** — Sidebars auto-collapse when the Live Preview panel is active.
-- **Model field** — Replaced model dropdown with free-text input in LLM settings for better compatibility.
-
----
-
-## Upgrade Guide
-
-### Who this applies to
-
-- Upgrading from **v1.7.2** (standard release)
-- Upgrading from an **intermediate post-v1.7.2 state** (same steps, lower risk)
-
-### Important Notes Before Upgrading
-
-> **Always back up your database before upgrading.**
-
-**1. Database Migrations (12 total)**
-
-This release includes 12 Alembic migrations. The most significant is `user_refactor_v1`, which introduces a global `identities` table and migrates user credentials from the `users` table. All migrations are idempotent — if your instance already ran some of them, they will be skipped safely.
-
-**2. Invitation Codes Reset**
-
-The `multi_tenant_registration` migration adds `tenant_id` to invitation codes and clears all legacy codes that lack this field. **Existing invitation codes will be invalidated.** Regenerate them from Company Settings after upgrading.
-
-**3. SMTP Configuration (for post-v1.7.2 intermediate versions only)**
-
-If you previously configured `SYSTEM_SMTP_*` environment variables, these are now **ignored**. After upgrading, go to **Platform Settings → Email** and re-enter your SMTP credentials via the UI. Users upgrading from v1.7.2 are unaffected (email was not available in that version).
-
-**4. New Optional Environment Variables**
-
+### Docker Deployment
 ```bash
-# Public URL used in email links and webhook callbacks.
-# Recommended for production; auto-detected from request host if not set.
-PUBLIC_BASE_URL=https://your-domain.com
-
-# Password reset token lifetime in minutes (default: 30)
-PASSWORD_RESET_TOKEN_EXPIRE_MINUTES=30
-```
-
-**5. New Python Dependencies**
-
-Three new packages are required (automatically installed by Docker build):
-- `wuying-agentbay-sdk >= 0.18.0`
-- `pypinyin >= 0.52.0`
-- `Pillow >= 10.0.0`
-
----
-
-### Option A: Docker Deployment (Recommended)
-
-```bash
-# 1. Back up your database
-docker exec clawith-postgres-1 pg_dump -U clawith clawith > backup_$(date +%Y%m%d).sql
-
-# 2. Pull the latest code
-cd <your-clawith-directory>
 git pull origin main
-
-# 3. Rebuild and restart all containers
-docker compose down
-docker compose up -d --build
-
-# 4. Check migration logs
-docker logs clawith-backend-1 2>&1 | head -80
+docker compose down && docker compose up -d --build
 ```
 
-**Post-upgrade checklist:**
-- [ ] Go to **Platform Settings → Email** and configure SMTP (if you want password recovery / broadcast emails)
-- [ ] Regenerate invitation codes in Company Settings (old codes are cleared)
-- [ ] Optionally set `PUBLIC_BASE_URL` in your `.env`
-
----
-
-### Option B: Source Deployment
-
+### Source Deployment
 ```bash
-# 1. Back up your database
-pg_dump -U clawith clawith > backup_$(date +%Y%m%d).sql
-
-# 2. Pull the latest code
-cd <your-clawith-directory>
 git pull origin main
-
-# 3. Update Python dependencies
-cd backend && pip install -e ".[dev]"
-
-# 4. Run database migrations
-alembic upgrade head
-
-# 5. Build the frontend
-cd ../frontend && npm install && npm run build
-
-# 6. Restart your backend service
+# Backend
+pip install -r backend/requirements.txt  # no changes expected, but safe to run
+# Frontend (pre-built dist.zip is included)
+cd frontend && unzip -o dist.zip -d dist/
+# Restart services
 ```
-
-**Post-upgrade checklist:** Same as Option A.
-
----
-
-### Rollback
-
-If something goes wrong, restore from your SQL backup:
-
-```bash
-# Docker deployment
-docker compose down
-docker exec clawith-postgres-1 psql -U clawith -c "DROP DATABASE clawith; CREATE DATABASE clawith;"
-docker exec -i clawith-postgres-1 psql -U clawith clawith < backup_YYYYMMDD.sql
-git checkout v1.7.2
-docker compose up -d --build
-```
-
-> We recommend SQL restore over `alembic downgrade`, as down migrations have not been fully tested.

@@ -26,14 +26,16 @@ BUILTIN_TOOLS = [
     {
         "name": "read_file",
         "display_name": "Read File",
-        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/.",
+        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks.",
         "category": "file",
         "icon": "📄",
         "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"}
+                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"},
+                "offset": {"type": "integer", "description": "Starting line number (0-indexed, default 0). Use with limit for pagination."},
+                "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000). Use with offset for pagination."},
             },
             "required": ["path"],
         },
@@ -75,6 +77,65 @@ BUILTIN_TOOLS = [
                 "path": {"type": "string", "description": "File path to delete"}
             },
             "required": ["path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # --- Enhanced file management tools ---
+    {
+        "name": "edit_file",
+        "display_name": "Edit File",
+        "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections.",
+        "category": "file",
+        "icon": "✂️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to edit, e.g.: memory/memory.md, skills/my-skill/SKILL.md"},
+                "old_string": {"type": "string", "description": "Exact text to find and replace. Must match exactly including whitespace and newlines."},
+                "new_string": {"type": "string", "description": "Replacement text"},
+                "replace_all": {"type": "boolean", "description": "Replace all occurrences if true (default: false)"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "search_files",
+        "display_name": "Search Files",
+        "description": "Search for content patterns across files using regex. Returns matching lines with file paths and line numbers. Results capped at 50 per query.",
+        "category": "file",
+        "icon": "🔍",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for, e.g.: 'API_KEY', 'def\\\\s+\\\\w+'"},
+                "path": {"type": "string", "description": "Directory to search in (default: root)"},
+                "file_pattern": {"type": "string", "description": "File pattern to match (default: all files). e.g.: '*.md', '*.py'"},
+                "ignore_case": {"type": "boolean", "description": "Case-insensitive search (default: false)"},
+            },
+            "required": ["pattern"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "find_files",
+        "display_name": "Find Files",
+        "description": "Find files matching glob patterns. Returns file paths with sizes and modification info. Results capped at 100 per query.",
+        "category": "file",
+        "icon": "📁",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to match files, e.g.: '**/*.md', 'skills/*.md'"},
+                "path": {"type": "string", "description": "Base directory for search (default: root)"},
+            },
+            "required": ["pattern"],
         },
         "config": {},
         "config_schema": {},
@@ -436,7 +497,7 @@ BUILTIN_TOOLS = [
     {
         "name": "execute_code",
         "display_name": "Code Executor",
-        "description": "Execute code (Python, Bash, Node.js) in a sandboxed environment within the agent's workspace. Useful for data processing, calculations, file transformations, and automation.",
+        "description": "Execute code (Python, Bash, Node.js) in a local sandboxed subprocess within the agent's workspace. Useful for data processing, calculations, file transformations, and automation.",
         "category": "code",
         "icon": "💻",
         "is_default": True,
@@ -451,8 +512,6 @@ BUILTIN_TOOLS = [
         },
         "config": {
             "sandbox_type": "subprocess",
-            "api_key": "",
-            "api_url": "",
             "cpu_limit": "0.5",
             "memory_limit": "256m",
             "allow_network": True,
@@ -461,24 +520,6 @@ BUILTIN_TOOLS = [
         },
         "config_schema": {
             "fields": [
-                {
-                    "key": "sandbox_type",
-                    "label": "Sandbox Type",
-                    "type": "select",
-                    "options": [
-                        {"value": "subprocess", "label": "Local (subprocess)"},
-                        {"value": "e2b", "label": "E2B (cloud)"},
-                    ],
-                    "default": "subprocess",
-                },
-                {
-                    "key": "api_key",
-                    "label": "API Key",
-                    "type": "password",
-                    "default": "",
-                    "placeholder": "Required for cloud/API sandboxes",
-                    "depends_on": {"sandbox_type": ["e2b"]},
-                },
                 {
                     "key": "cpu_limit",
                     "label": "CPU Limit",
@@ -498,7 +539,6 @@ BUILTIN_TOOLS = [
                     "label": "Allow Network Access",
                     "type": "checkbox",
                     "default": True,
-                    "depends_on": {"sandbox_type": ["subprocess"]},
                     "read_only_for_roles": ["agent_admin", "member"],
                 },
                 {
@@ -520,6 +560,58 @@ BUILTIN_TOOLS = [
             ]
         },
     },
+    {
+        "name": "execute_code_e2b",
+        "display_name": "Code Executor (E2B Cloud)",
+        "description": "Execute code (Python, Bash, Node.js) in a secure E2B cloud sandbox. Provides full network access and an isolated environment without consuming local resources. Requires an E2B API key.",
+        "category": "code",
+        "icon": "☁️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
+                "code": {"type": "string", "description": "Code to execute"},
+                "timeout": {"type": "integer", "description": "Max execution time in seconds (default 30, max 60)"},
+            },
+            "required": ["language", "code"],
+        },
+        "config": {
+            "sandbox_type": "e2b",
+            "api_key": "",
+            "default_timeout": 30,
+            "max_timeout": 60,
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "E2B API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get your API key at https://e2b.dev",
+                    "required": True,
+                },
+                {
+                    "key": "default_timeout",
+                    "label": "Default Timeout (seconds)",
+                    "type": "number",
+                    "default": 30,
+                    "min": 5,
+                    "max": 300,
+                },
+                {
+                    "key": "max_timeout",
+                    "label": "Max Timeout (seconds)",
+                    "type": "number",
+                    "default": 60,
+                    "min": 10,
+                    "max": 300,
+                },
+            ]
+        },
+    },
+
     {
         "name": "upload_image",
         "display_name": "Upload Image",
