@@ -679,6 +679,79 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                     async with db.begin_nested():
                         # Use first department from user's department_ids, fallback to "0"
                         dept_ext_id = user.department_ids[0] if user.department_ids else "0"
+                        
+                        # Ensure department exists - if not found, create it on the fly
+                        dept_result = await db.execute(
+                            select(OrgDepartment).where(
+                                OrgDepartment.external_id == dept_ext_id,
+                                OrgDepartment.provider_id == provider.id,
+                            )
+                        )
+                        dept = dept_result.scalar_one_or_none()
+                        if not dept:
+                            # Check if department exists but was marked deleted
+                            del_result = await db.execute(
+                                select(OrgDepartment).where(
+                                    OrgDepartment.external_id == dept_ext_id,
+                                    OrgDepartment.provider_id == provider.id,
+                                    OrgDepartment.status == "deleted",
+                                )
+                            )
+                            dept = del_result.scalar_one_or_none()
+                        fetched_dept_name = None
+                        if dept:
+                            # Reactivate deleted department
+                            dept.status = "active"
+                            dept.synced_at = datetime.now()
+                            if fetched_dept_name:
+                                dept.name = fetched_dept_name
+                            await db.flush()
+                            logger.info(f"[OrgSync] Reactivated deleted department: {dept.external_id} -> {fetched_dept_name or dept.name}")
+                            # Try to fetch real name for reactivated dept
+                            try:
+                                token = await self.get_access_token()
+                                async with httpx.AsyncClient() as client:
+                                    resp = await client.get(
+                                        f"https://open.feishu.cn/open-apis/contact/v3/departments/{dept.external_id}",
+                                        params={"department_id_type": "open_department_id"},
+                                        headers={"Authorization": f"Bearer {token}"},
+                                    )
+                                    data = resp.json()
+                                    if data.get("code") == 0:
+                                        fetched_dept_name = data.get("data", {}).get("department", {}).get("name")
+                            except Exception:
+                                pass
+                        
+                        if not dept:
+                            # Fetch department details from Feishu API
+                            dept_name = fetched_dept_name or f"部门{dept_ext_id[:8]}"
+                            try:
+                                token = await self.get_access_token()
+                                async with httpx.AsyncClient() as client:
+                                    resp = await client.get(
+                                        f"https://open.feishu.cn/open-apis/contact/v3/departments/{dept_ext_id}",
+                                        params={"department_id_type": "open_department_id"},
+                                        headers={"Authorization": f"Bearer {token}"},
+                                    )
+                                    data = resp.json()
+                                    if data.get("code") == 0:
+                                        dept_name = data.get("data", {}).get("department", {}).get("name", dept_name)
+                            except Exception as e:
+                                logger.warning(f"[OrgSync] Failed to fetch dept name for {dept_ext_id}: {e}")
+                            
+                            dept = OrgDepartment(
+                                external_id=dept_ext_id,
+                                provider_id=provider.id,
+                                name=dept_name,
+                                tenant_id=self.tenant_id,
+                                synced_at=datetime.now(),
+                            )
+                            db.add(dept)
+                            await db.flush()
+                            logger.warning(f"[OrgSync] Auto-created missing department: {dept_ext_id} - {dept_name}")
+                            # Add to departments list so reconciliation doesn't delete it
+                            departments.append(dept)
+                        
                         stats = await self._upsert_member(db, provider, user, dept_ext_id)
                         if stats.get("user_created"):
                             user_count += 1
