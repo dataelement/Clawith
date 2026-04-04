@@ -204,11 +204,11 @@ export const adminApi = {
     listCompanies: () =>
         request<any[]>('/admin/companies'),
 
-    createCompany: (data: { name: string }) =>
+    createCompany: (data: { name: string; slug?: string }) =>
         request<any>('/admin/companies', { method: 'POST', body: JSON.stringify(data) }),
 
-    updateCompany: (id: string, data: any) =>
-        request<any>(`/tenants/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    updateCompany: (id: string, data: { name?: string; slug?: string; sso_enabled?: boolean; sso_domain?: string | null }) =>
+        request<any>(`/admin/companies/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 
     toggleCompany: (id: string) =>
         request<any>(`/admin/companies/${id}/toggle`, { method: 'PUT' }),

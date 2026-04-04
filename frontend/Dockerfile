@@ -3,6 +3,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --registry https://registry.npmmirror.com
 COPY . .
+ARG VITE_PUBLIC_URL
+ENV VITE_PUBLIC_URL=$VITE_PUBLIC_URL
 RUN npm run build
 
 FROM nginx:alpine

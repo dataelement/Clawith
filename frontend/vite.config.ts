@@ -30,6 +30,7 @@ export default defineConfig({
     server: {
         port: 3008,
         host: '0.0.0.0',
+        allowedHosts: ['.clawith.ai', '.bigbear.cool', 'localhost', '127.0.0.1'],
         proxy: {
             '/api': {
                 target: 'http://localhost:8008',

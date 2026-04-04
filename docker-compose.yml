@@ -67,12 +67,16 @@ services:
         max-size: "10m"
         max-file: "3"
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_PUBLIC_URL: ${VITE_PUBLIC_URL:-}
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-3008}:3000"
     environment:
       VITE_API_URL: http://localhost:8000
+      VITE_PUBLIC_URL: ${VITE_PUBLIC_URL:-}
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public

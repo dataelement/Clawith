@@ -668,9 +668,13 @@ function CompaniesTab() {
     // Create company
     const [showCreate, setShowCreate] = useState(false);
     const [newName, setNewName] = useState('');
+    const [newSlug, setNewSlug] = useState('');
     const [creating, setCreating] = useState(false);
     const [createdCode, setCreatedCode] = useState('');
     const [createdCompanyName, setCreatedCompanyName] = useState('');
+
+    // Edit company
+    const [editingCompany, setEditingCompany] = useState<any | null>(null);
 
     // Toast
     const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
@@ -734,10 +738,11 @@ function CompaniesTab() {
         if (!newName.trim()) return;
         setCreating(true);
         try {
-            const result = await adminApi.createCompany({ name: newName.trim() });
+            const result = await adminApi.createCompany({ name: newName.trim(), slug: newSlug.trim() || undefined });
             setCreatedCompanyName(newName.trim());
             setCreatedCode(result.admin_invitation_code || '');
             setNewName('');
+            setNewSlug('');
             setShowCreate(false);
             loadCompanies();
         } catch (e: any) {
@@ -888,17 +893,26 @@ function CompaniesTab() {
                     <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px' }}>
                         {t('admin.createCompany', 'Create Company')}
                     </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                        <input className="form-input" value={newName} onChange={e => setNewName(e.target.value)}
-                            placeholder={t('admin.companyNamePlaceholder', 'Company name')}
-                            onKeyDown={e => e.key === 'Enter' && handleCreate()}
-                            style={{ flex: 1 }} autoFocus />
-                        <button className="btn btn-primary" onClick={handleCreate} disabled={creating || !newName.trim()}>
-                            {creating ? '...' : t('common.create', 'Create')}
-                        </button>
-                        <button className="btn btn-secondary" onClick={() => setShowCreate(false)}>
-                            {t('common.cancel', 'Cancel')}
-                        </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <input className="form-input" value={newName} onChange={e => setNewName(e.target.value)}
+                                placeholder={t('admin.companyNamePlaceholder', 'Company name')}
+                                onKeyDown={e => e.key === 'Enter' && handleCreate()}
+                                style={{ flex: 1 }} autoFocus />
+                            <input className="form-input" value={newSlug} onChange={e => setNewSlug(e.target.value)}
+                                placeholder={t('admin.slugPlaceholder', 'Custom slug (optional)')}
+                                onKeyDown={e => e.key === 'Enter' && handleCreate()}
+                                style={{ flex: 1 }} />
+                            <button className="btn btn-primary" onClick={handleCreate} disabled={creating || !newName.trim()}>
+                                {creating ? '...' : t('common.create', 'Create')}
+                            </button>
+                            <button className="btn btn-secondary" onClick={() => { setShowCreate(false); setNewName(''); setNewSlug(''); }}>
+                                {t('common.cancel', 'Cancel')}
+                            </button>
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                            {t('admin.slugHelp', 'Slug is used for SSO domain: slug.bigbear.cool. Leave empty to auto-generate from company name.')}
+                        </div>
                     </div>
                 </div>
             )}
@@ -1027,6 +1041,16 @@ function CompaniesTab() {
                                 className="btn btn-ghost"
                                 style={{
                                     padding: '2px 8px', fontSize: '11px', height: '24px',
+                                    color: 'var(--accent-primary)',
+                                }}
+                                onClick={() => setEditingCompany(c)}
+                            >
+                                {t('admin.edit', 'Edit')}
+                            </button>
+                            <button
+                                className="btn btn-ghost"
+                                style={{
+                                    padding: '2px 8px', fontSize: '11px', height: '24px',
                                     color: c.slug === 'default' ? 'var(--text-tertiary)' : c.is_active ? 'var(--error)' : 'var(--success)',
                                     cursor: c.slug === 'default' ? 'not-allowed' : 'pointer',
                                     opacity: c.slug === 'default' ? 0.5 : 1,
@@ -1077,6 +1101,15 @@ function CompaniesTab() {
                         </div>
                     </div>
                 )}
+
+                {/* Edit Company Modal */}
+                {editingCompany && (
+                    <EditCompanyModal
+                        company={editingCompany}
+                        onClose={() => setEditingCompany(null)}
+                        onUpdated={loadCompanies}
+                    />
+                )}
             </div>
         </div>
     );
@@ -1085,6 +1118,8 @@ function CompaniesTab() {
 // ─── Edit Company Modal ───────────────────────────────
 function EditCompanyModal({ company, onClose, onUpdated }: { company: any, onClose: () => void, onUpdated: () => void }) {
     const { t } = useTranslation();
+    const [name, setName] = useState(company.name || '');
+    const [slug, setSlug] = useState(company.slug || '');
     const [ssoEnabled, setSsoEnabled] = useState(!!company.sso_enabled);
     const [ssoDomain, setSsoDomain] = useState(company.sso_domain || '');
     const [saving, setSaving] = useState(false);
@@ -1095,6 +1130,8 @@ function EditCompanyModal({ company, onClose, onUpdated }: { company: any, onClo
         setError('');
         try {
             await adminApi.updateCompany(company.id, {
+                name: name.trim() || undefined,
+                slug: slug.trim() || undefined,
                 sso_enabled: ssoEnabled,
                 sso_domain: ssoDomain.trim() || null,
             });
@@ -1113,12 +1150,12 @@ function EditCompanyModal({ company, onClose, onUpdated }: { company: any, onClo
             backdropFilter: 'blur(4px)',
         }} onClick={onClose}>
             <div className="card" style={{
-                padding: '24px', maxWidth: '440px', width: '90%',
+                padding: '24px', maxWidth: '480px', width: '90%',
                 boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
             }} onClick={e => e.stopPropagation()}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                     <h2 style={{ fontSize: '16px', fontWeight: 600 }}>
-                        {t('admin.editCompany', 'Edit Company')}: {company.name}
+                        {t('admin.editCompany', 'Edit Company')}
                     </h2>
                     <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}>
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1128,14 +1165,38 @@ function EditCompanyModal({ company, onClose, onUpdated }: { company: any, onClo
                     </button>
                 </div>
                 
-                <h3 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>
-                    {t('admin.ssoConfigTitle', 'SSO & Domain Configuration')}
-                </h3>
-                <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '16px', lineHeight: '1.4' }}>
-                    {t('admin.ssoConfigDesc', 'Configure SSO and custom domain for this company.')}
-                </p>
+                <div style={{ marginBottom: '16px', background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                    <h3 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', color: 'var(--text-secondary)' }}>
+                        {t('admin.basicInfo', 'Basic Information')}
+                    </h3>
+                    <div style={{ marginBottom: '12px' }}>
+                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '4px' }}>{t('admin.companyName', 'Company Name')}</label>
+                        <input
+                            className="form-input"
+                            value={name}
+                            onChange={e => setName(e.target.value)}
+                            style={{ fontSize: '13px' }}
+                        />
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '4px' }}>{t('admin.slug', 'Slug')}</label>
+                        <input
+                            className="form-input"
+                            value={slug}
+                            onChange={e => setSlug(e.target.value)}
+                            placeholder={t('admin.slugPlaceholder', 'e.g. acme')}
+                            style={{ fontSize: '13px' }}
+                        />
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                            {t('admin.slugHelp', 'Used for SSO domain: slug.bigbear.cool')}
+                        </div>
+                    </div>
+                </div>
 
                 <div style={{ marginBottom: '16px', background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                    <h3 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', color: 'var(--text-secondary)' }}>
+                        {t('admin.ssoConfigTitle', 'SSO & Domain Configuration')}
+                    </h3>
                     <div style={{ marginBottom: '12px' }}>
                         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}>
                             <input
