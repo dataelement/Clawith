@@ -18,6 +18,7 @@ export default function CompanySetup() {
     // Fallback: if user exists but is not active, they're in the registration flow
     // (the Navigate in ProtectedRoute may strip location.state).
     const fromRegister = (location.state as any)?.fromRegister || (user && !user.is_active);
+    const registerEmail = (location.state as any)?.email || user?.email;
 
     // Join company form
     const [inviteCode, setInviteCode] = useState('');
@@ -58,9 +59,15 @@ export default function CompanySetup() {
         setLoading(true);
         try {
             await tenantApi.join(inviteCode);
-            // Always refresh user state so tenant_id is updated in store
-            await refreshUser();
-            navigate('/');
+            if (fromRegister) {
+                // In registration flow: refresh user then go to verify email
+                await refreshUser();
+                navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
+            } else {
+                // Normal flow: refresh user and go home
+                await refreshUser();
+                navigate('/');
+            }
         } catch (err: any) {
             setError(err.message || 'Failed to join company');
         } finally {
@@ -74,9 +81,15 @@ export default function CompanySetup() {
         setLoading(true);
         try {
             await tenantApi.selfCreate({ name: companyName });
-            // Always refresh user state so tenant_id is updated in store
-            await refreshUser();
-            navigate('/');
+            if (fromRegister) {
+                // In registration flow: refresh user then go to verify email
+                await refreshUser();
+                navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
+            } else {
+                // Normal flow: refresh user and go to Enterprise Settings
+                await refreshUser();
+                navigate('/enterprise');
+            }
         } catch (err: any) {
             setError(err.message || 'Failed to create company');
         } finally {
