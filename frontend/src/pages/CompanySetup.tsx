@@ -106,6 +106,9 @@ export default function CompanySetup() {
         return null;
     }
 
+    // --- Debug: log guard state ---
+    console.log('[CompanySetup] guards:', { fromRegister, fromTenantSelection, tenant_id: user?.tenant_id });
+
     return (
         <div className="company-setup-page">
             {/* Language Switcher */}
