@@ -147,6 +147,8 @@ async def self_create_company(
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         await db.flush()
 
+    await db.commit()
+
     return SelfCreateResponse(
         tenant=TenantOut.model_validate(tenant),
         access_token=access_token,
@@ -274,6 +276,8 @@ async def join_company(
     # Increment invitation code usage
     code_obj.used_count += 1
     await db.flush()
+
+    await db.commit()
 
     return JoinResponse(
         tenant=TenantOut.model_validate(tenant),
