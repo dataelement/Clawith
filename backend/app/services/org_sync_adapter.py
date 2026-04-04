@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, delete, func, or_, select, update
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, delete, func, select, update
 
 import httpx
 from loguru import logger
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.identity import IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
-from app.models.user import User, Identity
+from app.models.user import User
 from pypinyin import pinyin, Style
 
 from app.core.security import hash_password
@@ -310,7 +310,7 @@ class BaseOrgSyncAdapter(ABC):
             query = query.where(IdentityProvider.tenant_id.is_(None))
             
         result = await db.execute(query)
-        provider = result.scalars().first()
+        provider = result.scalar_one_or_none()
 
         if not provider:
             provider = IdentityProvider(
@@ -337,7 +337,7 @@ class BaseOrgSyncAdapter(ABC):
                 OrgDepartment.provider_id == provider.id,
             )
         )
-        existing = result.scalars().first()
+        existing = result.scalar_one_or_none()
 
         now = datetime.now()
         path = f"{dept.parent_external_id}/{dept.name}" if dept.parent_external_id else dept.name
@@ -351,7 +351,7 @@ class BaseOrgSyncAdapter(ABC):
                     OrgDepartment.provider_id == provider.id,
                 )
             )
-            parent_dept = parent_result.scalars().first()
+            parent_dept = parent_result.scalar_one_or_none()
             if parent_dept:
                 parent_id = parent_dept.id
 
@@ -402,7 +402,7 @@ class BaseOrgSyncAdapter(ABC):
                         OrgDepartment.provider_id == provider.id,
                     )
                 )
-                department = dept_result.scalars().first()
+                department = dept_result.scalar_one_or_none()
                 if department:
                     break
         # Fallback: use the department_external_id that was set during fetch_users
@@ -413,25 +413,16 @@ class BaseOrgSyncAdapter(ABC):
                     OrgDepartment.provider_id == provider.id,
                 )
             )
-            department = dept_result.scalars().first()
+            department = dept_result.scalar_one_or_none()
 
-        # Check if exists by unionid or external_id or open_id (any matches), and provider
-        conditions = []
-        if user.unionid:
-            conditions.append(OrgMember.unionid == user.unionid)
-        if user.external_id:
-            conditions.append(OrgMember.external_id == user.external_id)
-        if user.open_id:
-            conditions.append(OrgMember.open_id == user.open_id)
-
-        if conditions:
-            result = await db.execute(
-                select(OrgMember).where(
-                    OrgMember.provider_id == provider.id,
-                    or_(*conditions)
-                )
+        # Check if exists by external_id and provider
+        result = await db.execute(
+            select(OrgMember).where(
+                OrgMember.external_id == user.external_id,
+                OrgMember.provider_id == provider.id,
             )
-        existing_member = result.scalars().first()
+        )
+        existing_member = result.scalar_one_or_none()
 
         now = datetime.now()
 
@@ -445,20 +436,20 @@ class BaseOrgSyncAdapter(ABC):
         mobile = _normalize_contact(user.mobile)
 
         if email:
-            user_query = select(User).join(User.identity).where(Identity.email == email)
+            user_query = select(User).where(User.email.ilike(email))
             if self.tenant_id:
                 user_query = user_query.where(User.tenant_id == self.tenant_id)
             user_res = await db.execute(user_query)
-            platform_user = user_res.scalars().first()
+            platform_user = user_res.scalar_one_or_none()
             if platform_user:
                 user_id = platform_user.id
 
         if not user_id and mobile:
-            user_query = select(User).join(User.identity).where(Identity.phone == mobile)
+            user_query = select(User).where(User.primary_mobile == mobile)
             if self.tenant_id:
                 user_query = user_query.where(User.tenant_id == self.tenant_id)
             user_res = await db.execute(user_query)
-            platform_user = user_res.scalars().first()
+            platform_user = user_res.scalar_one_or_none()
             if platform_user:
                 user_id = platform_user.id
 
@@ -482,8 +473,7 @@ class BaseOrgSyncAdapter(ABC):
             # Universal ID fields
             existing_member.external_id = user.external_id
             existing_member.open_id = user.open_id
-            existing_member.unionid = user.unionid
-
+            
             existing_member.provider_id = provider.id
             existing_member.synced_at = now
             if user_id and not existing_member.user_id:
@@ -496,7 +486,6 @@ class BaseOrgSyncAdapter(ABC):
             new_member = OrgMember(
                 external_id=user.external_id,
                 open_id=user.open_id,
-                unionid=user.unionid,
 
                 provider_id=provider.id,
                 user_id=user_id,
@@ -521,7 +510,7 @@ class BaseOrgSyncAdapter(ABC):
         if not target_user and (user_id or (existing_member and existing_member.user_id)):
             target_id = user_id or existing_member.user_id
             user_res = await db.execute(select(User).where(User.id == target_id))
-            target_user = user_res.scalars().first()
+            target_user = user_res.scalar_one_or_none()
 
         if target_user:
             if email and target_user.email != email:
@@ -538,18 +527,18 @@ class BaseOrgSyncAdapter(ABC):
         email = _normalize_contact(user.email)
         if email:
             result = await db.execute(
-                select(User).join(User.identity).where(Identity.email == email)
+                select(User).where(User.email.ilike(email))
             )
-            u = result.scalars().first()
+            u = result.scalar_one_or_none()
             if u: return u
 
         # 2. Try by mobile matching
         mobile = _normalize_contact(user.mobile)
         if mobile:
             result = await db.execute(
-                select(User).join(User.identity).where(Identity.phone == mobile)
+                select(User).where(User.primary_mobile == mobile)
             )
-            u = result.scalars().first()
+            u = result.scalar_one_or_none()
             if u: return u
 
         return None
@@ -658,13 +647,149 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
         logger.info(f"Feishu fetched {len(all_depts)} departments total.")
         return all_depts
 
-    async def fetch_users(self, department_external_id: str) -> list[ExternalUser]:
-        """Fetch users in a department.
-        
-        Uses user_id_type=user_id which requires the contact:user.employee_id:readonly
-        permission. If the Feishu API returns an error due to missing permission, raises
-        a clear error instructing the user to add the required scope.
-        """
+    async def sync_org_structure(self, db: AsyncSession) -> dict[str, Any]:
+        """Override to use global user list API so we can get users regardless of department hierarchy."""
+        errors = []
+        dept_count = 0
+        member_count = 0
+        user_count = 0
+        profile_count = 0
+        sync_start = datetime.now()
+
+        provider = await self._ensure_provider(db)
+
+        try:
+            # Fetch and sync departments
+            departments = await self.fetch_departments()
+            for dept in departments:
+                try:
+                    async with db.begin_nested():
+                        await self._upsert_department(db, provider, dept)
+                    dept_count += 1
+                except Exception as e:
+                    errors.append(f"Department {dept.external_id}: {str(e)}")
+                    logger.error(f"[OrgSync] Failed to sync department {dept.external_id}: {e}")
+
+            # Fetch ALL users using global user list API (works even without department access)
+            all_users = await self._fetch_all_users()
+            logger.info(f"Feishu fetched {len(all_users)} total users globally.")
+
+            for user in all_users:
+                try:
+                    async with db.begin_nested():
+                        # Use first department from user's department_ids, fallback to "0"
+                        dept_ext_id = user.department_ids[0] if user.department_ids else "0"
+                        
+                        # Ensure department exists - if not found, create it on the fly
+                        dept_result = await db.execute(
+                            select(OrgDepartment).where(
+                                OrgDepartment.external_id == dept_ext_id,
+                                OrgDepartment.provider_id == provider.id,
+                            )
+                        )
+                        dept = dept_result.scalar_one_or_none()
+                        if not dept:
+                            # Check if department exists but was marked deleted
+                            del_result = await db.execute(
+                                select(OrgDepartment).where(
+                                    OrgDepartment.external_id == dept_ext_id,
+                                    OrgDepartment.provider_id == provider.id,
+                                    OrgDepartment.status == "deleted",
+                                )
+                            )
+                            dept = del_result.scalar_one_or_none()
+                        fetched_dept_name = None
+                        if dept:
+                            # Reactivate deleted department
+                            dept.status = "active"
+                            dept.synced_at = datetime.now()
+                            if fetched_dept_name:
+                                dept.name = fetched_dept_name
+                            await db.flush()
+                            logger.info(f"[OrgSync] Reactivated deleted department: {dept.external_id} -> {fetched_dept_name or dept.name}")
+                            # Try to fetch real name for reactivated dept
+                            try:
+                                token = await self.get_access_token()
+                                async with httpx.AsyncClient() as client:
+                                    resp = await client.get(
+                                        f"https://open.feishu.cn/open-apis/contact/v3/departments/{dept.external_id}",
+                                        params={"department_id_type": "open_department_id"},
+                                        headers={"Authorization": f"Bearer {token}"},
+                                    )
+                                    data = resp.json()
+                                    if data.get("code") == 0:
+                                        fetched_dept_name = data.get("data", {}).get("department", {}).get("name")
+                            except Exception:
+                                pass
+                        
+                        if not dept:
+                            # Fetch department details from Feishu API
+                            dept_name = fetched_dept_name or f"部门{dept_ext_id[:8]}"
+                            try:
+                                token = await self.get_access_token()
+                                async with httpx.AsyncClient() as client:
+                                    resp = await client.get(
+                                        f"https://open.feishu.cn/open-apis/contact/v3/departments/{dept_ext_id}",
+                                        params={"department_id_type": "open_department_id"},
+                                        headers={"Authorization": f"Bearer {token}"},
+                                    )
+                                    data = resp.json()
+                                    if data.get("code") == 0:
+                                        dept_name = data.get("data", {}).get("department", {}).get("name", dept_name)
+                            except Exception as e:
+                                logger.warning(f"[OrgSync] Failed to fetch dept name for {dept_ext_id}: {e}")
+                            
+                            dept = OrgDepartment(
+                                external_id=dept_ext_id,
+                                provider_id=provider.id,
+                                name=dept_name,
+                                tenant_id=self.tenant_id,
+                                synced_at=datetime.now(),
+                            )
+                            db.add(dept)
+                            await db.flush()
+                            logger.warning(f"[OrgSync] Auto-created missing department: {dept_ext_id} - {dept_name}")
+                            # Add to departments list so reconciliation doesn't delete it
+                            departments.append(dept)
+                        
+                        stats = await self._upsert_member(db, provider, user, dept_ext_id)
+                        if stats.get("user_created"):
+                            user_count += 1
+                        if stats.get("profile_synced"):
+                            profile_count += 1
+                    member_count += 1
+                except Exception as e:
+                    logger.error(f"[OrgSync] Failed to sync member {user.external_id} ({user.name}): {e}")
+                    errors.append(f"Member {user.external_id}: {str(e)}")
+
+            # Update provider metadata
+            if self.provider:
+                config = (self.provider.config or {}).copy()
+                config["last_synced_at"] = datetime.now().isoformat()
+                self.provider.config = config
+                await db.flush()
+                await self._reconcile(db, provider.id, sync_start)
+                await db.flush()
+                await self._update_member_counts(db, provider.id)
+                await db.flush()
+
+        except Exception as e:
+            import traceback
+            logger.error(f"[OrgSync] Critical error during sync: {e}\n{traceback.format_exc()}")
+            errors.append(f"Critical: {str(e)}")
+
+        return {
+            "departments": dept_count,
+            "members": member_count,
+            "users_created": user_count,
+            "profiles_synced": profile_count,
+            "errors": errors,
+            "provider": self.provider_type,
+            "synced_at": datetime.now().isoformat()
+        }
+
+    async def _fetch_all_users(self) -> list[ExternalUser]:
+        """Fetch all users from Feishu using global users API."""
         token = await self.get_access_token()
         users: list[ExternalUser] = []
         page_token = ""
@@ -672,73 +797,56 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
         async with httpx.AsyncClient() as client:
             while True:
                 params = {
-                    "department_id": department_external_id,
-                    "department_id_type": "open_department_id",
-                    "user_id_type": "user_id",  # Requires contact:user.employee_id:readonly
                     "page_size": "50",
+                    "user_id_type": "user_id",
+                    "sort_type": "NameOrder",
                 }
                 if page_token:
                     params["page_token"] = page_token
 
                 resp = await client.get(
-                    self.FEISHU_USERS_URL,
+                    "https://open.feishu.cn/open-apis/contact/v3/users",
                     params=params,
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 data = resp.json()
 
                 if data.get("code") != 0:
-                    error_code = data.get("code")
-                    error_msg = data.get("msg", "")
-                    logger.error(
-                        f"Feishu fetch users error for dept {department_external_id}: "
-                        f"code={error_code}, msg={error_msg}"
-                    )
-                    # Raise a user-friendly error for permission issues
-                    raise RuntimeError(
-                        f"Feishu API error (code {error_code}): {error_msg}. "
-                        f"Please ensure the Feishu app has the 'contact:user.employee_id:readonly' "
-                        f"permission enabled. Go to Feishu Open Platform -> App -> Permissions -> "
-                        f"search 'employee_id' -> enable and publish a new version."
-                    )
+                    logger.error(f"Feishu fetch all users error: {data}")
+                    break
 
                 res_data = data.get("data", {})
                 items = res_data.get("items", []) or []
                 for item in items:
-                    # Collect all departments the user belongs to
                     raw_dept_ids = item.get("department_ids", [])
-                    department_ids = [str(did) for did in raw_dept_ids] if raw_dept_ids else [department_external_id]
-                    
-                    external_id = item.get("user_id", "") or item.get("open_id", "")
-                    
-                    # For Feishu, a user is considered inactive if they are explicitly frozen or resigned.
-                    # Merely not being activated (is_activated=False) shouldn't hide them from the org chart.
-                    feishu_status = item.get("status", {})
-                    is_frozen = feishu_status.get("is_frozen", False)
-                    is_resigned = feishu_status.get("is_resigned", False)
-                    member_status = "inactive" if (is_frozen or is_resigned) else "active"
+                    department_ids = [str(did) for did in raw_dept_ids] if raw_dept_ids else ["0"]
 
                     user = ExternalUser(
-                        external_id=external_id,
+                        external_id=item.get("user_id", "") or item.get("open_id", ""),
                         open_id=item.get("open_id", ""),
                         unionid=item.get("union_id", ""),
                         name=item.get("name", ""),
                         email=item.get("email", ""),
                         avatar_url=item.get("avatar_url", ""),
                         title=item.get("title", ""),
-                        department_external_id=department_external_id,
+                        department_external_id=department_ids[0] if department_ids else "0",
                         department_ids=department_ids,
                         mobile=item.get("mobile", ""),
-                        status=member_status,
+                        status="active" if item.get("status", {}).get("is_activated") else "inactive",
                         raw_data=item,
                     )
                     users.append(user)
 
                 page_token = res_data.get("page_token", "")
-                if not page_token:
+                has_more = res_data.get("has_more", False)
+                if not has_more or not page_token:
                     break
 
         return users
+
+    async def fetch_users(self, department_external_id: str) -> list[ExternalUser]:
+        # Dummy implementation - not used since we override sync_org_structure
+        return []
 
 
 class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
