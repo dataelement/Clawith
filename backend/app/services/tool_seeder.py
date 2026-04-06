@@ -1428,6 +1428,26 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    # --- File Conversion Tools ---
+    {
+        "name": "convert_markdown",
+        "display_name": "Convert Markdown",
+        "description": "Convert a Markdown file to Word (.docx) or Excel (.xlsx). Supports tables, lists, code blocks, and rich text formatting. For Excel, level-1 headings create new sheets.",
+        "category": "converter",
+        "icon": "📄",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "input_path": {"type": "string", "description": "Path to the input Markdown file (relative to workspace)"},
+                "output_type": {"type": "string", "enum": ["docx", "xlsx"], "description": "Output format: 'docx' for Word, 'xlsx' for Excel"},
+                "output_path": {"type": "string", "description": "Output file path (optional, default: same name with new extension)"},
+            },
+            "required": ["input_path", "output_type"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
 ]
 
 # ── AgentBay Tools ──────────────────────────────────────────────────────────

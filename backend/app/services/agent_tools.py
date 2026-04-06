@@ -2153,6 +2153,9 @@ async def execute_tool(
             result = await _search_clawhub(agent_id, arguments)
         elif tool_name == "install_skill":
             result = await _install_skill(agent_id, ws, arguments)
+        # ── File Conversion ──
+        elif tool_name == "convert_markdown":
+            result = await _convert_markdown(ws, arguments)
         else:
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
@@ -2460,6 +2463,56 @@ async def _search_zhipu(query: str, api_key: str, max_results: int) -> str:
     if not results:
         return f'🔍 No results found for "{query}"'
     return f'🔍 智谱网络搜索 "{query}" ({len(results)} 条结果):\n\n' + "\n\n---\n\n".join(results)
+
+
+# ─── File Conversion Tools ────────────────────────────────────────────────────
+
+async def _convert_markdown(ws: Path, arguments: dict) -> str:
+    """Convert Markdown file to Word or Excel."""
+    import subprocess
+    import sys
+
+    input_path = arguments.get("input_path", "").strip()
+    output_type = arguments.get("output_type", "").strip()
+
+    if not input_path:
+        return "❌ Error: input_path is required"
+    if output_type not in ("docx", "xlsx"):
+        return "❌ Error: output_type must be 'docx' or 'xlsx'"
+
+    # Resolve input path
+    input_file = (ws / input_path).resolve()
+    if not input_file.exists():
+        return f"❌ Error: File not found: {input_path}"
+
+    # Determine output path
+    output_path = arguments.get("output_path", "").strip()
+    if not output_path:
+        output_path = input_path.rsplit(".", 1)[0] + f".{output_type}"
+    output_file = (ws / output_path).resolve()
+
+    # Get converter script
+    script_name = "md2docx.py" if output_type == "docx" else "md2xlsx.py"
+    converter_script = Path(__file__).parent.parent.parent / "converters" / script_name
+    if not converter_script.exists():
+        return f"❌ Error: Converter script not found: {converter_script}"
+
+    type_name = "Word" if output_type == "docx" else "Excel"
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(converter_script), str(input_file), str(output_file)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            return f"❌ Conversion failed: {result.stderr[:500]}"
+        return f"✅ Converted to {type_name}: {output_path}"
+    except subprocess.TimeoutExpired:
+        return "❌ Conversion timed out"
+    except Exception as e:
+        return f"❌ Error: {str(e)[:200]}"
 
 
 async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
