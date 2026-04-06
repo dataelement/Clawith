@@ -8,6 +8,7 @@ prevent human-agent input collisions.
 Cookie export occurs automatically when the Take Control session ends.
 """
 
+import asyncio
 import json
 import logging
 import time
