@@ -397,20 +397,32 @@ async def get_agent_permissions(
     perms = result.scalars().all()
 
     if not perms:
-        return {"scope_type": "user", "scope_ids": [], "access_level": "manage" if is_agent_creator(current_user, agent) else "use", "is_owner": is_agent_creator(current_user, agent)}
+        return {
+            "scope_type": "user",
+            "scope_ids": [],
+            "access_level": "manage" if is_agent_creator(current_user, agent) else "use",
+            "is_owner": is_agent_creator(current_user, agent),
+            "is_team": False,
+        }
 
     scope_type = perms[0].scope_type
     scope_ids = [str(p.scope_id) for p in perms if p.scope_id]
     perm_access_level = perms[0].access_level or "use"
 
-    # Resolve names for display
+    # Resolve names for display (batch query to avoid N+1)
     scope_names = []
-    if scope_type == "user":
+    if scope_type == "user" and scope_ids:
+        r = await db.execute(
+            select(User).where(User.id.in_([uuid.UUID(sid) for sid in scope_ids]))
+        )
+        users = {str(u.id): u for u in r.scalars().all()}
         for sid in scope_ids:
-            r = await db.execute(select(User).where(User.id == uuid.UUID(sid)))
-            u = r.scalar_one_or_none()
+            u = users.get(sid)
             if u:
-                scope_names.append({"id": sid, "name": u.display_name or u.username})
+                scope_names.append({"id": sid, "name": u.display_name or u.username, "avatar_url": u.avatar_url})
+
+    # is_team: scope_type='user' with non-creator members → "团队" mode
+    is_team = scope_type == "user" and any(sid != str(agent.creator_id) for sid in scope_ids)
 
     return {
         "scope_type": scope_type,
@@ -418,6 +430,7 @@ async def get_agent_permissions(
         "scope_names": scope_names,
         "access_level": perm_access_level,
         "is_owner": is_agent_creator(current_user, agent),
+        "is_team": is_team,
     }
 
 
@@ -450,8 +463,11 @@ async def update_agent_permissions(
         db.add(AgentPermission(agent_id=agent_id, scope_type="company", access_level=access_level))
     elif scope_type == "user":
         if scope_ids:
+            # Filter out creator to avoid redundant permission record
+            creator_id_str = str(agent.creator_id)
             for sid in scope_ids:
-                db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uuid.UUID(sid), access_level=access_level))
+                if sid != creator_id_str:
+                    db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uuid.UUID(sid), access_level=access_level))
         else:
             # "仅自己"
             db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=current_user.id, access_level="manage"))

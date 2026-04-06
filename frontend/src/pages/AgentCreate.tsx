@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { agentApi, channelApi, enterpriseApi, skillApi } from '../services/api';
+import { useAuthStore } from '../stores';
 import ChannelConfig from '../components/ChannelConfig';
 import LinearCopyButton from '../components/LinearCopyButton';
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
@@ -62,6 +63,7 @@ export default function AgentCreate() {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const queryClient = useQueryClient();
+    const currentUser = useAuthStore((s) => s.user);
     const [step, setStep] = useState(0);
     const [error, setError] = useState('');
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -81,12 +83,31 @@ export default function AgentCreate() {
         fallback_model_id: '' as string,
         permission_scope_type: 'company',
         permission_access_level: 'use',
+        permission_scope_ids: [] as string[],
         template_id: '' as string,
         max_tokens_per_day: '',
         max_tokens_per_month: '',
         skill_ids: [] as string[],
     });
+    const [teamSearchResults, setTeamSearchResults] = useState<any[]>([]);
+    const [selectedTeamUsers, setSelectedTeamUsers] = useState<any[]>([]);
     const [channelValues, setChannelValues] = useState<Record<string, string>>({});
+
+    // Team member management
+    const addTeamMember = (user: any) => {
+        setForm(prev => ({ ...prev, permission_scope_ids: [...prev.permission_scope_ids, user.id] }));
+        setSelectedTeamUsers(prev => [...prev, user]);
+        setTeamSearchResults(prev => prev.filter(u => u.id !== user.id));
+    };
+    const removeTeamMember = (userId: string) => {
+        setForm(prev => ({ ...prev, permission_scope_ids: prev.permission_scope_ids.filter(id => id !== userId) }));
+        const removed = selectedTeamUsers.find(u => u.id === userId);
+        setSelectedTeamUsers(prev => prev.filter(u => u.id !== userId));
+        // Re-add removed user back to available list
+        if (removed) {
+            setTeamSearchResults(prev => [...prev, removed]);
+        }
+    };
 
     // Fetch LLM models for step 1
     const { data: models = [] } = useQuery({
@@ -259,7 +280,8 @@ export default function AgentCreate() {
             primary_model_id: agentType === 'native' ? (form.primary_model_id || undefined) : undefined,
             fallback_model_id: agentType === 'native' ? (form.fallback_model_id || undefined) : undefined,
             template_id: form.template_id || undefined,
-            permission_scope_type: form.permission_scope_type,
+            permission_scope_type: form.permission_scope_type === 'team' ? 'user' : form.permission_scope_type,
+            permission_scope_ids: form.permission_scope_type === 'team' ? form.permission_scope_ids : undefined,
             max_tokens_per_day: form.max_tokens_per_day ? Number(form.max_tokens_per_day) : undefined,
             max_tokens_per_month: form.max_tokens_per_month ? Number(form.max_tokens_per_month) : undefined,
             skill_ids: agentType === 'native' ? form.skill_ids : [],
@@ -760,6 +782,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
                             {[
                                 { value: 'company', label: t('wizard.step4.companyWide'), desc: t('wizard.step4.companyWideDesc') },
+                                { value: 'team', label: t('wizard.step4.team', 'Team'), desc: t('wizard.step4.teamDesc', 'Only specified team members can use this agent') },
                                 { value: 'user', label: t('wizard.step4.selfOnly'), desc: t('wizard.step4.selfOnlyDesc') },
                             ].map((scope) => (
                                 <label key={scope.value} style={{
@@ -769,7 +792,24 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                     borderRadius: '8px', cursor: 'pointer',
                                 }}>
                                     <input type="radio" name="scope" checked={form.permission_scope_type === scope.value}
-                                        onChange={() => setForm({ ...form, permission_scope_type: scope.value })} />
+                                        onChange={async () => {
+                                            setForm({ ...form, permission_scope_type: scope.value, permission_scope_ids: scope.value !== 'team' ? [] : form.permission_scope_ids });
+                                            if (scope.value !== 'team') {
+                                                setSelectedTeamUsers([]);
+                                            } else {
+                                                // Auto-load all tenant users for direct selection
+                                                try {
+                                                    const res = await fetch(`/api/users/search`, {
+                                                        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                                                    });
+                                                    if (res.ok) {
+                                                        const users = await res.json();
+                                                        const selected = new Set(form.permission_scope_ids);
+                                                        setTeamSearchResults((users || []).filter((u: any) => !selected.has(u.id)));
+                                                    }
+                                                } catch { /* ignore */ }
+                                            }
+                                        }} />
 
                                     <div>
                                         <div style={{ fontWeight: 500, fontSize: '13px' }}>{scope.label}</div>
@@ -778,6 +818,82 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                 </label>
                             ))}
                         </div>
+
+                        {/* Team member selector — only for team scope */}
+                        {form.permission_scope_type === 'team' && (
+                            <div>
+                                <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '10px' }}>
+                                    {t('wizard.step4.teamMembers', 'Team Members')}
+                                </label>
+
+                                {/* Selected members — creator (self) + others */}
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+                                    {/* Creator (self) — always shown, non-removable */}
+                                    {currentUser && (
+                                        <span style={{
+                                            display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                            padding: '4px 8px', background: 'var(--bg-elevated)',
+                                            border: '1px solid var(--accent-primary)', borderRadius: '6px',
+                                            fontSize: '12px', fontWeight: 500, opacity: 0.9,
+                                        }}>
+                                            {currentUser.display_name || t('wizard.step4.creator', 'Creator')}
+                                            <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>({t('wizard.step4.creator', 'Creator')})</span>
+                                        </span>
+                                    )}
+                                    {/* Other selected team members */}
+                                    {selectedTeamUsers.map((user) => (
+                                        <span key={user.id} style={{
+                                            display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                            padding: '4px 8px', background: 'var(--accent-subtle)',
+                                            border: '1px solid var(--accent-primary)', borderRadius: '6px',
+                                            fontSize: '12px', fontWeight: 500,
+                                        }}>
+                                            {user.display_name || user.id.slice(0, 8)}
+                                            <button type="button" onClick={() => removeTeamMember(user.id)} style={{
+                                                background: 'none', border: 'none', cursor: 'pointer',
+                                                fontSize: '14px', color: 'var(--text-tertiary)', padding: '0 2px',
+                                            }}>&times;</button>
+                                        </span>
+                                    ))}
+                                </div>
+
+                                {/* Direct user list for selection */}
+                                <div style={{
+                                    border: '1px solid var(--border-default)', borderRadius: '8px',
+                                    maxHeight: '240px', overflowY: 'auto',
+                                }}>
+                                    {teamSearchResults.filter(u => !form.permission_scope_ids.includes(u.id)).length === 0 ? (
+                                        <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                            {t('agent.settings.perm.noAvailableUsers', 'No available users')}
+                                        </div>
+                                    ) : (
+                                        teamSearchResults.filter(u => !form.permission_scope_ids.includes(u.id)).map((user) => (
+                                            <div key={user.id} onClick={() => addTeamMember(user)} style={{
+                                                display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px',
+                                                cursor: 'pointer', fontSize: '13px',
+                                                borderBottom: '1px solid var(--border-subtle)',
+                                                transition: 'background 0.15s',
+                                            }}
+                                            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-elevated)'}
+                                            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                            >
+                                                <div style={{
+                                                    width: '28px', height: '28px', borderRadius: '50%',
+                                                    background: 'var(--accent-subtle)', display: 'flex',
+                                                    alignItems: 'center', justifyContent: 'center', fontSize: '12px',
+                                                    fontWeight: 600, color: 'var(--accent-primary)', flexShrink: 0,
+                                                }}>{(user.display_name || '?')[0].toUpperCase()}</div>
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.display_name}</div>
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.email}</div>
+                                                </div>
+                                                <span style={{ fontSize: '18px', color: 'var(--accent-primary)', flexShrink: 0 }}>+</span>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                        )}
 
                         {/* Access Level — only for company scope */}
                         {form.permission_scope_type === 'company' && (

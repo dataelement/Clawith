@@ -2556,6 +2556,12 @@ function AgentDetailInner() {
         enabled: !!id && activeTab === 'settings',
     });
 
+    // Team member selection state for permission management
+    const [teamSearchRes, setTeamSearchRes] = useState<any[]>([]);
+    // Local team mode: when user selects "team" but hasn't added members yet,
+    // backend would treat empty scope_ids as "only me", so we track locally.
+    const [pendingTeamMode, setPendingTeamMode] = useState(false);
+
     // ─── Soul editor ─────────────────────────────────────
     const [soulEditing, setSoulEditing] = useState(false);
     const [soulDraft, setSoulDraft] = useState('');
@@ -5265,16 +5271,30 @@ function AgentDetailInner() {
 
                                 {/* Permission Management */}
                                 {(() => {
-                                    const scopeLabels: Record<string, string> = {
-                                        company: '🏢 ' + t('agent.settings.perm.companyWide', 'Company-wide'),
-                                        user: '👤 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
-                                    };
+                                    const scopeOptions = [
+                                        { value: 'company', label: t('agent.settings.perm.companyWide', '🏢 Company-wide'), desc: t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent') },
+                                        { value: 'team', label: t('agent.settings.perm.team', '👥 Team'), desc: t('agent.settings.perm.teamDesc', 'Only specified team members can use this agent') },
+                                        { value: 'user', label: t('agent.settings.perm.onlyMe', '👤 Only Me'), desc: t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent') },
+                                    ];
+
+                                    // Map backend scope to UI: scope_type='user' + is_team → 'team'
+                                    const displayScope = pendingTeamMode ? 'team' : (permData?.is_team ? 'team' : (permData?.scope_type || 'company'));
 
                                     const handleScopeChange = async (newScope: string) => {
+                                        if (newScope === 'team') {
+                                            setPendingTeamMode(true);
+                                            // Auto-load tenant users for selection
+                                            try {
+                                                const users = await fetchAuth<any[]>(`/users/search`);
+                                                const existing = new Set(permData?.scope_ids || []);
+                                                setTeamSearchRes((users || []).filter((u: any) => !existing.has(u.id)));
+                                            } catch { /* ignore */ }
+                                            return;
+                                        }
+                                        setPendingTeamMode(false);
                                         try {
                                             await fetchAuth(`/agents/${id}/permissions`, {
                                                 method: 'PUT',
-                                                headers: { 'Content-Type': 'application/json' },
                                                 body: JSON.stringify({ scope_type: newScope, scope_ids: [], access_level: permData?.access_level || 'use' }),
                                             });
                                             queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
@@ -5286,10 +5306,10 @@ function AgentDetailInner() {
 
                                     const handleAccessLevelChange = async (newLevel: string) => {
                                         try {
+                                            const backendScope = permData?.scope_type || 'company';
                                             await fetchAuth(`/agents/${id}/permissions`, {
                                                 method: 'PUT',
-                                                headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ scope_type: permData?.scope_type || 'company', scope_ids: permData?.scope_ids || [], access_level: newLevel }),
+                                                body: JSON.stringify({ scope_type: backendScope, scope_ids: permData?.scope_ids || [], access_level: newLevel }),
                                             });
                                             queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
                                             queryClient.invalidateQueries({ queryKey: ['agent', id] });
@@ -5298,8 +5318,44 @@ function AgentDetailInner() {
                                         }
                                     };
 
+                                    const handleAddTeamMember = async (user: any) => {
+                                        try {
+                                            const newIds = [...(permData?.scope_ids || []), user.id];
+                                            await fetchAuth(`/agents/${id}/permissions`, {
+                                                method: 'PUT',
+                                                body: JSON.stringify({ scope_type: 'user', scope_ids: newIds, access_level: permData?.access_level || 'use' }),
+                                            });
+                                            queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
+                                            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                            const existing = new Set([...(permData?.scope_ids || []), user.id]);
+                                            setTeamSearchRes(teamSearchRes.filter((u: any) => !existing.has(u.id)));
+                                            setPendingTeamMode(false);
+                                        } catch (e) {
+                                            console.error('Failed to add team member', e);
+                                        }
+                                    };
+
+                                    const handleRemoveTeamMember = async (userId: string) => {
+                                        try {
+                                            const newIds = (permData?.scope_ids || []).filter((sid: string) => sid !== userId);
+                                            await fetchAuth(`/agents/${id}/permissions`, {
+                                                method: 'PUT',
+                                                body: JSON.stringify({ scope_type: 'user', scope_ids: newIds, access_level: permData?.access_level || 'use' }),
+                                            });
+                                            queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
+                                            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                            // Re-fetch full user list so removed user reappears
+                                            try {
+                                                const users = await fetchAuth<any[]>(`/users/search`);
+                                                const remaining = new Set(newIds);
+                                                setTeamSearchRes((users || []).filter((u: any) => !remaining.has(u.id)));
+                                            } catch { /* ignore */ }
+                                        } catch (e) {
+                                            console.error('Failed to remove team member', e);
+                                        }
+                                    };
+
                                     const isOwner = permData?.is_owner ?? false;
-                                    const currentScope = permData?.scope_type || 'company';
                                     const currentAccessLevel = permData?.access_level || 'use';
 
                                     return (
@@ -5311,9 +5367,9 @@ function AgentDetailInner() {
 
                                             {/* Scope Selection */}
                                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-                                                {(['company', 'user'] as const).map((scope) => (
+                                                {scopeOptions.map((opt) => (
                                                     <label
-                                                        key={scope}
+                                                        key={opt.value}
                                                         style={{
                                                             display: 'flex',
                                                             alignItems: 'center',
@@ -5321,10 +5377,10 @@ function AgentDetailInner() {
                                                             padding: '12px 14px',
                                                             borderRadius: '8px',
                                                             cursor: isOwner ? 'pointer' : 'default',
-                                                            border: currentScope === scope
+                                                            border: displayScope === opt.value
                                                                 ? '1px solid var(--accent-primary)'
                                                                 : '1px solid var(--border-subtle)',
-                                                            background: currentScope === scope
+                                                            background: displayScope === opt.value
                                                                 ? 'rgba(99,102,241,0.06)'
                                                                 : 'transparent',
                                                             opacity: isOwner ? 1 : 0.7,
@@ -5334,24 +5390,21 @@ function AgentDetailInner() {
                                                         <input
                                                             type="radio"
                                                             name="perm_scope"
-                                                            checked={currentScope === scope}
+                                                            checked={displayScope === opt.value}
                                                             disabled={!isOwner}
-                                                            onChange={() => handleScopeChange(scope)}
+                                                            onChange={() => handleScopeChange(opt.value)}
                                                             style={{ accentColor: 'var(--accent-primary)' }}
                                                         />
                                                         <div>
-                                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{scopeLabels[scope]}</div>
-                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                                {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
-                                                                {scope === 'user' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
-                                                            </div>
+                                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{opt.label}</div>
+                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{opt.desc}</div>
                                                         </div>
                                                     </label>
                                                 ))}
                                             </div>
 
                                             {/* Access Level for company scope */}
-                                            {currentScope === 'company' && isOwner && (
+                                            {(displayScope === 'company') && isOwner && (
                                                 <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
                                                     <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
                                                         {t('agent.settings.perm.defaultAccess', 'Default Access Level')}
@@ -5387,10 +5440,91 @@ function AgentDetailInner() {
                                                 </div>
                                             )}
 
-                                            {currentScope !== 'company' && permData?.scope_names?.length > 0 && (
-                                                <div style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                    <span style={{ fontWeight: 500 }}>{t('agent.settings.perm.currentAccess', 'Current access')}:</span>{' '}
-                                                    {permData.scope_names.map((s: any) => s.name).join(', ')}
+                                            {/* Team member management */}
+                                            {displayScope === 'team' && (
+                                                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
+                                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
+                                                        {t('agent.settings.perm.teamMembers', 'Team Members')}
+                                                    </label>
+
+                                                    {/* Current team members */}
+                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+                                                        {/* Creator (self) — always shown, non-removable */}
+                                                        {isOwner && (
+                                                            <span style={{
+                                                                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                                                padding: '6px 10px', background: 'var(--bg-elevated)',
+                                                                border: '1px solid var(--accent-primary)', borderRadius: '6px',
+                                                                fontSize: '12px', fontWeight: 500, opacity: 0.9,
+                                                            }}>
+                                                                <span style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'var(--accent-primary)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px' }}>
+                                                                    {(currentUser?.display_name || '?')[0].toUpperCase()}
+                                                                </span>
+                                                                {currentUser?.display_name || t('agent.detail.createdBy', 'Creator')}
+                                                                <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>({t('agent.detail.createdBy', 'Creator')})</span>
+                                                            </span>
+                                                        )}
+                                                        {/* Other team members */}
+                                                        {permData?.scope_names?.map((s: any) => (
+                                                            <span key={s.id} style={{
+                                                                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                                                padding: '6px 10px', background: 'var(--accent-subtle)',
+                                                                border: '1px solid var(--accent-primary)', borderRadius: '6px',
+                                                                fontSize: '12px', fontWeight: 500,
+                                                            }}>
+                                                                {s.avatar_url ? (
+                                                                    <img src={s.avatar_url} alt="" style={{ width: '18px', height: '18px', borderRadius: '50%' }} />
+                                                                ) : (
+                                                                    <span style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'var(--accent-primary)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px' }}>{(s.name || '?')[0].toUpperCase()}</span>
+                                                                )}
+                                                                {s.name}
+                                                                {isOwner && (
+                                                                    <button type="button" onClick={() => handleRemoveTeamMember(s.id)} style={{
+                                                                        background: 'none', border: 'none', cursor: 'pointer',
+                                                                        fontSize: '14px', color: 'var(--text-tertiary)', padding: '0 2px',
+                                                                    }}>&times;</button>
+                                                                )}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+
+                                                    {/* Direct user list to add members */}
+                                                    {isOwner && (
+                                                        <div style={{
+                                                            border: '1px solid var(--border-default)', borderRadius: '8px',
+                                                            maxHeight: '240px', overflowY: 'auto',
+                                                        }}>
+                                                            {teamSearchRes.length === 0 ? (
+                                                                <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                                    {t('agent.settings.perm.noAvailableUsers', 'No available users')}
+                                                                </div>
+                                                            ) : (
+                                                                teamSearchRes.map((user) => (
+                                                                    <div key={user.id} onClick={() => handleAddTeamMember(user)} style={{
+                                                                        display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px',
+                                                                        cursor: 'pointer', fontSize: '13px',
+                                                                        borderBottom: '1px solid var(--border-subtle)',
+                                                                        transition: 'background 0.15s',
+                                                                    }}
+                                                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-elevated)'}
+                                                                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                                                    >
+                                                                        <div style={{
+                                                                            width: '28px', height: '28px', borderRadius: '50%',
+                                                                            background: 'var(--accent-subtle)', display: 'flex',
+                                                                            alignItems: 'center', justifyContent: 'center', fontSize: '12px',
+                                                                            fontWeight: 600, color: 'var(--accent-primary)', flexShrink: 0,
+                                                                        }}>{(user.display_name || '?')[0].toUpperCase()}</div>
+                                                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                                                            <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.display_name}</div>
+                                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.email}</div>
+                                                                        </div>
+                                                                        <span style={{ fontSize: '18px', color: 'var(--accent-primary)', flexShrink: 0 }}>+</span>
+                                                                    </div>
+                                                                ))
+                                                            )}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             )}
 
