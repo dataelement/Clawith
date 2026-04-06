@@ -288,45 +288,64 @@ async def _tc_browser_cleanup(agent_id: uuid.UUID, session_id: str) -> None:
         return
 
     try:
-        # Use a CDP script to navigate to about:blank via raw Page.navigate command.
-        # The SDK's browser.operator.navigate() rejects about:blank ("must start with
-        # http or https"), but Chrome's CDP Page.navigate command accepts any URL.
+        # Cleanup strategy: stop all in-flight page navigations, then navigate
+        # the active content page to about:blank.
         #
-        # WHY about:blank: Any TC click that triggers page navigation (tieba, zhihu,
-        # etc.) leaves Chrome loading that page for 30-60s. The AgentBay service's
-        # page.goto() queues BEHIND the in-progress page load — timing out before
-        # the heavy page finishes. Raw Page.navigate to about:blank immediately
-        # overrides the slow navigation; about:blank finishes in <50ms.
-        #
-        # WHY no browser.close(): explicit Target.detachFromTarget (what browser.close
-        # sends) arrives at the service's Playwright mid-navigation and triggers a
-        # ~60s internal recovery cycle. Exiting with process.exit() leaves Chrome to
-        # handle the WebSocket close AFTER the page is stable (at about:blank).
+        # WHY multi-step:
+        # 1. stopLoading on all pages: a TC click may have opened a NEW TAB
+        #    (target=_blank link on baidu) that is still loading a heavy article.
+        #    Page.stopLoading kills that load immediately so Chrome's DevTools
+        #    is no longer blocked draining a multi-MB response.
+        # 2. Page.navigate to about:blank on the active page: gives the AgentBay
+        #    service's page.goto() a clean starting point. about:blank commits in
+        #    <10ms; the service no longer has to wait for tieba/zhihu/baidu to drain.
+        # 3. Wait for Page.loadEventFired before process.exit(): ensures Chrome has
+        #    fully settled at about:blank before we disconnect. This means Chrome
+        #    emits Target.detachedFromTarget (from our WebSocket close) while the
+        #    page is in a stable, loaded state — not mid-navigation — so the
+        #    service's Playwright state machine doesn't enter a 60-second recovery.
+        # 4. No browser.close(): we let Node.js exit naturally. Chrome handles
+        #    the WebSocket close without an explicit Target.detachFromTarget CDP
+        #    command that races with other async CDP events.
         cleanup_script = """
 const { chromium } = require('/usr/local/lib/node_modules/playwright');
 (async () => {
     try {
         const browser = await chromium.connectOverCDP('http://localhost:9222');
         const context = browser.contexts()[0];
-        const pages = context.pages();
-        // Target the currently visible content page (skip existing about:blank tabs)
-        const page = pages.slice().reverse().find(p => p.url() !== 'about:blank')
-                     || pages[pages.length - 1];
-        // Send raw CDP Page.navigate — bypasses SDK URL validation that blocks about:blank.
-        // This immediately overrides any in-progress TC navigation (tieba/baidu/etc)
-        // with about:blank, which Chrome loads in <50ms.
-        const cdp = await context.newCDPSession(page);
-        await cdp.send('Page.navigate', { url: 'about:blank' });
-        // Wait for about:blank to fully load before exiting. When process.exit() runs
-        // with the page already at a stable about:blank, Chrome fires
-        // Target.detachedFromTarget while the page state is clean — no 60-second
-        // service recovery cycle.
-        await new Promise(r => setTimeout(r, 300));
+        const allPages = context.pages();
+
+        // Stop all loading pages so Chrome is not draining heavy responses.
+        // tc clicks frequently open new tabs (target=_blank) that stay loading
+        // for 20-40s; stopping them is critical for fast post-TC recovery.
+        for (const p of allPages) {
+            try {
+                const cdp = await context.newCDPSession(p);
+                await cdp.send('Page.stopLoading');
+                await cdp.detach();
+            } catch(_) {}
+        }
+
+        // Navigate the active content page (last non-blank) to about:blank.
+        // Use raw CDP Page.navigate — the AgentBay SDK rejects about:blank
+        // ("must start with http or https") but Chrome's CDP has no such rule.
+        const contentPage = allPages.slice().reverse().find(p => p.url() !== 'about:blank')
+                            || allPages[allPages.length - 1];
+        const cdp = await context.newCDPSession(contentPage);
+
+        // Navigate and wait for loadEventFired so about:blank is fully settled.
+        await new Promise((resolve) => {
+            cdp.on('Page.loadEventFired', () => resolve());
+            cdp.send('Page.navigate', { url: 'about:blank' }).catch(() => resolve());
+            setTimeout(resolve, 800);  // Fallback: about:blank always loads in <100ms
+        });
+
         console.log('CLEANUP_OK');
     } catch(e) {
         console.error('CLEANUP_FAIL: ' + e.message);
     }
-    // No browser.close() — let Chrome handle the WebSocket close gracefully.
+    // No browser.close() — let Chrome handle WebSocket close gracefully after
+    // the page is in a stable loaded state (about:blank).
     process.exit(0);
 })();
 """
@@ -353,30 +372,62 @@ async def _perform_click(client, x: int, y: int, button: str = "left"):
     if _is_browser_session(client):
         script = f"""
 const {{ chromium }} = require('/usr/local/lib/node_modules/playwright');
-(async () => {{
+(async () => {{
     let ok = false;
     try {{
         const browser = await chromium.connectOverCDP('http://localhost:9222');
         const context = browser.contexts()[0];
-        // Pick the last non-blank page so we always target the visible content page.
         const pages = context.pages();
-        const page = pages.slice().reverse().find(p => p.url() !== 'about:blank') || pages[pages.length - 1];
-        console.log('TARGET_PAGE:' + page.url());
+
+        // Page selection: prefer the last page with a committed non-blank URL.
+        // When a tc click opens a new tab (target=_blank), the new tab briefly
+        // has url() === 'about:blank' before its navigation commits. During that
+        // window, we correctly target the ORIGINAL content page (the one the user
+        // sees in the TC screenshot). The NEXT click, after the new tab has settled,
+        // will naturally pick the new tab because its URL will be non-blank by then.
+        const page = pages.slice().reverse().find(p => p.url() !== 'about:blank')
+                     || pages[pages.length - 1];
+        const initialUrl = page.url();
+        const initialPageCount = pages.length;
+        console.log('TARGET_PAGE:' + initialUrl);
+
         await page.mouse.click({x}, {y}, {{ button: '{button}' }});
         console.log('CLICK_OK');
         ok = true;
+
+        // Wait up to 4 seconds for any triggered navigation to commit.
+        //
+        // WHY: without this wait, the interaction lock is released in ~1s —
+        // before same-tab navigation commits (URL unchanged) or before a new
+        // tab's URL transitions from about:blank to its target URL. The next
+        // click then picks the WRONG page (finds the pre-navigation URL or
+        // the still-blank new tab), making it appear as if the second click
+        // has no effect.
+        //
+        // A 4-second ceiling is safe: same-tab navigations commit in 0.5-2s;
+        // new-tab URL commits in 1-3s. We break early once the state changes.
+        const deadline = Date.now() + 4000;
+        while (Date.now() < deadline) {{
+            await new Promise(r => setTimeout(r, 200));
+            const currentPages = context.pages();
+            // Case A: same-tab navigation committed (URL changed)
+            if (page.url() !== initialUrl) break;
+            // Case B: new tab opened and its URL has committed (no longer about:blank)
+            if (currentPages.length > initialPageCount) {{
+                const newest = currentPages[currentPages.length - 1];
+                if (newest.url() !== 'about:blank') break;
+            }}
+        }}
     }} catch (e) {{
         console.error('CLICK_FAIL:' + e.message);
     }}
-    // Do NOT call browser.close() here. Explicit Target.detachFromTarget during
-    // an in-progress navigation confuses the AgentBay service's Playwright for
-    // ~60 seconds. Let Node.js exit naturally — Chrome handles the socket close
-    // without emitting mid-navigation detach events.
+    // No browser.close() — avoid explicit Target.detachFromTarget.
+    // Chrome handles the WebSocket close gracefully.
     process.exit(ok ? 0 : 1);
 }})();
 """
         res = await _eval_cdp_script(client, script)
-        return {"success": res.get("success", False) and "CLICK_OK" in res.get("output", ""), "method": "cdp_click", "output": "Clicked" if "CLICK_OK" in res.get("output", "") else res.get("output", "Unknown error")}
+        return {{"success": res.get("success", False) and "CLICK_OK" in res.get("output", ""), "method": "cdp_click", "output": "Clicked" if "CLICK_OK" in res.get("output", "") else res.get("output", "Unknown error")}}
 
     # Desktop session — use Computer API
     try:
