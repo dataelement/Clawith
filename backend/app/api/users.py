@@ -1,11 +1,10 @@
-"""User management API — admin-only user listing and quota management."""
-
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.security import get_current_user
 from app.database import get_db
@@ -24,9 +23,12 @@ class UserQuotaUpdate(BaseModel):
 
 class UserOut(BaseModel):
     id: uuid.UUID
-    username: str
-    email: str
-    display_name: str
+    # username/email/display_name can be None for SSO-created users whose Identity
+    # was created without explicit values (e.g., DingTalk/Feishu OAuth flow).
+    # The frontend should handle None gracefully.
+    username: str | None = None
+    email: str | None = None
+    display_name: str | None = None
     role: str
     is_active: bool
     # Quota fields
@@ -39,7 +41,7 @@ class UserOut(BaseModel):
     agents_count: int = 0
     # Source info
     created_at: str | None = None
-    source: str = 'registered'  # 'registered' | 'feishu'
+    source: str = 'registered'  # 'registered' | 'feishu' | 'dingtalk' | 'wecom' | etc.
 
     model_config = {"from_attributes": True}
 
@@ -59,7 +61,7 @@ async def list_users(
 
     # Filter users by tenant — platform_admins only shown in their own tenant
     result = await db.execute(
-        select(User).where(
+        select(User).options(selectinload(User.identity)).where(
             User.tenant_id == tid
         ).order_by(User.created_at.asc())
     )
@@ -78,9 +80,11 @@ async def list_users(
 
         user_dict = {
             "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "display_name": u.display_name,
+            # Fallback to empty string if username/email/display_name is None to prevent
+            # serialization errors for SSO-created users with incomplete Identity records.
+            "username": u.username or u.email or f"{u.registration_source or 'user'}_{str(u.id)[:8]}",
+            "email": u.email or "",
+            "display_name": u.display_name or u.username or "",
             "role": u.role,
             "is_active": u.is_active,
             "quota_message_limit": u.quota_message_limit,
@@ -107,7 +111,9 @@ async def update_user_quota(
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).options(selectinload(User.identity)).where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -185,7 +191,9 @@ async def update_user_role(
         raise HTTPException(status_code=400, detail=f"Invalid role. Allowed: {', '.join(allowed_roles)}")
 
     # Find target user
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).options(selectinload(User.identity)).where(User.id == user_id)
+    )
     target_user = result.scalar_one_or_none()
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")

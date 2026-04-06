@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_user, require_role
+from app.core.security import get_current_user, require_role, get_authenticated_user
 from app.database import get_db
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -26,6 +26,7 @@ router = APIRouter(prefix="/tenants", tags=["tenants"])
 
 class TenantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    target_tenant_id: uuid.UUID | None = None
 
 class TenantOut(BaseModel):
     id: uuid.UUID
@@ -53,29 +54,76 @@ class TenantUpdate(BaseModel):
 # ─── Helpers ────────────────────────────────────────────
 
 def _slugify(name: str) -> str:
-    """Generate a URL-friendly slug from a company name."""
-    # Replace CJK and non-alphanumeric chars with hyphens
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower().strip())
+    """Generate a URL-friendly slug from a company name.
+
+    Uses a layered transliteration strategy so non-Latin company names produce
+    meaningful, readable slugs instead of collapsing to the generic 'company'
+    placeholder:
+
+      1. pypinyin   — CJK/Chinese characters → pinyin (e.g. '公司' → 'gongsi')
+      2. anyascii   — remaining non-ASCII scripts → closest ASCII approximation
+                      (Korean '안녕' → 'annyeong', Japanese 'ひらがな' → 'hiragana',
+                       Arabic 'مرحبا' → 'mrhb', Cyrillic 'Привет' → 'Privet', …)
+      3. NFKD norm  — accented Latin chars stripped of diacritics (é → e)
+
+    A short random hex suffix is always appended to guarantee global uniqueness
+    even when two tenants choose the same company name.
+    """
+    import unicodedata
+    from pypinyin import lazy_pinyin
+    from anyascii import anyascii
+
+    # Step 1: Convert CJK characters to pinyin; non-CJK chars pass through unchanged.
+    # lazy_pinyin with errors='default' keeps non-CJK chars as-is so they are
+    # handled by the subsequent anyascii pass rather than being silently dropped.
+    parts = lazy_pinyin(name, errors="default")
+    text = "".join(parts)
+
+    # Step 2: Convert remaining non-ASCII characters using anyascii.
+    # anyascii is a no-op on ASCII input, so it is safe to apply to the whole
+    # string after pypinyin has already processed the CJK portion.
+    text = anyascii(text)
+
+    # Step 3: Normalize any remaining accented Latin chars (é → e, ü → u, etc.)
+    # and drop anything that still cannot be represented in ASCII.
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+
+    # Step 4: Lowercase, collapse non-alphanumeric runs to hyphens, trim to 40 chars.
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower().strip())
     slug = slug.strip("-")[:40]
+
     if not slug:
+        # Extremely unlikely after anyascii, but keep as a safety net
+        # for inputs that are entirely punctuation or whitespace.
         slug = "company"
-    # Add short random suffix for uniqueness
+
+    # Add a short random hex suffix to ensure global uniqueness.
     slug = f"{slug}-{secrets.token_hex(3)}"
     return slug
 
 
-# ─── Self-Service: Create Company ───────────────────────
+class SelfCreateResponse(BaseModel):
+    """Response for self-create company, includes token for context switching."""
+    tenant: TenantOut
+    access_token: str | None = None  # Non-null when a new User record was created (multi-tenant switch)
 
-@router.post("/self-create", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
+
+@router.post("/self-create", response_model=SelfCreateResponse, status_code=status.HTTP_201_CREATED)
 async def self_create_company(
     data: TenantCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new company (self-service). The creator becomes org_admin."""
-    # Must not already belong to a company
-    if current_user.tenant_id is not None:
-        raise HTTPException(status_code=400, detail="You already belong to a company")
+    """Create a new company (self-service). The creator becomes org_admin.
+
+    Supports both:
+    - Registration flow (user has no tenant yet): assigns tenant directly
+    - Switch-org flow (user already has a tenant): creates a new User record for the new tenant
+    """
+    # Block self-creation if locked to a specific tenant (Dedicated Link flow)
+    if data.target_tenant_id is not None:
+        raise HTTPException(status_code=403, detail="Company creation is not allowed via this link. Please join your assigned organization.")
 
     # Check if self-creation is allowed
     from app.models.system_settings import SystemSetting
@@ -92,40 +140,83 @@ async def self_create_company(
     db.add(tenant)
     await db.flush()
 
-    # Assign creator as org_admin
-    current_user.tenant_id = tenant.id
-    current_user.role = "org_admin" if current_user.role == "member" else current_user.role
-    # Inherit quota defaults from new tenant
-    current_user.quota_message_limit = tenant.default_message_limit
-    current_user.quota_message_period = tenant.default_message_period
-    current_user.quota_max_agents = tenant.default_max_agents
-    current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
-    await db.flush()
+    access_token = None
 
-    return TenantOut.model_validate(tenant)
+    if current_user.tenant_id is not None:
+        # Multi-tenant: user already belongs to a company.
+        # Create a NEW User record for the new tenant instead of overwriting.
+        from app.core.security import create_access_token
+        from app.models.participant import Participant
+
+        new_user = User(
+            identity_id=current_user.identity_id,
+            tenant_id=tenant.id,
+            display_name=current_user.display_name,
+            role="org_admin",
+            registration_source="web",
+            is_active=current_user.is_active,
+            quota_message_limit=tenant.default_message_limit,
+            quota_message_period=tenant.default_message_period,
+            quota_max_agents=tenant.default_max_agents,
+            quota_agent_ttl_hours=tenant.default_agent_ttl_hours,
+        )
+        db.add(new_user)
+        await db.flush()
+
+        # Create Participant for the new user record
+        db.add(Participant(
+            type="user",
+            ref_id=new_user.id,
+            display_name=new_user.display_name,
+            avatar_url=new_user.avatar_url,
+        ))
+        await db.flush()
+
+        # Generate token scoped to the new user so frontend can switch context
+        access_token = create_access_token(str(new_user.id), new_user.role)
+    else:
+        # Registration flow: user has no tenant yet, assign directly
+        current_user.tenant_id = tenant.id
+        current_user.role = "org_admin" if current_user.role == "member" else current_user.role
+        # Inherit quota defaults from new tenant
+        current_user.quota_message_limit = tenant.default_message_limit
+        current_user.quota_message_period = tenant.default_message_period
+        current_user.quota_max_agents = tenant.default_max_agents
+        current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
+        await db.flush()
+
+    await db.commit()
+
+    return SelfCreateResponse(
+        tenant=TenantOut.model_validate(tenant),
+        access_token=access_token,
+    )
 
 
 # ─── Self-Service: Join Company via Invite Code ─────────
 
 class JoinRequest(BaseModel):
     invitation_code: str = Field(min_length=1, max_length=32)
+    target_tenant_id: uuid.UUID | None = None
 
 
 class JoinResponse(BaseModel):
     tenant: TenantOut
     role: str
+    access_token: str | None = None  # Non-null when a new User record was created (multi-tenant switch)
 
 
 @router.post("/join", response_model=JoinResponse)
 async def join_company(
     data: JoinRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Join an existing company using an invitation code."""
-    if current_user.tenant_id is not None:
-        raise HTTPException(status_code=400, detail="You already belong to a company")
+    """Join an existing company using an invitation code.
 
+    Supports both:
+    - Registration flow (user has no tenant yet): assigns tenant directly
+    - Switch-org flow (user already has a tenant): creates a new User record"""
     from app.models.invitation_code import InvitationCode
     ic_result = await db.execute(
         select(InvitationCode).where(
@@ -137,6 +228,11 @@ async def join_company(
     code_obj = ic_result.scalar_one_or_none()
     if not code_obj:
         raise HTTPException(status_code=400, detail="Invalid invitation code")
+
+    # Verify matching tenant if locked (Dedicated Link flow)
+    if data.target_tenant_id and str(code_obj.tenant_id) != str(data.target_tenant_id):
+        raise HTTPException(status_code=403, detail="This invitation code does not belong to the required organization.")
+
     if code_obj.used_count >= code_obj.max_uses:
         raise HTTPException(status_code=400, detail="Invitation code has reached its usage limit")
 
@@ -145,6 +241,16 @@ async def join_company(
     tenant = t_result.scalar_one_or_none()
     if not tenant or not tenant.is_active:
         raise HTTPException(status_code=400, detail="Company not found or is disabled")
+
+    # Check if user already belongs to this specific tenant
+    existing_membership = await db.execute(
+        select(User).where(
+            User.identity_id == current_user.identity_id,
+            User.tenant_id == tenant.id,
+        )
+    )
+    if existing_membership.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="You already belong to this company")
 
     # Check if this company has an org_admin already
     admin_check = await db.execute(
@@ -158,23 +264,63 @@ async def join_company(
     # First joiner of an empty company becomes org_admin
     assigned_role = "member" if has_admin else "org_admin"
 
-    # Assign user to company
-    current_user.tenant_id = tenant.id
-    if current_user.role == "member":
-        current_user.role = assigned_role
-    # Inherit quota defaults from tenant
-    current_user.quota_message_limit = tenant.default_message_limit
-    current_user.quota_message_period = tenant.default_message_period
-    current_user.quota_max_agents = tenant.default_max_agents
-    current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
+    access_token = None
+
+    if current_user.tenant_id is not None:
+        # Multi-tenant: user already belongs to a company.
+        # Create a NEW User record for the new tenant.
+        from app.core.security import create_access_token
+        from app.models.participant import Participant
+
+        new_user = User(
+            identity_id=current_user.identity_id,
+            tenant_id=tenant.id,
+            display_name=current_user.display_name,
+            role=assigned_role,
+            registration_source="web",
+            is_active=current_user.is_active,
+            quota_message_limit=tenant.default_message_limit,
+            quota_message_period=tenant.default_message_period,
+            quota_max_agents=tenant.default_max_agents,
+            quota_agent_ttl_hours=tenant.default_agent_ttl_hours,
+        )
+        db.add(new_user)
+        await db.flush()
+
+        # Create Participant for the new user record
+        db.add(Participant(
+            type="user",
+            ref_id=new_user.id,
+            display_name=new_user.display_name,
+            avatar_url=new_user.avatar_url,
+        ))
+        await db.flush()
+
+        # Generate token scoped to the new user so frontend can switch context
+        access_token = create_access_token(str(new_user.id), new_user.role)
+        final_role = new_user.role
+    else:
+        # Registration flow: user has no tenant yet, assign directly
+        current_user.tenant_id = tenant.id
+        if current_user.role == "member":
+            current_user.role = assigned_role
+        # Inherit quota defaults from tenant
+        current_user.quota_message_limit = tenant.default_message_limit
+        current_user.quota_message_period = tenant.default_message_period
+        current_user.quota_max_agents = tenant.default_max_agents
+        current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
+        final_role = current_user.role
 
     # Increment invitation code usage
     code_obj.used_count += 1
     await db.flush()
 
+    await db.commit()
+
     return JoinResponse(
         tenant=TenantOut.model_validate(tenant),
-        role=current_user.role,
+        role=final_role,
+        access_token=access_token,
     )
 
 
@@ -201,15 +347,37 @@ async def resolve_tenant_by_domain(
 ):
     """Resolve a tenant by its sso_domain or subdomain slug.
 
+    sso_domain is stored as a full URL (e.g. "https://acme.clawith.ai" or "http://1.2.3.4:3009").
+    The incoming `domain` parameter is the host (without protocol).
+
     Lookup precedence:
-    1. Exact match on tenant.sso_domain (e.g. "acme.clawith.ai")
+    1. Exact match on tenant.sso_domain ending with the host (strips protocol)
     2. Extract slug from "{slug}.clawith.ai" and match tenant.slug
     """
-    # 1. Try exact sso_domain match first
-    result = await db.execute(select(Tenant).where(Tenant.sso_domain == domain))
-    tenant = result.scalar_one_or_none()
+    tenant = None
 
-    # 2. Fallback: extract slug from subdomain pattern
+    # 1. Match by stripping protocol from stored sso_domain
+    # sso_domain = "https://acme.clawith.ai" → compare against "acme.clawith.ai"
+    for proto in ("https://", "http://"):
+        result = await db.execute(
+            select(Tenant).where(Tenant.sso_domain == f"{proto}{domain}")
+        )
+        tenant = result.scalar_one_or_none()
+        if tenant:
+            break
+
+    # 2. Try without port (e.g. domain = "1.2.3.4:3009" → try "1.2.3.4")
+    if not tenant and ":" in domain:
+        domain_no_port = domain.split(":")[0]
+        for proto in ("https://", "http://"):
+            result = await db.execute(
+                select(Tenant).where(Tenant.sso_domain.like(f"{proto}{domain_no_port}%"))
+            )
+            tenant = result.scalar_one_or_none()
+            if tenant:
+                break
+
+    # 3. Fallback: extract slug from subdomain pattern
     if not tenant:
         import re
         m = re.match(r"^([a-z0-9][a-z0-9\-]*[a-z0-9])\.clawith\.ai$", domain.lower())
@@ -218,9 +386,9 @@ async def resolve_tenant_by_domain(
             result = await db.execute(select(Tenant).where(Tenant.slug == slug))
             tenant = result.scalar_one_or_none()
 
-    if not tenant or not tenant.is_active:
-        raise HTTPException(status_code=404, detail="Tenant not found or not active")
-    
+    if not tenant or not tenant.is_active or not tenant.sso_enabled:
+        raise HTTPException(status_code=404, detail="Tenant not found or not active or SSO not enabled")
+
     return {
         "id": tenant.id,
         "name": tenant.name,

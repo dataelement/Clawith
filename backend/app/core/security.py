@@ -135,7 +135,7 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ):
-    """Dependency to get the current authenticated user."""
+    """Dependency to get the current authenticated and active user."""
     from app.models.user import User
 
     payload = decode_access_token(credentials.credentials)
@@ -146,10 +146,34 @@ async def get_current_user(
     result = await db.execute(
         select(User)
         .where(User.id == uuid.UUID(user_id))
+        .options(selectinload(User.identity))
     )
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+    return user
+
+
+async def get_authenticated_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dependency to get the current authenticated user (even if not active yet)."""
+    from app.models.user import User
+
+    payload = decode_access_token(credentials.credentials)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    result = await db.execute(
+        select(User)
+        .where(User.id == uuid.UUID(user_id))
+        .options(selectinload(User.identity))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
 
 

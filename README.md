@@ -156,6 +156,39 @@ Agent workspace files (soul.md, memory, skills, workspace files) are stored in `
 
 The first user to register automatically becomes the **platform admin**. Open the app, click "Register", and create your account.
 
+### System Email and Password Reset
+
+Clawith can send platform-owned emails for password reset and optional broadcast delivery. Configure SMTP in `.env`:
+
+```bash
+PUBLIC_BASE_URL=http://localhost:3008
+SYSTEM_EMAIL_FROM_ADDRESS=bot@example.com
+SYSTEM_EMAIL_FROM_NAME=Clawith
+SYSTEM_SMTP_HOST=smtp.example.com
+SYSTEM_SMTP_PORT=465
+SYSTEM_SMTP_USERNAME=bot@example.com
+SYSTEM_SMTP_PASSWORD=your-app-password
+SYSTEM_SMTP_SSL=true
+SYSTEM_SMTP_TIMEOUT_SECONDS=15
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES=30
+```
+
+`PUBLIC_BASE_URL` must point to the user-facing frontend because reset links are generated as `/reset-password?token=...`.
+In production, set it to your public HTTPS domain (for example `https://app.example.com`), not a localhost address.
+
+Quick local validation:
+
+```bash
+cd backend && .venv/bin/python -m pytest tests/test_password_reset_and_notifications.py
+cd frontend && npm run build
+```
+
+Manual flow:
+1. Open `http://localhost:3008/login`
+2. Click `Forgot password?`
+3. Submit a registered email
+4. Open the emailed reset link and set a new password
+
 ### Network Troubleshooting
 
 If `git clone` is slow or times out:

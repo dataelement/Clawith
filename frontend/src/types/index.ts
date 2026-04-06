@@ -11,6 +11,7 @@ export interface User {
     title?: string;
     feishu_open_id?: string;
     is_active: boolean;
+    email_verified?: boolean;
     created_at: string;
 }
 

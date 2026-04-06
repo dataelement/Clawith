@@ -8,8 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
-from app.models.user import User
+from app.models.user import User, Identity
 from app.schemas.schemas import UserOut, UserUpdate
+
+from sqlalchemy.orm import selectinload
 
 router = APIRouter(prefix="/org", tags=["organization"])
 
@@ -23,7 +25,11 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     """List users, optionally filtered by tenant."""
-    query = select(User).where(User.is_active == True)
+    query = (
+        select(User)
+        .options(selectinload(User.identity))
+        .where(User.is_active == True)
+    )
 
     target_tenant_id = current_user.tenant_id
     if current_user.role in ("platform_admin", "org_admin") and tenant_id:
@@ -44,7 +50,11 @@ async def admin_update_user(
     db: AsyncSession = Depends(get_db),
 ):
     """Admin update user profile."""
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.identity))
+        .where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -54,8 +64,10 @@ async def admin_update_user(
     # Validate email uniqueness within tenant if changing
     if "email" in update_data and update_data["email"] != user.email:
         existing = await db.execute(
-            select(User).where(
-                User.email.ilike(update_data["email"]),
+            select(User)
+            .join(Identity, User.identity_id == Identity.id)
+            .where(
+                Identity.email == update_data["email"],
                 User.tenant_id == user.tenant_id,
                 User.id != user.id,
             )
@@ -66,8 +78,10 @@ async def admin_update_user(
     # Validate mobile uniqueness within tenant if changing
     if "primary_mobile" in update_data and update_data["primary_mobile"] != user.primary_mobile:
         existing = await db.execute(
-            select(User).where(
-                User.primary_mobile == update_data["primary_mobile"],
+            select(User)
+            .join(Identity, User.identity_id == Identity.id)
+            .where(
+                Identity.phone == update_data["primary_mobile"],
                 User.tenant_id == user.tenant_id,
                 User.id != user.id,
             )

@@ -15,14 +15,26 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
 
     if (!res.ok) {
         // Auto-logout on expired/invalid token (but not on auth endpoints — let them show errors)
-        const isAuthEndpoint = url.startsWith('/auth/login') || url.startsWith('/auth/register');
+        const isAuthEndpoint = url.startsWith('/auth/login')
+            || url.startsWith('/auth/register')
+            || url.startsWith('/auth/forgot-password')
+            || url.startsWith('/auth/reset-password');
         if (res.status === 401 && !isAuthEndpoint) {
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             window.location.href = '/login';
             throw new Error('Session expired');
         }
-        const error = await res.json().catch(() => ({ detail: 'Request failed' }));
+        const bodyText = await res.text();
+        let error: { detail?: unknown };
+        try {
+            error = bodyText ? JSON.parse(bodyText) : {};
+        } catch {
+            const snippet = bodyText.trim().slice(0, 280);
+            error = {
+                detail: snippet || `HTTP ${res.status} ${res.statusText || ''}`.trim(),
+            };
+        }
         // Pydantic validation errors return detail as an array of objects
         const fieldLabels: Record<string, string> = {
             name: '名称',
@@ -41,10 +53,20 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
                     return label ? `${label}: ${e.msg}` : e.msg;
                 })
                 .join('; ');
+        } else if (typeof error.detail === 'object' && error.detail !== null) {
+            // Structured error detail (e.g., NeedsVerificationResponse)
+            message = (error.detail as Record<string, any>).message || `HTTP ${res.status}`;
         } else {
-            message = error.detail || `HTTP ${res.status}`;
+            const d = error.detail;
+            if (typeof d === 'string') message = d;
+            else if (d != null && typeof d === 'object') message = JSON.stringify(d);
+            else message = `HTTP ${res.status}`;
         }
-        throw new Error(message);
+
+        const apiErr: any = new Error(message);
+        apiErr.status = res.status;
+        apiErr.detail = error.detail;
+        throw apiErr;
     }
 
     if (res.status === 204) return undefined as T;
@@ -130,16 +152,37 @@ export function uploadFileWithProgress(
 
 // ─── Auth ─────────────────────────────────────────────
 export const authApi = {
-    register: (data: { username: string; email: string; password: string; display_name: string }) =>
-        request<TokenResponse>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
+    register: (data: { username?: string; email: string; password: string; display_name: string; invitation_code?: string; provider?: string; provider_code?: string }) =>
+        request<{ user_id: string; email: string; access_token: string; message: string; user?: any; needs_company_setup: boolean }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
 
-    login: (data: { username: string; password: string }) =>
-        request<TokenResponse>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
+    login: (data: { login_identifier: string; password: string; tenant_id?: string }) =>
+        request<TokenResponse | { requires_tenant_selection: boolean; login_identifier: string; tenants: any[] }>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
+
+    forgotPassword: (data: { email: string }) =>
+        request<{ ok: boolean; message: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify(data) }),
+
+    resetPassword: (data: { token: string; new_password: string }) =>
+        request<{ ok: boolean }>('/auth/reset-password', { method: 'POST', body: JSON.stringify(data) }),
+
+    emailHint: (username: string) =>
+        request<{ hint: string }>(`/auth/email-hint?username=${encodeURIComponent(username)}`),
 
     me: () => request<User>('/auth/me'),
 
     updateMe: (data: Partial<User>) =>
         request<User>('/auth/me', { method: 'PATCH', body: JSON.stringify(data) }),
+
+    verifyEmail: (token: string) =>
+        request<{ ok: boolean; message: string; access_token: string; user: User; needs_company_setup: boolean }>('/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) }),
+
+    resendVerification: (email: string) =>
+        request<{ ok: boolean; message: string }>('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }),
+
+    getMyTenants: () =>
+        request<any[]>('/auth/my-tenants'),
+
+    switchTenant: (tenantId: string) =>
+        request<{ access_token: string; redirect_url?: string; message?: string }>('/auth/switch-tenant', { method: 'POST', body: JSON.stringify({ tenant_id: tenantId }) }),
 };
 
 // ─── Tenants ──────────────────────────────────────────
@@ -419,5 +462,49 @@ export const triggerApi = {
 
     delete: (agentId: string, triggerId: string) =>
         request<void>(`/agents/${agentId}/triggers/${triggerId}`, { method: 'DELETE' }),
+};
+
+// ─── Agent Credentials ────────────────────────────────
+export const credentialApi = {
+    list: (agentId: string) =>
+        request<any[]>(`/agents/${agentId}/credentials/`),
+
+    create: (agentId: string, data: any) =>
+        request<any>(`/agents/${agentId}/credentials/`, { method: 'POST', body: JSON.stringify(data) }),
+
+    update: (agentId: string, credentialId: string, data: any) =>
+        request<any>(`/agents/${agentId}/credentials/${credentialId}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+    delete: (agentId: string, credentialId: string) =>
+        request<void>(`/agents/${agentId}/credentials/${credentialId}`, { method: 'DELETE' }),
+};
+
+// ─── AgentBay Take Control ────────────────────────────
+export const controlApi = {
+    click: (agentId: string, data: { session_id: string; x: number; y: number; button?: string }) =>
+        request<any>(`/agents/${agentId}/control/click`, { method: 'POST', body: JSON.stringify(data) }),
+
+    type: (agentId: string, data: { session_id: string; text: string }) =>
+        request<any>(`/agents/${agentId}/control/type`, { method: 'POST', body: JSON.stringify(data) }),
+
+    pressKeys: (agentId: string, data: { session_id: string; keys: string[] }) =>
+        request<any>(`/agents/${agentId}/control/press_keys`, { method: 'POST', body: JSON.stringify(data) }),
+
+    /** Simulate a natural human drag (Bezier curve trajectory) for slider CAPTCHAs. */
+    drag: (agentId: string, data: { session_id: string; from_x: number; from_y: number; to_x: number; to_y: number; duration_ms?: number }) =>
+        request<any>(`/agents/${agentId}/control/drag`, { method: 'POST', body: JSON.stringify(data) }),
+
+    /** Get the current active page URL from the browser session (for auto-populating domain). */
+    currentUrl: (agentId: string, data: { session_id: string }) =>
+        request<{ status: string; url: string }>(`/agents/${agentId}/control/current-url`, { method: 'POST', body: JSON.stringify(data) }),
+
+    screenshot: (agentId: string, data: { session_id: string }) =>
+        request<any>(`/agents/${agentId}/control/screenshot`, { method: 'POST', body: JSON.stringify(data) }),
+
+    lock: (agentId: string, data: { session_id: string; platform_hint?: string }) =>
+        request<any>(`/agents/${agentId}/control/lock`, { method: 'POST', body: JSON.stringify(data) }),
+
+    unlock: (agentId: string, data: { session_id: string; export_cookies?: boolean; platform_hint?: string }) =>
+        request<any>(`/agents/${agentId}/control/unlock`, { method: 'POST', body: JSON.stringify(data) }),
 };
 

@@ -41,6 +41,7 @@ class Tool(Base):
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)  # global toggle
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)  # auto-assigned to new agents
+    source: Mapped[str] = mapped_column(String(20), default="builtin")  # "builtin" | "admin" | "agent"
 
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

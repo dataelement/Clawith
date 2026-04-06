@@ -27,7 +27,7 @@ class SandboxConfig(BaseModel):
     # Local sandbox options
     cpu_limit: str = "0.5"
     memory_limit: str = "256m"
-    allow_network: bool = False
+    allow_network: bool = True
 
     # API sandbox options
     api_key: str = ""

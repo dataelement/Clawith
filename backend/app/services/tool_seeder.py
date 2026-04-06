@@ -26,14 +26,16 @@ BUILTIN_TOOLS = [
     {
         "name": "read_file",
         "display_name": "Read File",
-        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/.",
+        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks.",
         "category": "file",
         "icon": "📄",
         "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"}
+                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"},
+                "offset": {"type": "integer", "description": "Starting line number (0-indexed, default 0). Use with limit for pagination."},
+                "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000). Use with offset for pagination."},
             },
             "required": ["path"],
         },
@@ -75,6 +77,65 @@ BUILTIN_TOOLS = [
                 "path": {"type": "string", "description": "File path to delete"}
             },
             "required": ["path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # --- Enhanced file management tools ---
+    {
+        "name": "edit_file",
+        "display_name": "Edit File",
+        "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections.",
+        "category": "file",
+        "icon": "✂️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to edit, e.g.: memory/memory.md, skills/my-skill/SKILL.md"},
+                "old_string": {"type": "string", "description": "Exact text to find and replace. Must match exactly including whitespace and newlines."},
+                "new_string": {"type": "string", "description": "Replacement text"},
+                "replace_all": {"type": "boolean", "description": "Replace all occurrences if true (default: false)"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "search_files",
+        "display_name": "Search Files",
+        "description": "Search for content patterns across files using regex. Returns matching lines with file paths and line numbers. Results capped at 50 per query.",
+        "category": "file",
+        "icon": "🔍",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for, e.g.: 'API_KEY', 'def\\\\s+\\\\w+'"},
+                "path": {"type": "string", "description": "Directory to search in (default: root)"},
+                "file_pattern": {"type": "string", "description": "File pattern to match (default: all files). e.g.: '*.md', '*.py'"},
+                "ignore_case": {"type": "boolean", "description": "Case-insensitive search (default: false)"},
+            },
+            "required": ["pattern"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "find_files",
+        "display_name": "Find Files",
+        "description": "Find files matching glob patterns. Returns file paths with sizes and modification info. Results capped at 100 per query.",
+        "category": "file",
+        "icon": "📁",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to match files, e.g.: '**/*.md', 'skills/*.md'"},
+                "path": {"type": "string", "description": "Base directory for search (default: root)"},
+            },
+            "required": ["pattern"],
         },
         "config": {},
         "config_schema": {},
@@ -187,24 +248,9 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
-    {
-        "name": "send_feishu_message",
-        "display_name": "Feishu Message",
-        "description": "Send a message to a human colleague via Feishu. Can only message people in your relationships.",
-        "category": "communication",
-        "icon": "💬",
-        "is_default": True,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {
-                "member_name": {"type": "string", "description": "Recipient name"},
-                "message": {"type": "string", "description": "Message content"},
-            },
-            "required": ["member_name", "message"],
-        },
-        "config": {},
-        "config_schema": {},
-    },
+    # NOTE: send_feishu_message is defined in the 'feishu' category section below.
+    # It was previously duplicated here under 'communication', which could cause
+    # 'Tool names must be unique' errors when the DB lacked a UNIQUE constraint.
     {
         "name": "send_web_message",
         "display_name": "Web Message",
@@ -263,10 +309,10 @@ BUILTIN_TOOLS = [
     },
     {
         "name": "web_search",
-        "display_name": "DuckDuckGo Search",
-        "description": "Search the internet via DuckDuckGo. May be unavailable on some networks. Use Bing Search as an alternative.",
+        "display_name": "Web Search",
+        "description": "Search the internet using a configurable search engine. Supports DuckDuckGo (free), Tavily, Google, and Bing. Configure the search engine in the tool settings.",
         "category": "search",
-        "icon": "🦆",
+        "icon": "🔍",
         "is_default": True,
         "parameters_schema": {
             "type": "object",
@@ -436,7 +482,7 @@ BUILTIN_TOOLS = [
     {
         "name": "execute_code",
         "display_name": "Code Executor",
-        "description": "Execute code (Python, Bash, Node.js) in a sandboxed environment within the agent's workspace. Useful for data processing, calculations, file transformations, and automation.",
+        "description": "Execute code (Python, Bash, Node.js) in a local sandboxed subprocess within the agent's workspace. Useful for data processing, calculations, file transformations, and automation.",
         "category": "code",
         "icon": "💻",
         "is_default": True,
@@ -451,34 +497,14 @@ BUILTIN_TOOLS = [
         },
         "config": {
             "sandbox_type": "subprocess",
-            "api_key": "",
-            "api_url": "",
             "cpu_limit": "0.5",
             "memory_limit": "256m",
-            "allow_network": False,
+            "allow_network": True,
             "default_timeout": 30,
             "max_timeout": 60,
         },
         "config_schema": {
             "fields": [
-                {
-                    "key": "sandbox_type",
-                    "label": "Sandbox Type",
-                    "type": "select",
-                    "options": [
-                        {"value": "subprocess", "label": "Local (subprocess)"},
-                        {"value": "e2b", "label": "E2B (cloud)"},
-                    ],
-                    "default": "subprocess",
-                },
-                {
-                    "key": "api_key",
-                    "label": "API Key",
-                    "type": "password",
-                    "default": "",
-                    "placeholder": "Required for cloud/API sandboxes",
-                    "depends_on": {"sandbox_type": ["e2b"]},
-                },
                 {
                     "key": "cpu_limit",
                     "label": "CPU Limit",
@@ -497,8 +523,7 @@ BUILTIN_TOOLS = [
                     "key": "allow_network",
                     "label": "Allow Network Access",
                     "type": "checkbox",
-                    "default": False,
-                    "depends_on": {"sandbox_type": ["subprocess"]},
+                    "default": True,
                     "read_only_for_roles": ["agent_admin", "member"],
                 },
                 {
@@ -520,6 +545,58 @@ BUILTIN_TOOLS = [
             ]
         },
     },
+    {
+        "name": "execute_code_e2b",
+        "display_name": "Code Executor (E2B Cloud)",
+        "description": "Execute code (Python, Bash, Node.js) in a secure E2B cloud sandbox. Provides full network access and an isolated environment without consuming local resources. Requires an E2B API key.",
+        "category": "code",
+        "icon": "☁️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
+                "code": {"type": "string", "description": "Code to execute"},
+                "timeout": {"type": "integer", "description": "Max execution time in seconds (default 30, max 60)"},
+            },
+            "required": ["language", "code"],
+        },
+        "config": {
+            "sandbox_type": "e2b",
+            "api_key": "",
+            "default_timeout": 30,
+            "max_timeout": 60,
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "E2B API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get your API key at https://e2b.dev",
+                    "required": True,
+                },
+                {
+                    "key": "default_timeout",
+                    "label": "Default Timeout (seconds)",
+                    "type": "number",
+                    "default": 30,
+                    "min": 5,
+                    "max": 300,
+                },
+                {
+                    "key": "max_timeout",
+                    "label": "Max Timeout (seconds)",
+                    "type": "number",
+                    "default": 60,
+                    "min": 10,
+                    "max": 300,
+                },
+            ]
+        },
+    },
+
     {
         "name": "upload_image",
         "display_name": "Upload Image",
@@ -552,6 +629,147 @@ BUILTIN_TOOLS = [
                     "type": "text",
                     "default": "",
                     "placeholder": "https://ik.imagekit.io/your_imagekit_id",
+                },
+            ]
+        },
+    },
+    {
+        "name": "generate_image_siliconflow",
+        "display_name": "Generate Image (SiliconFlow)",
+        "description": "Generate an image via SiliconFlow FLUX models. China-friendly and fast.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024, 1024x768). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "black-forest-labs/FLUX.1-schnell",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "black-forest-labs/FLUX.1-schnell",
+                    "placeholder": "e.g. black-forest-labs/FLUX.1-schnell",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "SiliconFlow API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL (optional)",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "Default: https://api.siliconflow.cn/v1",
+                },
+            ]
+        },
+    },
+    {
+        "name": "generate_image_openai",
+        "display_name": "Generate Image (OpenAI)",
+        "description": "Generate an image via OpenAI DALL-E models.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "dall-e-3",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "dall-e-3",
+                    "placeholder": "e.g. dall-e-3 or dall-e-2",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "OpenAI API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL (optional)",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "Default: https://api.openai.com/v1",
+                },
+            ]
+        },
+    },
+    {
+        "name": "generate_image_google",
+        "display_name": "Generate Image (Google/Vertex)",
+        "description": "Generate an image via Google Gemini Image (Nano Banana) or Vertex AI.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "gemini-2.5-flash-image",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "gemini-2.5-flash-image",
+                    "placeholder": "e.g. gemini-2.5-flash-image",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Google AI Studio or Vertex API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL (optional)",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "Can be Vertex API URL: https://aiplatform.googleapis.com/...",
                 },
             ]
         },
@@ -785,6 +1003,137 @@ BUILTIN_TOOLS = [
         "config_schema": {},
     },
     {
+        "name": "bitable_create_app",
+        "display_name": "Bitable Create",
+        "description": "在飞书云盘中新建一个多维表格（Bitable）应用。创建后返回可直接访问的链接和 App Token，下一步可以通过 bitable_list_tables 查看初始数据表。",
+        "category": "feishu",
+        "icon": "📊",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "新多维表格的名称，例如「项目追踪表」"},
+                "folder_token": {"type": "string", "description": "可选：父文件夹的 folder_token。不填则创建到「我的空间」根目录。"},
+            },
+            "required": ["name"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_list_tables",
+        "display_name": "Bitable List Tables",
+        "description": "列出飞书多维表格内的所有数据表 (Tables)。url 支持表格链接或 Wiki 链接。使用此工具了解请求的多维表格中有哪些表。",
+        "category": "feishu",
+        "icon": "📊",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_list_fields",
+        "display_name": "Bitable List Fields",
+        "description": "列出飞书多维表格指定数据表中的所有字段 (Fields)。url 支持表格链接或 Wiki 链接。在查询或修改数据前，必须先调用此工具了解字段名称和类型。",
+        "category": "feishu",
+        "icon": "⌨️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_query_records",
+        "display_name": "Bitable Query Records",
+        "description": "查询飞书多维表格中的数据行。可以提供过滤条件 (filter)。",
+        "category": "feishu",
+        "icon": "🔍",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                "filter_info": {"type": "string", "description": "可选，FQL 语法的过滤条件，例如 'CurrentValue.[Status]=\"Done\"'。如不确定过滤语法，可以不填，由你臺己在本地过滤返回的所有数据。"},
+                "max_results": {"type": "integer", "description": "最大返回条数 (默认 100)"},
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_create_record",
+        "display_name": "Bitable Create Record",
+        "description": "在飞书多维表格中新增一行数据。fields 参数是一个字典，key 是字段名 (需要先通过 bitable_list_fields 获取)，value 是对应的值。",
+        "category": "feishu",
+        "icon": "➕",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                "fields": {"type": "string", "description": "一个 JSON 字符串，代表要插入的 fields。例如：'{\"Name\": \"张三\", \"Age\": 30}'"},
+            },
+            "required": ["url", "fields"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_update_record",
+        "display_name": "Bitable Update Record",
+        "description": "更新飞书多维表格中的指定行数据。",
+        "category": "feishu",
+        "icon": "✏️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                "record_id": {"type": "string", "description": "要更新的 record_id，通过 bitable_query_records 获取。"},
+                "fields": {"type": "string", "description": "一个 JSON 字符串，代表要更新的 fields。例如：'{\"Status\": \"Done\"}'"},
+            },
+            "required": ["url", "record_id", "fields"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_delete_record",
+        "display_name": "Bitable Delete Record",
+        "description": "删除飞书多维表格中的指定行数据。",
+        "category": "feishu",
+        "icon": "🗑️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                "record_id": {"type": "string", "description": "要删除的 record_id，通过 bitable_query_records 获取。"},
+            },
+            "required": ["url", "record_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
         "name": "feishu_doc_read",
         "display_name": "Feishu Doc Read",
         "description": "Read the text content of a Feishu document (Docx). Provide the document token from its URL.",
@@ -834,6 +1183,46 @@ BUILTIN_TOOLS = [
                 "content": {"type": "string", "description": "Text content to append"},
             },
             "required": ["document_token", "content"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_drive_share",
+        "display_name": "Feishu Drive Share",
+        "description": "Manage collaborators for any Feishu Drive file (docx, bitable, sheet, etc.). Add, remove, or list collaborators with view/edit/full_access permissions.",
+        "category": "feishu",
+        "icon": "🔗",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "document_token": {"type": "string", "description": "File token (from URL or previous tool output)"},
+                "doc_type": {"type": "string", "enum": ["docx", "bitable", "sheet", "doc", "folder", "mindnote", "slides"], "description": "File type. Default: 'docx'"},
+                "action": {"type": "string", "enum": ["add", "remove", "list"], "description": "'add' to grant, 'remove' to revoke, 'list' to view"},
+                "member_names": {"type": "array", "items": {"type": "string"}, "description": "Colleague names to add/remove (auto-searched)"},
+                "member_open_ids": {"type": "array", "items": {"type": "string"}, "description": "Feishu open_ids directly"},
+                "permission": {"type": "string", "enum": ["view", "edit", "full_access"], "description": "Permission level. Default: 'edit'"},
+            },
+            "required": ["document_token", "action"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_drive_delete",
+        "display_name": "Feishu Drive Delete",
+        "description": "Delete a file or folder from Feishu Drive. The file is moved to the recycle bin. Supports all file types: docx, bitable, sheet, folder, etc.",
+        "category": "feishu",
+        "icon": "🗑️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "file_token": {"type": "string", "description": "Token of the file to delete"},
+                "file_type": {"type": "string", "enum": ["file", "docx", "bitable", "folder", "doc", "sheet", "mindnote", "shortcut", "slides"], "description": "Type of the file to delete"},
+            },
+            "required": ["file_token", "file_type"],
         },
         "config": {},
         "config_schema": {},
@@ -913,6 +1302,60 @@ BUILTIN_TOOLS = [
                 "event_id": {"type": "string", "description": "Event ID to delete"},
             },
             "required": ["user_email", "event_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_approval_create",
+        "display_name": "Feishu Approval Create",
+        "description": "发起一个飞书审批流实例。你需要知道审批定义的 approval_code 和表单对应字段的内容。",
+        "category": "feishu",
+        "icon": "📝",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "approval_code": {"type": "string", "description": "审批定义的唯一代码 (approval_code)"},
+                "user_id": {"type": "string", "description": "发起人的 open_id。可以通过 feishu_user_search 获取。"},
+                "form_data": {"type": "string", "description": "表单内容的 JSON 字符串，例如 '[{\"id\":\"widget1\",\"type\":\"input\",\"value\":\"这是内容\"}]'"},
+            },
+            "required": ["approval_code", "user_id", "form_data"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_approval_query",
+        "display_name": "Feishu Approval Query",
+        "description": "查询指定的飞书审批实例列表。可以支持按状态查询（PENDING, APPROVED, REJECTED, CANCELED, DELETED）。",
+        "category": "feishu",
+        "icon": "📋",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "approval_code": {"type": "string", "description": "审批定义的唯一代码 (approval_code)"},
+                "status": {"type": "string", "description": "可选过滤状态：PENDING, APPROVED, REJECTED, CANCELED, DELETED"},
+            },
+            "required": ["approval_code"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_approval_get",
+        "display_name": "Feishu Approval Get",
+        "description": "获取指定飞书审批实例的详细信息与当前审批状态。",
+        "category": "feishu",
+        "icon": "📊",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "instance_id": {"type": "string", "description": "审批实例的 instance_id"},
+            },
+            "required": ["instance_id"],
         },
         "config": {},
         "config_schema": {},
@@ -1400,9 +1843,9 @@ async def seed_builtin_tools():
                     category=t["category"],
                     icon=t["icon"],
                     is_default=t["is_default"],
-                    parameters_schema=t["parameters_schema"],
                     config=t.get("config", {}),
                     config_schema=t.get("config_schema", {}),
+                    source="builtin",
                 )
                 db.add(tool)
                 await db.flush()  # get tool.id
@@ -1565,6 +2008,7 @@ async def seed_atlassian_rovo_config():
                 config_schema=t["config_schema"],
                 mcp_server_url=ATLASSIAN_ROVO_MCP_URL,
                 mcp_server_name="Atlassian Rovo",
+                source="admin",
             )
             db.add(tool)
             await db.commit()

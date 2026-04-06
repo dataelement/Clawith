@@ -66,10 +66,10 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
             from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
 
-            system_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "")
+            static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "")
 
             messages = [
-                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),
                 LLMMessage(role="user", content=f"[自动调度任务] {instruction}"),
             ]
 
@@ -83,7 +83,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                     api_key=model.api_key_encrypted,
                     model=model.model,
                     base_url=model.base_url,
-                    timeout=120.0,
+                    timeout=float(getattr(model, 'request_timeout', None) or 120.0),
                 )
             except Exception as e:
                 logger.error(f"Schedule {schedule_id}: Failed to create LLM client: {e}")
@@ -175,7 +175,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             logger.info(f"Schedule {schedule_id} executed for agent {agent.name}: {reply[:80]}")
 
     except Exception as e:
-        logger.error(f"Schedule {schedule_id} execution error: {e}", exc_info=True)
+        logger.exception(f"Schedule {schedule_id} execution error: {e}")
 
 
 async def _tick():
@@ -220,7 +220,7 @@ async def _tick():
                 logger.info(f"Triggered schedule '{sched.name}' (next: {next_run})")
 
     except Exception as e:
-        logger.error(f"Scheduler tick error: {e}", exc_info=True)
+        logger.exception(f"Scheduler tick error: {e}")
         await write_audit_log("schedule_error", {"error": str(e)[:300]})
 
 

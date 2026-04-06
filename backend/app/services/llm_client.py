@@ -31,12 +31,18 @@ class LLMMessage:
     tool_call_id: str | None = None
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
+    dynamic_content: str | None = None
 
     def to_openai_format(self) -> dict:
         """Convert to OpenAI format."""
         msg: dict[str, Any] = {"role": self.role}
-        if self.content is not None:
-            msg["content"] = self.content
+        
+        content = self.content
+        if self.role == "system" and self.dynamic_content:
+            content = f"{content}\n\n{self.dynamic_content}"
+            
+        if content is not None:
+            msg["content"] = content
         if self.tool_calls:
             msg["tool_calls"] = self.tool_calls
         if self.tool_call_id:
@@ -240,7 +246,7 @@ class OpenAICompatibleClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -532,13 +538,19 @@ class OpenAICompatibleClient(LLMClient):
 
                         if chunk.finish_reason:
                             last_finish_reason = chunk.finish_reason
+                            break
 
-                break  # Success
+                break
 
-            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+            except (httpx.TransportError, httpx.ConnectTimeout) as e:
+                # TransportError covers all network-layer issues:
+                # - ConnectError, ReadError, WriteError (NetworkError subclasses)
+                # - RemoteProtocolError, LocalProtocolError (ProtocolError subclasses)
+                # The last case is common with local vLLM when the server closes
+                # the connection mid-stream (e.g. OOM, context limit exceeded).
                 if attempt < max_retries - 1:
                     wait = (attempt + 1) * 1
-                    logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}), retrying in {wait}s...")
+                    logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}: {e}), retrying in {wait}s...")
                     await asyncio.sleep(wait)
                     full_content = ""
                     full_reasoning = ""
@@ -547,7 +559,7 @@ class OpenAICompatibleClient(LLMClient):
                     tag_buffer = ""
                     json_buffer = ""
                 else:
-                    raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
+                    raise LLMError(f"Connection failed after {max_retries} attempts: {type(e).__name__}: {e}")
 
         # Clean up any remaining think tags
         full_content = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_content).strip()
@@ -564,7 +576,11 @@ class OpenAICompatibleClient(LLMClient):
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:
-            await self._client.aclose()
+            try:
+                await asyncio.wait_for(self._client.aclose(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("[LLM] Client close timed out, forcing")
+                self._client = None
 
 
 # ============================================================================
@@ -591,7 +607,7 @@ class OpenAIResponsesClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -861,7 +877,11 @@ class OpenAIResponsesClient(LLMClient):
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:
-            await self._client.aclose()
+            try:
+                await asyncio.wait_for(self._client.aclose(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("[LLM] Client close timed out, forcing")
+                self._client = None
 
 
 # ============================================================================
@@ -889,7 +909,7 @@ class GeminiClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     async def _get_openai_fallback_client(self) -> OpenAICompatibleClient:
@@ -1280,8 +1300,10 @@ class GeminiClient(LLMClient):
                     if not line.startswith("data:"):
                         continue
                     data_str = line[len("data:"):].strip()
-                    if not data_str or data_str == "[DONE]":
+                    if not data_str:
                         continue
+                    if data_str == "[DONE]":
+                        break
 
                     try:
                         data = json.loads(data_str)
@@ -1300,6 +1322,8 @@ class GeminiClient(LLMClient):
                         continue
                     candidate = candidates[0]
                     final_finish_reason = candidate.get("finishReason") or final_finish_reason
+                    if final_finish_reason:
+                        break
                     content_obj = candidate.get("content", {}) or {}
                     for part in content_obj.get("parts", []) or []:
                         text = part.get("text")
@@ -1326,8 +1350,10 @@ class GeminiClient(LLMClient):
                                 },
                             })
 
-        except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
-            raise LLMError(f"Connection failed: {e}")
+        except (httpx.TransportError, httpx.ConnectTimeout) as e:
+            # TransportError covers NetworkError (ConnectError, ReadError) and
+            # ProtocolError (RemoteProtocolError) — all common with local vLLM.
+            raise LLMError(f"Connection failed: {type(e).__name__}: {e}")
 
         return LLMResponse(
             content=full_text,
@@ -1342,7 +1368,11 @@ class GeminiClient(LLMClient):
         if self._openai_fallback_client:
             await self._openai_fallback_client.close()
         if self._client and not self._client.is_closed:
-            await self._client.aclose()
+            try:
+                await asyncio.wait_for(self._client.aclose(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("[LLM] Client close timed out, forcing")
+                self._client = None
 
 
 # ============================================================================
@@ -1371,7 +1401,7 @@ class AnthropicClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -1379,7 +1409,19 @@ class AnthropicClient(LLMClient):
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
             "anthropic-version": self.API_VERSION,
+            "anthropic-beta": "prompt-caching-2024-07-31",
         }
+
+    def _normalize_base_url(self) -> str:
+        """Normalize base URL by stripping trailing API paths."""
+        url = self.base_url.rstrip("/")
+        if url.endswith("/v1/messages"):
+            url = url[: -len("/v1/messages")]
+        elif url.endswith("/v1/chat/completions"):
+            url = url[: -len("/v1/chat/completions")]
+        elif url.endswith("/v1"):
+            url = url[: -len("/v1")]
+        return url
 
     def _build_payload(
         self,
@@ -1391,16 +1433,42 @@ class AnthropicClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build Anthropic request payload."""
-        system_content = None
+        system_blocks = []
         anthropic_messages = []
 
         for msg in messages:
             if msg.role == "system":
-                system_content = msg.content
+                if msg.content:
+                    system_blocks.append({
+                        "type": "text",
+                        "text": msg.content,
+                        "cache_control": {"type": "ephemeral"}
+                    })
+                if msg.dynamic_content:
+                    system_blocks.append({
+                        "type": "text",
+                        "text": f"\n{msg.dynamic_content}"
+                    })
             else:
                 formatted = msg.to_anthropic_format()
                 if formatted:
                     anthropic_messages.append(formatted)
+
+        # In Anthropic prompt caching, we also want to cache_control the last user message
+        # So we add cache_control to the very last message in the history if it's a user message
+        if anthropic_messages and anthropic_messages[-1]["role"] == "user":
+            user_msg = anthropic_messages[-1]
+            if isinstance(user_msg["content"], list) and user_msg["content"]:
+                # Ensure the last block of the user message has cache_control
+                user_msg["content"][-1]["cache_control"] = {"type": "ephemeral"}
+            elif isinstance(user_msg["content"], str):
+                user_msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": user_msg["content"],
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -1411,8 +1479,8 @@ class AnthropicClient(LLMClient):
         if temperature is not None:
             payload["temperature"] = temperature
 
-        if system_content:
-            payload["system"] = system_content
+        if system_blocks:
+            payload["system"] = system_blocks
 
         # Handle Extended Thinking
         thinking = kwargs.pop("thinking", None)
@@ -1433,6 +1501,8 @@ class AnthropicClient(LLMClient):
                         "description": func.get("description", ""),
                         "input_schema": func.get("parameters", {"type": "object"}),
                     })
+            if anthropic_tools:
+                anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
             payload["tools"] = anthropic_tools
 
         payload.update(kwargs)
@@ -1447,7 +1517,7 @@ class AnthropicClient(LLMClient):
         **kwargs: Any,
     ) -> LLMResponse:
         """Non-streaming completion."""
-        url = f"{self.base_url.rstrip('/')}/v1/messages"
+        url = f"{self._normalize_base_url()}/v1/messages"
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
@@ -1510,7 +1580,7 @@ class AnthropicClient(LLMClient):
         **kwargs: Any,
     ) -> LLMResponse:
         """Streaming completion."""
-        url = f"{self.base_url.rstrip('/')}/v1/messages"
+        url = f"{self._normalize_base_url()}/v1/messages"
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=True, **kwargs)
 
         full_content = ""
@@ -1540,6 +1610,7 @@ class AnthropicClient(LLMClient):
                         
                     if line.startswith("event:"):
                         current_event = line[len("event:"):].strip()
+                        logger.debug(f"[Anthropic SSE] event: {current_event}")
                         continue
                         
                     if not line.startswith("data:"):
@@ -1547,6 +1618,7 @@ class AnthropicClient(LLMClient):
                         
                     data_str = line[len("data:"):].strip()
                     if data_str == "[DONE]":
+                        logger.debug("[Anthropic SSE] received [DONE]")
                         break
                         
                     try:
@@ -1600,11 +1672,13 @@ class AnthropicClient(LLMClient):
                                 
                     elif current_event == "message_delta":
                         delta = data.get("delta", {})
+                        logger.debug(f"[Anthropic SSE] message_delta: stop_reason={delta.get('stop_reason')}, usage={bool(data.get('usage'))}")
+                        if data.get("usage"):
+                            final_usage = data["usage"]
                         if delta.get("stop_reason"):
                             last_finish_reason = delta["stop_reason"]
-                        if data.get("usage"):
-                            # message_delta usage is cumulative
-                            final_usage = data["usage"]
+                            logger.debug("[Anthropic SSE] breaking on stop_reason")
+                            break
                             
                     elif current_event == "error":
                         error_info = data.get("error", {})
@@ -1613,14 +1687,20 @@ class AnthropicClient(LLMClient):
                     elif current_event == "message_stop":
                         break
 
-        except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
-            raise LLMError(f"Connection failed: {e}")
+            logger.debug(f"[Anthropic SSE] stream loop ended, content={len(full_content)} chars, finish={last_finish_reason}, tools={len(tool_calls_data)}")
+
+        except (httpx.TransportError, httpx.ConnectTimeout) as e:
+            # TransportError covers NetworkError (ConnectError, ReadError) and
+            # ProtocolError (RemoteProtocolError) — all common with local vLLM.
+            raise LLMError(f"Connection failed: {type(e).__name__}: {e}")
 
         # Normalize stop reason to OpenAI style (optional but helpful for consistency)
         if last_finish_reason == "end_turn":
             last_finish_reason = "stop"
         elif last_finish_reason == "tool_use":
             last_finish_reason = "tool_calls"
+
+        logger.debug(f"[Anthropic SSE] returning LLMResponse: {len(full_content)} chars, finish={last_finish_reason}")
 
         return LLMResponse(
             content=full_content,
@@ -1635,7 +1715,11 @@ class AnthropicClient(LLMClient):
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:
-            await self._client.aclose()
+            try:
+                await asyncio.wait_for(self._client.aclose(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("[LLM] Client close timed out, forcing")
+                self._client = None
 
 
 # ============================================================================

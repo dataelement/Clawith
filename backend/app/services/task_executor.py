@@ -78,7 +78,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
 
     # Step 3: Build full agent context (same as chat dialog)
     from app.services.agent_context import build_agent_context
-    system_prompt = await build_agent_context(agent_id, agent_name, agent.role_description or "")
+    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent.role_description or "")
 
     # Add task-execution-specific instructions
     task_addendum = """
@@ -94,7 +94,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
 - If the task requires data or information, use your tools to fetch it.
 - Do NOT ask the user follow-up questions — take initiative and complete the task autonomously.
 """
-    system_prompt += task_addendum
+    dynamic_prompt += task_addendum
 
     # Build user prompt
     if task_type == 'supervision':
@@ -114,7 +114,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
     from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
 
     messages = [
-        LLMMessage(role="system", content=system_prompt),
+        LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),
         LLMMessage(role="user", content=user_prompt),
     ]
 
@@ -132,7 +132,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
             api_key=model.api_key_encrypted,
             model=model.model,
             base_url=model.base_url,
-            timeout=1200.0,
+            timeout=float(getattr(model, 'request_timeout', None) or 1200.0),
         )
     except Exception as e:
         await _log_error(task_id, f"创建 LLM 客户端失败: {e}")

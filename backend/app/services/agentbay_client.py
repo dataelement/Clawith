@@ -87,20 +87,49 @@ class AgentBayClient:
             raise RuntimeError("No active browser session")
         if not getattr(self, "_browser_initialized", False):
             from agentbay import BrowserOption
-            success = await asyncio.to_thread(self._session.browser.initialize, BrowserOption())
+            from agentbay._common.models.browser import BrowserViewport, BrowserScreen
+            
+            # Use high-res viewport for clearer screenshots and better layout
+            options = BrowserOption(
+                viewport=BrowserViewport(width=1920, height=1080),
+                screen=BrowserScreen(width=1920, height=1080)
+            )
+            success = await asyncio.to_thread(self._session.browser.initialize, options)
             if success is False:
                 raise RuntimeError("SDK failed to initialize browser (returned False).")
             self._browser_initialized = True
 
     async def browser_navigate(self, url: str, wait_for: str = "", screenshot: bool = False) -> dict:
-        """Navigate browser to URL using SDK."""
+        """Navigate browser to URL using SDK.
+
+        The AgentBay SDK default navigation timeout is ~60 s. We wrap the call
+        with a 40-second asyncio soft-timeout so callers receive an actionable
+        error quickly rather than hanging the whole agent loop. The underlying
+        SDK thread may continue briefly in the background but its result is
+        discarded — the browser will eventually settle on its own.
+        """
         if not self._session or self._image_type not in ("browser", "browser_latest"):
             await self.create_session("browser_latest")
 
         await self._ensure_browser_initialized()
 
-        # Navigate to URL
-        await asyncio.to_thread(self._session.browser.operator.navigate, url)
+        # Navigate to URL with a 40-second soft timeout.
+        # asyncio.wait_for cancels the coroutine wrapper; the blocking thread
+        # inside asyncio.to_thread keeps running until SDK returns, but we
+        # no longer block the agent loop waiting for it.
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._session.browser.operator.navigate, url),
+                timeout=40.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[AgentBay] navigate to {url!r} timed out after 40 s")
+            raise RuntimeError(
+                f"Navigation to '{url}' timed out (>40 s). "
+                "The browser may be busy or the page is unreachable. "
+                "Try calling agentbay_browser_screenshot to check the current "
+                "state, or retry the navigation."
+            )
 
         result = {"url": url, "success": True, "title": url}
 
@@ -487,14 +516,14 @@ class AgentBayClient:
             from PIL import Image
 
             img = Image.open(BytesIO(screenshot_data))
-            # Resize to max 1280px wide for live preview
-            if img.width > 1280:
-                ratio = 1280 / img.width
+            # Resize to max 1920px wide for live preview (up from 1280px to preserve details)
+            if img.width > 1920:
+                ratio = 1920 / img.width
                 img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
             buffer = BytesIO()
-            img.save(buffer, format="JPEG", quality=60, optimize=True)
+            img.save(buffer, format="JPEG", quality=80, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
             return f"data:image/jpeg;base64,{b64}"
         except Exception as e:
@@ -543,14 +572,14 @@ class AgentBayClient:
 
 
             img = Image.open(BytesIO(screenshot_data))
-            # Resize to max 1280px wide for live preview
-            if img.width > 1280:
-                ratio = 1280 / img.width
+            # Resize to max 1920px wide for live preview (up from 1280px to preserve details)
+            if img.width > 1920:
+                ratio = 1920 / img.width
                 img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
             buffer = BytesIO()
-            img.save(buffer, format="JPEG", quality=60, optimize=True)
+            img.save(buffer, format="JPEG", quality=80, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
             return f"data:image/jpeg;base64,{b64}"
         except Exception as e:
@@ -565,11 +594,12 @@ class AgentBayClient:
 
 
 # ─── Session Cache for Tool Executions ──────────────────────────
-# Key: (agent_id, image_type) so browser and code sessions coexist.
-# Previously keyed by agent_id only, which caused browser session
-# to be destroyed when code session was created and vice versa.
+# Key: (agent_id, session_id, image_type) so each ChatSession gets
+# its own independent AgentBay instance for browser/computer/code.
+# Previously keyed by (agent_id, image_type) which meant all users
+# of the same Agent shared one browser/desktop — causing conflicts.
 
-_agentbay_sessions: dict[tuple[uuid.UUID, str], tuple[AgentBayClient, datetime]] = {}
+_agentbay_sessions: dict[tuple[uuid.UUID, str, str], tuple[AgentBayClient, datetime]] = {}
 _AGENTBAY_SESSION_TIMEOUT = timedelta(minutes=5)
 
 
@@ -607,14 +637,36 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
             except Exception:
                 return config.app_secret
 
-        # 2) Fallback: check global Tool.config.api_key for any agentbay tool
+        # 2) Fallback: check global Tool.config.api_key for agentbay tools.
+        #
+        # Only agentbay_browser_navigate (the "primary" AgentBay tool) has a
+        # config_schema with an api_key field, so it is the only tool whose
+        # config is ever populated with a key via the Company Settings UI.
+        # We therefore query it first, then fall back to scanning all agentbay
+        # tools — this prevents a non-deterministic .limit(1) from returning a
+        # tool with an empty config (e.g. agentbay_computer_screenshot), which
+        # would silently return None even when a key IS configured.
         tool_result = await session.execute(
             select(Tool).where(
-                Tool.category == "agentbay",
+                Tool.name == "agentbay_browser_navigate",
                 Tool.enabled == True,
             ).limit(1)
         )
         tool = tool_result.scalar_one_or_none()
+
+        # Also scan all agentbay tools in case the key was stored differently
+        if not (tool and tool.config and tool.config.get("api_key")):
+            all_result = await session.execute(
+                select(Tool).where(
+                    Tool.category == "agentbay",
+                    Tool.enabled == True,
+                )
+            )
+            for candidate in all_result.scalars().all():
+                if candidate.config and candidate.config.get("api_key"):
+                    tool = candidate
+                    break
+
         if tool and tool.config and tool.config.get("api_key"):
             api_key = tool.config["api_key"]
             # Try to decrypt (global config is encrypted via _encrypt_sensitive_fields)
@@ -639,6 +691,9 @@ async def test_agentbay_channel(agent_id: uuid.UUID, current_user, db) -> dict:
     try:
         from agentbay import AgentBay, CreateSessionParams
         sdk = AgentBay(api_key=key)
+        # Using linux_latest instead of browser_latest. AgentBay tokens may be
+        # scoped/bound to specific instance types, and requesting browser_latest
+        # might trigger an 'InvalidParameter.Authorization' error for this key.
         result = await asyncio.to_thread(sdk.create, CreateSessionParams(image_id="linux_latest"))
         if result.success:
             if result.session:
@@ -649,17 +704,23 @@ async def test_agentbay_channel(agent_id: uuid.UUID, current_user, db) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str) -> AgentBayClient:
+async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str, session_id: str = "") -> AgentBayClient:
     """Get or create AgentBay client for agent.
 
-    Sessions are cached per (agent_id, image_type) so that an agent
-    can hold both a browser and a code session simultaneously.
-    Switching between browser and code operations no longer destroys
-    the other session.
+    Sessions are cached per (agent_id, session_id, image_type) so that each
+    ChatSession gets its own independent AgentBay instance. Multiple users
+    chatting with the same Agent will each have isolated browser/desktop/code
+    environments.
+
+    Args:
+        agent_id: The agent UUID.
+        image_type: One of 'browser', 'computer', 'code'.
+        session_id: The ChatSession ID. Defaults to '' for backward compat
+                    (e.g. test_agentbay_channel, single-session callers).
     """
 
     now = datetime.now()
-    cache_key = (agent_id, image_type)
+    cache_key = (agent_id, session_id, image_type)
 
     if cache_key in _agentbay_sessions:
         client, last_used = _agentbay_sessions[cache_key]
@@ -669,7 +730,7 @@ async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str) ->
             return client
         else:
             # Session expired, close and remove
-            logger.info(f"[AgentBay] Session expired for {image_type}, closing")
+            logger.info(f"[AgentBay] Session expired for {image_type} (session={session_id[:8]}), closing")
             await client.close_session()
             del _agentbay_sessions[cache_key]
 
@@ -696,11 +757,13 @@ async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str) ->
 
     if image_type == "browser":
         await client.create_session("browser_latest")
+        # Inject stored cookies after browser initialization
+        await _inject_credentials(client, agent_id)
     elif image_type == "computer":
         # Read OS preference from tool config (default: windows)
         os_type = (tool_config or {}).get("os_type", "windows")
         computer_image = "windows_latest" if os_type == "windows" else "linux_latest"
-        logger.info(f"[AgentBay] Creating computer session with OS: {os_type} (image: {computer_image})")
+        logger.info(f"[AgentBay] Creating computer session with OS: {os_type} (image: {computer_image}) for session={session_id[:8]}")
         await client.create_session(computer_image)
     else:
         await client.create_session("code_latest")
@@ -718,6 +781,161 @@ async def cleanup_agentbay_sessions():
     ]
     for cache_key in expired:
         client, _ = _agentbay_sessions.pop(cache_key)
-        agent_id, image_type = cache_key
-        logger.info(f"[AgentBay] Cleaning up expired {image_type} session for agent {agent_id}")
+        agent_id, session_id, image_type = cache_key
+        logger.info(f"[AgentBay] Cleaning up expired {image_type} session for agent {agent_id} (session={session_id[:8]})")
         await client.close_session()
+
+
+async def _inject_credentials(client: AgentBayClient, agent_id: uuid.UUID):
+    """Inject stored cookies into the browser via CDP after initialization.
+
+    Reads all 'active' credentials with cookies from the agent_credentials table,
+    decrypts cookies_json, and injects them via a Playwright Node.js script that
+    connects to Chrome's CDP port (localhost:9222).
+
+    This runs automatically after every browser session creation. If no credentials
+    exist or injection fails, it logs a warning but does not block the session.
+    """
+    import json
+    from app.database import async_session as async_session_factory
+    from app.models.agent_credential import AgentCredential
+    from sqlalchemy import select
+    from app.core.security import decrypt_data
+    from app.config import get_settings
+
+    settings = get_settings()
+
+    # Fetch active credentials with stored cookies
+    try:
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(AgentCredential).where(
+                    AgentCredential.agent_id == agent_id,
+                    AgentCredential.status == "active",
+                    AgentCredential.cookies_json.isnot(None),
+                )
+            )
+            credentials = result.scalars().all()
+    except Exception as e:
+        logger.warning(f"[AgentBay] Failed to query credentials for injection: {e}")
+        return
+
+    if not credentials:
+        return  # No cookies to inject
+
+    # Collect and decrypt all cookies
+    all_cookies = []
+    for cred in credentials:
+        try:
+            raw = decrypt_data(cred.cookies_json, settings.SECRET_KEY)
+            cookies = json.loads(raw)
+            if isinstance(cookies, list):
+                all_cookies.extend(cookies)
+        except Exception as e:
+            logger.warning(f"[AgentBay] Failed to decrypt cookies for {cred.platform}: {e}")
+
+    if not all_cookies:
+        return
+
+    # Ensure browser is initialized before injection (Chrome must be running)
+    try:
+        await client._ensure_browser_initialized()
+    except Exception as e:
+        logger.warning(f"[AgentBay] Cannot inject cookies — browser not initialized: {e}")
+        return
+
+    # Build Node.js injection script.
+    # Use base64 encoding to write the script to the current working dir (not /tmp,
+    # which may lack write permissions in the Wuying browser sandbox).
+    #
+    # Cookies stored in DB were already sanitized at export time (sameSite title-cased,
+    # expires:-1 removed, domain without leading dot), so we only do a defensive
+    # re-sanitize here in case older records were stored before the fix.
+    import base64 as _base64
+    cookies_json_str = json.dumps(all_cookies)
+    inject_script = r"""
+const { chromium } = require('/usr/local/lib/node_modules/playwright');
+(async () => {
+    try {
+        const browser = await chromium.connectOverCDP('http://localhost:9222');
+        const context = browser.contexts()[0];
+        const rawCookies = """ + cookies_json_str + r""";
+
+        // Defensive sanitize: normalize sameSite casing and strip invalid expires
+        const sameSiteMap = { none: 'None', lax: 'Lax', strict: 'Strict' };
+        const cookies = rawCookies.map(c => {
+            const out = { ...c };
+            if (out.sameSite != null) {
+                out.sameSite = sameSiteMap[String(out.sameSite).toLowerCase()] || 'Lax';
+            }
+            if (out.expires != null && out.expires <= 0) {
+                delete out.expires;
+            }
+            // Ensure domain has leading dot for subdomain matching
+            if (out.domain && !out.domain.startsWith('.')) {
+                out.domain = '.' + out.domain;
+            }
+            return out;
+        });
+
+        let injected = 0;
+        let failed = 0;
+        // Inject one at a time so a single bad cookie doesn't break the rest
+        for (const cookie of cookies) {
+            try {
+                await context.addCookies([cookie]);
+                injected++;
+            } catch (e) {
+                failed++;
+                if (failed <= 3) {
+                    // Log first few failures to aid debugging
+                    console.error('INJECT_SKIP:' + e.message + ' cookie=' + JSON.stringify(cookie).slice(0, 200));
+                }
+            }
+        }
+        console.log('INJECT_OK:' + injected + ' injected, ' + failed + ' skipped');
+        process.exit(0);
+    } catch (e) {
+        console.error('INJECT_FAIL:' + e.message);
+        process.exit(1);
+    }
+})();
+"""
+
+
+    try:
+        # Write script via base64 decode to avoid shell quoting issues and /tmp permission errors
+        script_b64 = _base64.b64encode(inject_script.encode('utf-8')).decode('ascii')
+        write_result = await asyncio.to_thread(
+            client._session.command.exec,
+            f"echo '{script_b64}' | /usr/bin/base64 -d > tc_inject_cookies.js",
+        )
+        write_ok = getattr(write_result, 'success', False)
+        logger.info(f"[AgentBay] Cookie inject script write: success={write_ok}")
+
+        # Execute the injection script
+        exec_result = await asyncio.to_thread(
+            client._session.command.exec,
+            "node tc_inject_cookies.js",
+            timeout_ms=15000,
+        )
+        stdout = getattr(exec_result, 'stdout', '') or getattr(exec_result, 'output', '') or ''
+        stderr = getattr(exec_result, 'stderr', '') or ''
+
+        if "INJECT_OK" in stdout:
+            logger.info(f"[AgentBay] Cookie injection successful for agent {agent_id}: {stdout.strip()[:100]}")
+            # Update last_injected_at for all injected credentials
+            try:
+                from datetime import timezone as tz
+                now = datetime.now(tz.utc)
+                async with async_session_factory() as db:
+                    for cred in credentials:
+                        cred.last_injected_at = now
+                        db.add(cred)
+                    await db.commit()
+            except Exception as e:
+                logger.warning(f"[AgentBay] Failed to update last_injected_at: {e}")
+        else:
+            logger.warning(f"[AgentBay] Cookie injection may have failed: stdout={stdout[:200]}, stderr={stderr[:200]}")
+    except Exception as e:
+        logger.warning(f"[AgentBay] Cookie injection error: {e}")

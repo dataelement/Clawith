@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, hash_password
 from app.models.identity import IdentityProvider
-from app.models.user import User
+from app.models.user import User, Identity
 from loguru import logger
 
 
@@ -94,28 +94,26 @@ class BaseAuthProvider(ABC):
     async def find_or_create_user(
         self, db: AsyncSession, user_info: ExternalUserInfo, tenant_id: str | None = None
     ) -> tuple[User, bool]:
-        """Find existing user or create new one via OrgMember.
+        """Find existing user or create new one via Identity/OrgMember.
 
         Args:
             db: Database session
             user_info: User info from provider
             tenant_id: Optional tenant ID for association
-
-        Returns:
-            Tuple of (user, is_new) where is_new indicates if user was created
         """
         from app.services.sso_service import sso_service
+        from sqlalchemy.orm import selectinload
 
         # Ensure provider exists
         await self._ensure_provider(db, tenant_id)
 
         # 1. Try lookup via sso_service (which now uses OrgMember)
-        # Prefer unionid if available, fallback to provider_user_id
         provider_user_id = user_info.provider_union_id or user_info.provider_user_id
         user = await sso_service.resolve_user_identity(
             db, provider_user_id, self.provider_type, tenant_id=tenant_id
         )
-        # Feishu: if union_id lookup misses, fall back to open_id (org sync app may not return union_id)
+        
+        # Feishu: fallback to open_id if union_id lookup misses
         if (
             not user
             and self.provider_type == "feishu"
@@ -128,54 +126,40 @@ class BaseAuthProvider(ABC):
 
         is_new = False
         if not user:
-            # 2. Fallback to legacy columns on User table
-            user = await self._find_user_by_legacy_fields(db, user_info)
-
-        # 3. Also try matching by email if available
-        if not user and user_info.email:
-            user = await sso_service.match_user_by_email(db, user_info.email, tenant_id)
+            # 2. Try matching by email/mobile (which now checks Identity too)
+            if user_info.email:
+                user = await sso_service.match_user_by_email(db, user_info.email, tenant_id)
+            if not user and user_info.mobile:
+                user = await sso_service.match_user_by_mobile(db, user_info.mobile, tenant_id)
+            
             if user:
-                # Link identity (OrgMember) to existing user
-                await sso_service.link_identity(
-                    db,
-                    str(user.id),
-                    self.provider_type,
-                    provider_user_id,
-                    user_info.raw_data,
-                    tenant_id=tenant_id,
-                )
-
-        # 4. Also try matching by mobile if available (critical to prevent duplicate users)
-        if not user and user_info.mobile:
-            user = await sso_service.match_user_by_mobile(db, user_info.mobile, tenant_id)
-            if user:
-                # Link identity (OrgMember) to existing user
-                await sso_service.link_identity(
-                    db,
-                    str(user.id),
-                    self.provider_type,
-                    provider_user_id,
-                    user_info.raw_data,
-                    tenant_id=tenant_id,
-                )
+                # If we found a user via email/mobile matching, it might be in a different tenant
+                if tenant_id and str(user.tenant_id) != tenant_id:
+                    # Identity exists but no user in this tenant
+                    user = None 
 
         if user:
-            # Update user info
+            # Update user info and ensure identity is loaded
+            if not user.identity_id:
+                 from app.services.registration_service import registration_service
+                 identity = await registration_service.find_or_create_identity(db, email=user_info.email, phone=user_info.mobile)
+                 user.identity_id = identity.id
+            
             await self._update_existing_user(db, user, user_info)
         else:
-            # Create new user
+            # 3. Create new user (and Identity if needed)
             user = await self._create_new_user(db, user_info, tenant_id)
             is_new = True
             
-            # Link identity (OrgMember) to the new user
-            await sso_service.link_identity(
-                db,
-                str(user.id),
-                self.provider_type,
-                provider_user_id,
-                user_info.raw_data,
-                tenant_id=tenant_id,
-            )
+        # Ensure OrgMember linkage
+        await sso_service.link_identity(
+            db,
+            str(user.id),
+            self.provider_type,
+            provider_user_id,
+            user_info.raw_data,
+            tenant_id=tenant_id,
+        )
 
         return user, is_new
 
@@ -229,32 +213,54 @@ class BaseAuthProvider(ABC):
         self, db: AsyncSession, user_info: ExternalUserInfo, tenant_id: str | None
     ) -> User:
         """Create new user from external identity."""
-        username = user_info.email.split("@")[0] if user_info.email else f"{self.provider_type}_{user_info.provider_user_id[:8]}"
-
-        # Ensure unique username
-        existing = await db.execute(select(User).where(User.username == username))
-        if existing.scalar_one_or_none():
-            username = f"{username}_{user_info.provider_user_id[:6]}"
-
-        email = user_info.email or f"{username}@{self.provider_type}.local"
-
-        user = User(
-            username=username,
-            email=email,
-            password_hash=hash_password(user_info.provider_user_id),
-            display_name=user_info.name or username,
-            avatar_url=user_info.avatar_url,
-            primary_mobile=user_info.mobile,
-            registration_source=self.provider_type,
-            tenant_id=tenant_id,
+        from app.services.registration_service import registration_service
+        import uuid
+        
+        # 1. Prepare user fields and resolve global identity
+        effective_id = user_info.provider_user_id or user_info.provider_union_id or "unknown"
+        
+        identity = await registration_service.find_or_create_identity(
+            db,
+            email=user_info.email,
+            phone=user_info.mobile,
+            username=user_info.email.split("@")[0] if user_info.email else None,
+            password=effective_id,
         )
 
-        # Set legacy fields
+        # 2. Prepare Tenant user fields
+        username = user_info.email.split("@")[0] if user_info.email else f"{self.provider_type}_{effective_id[:8]}"
+
+        # Ensure unique username within tenant
+        query = (
+            select(User)
+            .join(User.identity)
+            .where(Identity.username == username)
+        )
+        if tenant_id:
+            query = query.where(User.tenant_id == tenant_id)
+        existing = await db.execute(query)
+        if existing.scalar_one_or_none():
+            username = f"{username}_{uuid.uuid4().hex[:6]}"
+
+        # 3. Create TenantUser record
+        user = User(
+            identity_id=identity.id,
+            display_name=user_info.name or username,
+            avatar_url=user_info.avatar_url,
+            registration_source=self.provider_type,
+            tenant_id=tenant_id,
+            is_active=True,
+        )
+
+
+        # Set legacy fields if needed
         await self._set_legacy_user_fields(user, user_info)
 
         db.add(user)
         await db.flush()
-
+        
+        # Preload identity
+        user.identity = identity
         return user
 
     async def _update_legacy_user_fields(self, user: User, user_info: ExternalUserInfo):
@@ -361,12 +367,18 @@ class DingTalkAuthProvider(BaseAuthProvider):
         app_id = self.app_key or ""
         base_url = "https://login.dingtalk.com/oauth2/auth"
         from urllib.parse import quote
-        # contact.user.email and contact.user.mobile require specific permissions in DingTalk console
-        scope = "openid corpid fieldEmail contact.user.mobile"
+        # Contact.User.Read is required for GET /v1.0/contact/users/me (user info on callback)
+        # contact.user.mobile requires the fieldMobile permission in DingTalk console
+        # fieldEmail requires the fieldEmail permission in DingTalk console
+        scope = "openid corpid Contact.User.Read fieldEmail contact.user.mobile"
         params = (
-            f"corpId={self.corp_id}&client_id={app_id}&redirect_uri={quote(redirect_uri)}&"
+            f"client_id={app_id}&redirect_uri={quote(redirect_uri)}&"
             f"state={state}&response_type=code&scope={quote(scope)}&prompt=consent"
         )
+        # corp_id is optional: restricts the login page to a specific enterprise.
+        # If not configured, DingTalk shows a company picker (still works for SSO).
+        if self.corp_id:
+            params = f"corpId={self.corp_id}&" + params
         return f"{base_url}?{params}"
 
     async def exchange_code_for_token(self, code: str) -> dict:
@@ -398,8 +410,16 @@ class DingTalkAuthProvider(BaseAuthProvider):
             info_resp = await client.get(self.DINGTALK_USER_INFO_URL, headers=headers)
             info_data = info_resp.json()
             if info_resp.status_code != 200:
-                logger.error(f"DingTalk user info fetch failed (HTTP {info_resp.status_code}): {info_data}")
-                raise Exception(f"Failed to fetch user info: {info_data.get('message', 'Unknown error')}")
+                # Common error: errCode=403 means Contact.User.Read scope not granted.
+                # Ensure 'Contact.User.Read' is included in the OAuth scope AND
+                # that the app has been authorized by the employee in the login flow.
+                err_msg = info_data.get('message') or info_data.get('errmsg') or str(info_data)
+                logger.error(
+                    f"DingTalk user info fetch failed (HTTP {info_resp.status_code}): {info_data}. "
+                    "This usually means the 'Contact.User.Read' OAuth scope is missing from "
+                    "the authorization URL, or the app lacks the corresponding permission."
+                )
+                raise Exception(f"Failed to fetch user info: {err_msg}")
 
             # DingTalk new OAuth2 returns openId, unionId, nick, avatarUrl, mobile, email
             logger.info(f"DingTalk user info: {info_data}")
@@ -416,59 +436,205 @@ class DingTalkAuthProvider(BaseAuthProvider):
 
 
 class WeComAuthProvider(BaseAuthProvider):
-    """WeCom (Enterprise WeChat) OAuth provider implementation."""
+    """WeCom (Enterprise WeChat) OAuth provider implementation.
+
+    Authentication flow:
+    1. gettoken (corp_id + secret) -> access_token
+    2. auth/getuserinfo (access_token + OAuth code) -> userid + user_ticket
+    3. auth/getuserdetail (access_token + user_ticket) -> avatar, email, mobile
+    4. user/get (access_token + userid) -> name, position (non-sensitive fields)
+
+    Note: Steps 3 and 4 require the calling server IP to be whitelisted in the
+    WeCom self-built app settings. This is a one-time setup per tenant.
+    (Contrast with getuserinfo in step 2, which only requires trusted domain,
+    not IP whitelist.)
+    """
 
     provider_type = "wecom"
 
-    WECOM_TOKEN_URL = "https://api.weixin.qq.com/cgi-bin/token"
-    WECOM_USER_INFO_URL = "https://api.weixin.qq.com/cgi-bin/user/getuserinfo"
+    # All WeCom self-built app API calls go to qyapi.weixin.qq.com
+    # The old api.weixin.qq.com endpoints are legacy WeCom Public Account APIs
+    # and no longer work for self-built apps.
+    WECOM_TOKEN_URL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+    WECOM_USER_INFO_URL = "https://qyapi.weixin.qq.com/cgi-bin/auth/getuserinfo"
+    WECOM_USER_DETAIL_URL = "https://qyapi.weixin.qq.com/cgi-bin/auth/getuserdetail"
+    WECOM_USER_GET_URL = "https://qyapi.weixin.qq.com/cgi-bin/user/get"
 
     def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None):
         super().__init__(provider, config)
-        self.corp_id = self.config.get("corp_id")
-        self.secret = self.config.get("secret")
+        # corp_id and agent_id are used for the OAuth redirect URL
+        self.corp_id = self.config.get("corp_id") or self.config.get("app_id")
+        # secret is the self-built app's AgentSecret (not the contact-sync secret)
+        self.secret = self.config.get("secret") or self.config.get("app_secret")
         self.agent_id = self.config.get("agent_id")
 
     async def get_authorization_url(self, redirect_uri: str, state: str) -> str:
+        """Construct the WeCom web-login SSO redirect URL.
+
+        Uses the 'Scan QR Code to Login' flow (CorpPinCorp), which redirects users
+        to authenticate with their WeCom account then returns them to redirect_uri
+        with a code parameter.
+        """
+        from urllib.parse import quote
         base_url = "https://open.work.weixin.qq.com/wwlogin/sso/login"
-        params = f"loginType=CorpPinCorp&appid={self.corp_id}&agentid={self.agent_id}&redirect_uri={redirect_uri}&state={state}"
+        params = (
+            f"loginType=CorpPinCorp"
+            f"&appid={self.corp_id}"
+            f"&agentid={self.agent_id}"
+            f"&redirect_uri={quote(redirect_uri)}"
+            f"&state={state}"
+        )
         return f"{base_url}?{params}"
 
     async def exchange_code_for_token(self, code: str) -> dict:
-        # WeCom uses different auth flow - get access token first
-        async with httpx.AsyncClient() as client:
+        """Exchange OAuth code for a packed token string containing all user data.
+
+        Three sequential API calls:
+          1. gettoken -> access_token
+          2. auth/getuserinfo (code) -> userid + user_ticket
+          3a. auth/getuserdetail (user_ticket) -> avatar, email, mobile [sensitive]
+          3b. user/get (userid) -> name, position [non-sensitive, best-effort]
+
+        Returns a packed JSON dict disguised as the access_token field so
+        the existing BaseAuthProvider interface (get_user_info) can consume it.
+        """
+        import json
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            # Step 1: Get app-level access token using corp credentials
             token_resp = await client.get(
                 self.WECOM_TOKEN_URL,
-                params={
-                    "corpid": self.corp_id,
-                    "corpsecret": self.secret,
-                },
+                params={"corpid": self.corp_id, "corpsecret": self.secret},
             )
             token_data = token_resp.json()
             access_token = token_data.get("access_token")
-
             if not access_token:
-                logger.error(f"WeCom token error: {token_data}")
+                logger.error(f"[WeCom SSO] gettoken failed: {token_data}")
                 return {}
 
-            # Get user info with code
-            user_resp = await client.get(
+            # Step 2: Exchange OAuth code for userid + user_ticket
+            # auth/getuserinfo returns userid (lowercase 'u') for internal employees.
+            # user_ticket is a temporary credential (valid ~1800s) representing
+            # the employee's own OAuth authorization, required for sensitive fields.
+            info_resp = await client.get(
                 self.WECOM_USER_INFO_URL,
                 params={"access_token": access_token, "code": code},
             )
-            user_data = user_resp.json()
-            logger.info(f"WeCom user auth info: {user_data}")
-            return user_data
+            info_data = info_resp.json()
+            # The key is lowercase 'userid' in the new auth endpoint (not 'UserId')
+            userid = info_data.get("userid") or info_data.get("UserId", "")
+            user_ticket = info_data.get("user_ticket", "")
+            if not userid:
+                logger.error(f"[WeCom SSO] getuserinfo missing userid: {info_data}")
+                return {}
+
+            # Step 3a: Fetch sensitive profile fields using user_ticket.
+            # Since June 2022, new self-built apps cannot get avatar/email/mobile
+            # from user/get directly. The user_ticket (from OAuth consent) unlocks them.
+            # Returns: userid, gender, avatar, qr_code, mobile, email, biz_mail, address
+            sensitive_data: dict = {}
+            if user_ticket:
+                try:
+                    detail_resp = await client.post(
+                        self.WECOM_USER_DETAIL_URL,
+                        params={"access_token": access_token},
+                        json={"user_ticket": user_ticket},
+                    )
+                    detail_json = detail_resp.json()
+                    if detail_json.get("errcode") == 0:
+                        sensitive_data = detail_json
+                        logger.info(f"[WeCom SSO] getuserdetail succeeded for {userid}")
+                    else:
+                        logger.warning(f"[WeCom SSO] getuserdetail failed: {detail_json}")
+                except Exception as e:
+                    logger.warning(f"[WeCom SSO] getuserdetail error: {e}")
+            else:
+                logger.info(
+                    f"[WeCom SSO] No user_ticket for {userid}; "
+                    "sensitive fields (avatar/email/mobile) will be unavailable. "
+                    "Ensure the WeCom app has 'snsapi_privateinfo' scope."
+                )
+
+            # Step 3b: Fetch non-sensitive profile fields from user/get (name, position).
+            # These fields are NOT restricted by the June 2022 policy and are available
+            # via the standard app access token (IP whitelist required).
+            basic_data: dict = {}
+            try:
+                get_resp = await client.get(
+                    self.WECOM_USER_GET_URL,
+                    params={"access_token": access_token, "userid": userid},
+                )
+                get_json = get_resp.json()
+                if get_json.get("errcode") == 0:
+                    basic_data = get_json
+                    logger.info(f"[WeCom SSO] user/get succeeded for {userid}")
+                else:
+                    logger.warning(f"[WeCom SSO] user/get failed: {get_json}")
+            except Exception as e:
+                logger.warning(f"[WeCom SSO] user/get error: {e}")
+
+            # Pack all data for get_user_info() to consume
+            packed_token = json.dumps({
+                "userid": userid,
+                "sensitive": sensitive_data,  # from getuserdetail (avatar, email, mobile)
+                "basic": basic_data,           # from user/get (name, position)
+            })
+            return {"access_token": packed_token}
 
     async def get_user_info(self, access_token: str) -> ExternalUserInfo:
-        # WeCom returns user info in the token exchange response
-        logger.info("WeCom get_user_info called (user info usually handled in exchange_code)")
-        return ExternalUserInfo(
-            provider_type=self.provider_type,
-            provider_user_id="",
-            name="",
-            raw_data={"wecom": "user_info_in_token_response"},
-        )
+        """Parse the packed token into a standardized ExternalUserInfo.
+
+        Priority for each field:
+          - email: sensitive_data (getuserdetail) > biz_mail > basic_data (user/get)
+          - avatar: sensitive_data > basic_data
+          - mobile: sensitive_data only (restricted post-2022 in user/get)
+          - name: basic_data (non-sensitive, from user/get)
+        """
+        import json
+        try:
+            data = json.loads(access_token)
+            userid = data.get("userid", "")
+            sensitive = data.get("sensitive", {})
+            basic = data.get("basic", {})
+
+            # Name from user/get (non-sensitive, always available when IP is whitelisted)
+            name = basic.get("name") or f"WeCom {userid}"
+
+            # Email: prefer personal email from getuserdetail, fall back to biz_mail
+            email = (
+                sensitive.get("email")
+                or sensitive.get("biz_mail")
+                or basic.get("email")
+                or basic.get("biz_mail")
+                or ""
+            )
+
+            # Avatar from getuserdetail (restricted post-2022 in user/get)
+            avatar_url = sensitive.get("avatar") or basic.get("avatar") or ""
+
+            # Mobile only from getuserdetail (restricted post-2022 in user/get)
+            mobile = sensitive.get("mobile") or ""
+
+            # Merge raw_data so OrgMember has full context
+            raw = {**basic, **sensitive, "userid": userid}
+
+            return ExternalUserInfo(
+                provider_type=self.provider_type,
+                provider_user_id=userid,
+                name=name,
+                email=email,
+                avatar_url=avatar_url,
+                mobile=mobile,
+                raw_data=raw,
+            )
+        except Exception as e:
+            logger.error(f"[WeCom SSO] get_user_info parse error: {e}")
+            return ExternalUserInfo(
+                provider_type=self.provider_type,
+                provider_user_id="",
+                name="",
+                raw_data={"error": str(e)},
+            )
 
 
 class MicrosoftTeamsAuthProvider(BaseAuthProvider):

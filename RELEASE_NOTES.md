@@ -1,95 +1,137 @@
-# v1.7.2
+# v1.8.1 Release Notes
+
+> Released: 2026-04-03
+
+This is a stability and polish release built on top of v1.8.0-beta.3, covering security hardening,
+Feishu reliability fixes, a redesigned tool-call visualization, new file-management tools, and
+a first-class Kubernetes deployment option.
+
+---
 
 ## Highlights
 
-- **Discord Gateway (WebSocket)** — Connect Discord bots without a public IP. Configure via Channel Settings.
-- **Clawith Pages** — Agents can publish static HTML pages with shareable `/p/{short_id}` URLs.
-- **Unified Notification System** — Plaza replies, @mentions, broadcasts, and heartbeat-drain notifications with category filtering.
-- **Baidu (Qianfan) LLM Provider** — Add Baidu models alongside OpenAI, Anthropic, and others.
-- **LLM Temperature Control** — Set per-model temperature from the LLM management page.
-- **OpenClaw Settings Page** — Dedicated API key management for OpenClaw integrations.
-- **Platform Settings Restructure** — Companies page reorganized into a tabbed Platform Settings layout.
-- **Runtime Version Display** — `/api/version` endpoint and sidebar footer showing the running version.
+### Redesigned Tool-Call Visualization (AnalysisCard)
 
-## Bug Fixes
+The live chat view now shows agent reasoning and tool calls in a unified **AnalysisCard** that
+groups interleaved thinking and tool-call messages into one collapsible block. The card shows:
+- A pulse LED while the agent is running, turning green on completion
+- The currently-active tool name in collapsed state alongside tool-count badge
+- Individual `<details>` rows per tool for args and result (collapsed by default)
+- Italic thinking-content blocks inline for extended reasoning (deepthink) models
 
-- Fix Alembic migration cycle error during backend startup (resolved `multi_tenant_registration` loop)
-- Fix missing relationship type dropdown when adding an Agent Relationship
-- Align Agent-to-Agent relationship types with Human-to-Agent ones and complete missing i18n translations
-- Fix missing database migration for `max_output_tokens` in `llm_models` table
-- Fix default company heartbeat floor not being applied to newly created agents
-- Fix heartbeat/scheduler tool calls failing with empty arguments (empty-args guard ported from chat flow)
-- Fix agent-to-agent session duplication and LLM tool confusion
-- Harden A2A communication security with tenant isolation and relationship checks
-- Fix A2A LLM timeout retries with jitter and error surfacing
-- Fix system message always placed first for cross-model compatibility
-- Fix streaming state not reset when switching sessions
-- Fix trigger resurrection on restart
-- Fix non-standard API streaming with JSON buffer
-- Fix plaza tenant scoping and @mention navigation
-- Fix OpenClaw agent replies not appearing in chat UI
-- Fix chat message alignment by participant
-- Improve broadcast UI and @mention dropdown (scrollable, increased limit)
+### New File Management Tools
 
-## Database Migrations
+Three new built-in tools are available to all agents:
+- **`edit_file`** — targeted line-range edits without rewriting the entire file
+- **`search_files`** — substring or regex search across a workspace
+- **`find_files`** — glob-pattern file lookup
+- **`read_file`** now supports `offset` / `limit` for reading large files in pages
 
-Four new Alembic migrations run automatically on startup:
+### Kubernetes Deployment (Helm Chart)
 
-1. `add_published_pages` — Creates `published_pages` table
-2. `add_notification_agent_id` — Adds `agent_id`, `sender_name` columns to `notifications`; makes `user_id` nullable
-3. `add_llm_temperature` — Adds `temperature` column to `llm_models`
-4. `add_llm_max_output_tokens` — Adds `max_output_tokens` column to `llm_models`
-
-All migrations are idempotent (safe to re-run).
-
-## New Dependency
-
-- `discord.py>=2.3.0` — Required for Discord Gateway mode
-
-## Infrastructure
-
-- All Docker services now have `restart: unless-stopped`
-- `.dockerignore` updated to exclude `agent_data/` from build context
-- `entrypoint.sh` removed legacy schedule-to-triggers migration (completed in v1.7.0)
-- `restart.sh` supports external `DATABASE_URL`
-
-## Upgrade Instructions
-
-> **Important**: Users must upgrade one version at a time (e.g., v1.6.0 → v1.7.0 → v1.7.1 → v1.7.2). Skipping versions is not supported.
-
-### Option A: Docker Deployment
-
+A production-ready Helm chart is now included at `helm/clawith/`. Deploy Clawith on any
+Kubernetes cluster in one command:
 ```bash
-cd /path/to/Clawith
-git pull origin main
-docker compose down
-docker compose up -d --build
+helm upgrade --install clawith helm/clawith/ -f values.yaml
 ```
 
-Migrations run automatically via `entrypoint.sh`.
+### Security Fixes
 
-> [!IMPORTANT]
-> **`--build` is required for this release.** The following features depend on changes baked into the Docker image (Nginx config, Python dependencies) and will NOT work with hot-update (`docker cp`) alone:
-> - **Clawith Pages** — requires the new `/p/` Nginx proxy rule
-> - **Discord Gateway** — requires the new `discord.py` dependency
->
-> If you previously upgraded via `docker cp` without `--build`, run `docker compose down && docker compose up -d --build` to apply these changes.
+- **Cross-tenant data leak** — org member and department search was returning results across
+  tenant boundaries. Now strictly scoped to the requesting tenant. (#security)
+- **Platform admin token scope** — `platform_admin` role was not pinned to `tenant_id` in the
+  JWT, allowing cross-tenant privilege escalation. Fixed.
+- **Duplicate OrgMember shell** — channel users could create duplicate OrgMember rows on
+  reconnect. A uniqueness guard has been added.
 
-### Option B: Source Deployment
+### Feishu Integration Reliability
+
+- **`feishu_doc_append` intermittent failures** — Markdown `---` dividers were converted to
+  `block_type: 22` which the Feishu batch-children API rejects. They now render as a text
+  separator line (`────────────────────────`), always accepted.
+- **`index: -1` removed** from the children API call — Feishu defaults to append-at-end when
+  `index` is omitted, avoiding `1770001 invalid param` errors.
+- **Stale `websocket_chat` import** — `feishu_doc_create` was trying to import
+  `channel_feishu_sender_open_id` from a deleted module, generating a visible warning. Fixed.
+- **Feishu streaming card stalls** — ordered patch queue now correctly processes streaming
+  updates for Feishu cards without stalling.
+- **Tool status stuck on "running"** — Feishu-channel tool status now correctly transitions
+  from `running` → `done` after tool completion.
+- **Added `wiki:wiki` permission** to the recommended Full permission set in channel config.
+
+### Admin Chat UI
+
+- **Read-only session viewer** — Admins viewing other users' sessions see a clear "Read-only ·
+  username" badge at top-left (fixed overlay, never scrolls away).
+- **Card border** — the entire chat area is now enclosed in a 12px-radius bordered card for
+  visual clarity.
+- **Optimistic relationship deletion** — relationship rows fade out immediately on delete (no wait).
+
+### Cross-Domain Tenant Switch
+
+The `?token=` query param is now consumed on app bootstrap, so users switching between tenant
+instances via a generated link land directly in the correct tenant without requiring a page reload.
+
+### i18n Improvements
+
+- All emoji removed from `en.json` and `zh.json` translation keys (project policy).
+- Hardcoded "Copy", "Upload", and several status strings now properly use `t()`.
+- New i18n key `agent.chat.analysing` for the AnalysisCard header.
+- Credential-related UI strings in zh.json completed.
+
+---
+
+## Upgrade Guide
+
+### No breaking changes. No database migrations required.
+
+#### Option A — Docker Compose
 
 ```bash
-cd /path/to/Clawith
+cd <clawith-dir>
 git pull origin main
-
-# Install dependencies (run from the backend/ directory)
-cd backend
-pip install .
-
-# Run migrations (must be run from backend/ directory where alembic.ini is located)
-alembic upgrade head
-
-# Restart backend
-# (your restart method here)
+docker compose down && docker compose up -d --build
 ```
 
-No `.env` changes required.
+Or the rolling update (no downtime):
+
+```bash
+git pull origin main
+
+# Frontend
+cd frontend && npm install && npm run build
+cp public/logo.png dist/ && cp public/logo.svg dist/
+cd dist && zip -r ../dist.zip . && cd ../..
+docker cp frontend/dist.zip clawith-frontend-1:/usr/share/nginx/html/dist.zip
+docker exec clawith-frontend-1 sh -c "cd /usr/share/nginx/html && unzip -o dist.zip"
+docker compose restart frontend
+
+# Backend
+docker cp backend/app clawith-backend-1:/app/
+docker exec clawith-backend-1 find /app -name "__pycache__" -exec rm -rf {} + 2>/dev/null
+docker compose restart backend
+```
+
+#### Option B — Source Deployment
+
+```bash
+git pull origin main
+cd frontend && npm install && npm run build
+cd ..
+# Restart backend process (e.g. supervisorctl restart clawith-backend)
+```
+
+#### Option C — Kubernetes (Helm)
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+```
+
+No Alembic migration is required for this release.
+
+---
+
+## Full Changelog
+
+See all commits since v1.8.0-beta.3:
+https://github.com/dataelement/Clawith/compare/v1.8.0-beta.3...v1.8.1

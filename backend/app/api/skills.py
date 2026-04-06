@@ -683,7 +683,7 @@ def _mask_token(token: str) -> str:
 
 @router.get("/settings/token")
 async def get_skill_token_status(
-    current_user=Depends(require_role("platform_admin")),
+    current_user=Depends(require_role("org_admin", "platform_admin")),
 ):
     """Check if GitHub token and ClawHub key are configured for this tenant."""
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
@@ -701,9 +701,14 @@ async def get_skill_token_status(
 @router.put("/settings/token")
 async def set_skill_token(
     body: SkillSettingsIn,
-    current_user=Depends(require_role("platform_admin")),
+    current_user=Depends(require_role("org_admin", "platform_admin")),
 ):
-    """Save GitHub token and/or ClawHub key for this tenant."""
+    """Save GitHub token and/or ClawHub key for this tenant.
+
+    Accessible by org_admin (to manage their own company's credentials) and
+    platform_admin. require_role performs exact-match checks, so both roles
+    must be listed explicitly.
+    """
     if not current_user.tenant_id:
         raise HTTPException(400, "No tenant associated")
 

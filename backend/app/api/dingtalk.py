@@ -154,9 +154,8 @@ async def process_dingtalk_message(
     from app.database import async_session
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
-    from app.models.user import User as UserModel
-    from app.core.security import hash_password
     from app.services.channel_session import find_or_create_channel_session
+    from app.services.channel_user_service import channel_user_service
     from app.api.feishu import _call_agent_llm
 
     async with async_session() as db:
@@ -167,7 +166,8 @@ async def process_dingtalk_message(
             logger.warning(f"[DingTalk] Agent {agent_id} not found")
             return
         creator_id = agent_obj.creator_id
-        ctx_size = agent_obj.context_window_size if agent_obj else 20
+        from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+        ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
         # Determine conv_id for session isolation
         if conversation_type == "2":
@@ -177,22 +177,14 @@ async def process_dingtalk_message(
             # P2P / single chat
             conv_id = f"dingtalk_p2p_{sender_staff_id}"
 
-        # Find or create platform user
-        dt_username = f"dingtalk_{sender_staff_id}"
-        u_r = await db.execute(_select(UserModel).where(UserModel.username == dt_username))
-        platform_user = u_r.scalar_one_or_none()
-        if not platform_user:
-            import uuid as _uuid
-            platform_user = UserModel(
-                username=dt_username,
-                email=f"{dt_username}@dingtalk.local",
-                password_hash=hash_password(_uuid.uuid4().hex),
-                display_name=f"DingTalk {sender_staff_id[:8]}",
-                role="member",
-                tenant_id=agent_obj.tenant_id if agent_obj else None,
-            )
-            db.add(platform_user)
-            await db.flush()
+        # Resolve channel user via unified service (uses OrgMember + SSO patterns)
+        platform_user = await channel_user_service.resolve_channel_user(
+            db=db,
+            agent=agent_obj,
+            channel_type="dingtalk",
+            external_user_id=sender_staff_id,
+            extra_info={"unionid": sender_staff_id},
+        )
         platform_user_id = platform_user.id
 
         # Find or create session
