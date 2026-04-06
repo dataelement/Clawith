@@ -310,7 +310,7 @@ BUILTIN_TOOLS = [
     {
         "name": "web_search",
         "display_name": "Web Search",
-        "description": "Search the internet using a configurable search engine. Supports DuckDuckGo (free), Tavily, Google, and Bing. Configure the search engine in the tool settings.",
+        "description": "Search the internet using a configurable search engine. Supports DuckDuckGo (free), Tavily, Google, Bing, and Zhipu (智谱). Configure the search engine in the tool settings.",
         "category": "search",
         "icon": "🔍",
         "is_default": True,
@@ -339,6 +339,7 @@ BUILTIN_TOOLS = [
                         {"value": "tavily", "label": "Tavily (AI search, needs API key)"},
                         {"value": "google", "label": "Google Custom Search (needs API key)"},
                         {"value": "bing", "label": "Bing Search API (needs API key)"},
+                        {"value": "zhipu", "label": "智谱网络搜索 (需 API Key)"},
                     ],
                     "default": "duckduckgo",
                 },
@@ -348,7 +349,7 @@ BUILTIN_TOOLS = [
                     "type": "password",
                     "default": "",
                     "placeholder": "Required for engines that need an API key",
-                    "depends_on": {"search_engine": ["tavily", "google", "bing"]},
+                    "depends_on": {"search_engine": ["tavily", "google", "bing", "zhipu"]},
                 },
                 {
                     "key": "max_results",
@@ -356,7 +357,7 @@ BUILTIN_TOOLS = [
                     "type": "number",
                     "default": 5,
                     "min": 1,
-                    "max": 20,
+                    "max": 50,
                 },
                 {
                     "key": "language",
