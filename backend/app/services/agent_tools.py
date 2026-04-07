@@ -2188,7 +2188,9 @@ async def _web_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str
 
     engine = config.get("search_engine", "duckduckgo")
     api_key = config.get("api_key", "")
-    max_results = min(arguments.get("max_results", config.get("max_results", 5)), 10)
+    # Zhipu supports up to 50 results, others typically 10-20
+    max_allowed = 50 if engine == "zhipu" else 20
+    max_results = min(arguments.get("max_results", config.get("max_results", 5)), max_allowed)
     language = config.get("language", "zh-CN")
 
     try:
@@ -2198,6 +2200,8 @@ async def _web_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str
             return await _search_google(query, api_key, max_results, language)
         elif engine == "bing" and api_key:
             return await _search_bing(query, api_key, max_results, language)
+        elif engine == "zhipu" and api_key:
+            return await _search_zhipu(query, api_key, max_results)
         else:
             return await _search_duckduckgo(query, max_results)
     except Exception as e:
@@ -2418,6 +2422,44 @@ async def _search_bing(query: str, api_key: str, max_results: int, language: str
     if not results:
         return f'🔍 No results found for "{query}"'
     return f'🔍 Bing search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
+
+
+async def _search_zhipu(query: str, api_key: str, max_results: int) -> str:
+    """Search via Zhipu AI Web Search API (智谱网络搜索).
+
+    API docs: https://docs.bigmodel.cn/api-reference/工具-api/网络搜索
+    """
+    import httpx
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://open.bigmodel.cn/api/paas/v4/web_search",
+            json={
+                "search_query": query,
+                "search_engine": "search_pro",
+                "search_intent": True,
+                "count": min(max_results, 50),
+            },
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=15,
+        )
+        data = resp.json()
+
+    results = []
+    for item in data.get("search_result", [])[:max_results]:
+        title = item.get("title", "")
+        link = item.get("link", "")
+        content = item.get("content", "")
+        media = item.get("media", "")
+        source_info = f" [{media}]" if media else ""
+        results.append(f"**{title}**{source_info}\n{link}\n{content}")
+
+    if not results:
+        return f'🔍 No results found for "{query}"'
+    return f'🔍 智谱网络搜索 "{query}" ({len(results)} 条结果):\n\n' + "\n\n---\n\n".join(results)
 
 
 async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:

@@ -3,6 +3,8 @@
 FROM python:3.12-slim AS deps
 
 WORKDIR /app
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
 RUN apt-get update && \
     apt-get install -y --no-install-recommends gcc libpq-dev && \
     rm -rf /var/lib/apt/lists/*
@@ -22,6 +24,8 @@ RUN if [ -n "$CLAWITH_PIP_INDEX_URL" ] && [ -n "$CLAWITH_PIP_TRUSTED_HOST" ]; th
 FROM python:3.12-slim AS production
 
 WORKDIR /app
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libpq5 curl shadowsocks-libev gosu && \
     rm -rf /var/lib/apt/lists/*
