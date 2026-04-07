@@ -111,8 +111,8 @@ class Settings(BaseSettings):
     SANDBOX_CPU_LIMIT: str = "0.5"
     SANDBOX_MEMORY_LIMIT: str = "256m"
     SANDBOX_ALLOW_NETWORK: bool = False
-    SANDBOX_DEFAULT_TIMEOUT: int = 30
-    SANDBOX_MAX_TIMEOUT: int = 60
+    SANDBOX_DEFAULT_TIMEOUT: int = 60
+    SANDBOX_MAX_TIMEOUT: int = 300
 
     model_config = {
         "env_file": [".env", "../.env"],

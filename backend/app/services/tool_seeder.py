@@ -483,7 +483,15 @@ BUILTIN_TOOLS = [
     {
         "name": "execute_code",
         "display_name": "Code Executor",
-        "description": "Execute code (Python, Bash, Node.js) in a local sandboxed subprocess within the agent's workspace. Useful for data processing, calculations, file transformations, and automation.",
+        "description": (
+            "Execute Python, Bash, or Node.js code. CWD is the agent workspace directory.\n"
+            "Key rules:\n"
+            "1. File paths: use relative paths directly — open('file.txt') reads/writes in workspace.\n"
+            "2. Install packages: bash `pip install --target /data/shared-deps/pip <pkg>` (globally persisted).\n"
+            "3. Run script files: bash `python3 script.py` (script must be in workspace dir).\n"
+            "4. Timeout: default 60s, max 300s.\n"
+            "5. Large output auto-saved to workspace/; use read_file to view full content."
+        ),
         "category": "code",
         "icon": "💻",
         "is_default": True,
@@ -492,7 +500,7 @@ BUILTIN_TOOLS = [
             "properties": {
                 "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
                 "code": {"type": "string", "description": "Code to execute"},
-                "timeout": {"type": "integer", "description": "Max execution time in seconds (default 30, max 60)"},
+                "timeout": {"type": "integer", "description": "Execution timeout in seconds (default 60, max 300)"},
             },
             "required": ["language", "code"],
         },
@@ -501,8 +509,8 @@ BUILTIN_TOOLS = [
             "cpu_limit": "0.5",
             "memory_limit": "256m",
             "allow_network": True,
-            "default_timeout": 30,
-            "max_timeout": 60,
+            "default_timeout": 60,
+            "max_timeout": 300,
         },
         "config_schema": {
             "fields": [
@@ -531,7 +539,7 @@ BUILTIN_TOOLS = [
                     "key": "default_timeout",
                     "label": "Default Timeout (seconds)",
                     "type": "number",
-                    "default": 30,
+                    "default": 60,
                     "min": 5,
                     "max": 300,
                 },
@@ -539,7 +547,7 @@ BUILTIN_TOOLS = [
                     "key": "max_timeout",
                     "label": "Max Timeout (seconds)",
                     "type": "number",
-                    "default": 60,
+                    "default": 300,
                     "min": 10,
                     "max": 300,
                 },
@@ -549,7 +557,14 @@ BUILTIN_TOOLS = [
     {
         "name": "execute_code_e2b",
         "display_name": "Code Executor (E2B Cloud)",
-        "description": "Execute code (Python, Bash, Node.js) in a secure E2B cloud sandbox. Provides full network access and an isolated environment without consuming local resources. Requires an E2B API key.",
+        "description": (
+            "Execute Python, Bash, or Node.js code in a secure E2B cloud sandbox. "
+            "Full network access, isolated environment. Requires E2B API key.\n"
+            "Rules:\n"
+            "1. File paths: use absolute paths or resolve from the script's own directory.\n"
+            "2. Install packages: `pip install <package>` (E2B sandbox is ephemeral, packages not persisted).\n"
+            "3. Timeout: default 60s, max 300s."
+        ),
         "category": "code",
         "icon": "☁️",
         "is_default": False,
@@ -558,15 +573,15 @@ BUILTIN_TOOLS = [
             "properties": {
                 "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
                 "code": {"type": "string", "description": "Code to execute"},
-                "timeout": {"type": "integer", "description": "Max execution time in seconds (default 30, max 60)"},
+                "timeout": {"type": "integer", "description": "Execution timeout in seconds (default 60, max 300)"},
             },
             "required": ["language", "code"],
         },
         "config": {
             "sandbox_type": "e2b",
             "api_key": "",
-            "default_timeout": 30,
-            "max_timeout": 60,
+            "default_timeout": 60,
+            "max_timeout": 300,
         },
         "config_schema": {
             "fields": [
@@ -582,7 +597,7 @@ BUILTIN_TOOLS = [
                     "key": "default_timeout",
                     "label": "Default Timeout (seconds)",
                     "type": "number",
-                    "default": 30,
+                    "default": 60,
                     "min": 5,
                     "max": 300,
                 },
@@ -590,7 +605,7 @@ BUILTIN_TOOLS = [
                     "key": "max_timeout",
                     "label": "Max Timeout (seconds)",
                     "type": "number",
-                    "default": 60,
+                    "default": 300,
                     "min": 10,
                     "max": 300,
                 },

@@ -4926,45 +4926,68 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
 # ─── Code Execution ─────────────────────────────────────────────
 
 # Dangerous patterns to block (for legacy fallback)
-_DANGEROUS_BASH = [
+# Split into always-block and network-block to match sandbox backend semantics
+_DANGEROUS_BASH_ALWAYS = [
     "rm -rf /", "rm -rf ~", "sudo ", "mkfs", "dd if=",
     ":(){ :", "chmod 777 /", "chown ", "shutdown", "reboot",
-    "curl ", "wget ", "nc ", "ncat ", "ssh ", "scp ",
-    "python3 -c", "python -c",
+    # Removed: "python3 -c", "python -c" — allow bash to invoke python scripts
 ]
 
-_DANGEROUS_PYTHON_IMPORTS = [
+_DANGEROUS_BASH_NETWORK = [
+    "nc ", "ncat ", "ssh ", "scp ",
+    # Removed: "curl ", "wget " — allow downloading dependencies
+]
+
+_DANGEROUS_PYTHON_ALWAYS = [
     "subprocess", "shutil.rmtree", "os.system", "os.popen",
     "os.exec", "os.spawn",
-    "socket", "http.client", "urllib.request", "requests",
-    "ftplib", "smtplib", "telnetlib", "ctypes",
-    "__import__", "importlib",
+]
+
+_DANGEROUS_PYTHON_NETWORK = [
+    "socket", "http.client", "ftplib", "smtplib", "telnetlib", "ctypes",
+    # Removed: "requests", "urllib.request" — office scenarios need HTTP
+    # Removed: "__import__", "importlib" — pip install needs these
 ]
 
 
-def _check_code_safety(language: str, code: str) -> str | None:
-    """Check code for dangerous patterns. Returns error message if unsafe, None if ok."""
+def _check_code_safety(language: str, code: str, allow_network: bool = True) -> str | None:
+    """Check code for dangerous patterns. Returns error message if unsafe, None if ok.
+
+    Legacy fallback version — defaults allow_network=True since the blacklist
+    has already been relaxed for office scenarios.
+    """
     code_lower = code.lower()
 
     if language == "bash":
-        for pattern in _DANGEROUS_BASH:
+        for pattern in _DANGEROUS_BASH_ALWAYS:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: dangerous command detected ({pattern.strip()})"
-        # Block deep path traversal outside workspace
+        if not allow_network:
+            for pattern in _DANGEROUS_BASH_NETWORK:
+                if pattern.lower() in code_lower:
+                    return f"❌ Blocked: network command not allowed ({pattern.strip()})"
         if "../../" in code:
             return "❌ Blocked: directory traversal not allowed"
 
     elif language == "python":
-        for pattern in _DANGEROUS_PYTHON_IMPORTS:
+        for pattern in _DANGEROUS_PYTHON_ALWAYS:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: unsafe operation detected ({pattern})"
+        if not allow_network:
+            for pattern in _DANGEROUS_PYTHON_NETWORK:
+                if pattern.lower() in code_lower:
+                    return f"❌ Blocked: network operation not allowed ({pattern})"
 
     elif language == "node":
-        dangerous_node = ["child_process", "fs.rmSync", "fs.rmdirSync", "process.exit",
-                          "require('http')", "require('https')", "require('net')"]
+        dangerous_node = ["child_process", "fs.rmSync", "fs.rmdirSync", "process.exit"]
         for pattern in dangerous_node:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: unsafe operation detected ({pattern})"
+        if not allow_network:
+            dangerous_node_net = ["require('http')", "require('https')", "require('net')"]
+            for pattern in dangerous_node_net:
+                if pattern.lower() in code_lower:
+                    return f"❌ Blocked: network operation not allowed ({pattern})"
 
     return None
 
@@ -4988,7 +5011,8 @@ async def _execute_code(
     """
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
-    timeout = min(arguments.get("timeout", 30), 60)  # Max 60 seconds
+    # Timeout: read max from sandbox config (default 300), agent can specify up to that limit
+    timeout = arguments.get("timeout", 60)
 
     if not code.strip():
         return "❌ No code provided"
@@ -5023,7 +5047,9 @@ async def _execute_code(
             logger.info(f"[Sandbox] No per-agent config found for '{tool_name}', using fallback")
 
         backend = get_sandbox_backend(sandbox_config)
-        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name})")
+        # Apply configurable max_timeout from sandbox config (default 300)
+        timeout = min(timeout, sandbox_config.max_timeout)
+        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name}, timeout={timeout}s)")
         result = await backend.execute(
             code=code,
             language=language,
@@ -5031,8 +5057,8 @@ async def _execute_code(
             work_dir=str(work_dir),
         )
 
-        # Format result for user display
-        return backend._format_result(result)
+        # Format result for user display (with smart truncation + file save)
+        return backend._format_result(result, work_dir=str(work_dir))
 
     except ValueError as e:
         # Sandbox disabled or misconfigured
@@ -5061,7 +5087,7 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
 
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
-    timeout = min(arguments.get("timeout", 30), 60)
+    timeout = min(arguments.get("timeout", 60), 300)  # Legacy fallback: max 300s
 
     if not code.strip():
         return "❌ No code provided"
@@ -5074,10 +5100,11 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
     if safety_error:
         return safety_error
 
-    # Working directory is the agent's root directory (must be absolute)
-    # This allows code to access skills/, workspace/, memory/ etc. directly
-    work_dir = ws.resolve()
-    work_dir.mkdir(parents=True, exist_ok=True)
+    # Working directory: use workspace/ subdir as CWD for code execution
+    # This matches write_file/read_file behavior (relative paths = workspace/)
+    agent_root = ws.resolve()
+    workspace_dir = agent_root / "workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine command and file extension
     if language == "python":
@@ -5093,18 +5120,28 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
         return f"❌ Unsupported language: {language}"
 
     # Write code to a temp file inside workspace
-    script_path = work_dir / f"_exec_tmp{ext}"
+    script_path = workspace_dir / f"_exec_tmp{ext}"
     try:
         script_path.write_text(code, encoding="utf-8")
 
-        # Inherit parent environment but override HOME to workspace
+        # Inherit parent environment but set CWD context
         safe_env = dict(os.environ)
-        safe_env["HOME"] = str(work_dir)
+        safe_env["HOME"] = str(workspace_dir)
         safe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        safe_env["WORKSPACE_DIR"] = str(workspace_dir)
+        safe_env["AGENT_ROOT"] = str(agent_root)
+
+        # Inject shared dependency paths (consistent with sandbox backends)
+        _shared_deps = os.environ.get("SHARED_DEPS_DIR", "/data/shared-deps")
+        _path_sep = os.pathsep  # ';' on Windows, ':' on Linux
+        pip_deps = f"{_shared_deps}/pip"
+        existing_pp = safe_env.get("PYTHONPATH", "")
+        safe_env["PYTHONPATH"] = f"{pip_deps}{_path_sep}{existing_pp}" if existing_pp else pip_deps
+        safe_env["NODE_PATH"] = f"{_shared_deps}/node_modules"
 
         proc = await asyncio.create_subprocess_exec(
             *cmd_prefix, str(script_path),
-            cwd=str(work_dir),
+            cwd=str(workspace_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=safe_env,
@@ -5117,21 +5154,19 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
             await proc.communicate()
             return f"❌ Code execution timed out after {timeout}s"
 
-        stdout_str = stdout.decode("utf-8", errors="replace")[:10000]
-        stderr_str = stderr.decode("utf-8", errors="replace")[:5000]
+        stdout_str = stdout.decode("utf-8", errors="replace")
+        stderr_str = stderr.decode("utf-8", errors="replace")
 
-        result_parts = []
-        if stdout_str.strip():
-            result_parts.append(f"📤 Output:\n{stdout_str}")
-        if stderr_str.strip():
-            result_parts.append(f"⚠️ Stderr:\n{stderr_str}")
-        if proc.returncode != 0:
-            result_parts.append(f"Exit code: {proc.returncode}")
-
-        if not result_parts:
-            return "✅ Code executed successfully (no output)"
-
-        return "\n\n".join(result_parts)
+        # Use BaseSandboxBackend's smart truncation + file save logic
+        from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult as _ER
+        result = _ER(
+            success=proc.returncode == 0,
+            stdout=stdout_str,
+            stderr=stderr_str,
+            exit_code=proc.returncode,
+            duration_ms=0,
+        )
+        return BaseSandboxBackend._format_result(result, work_dir=str(agent_root))
 
     except Exception as e:
         return f"❌ Execution error: {str(e)[:200]}"

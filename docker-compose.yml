@@ -58,6 +58,7 @@ services:
       - ./backend/agent_data:/data/agents
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro
+      - shared-deps:/data/shared-deps
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,6 +85,7 @@ services:
 volumes:
   pgdata:
   redisdata:
+  shared-deps:
 
 
 networks:

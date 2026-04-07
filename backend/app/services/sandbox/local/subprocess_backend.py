@@ -9,16 +9,35 @@ from pathlib import Path
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig
 
+# Global shared dependencies directory (persisted via Docker volume)
+_SHARED_DEPS_DIR = os.environ.get("SHARED_DEPS_DIR", "/data/shared-deps")
 
-# Security patterns - reused from agent_tools.py
+# Platform-aware path separator for PYTHONPATH
+_PATH_SEP = os.pathsep  # ';' on Windows, ':' on Linux/macOS
+
+
+def _ensure_deps_dirs() -> None:
+    """Ensure shared dependency directories exist (no-op if path is not writable)."""
+    for subdir in ("pip", "node_modules"):
+        d = Path(_SHARED_DEPS_DIR) / subdir
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # May not be writable in all environments (e.g. Windows dev)
+
+
+_ensure_deps_dirs()
+
+# Security patterns - allow office-scenario dependencies (pip install, requests, python scripts)
 _DANGEROUS_BASH_ALWAYS = [
     "rm -rf /", "rm -rf ~", "sudo ", "mkfs", "dd if=",
     ":(){ :", "chmod 777 /", "chown ", "shutdown", "reboot",
-    "python3 -c", "python -c",
+    # Removed: "python3 -c", "python -c" — allow bash to invoke python scripts
 ]
 
 _DANGEROUS_BASH_NETWORK = [
-    "curl ", "wget ", "nc ", "ncat ", "ssh ", "scp ",
+    "nc ", "ncat ", "ssh ", "scp ",
+    # Removed: "curl ", "wget " — allow downloading dependencies
 ]
 
 _DANGEROUS_PYTHON_IMPORTS_ALWAYS = [
@@ -27,9 +46,9 @@ _DANGEROUS_PYTHON_IMPORTS_ALWAYS = [
 ]
 
 _DANGEROUS_PYTHON_IMPORTS_NETWORK = [
-    "socket", "http.client", "urllib.request", "requests",
-    "ftplib", "smtplib", "telnetlib", "ctypes",
-    "__import__", "importlib",
+    "socket", "http.client", "ftplib", "smtplib", "telnetlib", "ctypes",
+    # Removed: "requests", "urllib.request" — office scenarios need HTTP
+    # Removed: "__import__", "importlib" — pip install needs these
 ]
 
 _DANGEROUS_NODE_ALWAYS = [
@@ -156,12 +175,18 @@ class SubprocessBackend(BaseSandboxBackend):
                 error=f"❌ {safety_error}"
             )
 
-        # Determine work directory
+        # Determine work directory: prefer workspace/ subdir, fallback to agent root
         if work_dir:
-            work_path = Path(work_dir)
+            work_path = Path(work_dir) / "workspace"
+            if not work_path.exists():
+                # No workspace subdir — use agent root directly
+                work_path = Path(work_dir)
         else:
             work_path = Path.cwd() / "workspace"
         work_path.mkdir(parents=True, exist_ok=True)
+
+        # Agent root (contains workspace/, skills/, memory/)
+        agent_root = work_path.parent if work_path.name == "workspace" else work_path
 
         # Determine command and file extension
         if language == "python":
@@ -180,10 +205,20 @@ class SubprocessBackend(BaseSandboxBackend):
         try:
             script_path.write_text(code, encoding="utf-8")
 
-            # Set up safe environment
+            # Set up safe environment with shared dependency paths
             safe_env = dict(os.environ)
             safe_env["HOME"] = str(work_path)
             safe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+            # Inject paths so code can find its files without knowing absolute paths
+            safe_env["WORKSPACE_DIR"] = str(work_path)      # workspace/ absolute path
+            safe_env["AGENT_ROOT"] = str(agent_root)         # agent root (skills/, etc.)
+
+            # Inject global shared deps into PYTHONPATH so installed packages are importable
+            pip_deps = f"{_SHARED_DEPS_DIR}/pip"
+            existing_pp = safe_env.get("PYTHONPATH", "")
+            safe_env["PYTHONPATH"] = f"{pip_deps}{_PATH_SEP}{existing_pp}" if existing_pp else pip_deps
+            safe_env["NODE_PATH"] = f"{_SHARED_DEPS_DIR}/node_modules"
 
             # Execute
             proc = await asyncio.create_subprocess_exec(
@@ -211,8 +246,8 @@ class SubprocessBackend(BaseSandboxBackend):
                     error=f"Code execution timed out after {timeout}s"
                 )
 
-            stdout_str = stdout.decode("utf-8", errors="replace")[:10000]
-            stderr_str = stderr.decode("utf-8", errors="replace")[:5000]
+            stdout_str = stdout.decode("utf-8", errors="replace")
+            stderr_str = stderr.decode("utf-8", errors="replace")
 
             duration_ms = int((time.time() - start_time) * 1000)
 
