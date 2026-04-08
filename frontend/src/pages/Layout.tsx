@@ -556,6 +556,17 @@ export default function Layout() {
                             <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.home}</span>
                             <span className="sidebar-item-text">{t('nav.dashboard')}</span>
                         </NavLink>
+                        <NavLink to="/okr" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                {/* OKR target icon */}
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <circle cx="12" cy="12" r="6"/>
+                                    <circle cx="12" cy="12" r="2"/>
+                                </svg>
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.okr', 'OKR')}</span>
+                        </NavLink>
                     </div>
                 </div>
                 

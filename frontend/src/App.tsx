@@ -18,6 +18,7 @@ import EnterpriseSettings from './pages/EnterpriseSettings';
 import InvitationCodes from './pages/InvitationCodes';
 import AdminCompanies from './pages/AdminCompanies';
 import SSOEntry from './pages/SSOEntry';
+import OKR from './pages/OKR';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const token = useAuthStore((s) => s.token);
@@ -191,6 +192,7 @@ export default function App() {
                     <Route path="agents/:id/chat" element={<Chat />} />
                     <Route path="messages" element={<Messages />} />
                     <Route path="enterprise" element={<EnterpriseSettings />} />
+                    <Route path="okr" element={<OKR />} />
                     <Route path="invitations" element={<InvitationCodes />} />
                     <Route path="admin/platform-settings" element={<AdminCompanies />} />
                 </Route>

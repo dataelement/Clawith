@@ -53,7 +53,8 @@
     "newAgent": "New Digital Employee",
     "enterprise": "Company Settings",
     "language": "Language",
-    "plaza": "Plaza"
+    "plaza": "Plaza",
+    "okr": "OKR"
   },
   "auth": {
     "login": "Login",
@@ -613,7 +614,8 @@
       "code": "Code & Execution",
       "discovery": "Discovery",
       "feishu": "Feishu / Lark",
-      "agentbay": "AgentBay"
+      "agentbay": "AgentBay",
+      "okr": "OKR"
     },
     "upload": {
       "success": "Upload successful",

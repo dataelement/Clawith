@@ -2319,7 +2319,15 @@ async def execute_tool(
             result = await _search_clawhub(agent_id, arguments)
         elif tool_name == "install_skill":
             result = await _install_skill(agent_id, ws, arguments)
+        # ── OKR Tools ──
+        elif tool_name == "get_okr":
+            result = await _get_okr(agent_id, arguments)
+        elif tool_name == "get_my_okr":
+            result = await _get_my_okr(agent_id, arguments)
+        elif tool_name == "update_kr_progress":
+            result = await _update_kr_progress(agent_id, arguments)
         else:
+
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
 
@@ -9186,3 +9194,310 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
     except Exception as e:
         logger.exception(f"[AgentBay] File transfer failed for agent {agent_id}")
         return f"File transfer failed: {str(e)[:200]}"
+
+
+# ─── OKR Tools ───────────────────────────────────────────────────────────────
+
+
+async def _get_agent_owner_info(agent_id: uuid.UUID) -> tuple[str, str]:
+    """Return (owner_type, owner_id_str) for the calling agent.
+
+    Used by get_my_okr and update_kr_progress to scope queries to the
+    correct owner without requiring the caller to pass their own ID.
+    """
+    from app.database import async_session
+    from app.models.agent import Agent
+    from sqlalchemy import select as _select
+
+    async with async_session() as db:
+        result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+        agent = result.scalar_one_or_none()
+    if not agent:
+        return "agent", str(agent_id)
+    return "agent", str(agent_id)
+
+
+async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
+    """Return the full OKR board for the current period as formatted text.
+
+    Includes company-level O+KR and every member's individual O+KR.
+    This is a read-only tool available to all agents.
+    """
+    import json
+    import httpx
+
+    # Resolve tenant_id from the calling agent
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    try:
+        from app.database import async_session
+        from app.models.agent import Agent
+        from app.models.okr import OKRObjective, OKRKeyResult, OKRSettings
+        from sqlalchemy import select as _select
+        from datetime import date, timedelta
+
+        async with async_session() as db:
+            # Look up the agent's tenant
+            agent_result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+            agent = agent_result.scalar_one_or_none()
+            if not agent:
+                return "Agent not found."
+
+            tenant_id = agent.tenant_id
+
+            # Get OKR settings to determine period
+            settings_result = await db.execute(
+                _select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
+            )
+            settings = settings_result.scalar_one_or_none()
+
+            if not settings or not settings.enabled:
+                return "OKR is not enabled for your organization."
+
+            # Compute period bounds
+            period_start = arguments.get("period_start")
+            period_end = arguments.get("period_end")
+            if period_start and period_end:
+                ps = date.fromisoformat(period_start)
+                pe = date.fromisoformat(period_end)
+            else:
+                # Simple quarterly computation
+                today = date.today()
+                q = (today.month - 1) // 3 + 1
+                ps = date(today.year, (q - 1) * 3 + 1, 1)
+                if q == 4:
+                    pe = date(today.year, 12, 31)
+                else:
+                    pe = date(today.year, q * 3 + 1, 1) - timedelta(days=1)
+
+            # Fetch all active objectives
+            obj_result = await db.execute(
+                _select(OKRObjective).where(
+                    OKRObjective.tenant_id == tenant_id,
+                    OKRObjective.period_start >= ps,
+                    OKRObjective.period_end <= pe,
+                    OKRObjective.status != "archived",
+                ).order_by(OKRObjective.owner_type, OKRObjective.created_at)
+            )
+            objectives = obj_result.scalars().all()
+
+            if not objectives:
+                return f"No OKRs found for the current period ({ps} – {pe})."
+
+            # Fetch all KRs
+            obj_ids = [o.id for o in objectives]
+            kr_result = await db.execute(
+                _select(OKRKeyResult)
+                .where(OKRKeyResult.objective_id.in_(obj_ids))
+                .order_by(OKRKeyResult.created_at)
+            )
+            all_krs = kr_result.scalars().all()
+
+            krs_by_obj: dict = {}
+            for kr in all_krs:
+                krs_by_obj.setdefault(str(kr.objective_id), []).append(kr)
+
+        # Format output
+        lines = [f"# OKR Board — {ps} to {pe}\n"]
+
+        company_objs = [o for o in objectives if o.owner_type == "company"]
+        member_objs = [o for o in objectives if o.owner_type != "company"]
+
+        if company_objs:
+            lines.append("## Company Objectives")
+            for o in company_objs:
+                krs = krs_by_obj.get(str(o.id), [])
+                pct = 0
+                if krs:
+                    pct = int(sum(min(k.current_value / k.target_value, 1) for k in krs) / len(krs) * 100)
+                lines.append(f"\n**O: {o.title}** [{pct}%]")
+                for kr in krs:
+                    lines.append(
+                        f"  - KR ({kr.status}): {kr.title}  "
+                        f"[{kr.current_value}/{kr.target_value} {kr.unit or ''}]  "
+                        f" kr_id={kr.id}"
+                    )
+
+        if member_objs:
+            lines.append("\n## Member Objectives")
+            for o in member_objs:
+                owner_label = f"{o.owner_type}:{o.owner_id}"
+                krs = krs_by_obj.get(str(o.id), [])
+                lines.append(f"\n**{owner_label}** | O: {o.title}")
+                for kr in krs:
+                    lines.append(
+                        f"  - KR ({kr.status}): {kr.title}  "
+                        f"[{kr.current_value}/{kr.target_value} {kr.unit or ''}]  "
+                        f" kr_id={kr.id}"
+                    )
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"[OKR] get_okr failed for agent {agent_id}")
+        return f"Failed to retrieve OKR data: {str(e)[:200]}"
+
+
+async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
+    """Return the calling agent's own Objectives and KRs.
+
+    Includes kr_id values so the agent can call update_kr_progress.
+    """
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    try:
+        from app.database import async_session
+        from app.models.agent import Agent
+        from app.models.okr import OKRObjective, OKRKeyResult, OKRSettings
+        from sqlalchemy import select as _select
+        from datetime import date, timedelta
+
+        async with async_session() as db:
+            agent_result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+            agent = agent_result.scalar_one_or_none()
+            if not agent:
+                return "Agent not found."
+
+            settings_result = await db.execute(
+                _select(OKRSettings).where(OKRSettings.tenant_id == agent.tenant_id)
+            )
+            settings = settings_result.scalar_one_or_none()
+            if not settings or not settings.enabled:
+                return "OKR is not enabled for your organization."
+
+            today = date.today()
+            q = (today.month - 1) // 3 + 1
+            ps = date(today.year, (q - 1) * 3 + 1, 1)
+            pe = date(today.year, q * 3 + 1, 1) - timedelta(days=1) if q < 4 else date(today.year, 12, 31)
+
+            obj_result = await db.execute(
+                _select(OKRObjective).where(
+                    OKRObjective.tenant_id == agent.tenant_id,
+                    OKRObjective.owner_type == "agent",
+                    OKRObjective.owner_id == agent_id,
+                    OKRObjective.period_start >= ps,
+                    OKRObjective.period_end <= pe,
+                    OKRObjective.status != "archived",
+                )
+            )
+            objectives = obj_result.scalars().all()
+
+            if not objectives:
+                return (
+                    f"You have no OKRs set for the current period ({ps} – {pe}). "
+                    "Contact the OKR Agent to set up your Objectives and Key Results."
+                )
+
+            obj_ids = [o.id for o in objectives]
+            kr_result = await db.execute(
+                _select(OKRKeyResult)
+                .where(OKRKeyResult.objective_id.in_(obj_ids))
+                .order_by(OKRKeyResult.created_at)
+            )
+            all_krs = kr_result.scalars().all()
+
+            krs_by_obj: dict = {}
+            for kr in all_krs:
+                krs_by_obj.setdefault(str(kr.objective_id), []).append(kr)
+
+        lines = [f"# My OKRs — {ps} to {pe}\n"]
+        for o in objectives:
+            krs = krs_by_obj.get(str(o.id), [])
+            lines.append(f"**O: {o.title}**")
+            if o.description:
+                lines.append(f"  {o.description}")
+            for kr in krs:
+                lines.append(
+                    f"  - [{kr.status}] {kr.title}  "
+                    f"Progress: {kr.current_value}/{kr.target_value} {kr.unit or ''}  "
+                    f"  kr_id={kr.id}"
+                )
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"[OKR] get_my_okr failed for agent {agent_id}")
+        return f"Failed to retrieve your OKR: {str(e)[:200]}"
+
+
+async def _update_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -> str:
+    """Update a KR's current_value. Only the owning agent may call this.
+
+    Automatically writes an OKRProgressLog entry for history tracking.
+    """
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    kr_id_str = arguments.get("kr_id", "").strip()
+    value = arguments.get("value")
+    note = arguments.get("note")
+
+    if not kr_id_str:
+        return "Missing required argument 'kr_id'. Call get_my_okr first to get your KR IDs."
+    if value is None:
+        return "Missing required argument 'value'."
+
+    try:
+        kr_id = uuid.UUID(kr_id_str)
+    except ValueError:
+        return f"Invalid kr_id format: {kr_id_str}"
+
+    try:
+        from app.database import async_session
+        from app.models.okr import OKRObjective, OKRKeyResult, OKRProgressLog
+        from sqlalchemy import select as _select
+        from datetime import datetime
+
+        async with async_session() as db:
+            # Verify the KR belongs to this agent (via objective.owner_id)
+            result = await db.execute(
+                _select(OKRKeyResult, OKRObjective)
+                .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
+                .where(
+                    OKRKeyResult.id == kr_id,
+                    OKRObjective.owner_type == "agent",
+                    OKRObjective.owner_id == agent_id,
+                )
+            )
+            row = result.first()
+            if not row:
+                return (
+                    f"Key Result {kr_id_str} not found or does not belong to you. "
+                    "Use get_my_okr to retrieve your own KR IDs."
+                )
+
+            kr, obj = row
+            prev_value = kr.current_value
+            kr.current_value = float(value)
+            kr.last_updated_at = datetime.utcnow()
+
+            # Auto-determine status based on progress ratio
+            ratio = kr.current_value / kr.target_value if kr.target_value else 0
+            if ratio >= 1.0:
+                kr.status = "completed"
+            elif ratio >= 0.7:
+                kr.status = "on_track"
+            elif ratio >= 0.4:
+                kr.status = "at_risk"
+            else:
+                kr.status = "behind"
+
+            log = OKRProgressLog(
+                kr_id=kr_id,
+                previous_value=prev_value,
+                new_value=float(value),
+                source="self_report",
+                note=note,
+            )
+            db.add(log)
+            await db.commit()
+
+        return (
+            f"KR updated: {kr.title}\n"
+            f"  {prev_value} → {value} {kr.unit or ''} (status: {kr.status})"
+        )
+
+    except Exception as e:
+        logger.exception(f"[OKR] update_kr_progress failed for agent {agent_id}")
+        return f"Failed to update KR progress: {str(e)[:200]}"

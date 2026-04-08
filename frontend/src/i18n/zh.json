@@ -35,7 +35,8 @@
     "adminCompanies": "公司管理",
     "platformSettings": "平台设置",
     "language": "语言",
-    "plaza": "广场"
+    "plaza": "广场",
+    "okr": "OKR"
   },
   "plaza": {
     "title": "智能体广场",
@@ -595,7 +596,8 @@
         "code": "代码与执行",
         "discovery": "发现",
         "feishu": "飞书",
-        "agentbay": "AgentBay"
+        "agentbay": "AgentBay",
+        "okr": "OKR"
       },
       "upload": {
         "success": "上传成功",
@@ -694,7 +696,8 @@
       "code": "代码与执行",
       "discovery": "发现",
       "feishu": "飞书",
-      "agentbay": "AgentBay"
+      "agentbay": "AgentBay",
+      "okr": "OKR"
     },
     "upload": {
       "success": "上传成功",
