@@ -37,6 +37,9 @@ class TenantOut(BaseModel):
     is_active: bool
     sso_enabled: bool = False
     sso_domain: str | None = None
+    is_default: bool = False
+    subdomain_prefix: str | None = None
+    effective_base_url: str | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -49,6 +52,8 @@ class TenantUpdate(BaseModel):
     is_active: bool | None = None
     sso_enabled: bool | None = None
     sso_domain: str | None = None
+    subdomain_prefix: str | None = None
+    is_default: bool | None = None
 
 
 # ─── Helpers ────────────────────────────────────────────
@@ -338,65 +343,79 @@ async def get_registration_config(db: AsyncSession = Depends(get_db)):
     return {"allow_self_create_company": allowed}
 
 
+# ─── Public: Check Subdomain Prefix Availability ─────────
+
+@router.get("/check-prefix")
+async def check_prefix(prefix: str, db: AsyncSession = Depends(get_db)):
+    """Check if a subdomain prefix is available."""
+    import re as _re
+    if not _re.match(r'^[a-z0-9]([a-z0-9\-]{0,48}[a-z0-9])?$', prefix):
+        return {"available": False, "reason": "Invalid format"}
+    reserved = {"www", "api", "app", "admin", "mail", "smtp", "ftp", "ns1", "ns2", "cdn", "static", "assets"}
+    if prefix in reserved:
+        return {"available": False, "reason": "Reserved"}
+    result = await db.execute(select(Tenant).where(Tenant.subdomain_prefix == prefix))
+    if result.scalar_one_or_none():
+        return {"available": False, "reason": "Already taken"}
+    return {"available": True}
+
+
 # ─── Public: Resolve Tenant by Domain ───────────────────
 
-@router.get("/resolve-by-domain")
-async def resolve_tenant_by_domain(
-    domain: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Resolve a tenant by its sso_domain or subdomain slug.
-
-    sso_domain is stored as a full URL (e.g. "https://acme.clawith.ai" or "http://1.2.3.4:3009").
-    The incoming `domain` parameter is the host (without protocol).
-
-    Lookup precedence:
-    1. Exact match on tenant.sso_domain ending with the host (strips protocol)
-    2. Extract slug from "{slug}.clawith.ai" and match tenant.slug
-    """
-    tenant = None
-
-    # 1. Match by stripping protocol from stored sso_domain
-    # sso_domain = "https://acme.clawith.ai" → compare against "acme.clawith.ai"
-    for proto in ("https://", "http://"):
-        result = await db.execute(
-            select(Tenant).where(Tenant.sso_domain == f"{proto}{domain}")
-        )
-        tenant = result.scalar_one_or_none()
-        if tenant:
-            break
-
-    # 2. Try without port (e.g. domain = "1.2.3.4:3009" → try "1.2.3.4")
-    if not tenant and ":" in domain:
-        domain_no_port = domain.split(":")[0]
-        for proto in ("https://", "http://"):
-            result = await db.execute(
-                select(Tenant).where(Tenant.sso_domain.like(f"{proto}{domain_no_port}%"))
-            )
-            tenant = result.scalar_one_or_none()
-            if tenant:
-                break
-
-    # 3. Fallback: extract slug from subdomain pattern
-    if not tenant:
-        import re
-        m = re.match(r"^([a-z0-9][a-z0-9\-]*[a-z0-9])\.clawith\.ai$", domain.lower())
-        if m:
-            slug = m.group(1)
-            result = await db.execute(select(Tenant).where(Tenant.slug == slug))
-            tenant = result.scalar_one_or_none()
-
-    if not tenant or not tenant.is_active or not tenant.sso_enabled:
-        raise HTTPException(status_code=404, detail="Tenant not found or not active or SSO not enabled")
-
+def _tenant_response(tenant):
     return {
-        "id": tenant.id,
+        "id": str(tenant.id),
         "name": tenant.name,
         "slug": tenant.slug,
         "sso_enabled": tenant.sso_enabled,
         "sso_domain": tenant.sso_domain,
-        "is_active": tenant.is_active,
+        "subdomain_prefix": tenant.subdomain_prefix,
+        "is_default": getattr(tenant, 'is_default', False),
     }
+
+
+@router.get("/resolve-by-domain")
+async def resolve_by_domain(domain: str, db: AsyncSession = Depends(get_db)):
+    """Resolve a tenant by the incoming domain/hostname."""
+    from app.core.domain import resolve_base_url, _get_global_base_url
+    from urllib.parse import urlparse
+
+    hostname = domain.split(":")[0]
+
+    # 1. Match sso_domain exactly
+    result = await db.execute(select(Tenant).where(Tenant.sso_domain == hostname))
+    tenant = result.scalar_one_or_none()
+    if tenant:
+        return _tenant_response(tenant)
+
+    # 2. Match subdomain_prefix
+    global_url = await _get_global_base_url(db)
+    if global_url:
+        parsed = urlparse(global_url)
+        global_host = parsed.hostname or ""
+        if hostname.endswith(f".{global_host}"):
+            prefix = hostname[: -(len(global_host) + 1)]
+            result = await db.execute(select(Tenant).where(Tenant.subdomain_prefix == prefix))
+            tenant = result.scalar_one_or_none()
+            if tenant:
+                return _tenant_response(tenant)
+
+    # 3. Match slug as subdomain
+    parts = hostname.split(".")
+    if len(parts) >= 2:
+        slug_candidate = parts[0]
+        result = await db.execute(select(Tenant).where(Tenant.slug == slug_candidate))
+        tenant = result.scalar_one_or_none()
+        if tenant:
+            return _tenant_response(tenant)
+
+    # 4. Return default tenant
+    result = await db.execute(select(Tenant).where(Tenant.is_default == True))
+    tenant = result.scalar_one_or_none()
+    if tenant:
+        return _tenant_response(tenant)
+
+    raise HTTPException(status_code=404, detail="No tenant found for this domain")
 
 # ─── Authenticated: List / Get ──────────────────────────
 
@@ -425,7 +444,10 @@ async def get_tenant(
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    return TenantOut.model_validate(tenant)
+    from app.core.domain import resolve_base_url
+    out = TenantOut.model_validate(tenant)
+    out.effective_base_url = await resolve_base_url(db, tenant_id=str(tenant.id))
+    return out
 
 
 @router.put("/{tenant_id}", response_model=TenantOut)
@@ -444,12 +466,35 @@ async def update_tenant(
         raise HTTPException(status_code=404, detail="Tenant not found")
 
     update_data = data.model_dump(exclude_unset=True)
-    
+
     # SSO configuration is managed exclusively by the company's own org_admin
     # via the Enterprise Settings page. Platform admins should not override it here.
     if current_user.role == "platform_admin":
         update_data.pop("sso_enabled", None)
         update_data.pop("sso_domain", None)
+
+    # Validate subdomain_prefix format if provided
+    if "subdomain_prefix" in update_data and update_data["subdomain_prefix"] is not None:
+        import re as _re
+        prefix = update_data["subdomain_prefix"]
+        if not _re.match(r'^[a-z0-9]([a-z0-9\-]{0,48}[a-z0-9])?$', prefix):
+            raise HTTPException(status_code=400, detail="Invalid subdomain prefix format")
+        reserved = {"www", "api", "app", "admin", "mail", "smtp", "ftp", "ns1", "ns2", "cdn", "static", "assets"}
+        if prefix in reserved:
+            raise HTTPException(status_code=400, detail="Subdomain prefix is reserved")
+        # Check uniqueness
+        existing = await db.execute(
+            select(Tenant).where(Tenant.subdomain_prefix == prefix, Tenant.id != tenant_id)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Subdomain prefix already taken")
+
+    # If setting is_default=True, clear other defaults
+    if update_data.get("is_default") is True:
+        from sqlalchemy import update as sql_update
+        await db.execute(
+            sql_update(Tenant).where(Tenant.id != tenant_id).values(is_default=False)
+        )
 
     for field, value in update_data.items():
         setattr(tenant, field, value)

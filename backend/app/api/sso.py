@@ -104,15 +104,12 @@ async def get_sso_config(sid: uuid.UUID, request: Request, db: AsyncSession = De
     result = await db.execute(query)
     providers = result.scalars().all()
     
-    # Determine the base URL for OAuth callbacks using centralized platform service:
-    from app.services.platform_service import platform_service
-    if session.tenant_id:
-        from app.models.tenant import Tenant
-        tenant_result = await db.execute(select(Tenant).where(Tenant.id == session.tenant_id))
-        tenant_obj = tenant_result.scalar_one_or_none()
-        public_base = await platform_service.get_tenant_sso_base_url(db, tenant_obj, request)
-    else:
-        public_base = await platform_service.get_public_base_url(db, request)
+    # Determine the base URL for OAuth callbacks using unified domain resolution:
+    from app.core.domain import resolve_base_url
+    public_base = await resolve_base_url(
+        db, request=request,
+        tenant_id=str(session.tenant_id) if session.tenant_id else None
+    )
     
     auth_urls = []
     for p in providers:

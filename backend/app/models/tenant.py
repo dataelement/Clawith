@@ -44,6 +44,11 @@ class Tenant(Base):
     sso_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     sso_domain: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
 
+    # Subdomain prefix for auto-generated tenant URLs (e.g. "acme" → acme.clawith.com)
+    subdomain_prefix: Mapped[str | None] = mapped_column(String(50), unique=True, index=True, nullable=True)
+    # Whether this is the platform's default tenant
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Trigger limits — defaults for new agents & floor values
     default_max_triggers: Mapped[int] = mapped_column(Integer, default=20)
     min_poll_interval_floor: Mapped[int] = mapped_column(Integer, default=5)
