@@ -5544,6 +5544,7 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
     """List all active triggers for the agent."""
     from app.models.trigger import AgentTrigger
+    from app.services.platform_service import platform_service
 
     try:
         async with async_session() as db:
@@ -5554,15 +5555,24 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
             )
             triggers = result.scalars().all()
 
+            # Resolve base URL for webhook triggers
+            _base_url = (await platform_service.get_public_base_url(db)).rstrip("/")
+
         if not triggers:
             return "No triggers found. Use set_trigger to create one."
 
-        lines = ["| Name | Type | Config | Reason | Status | Fires |", "|------|------|--------|--------|--------|-------|"]
+        lines = ["| Name | Type | Config | Webhook URL | Reason | Status | Fires |", "|------|------|--------|-------------|--------|--------|-------|"]
         for t in triggers:
             status = "✅ active" if t.is_enabled else "⏸ disabled"
-            config_str = str(t.config)[:50]
+            config = t.config or {}
+            if t.type == "webhook" and config.get("token"):
+                config_str = f"token: {config['token']}"
+                webhook_url = f"{_base_url}/api/webhooks/t/{config['token']}"
+            else:
+                config_str = str(config)[:50]
+                webhook_url = "-"
             reason_str = t.reason[:40] if t.reason else ""
-            lines.append(f"| {t.name} | {t.type} | {config_str} | {reason_str} | {status} | {t.fire_count} |")
+            lines.append(f"| {t.name} | {t.type} | {config_str} | {webhook_url} | {reason_str} | {status} | {t.fire_count} |")
 
         return "\n".join(lines)
 
