@@ -168,6 +168,11 @@ async def call_llm(
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
 
+    # Re-hydrate image context from previous turns for vision-capable models
+    if supports_vision and agent_id:
+        from app.services.image_context import rehydrate_image_messages
+        messages = rehydrate_image_messages(messages, agent_id)
+
     # Convert messages to LLMMessage format
     api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
     for msg in messages:
