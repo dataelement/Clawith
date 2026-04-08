@@ -781,11 +781,22 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
         return self.DINGTALK_API_URL
 
     async def get_access_token(self) -> str:
-        if self._access_token and self._token_expires_at and datetime.now() < self._token_expires_at:
-            return self._access_token
+        """Get or refresh the DingTalk access token.
+
+        Cached in Redis (preferred) with in-memory fallback.
+        Key: clawith:token:dingtalk_corp:{app_key}
+        TTL: expires_in - 300s (5 min early refresh)
+        """
+        from app.core.token_cache import get_cached_token, set_cached_token
 
         if not self.app_key or not self.app_secret:
             raise ValueError("DingTalk app_key/app_secret missing in provider config")
+
+        cache_key = f"clawith:token:dingtalk_corp:{self.app_key}"
+        cached = await get_cached_token(cache_key)
+        if cached:
+            self._access_token = cached
+            return cached
 
         async with httpx.AsyncClient() as client:
             resp = await client.get(
@@ -797,9 +808,11 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
                 raise RuntimeError(f"DingTalk token error: {data.get('errmsg') or data}")
             token = data.get("access_token") or ""
             expires_in = int(data.get("expires_in") or 7200)
-            self._access_token = token
-            # refresh a bit earlier
-            self._token_expires_at = datetime.now() + timedelta(seconds=max(expires_in - 60, 60))
+            if token:
+                ttl = max(expires_in - 300, 60)
+                await set_cached_token(cache_key, token, ttl)
+                self._access_token = token
+                self._token_expires_at = datetime.now() + timedelta(seconds=max(expires_in - 60, 60))
             return token
 
     async def fetch_departments(self) -> list[ExternalDepartment]:
@@ -990,19 +1003,30 @@ class WeComOrgSyncAdapter(BaseOrgSyncAdapter):
     async def get_access_token(self) -> str:
         """Get valid access token using the 通讯录同步 (contact-sync) secret.
 
+        Cached in Redis (preferred) with in-memory fallback.
+        Key: clawith:token:wecom:{corp_id}
+        TTL: 6900s (7200s validity - 5 min early refresh)
+
         This token can call department/simplelist and user/list_id.
         It cannot call user/list or user/get (those raise errcode 48009).
         Full user profiles are obtained passively via SSO login instead.
         """
-        if self._access_token and self._token_expires_at and datetime.now() < self._token_expires_at:
-            return self._access_token
+        from app.core.token_cache import get_cached_token, set_cached_token
 
         if not self.corp_id or not self.secret:
             raise ValueError("WeCom corp_id or secret missing in provider config")
 
+        cache_key = f"clawith:token:wecom:{self.corp_id}"
+        cached = await get_cached_token(cache_key)
+        if cached:
+            self._access_token = cached
+            return cached
+
         token = await self._fetch_token(self.corp_id, self.secret)
+        if token:
+            ttl = max(7200 - 300, 300)
+            await set_cached_token(cache_key, token, ttl)
         self._access_token = token
-        # Refresh slightly before true expiry to avoid clock-skew issues
         self._token_expires_at = datetime.now() + timedelta(seconds=7200 - 300)
         return token
 

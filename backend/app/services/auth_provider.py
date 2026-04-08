@@ -294,8 +294,19 @@ class FeishuAuthProvider(BaseAuthProvider):
         return f"{base_url}?{params}"
 
     async def get_app_access_token(self) -> str:
-        if self._app_access_token:
-            return self._app_access_token
+        """Get or refresh the Feishu app access token.
+
+        Cached in Redis (preferred) with in-memory fallback.
+        Key: clawith:token:feishu_tenant:{app_id}
+        TTL: 6900s (7200s validity - 5 min early refresh)
+        """
+        from app.core.token_cache import get_cached_token, set_cached_token
+
+        cache_key = f"clawith:token:feishu_tenant:{self.app_id}"
+        cached = await get_cached_token(cache_key)
+        if cached:
+            self._app_access_token = cached
+            return cached
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -303,8 +314,13 @@ class FeishuAuthProvider(BaseAuthProvider):
                 json={"app_id": self.app_id, "app_secret": self.app_secret},
             )
             data = resp.json()
-            self._app_access_token = data.get("app_access_token", "")
-            return self._app_access_token
+            token = data.get("app_access_token", "") or data.get("tenant_access_token", "")
+            expire = data.get("expire", 7200)
+            if token:
+                ttl = max(expire - 300, 60)
+                await set_cached_token(cache_key, token, ttl)
+            self._app_access_token = token
+            return token
 
     async def exchange_code_for_token(self, code: str) -> dict:
         app_token = await self.get_app_access_token()

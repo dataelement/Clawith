@@ -86,21 +86,39 @@ class FeishuService:
         return await self.get_tenant_access_token(self.app_id, self.app_secret)
         
     async def get_tenant_access_token(self, app_id: str = None, app_secret: str = None) -> str:
-        """Get or refresh the app-level access token (tenant_access_token)."""
+        """Get or refresh the app-level access token (tenant_access_token).
+
+        Cached in Redis (preferred) with in-memory fallback.
+        Key: clawith:token:feishu_tenant:{app_id}
+        TTL: 6900s (7200s validity - 5 min early refresh)
+        """
+        from app.core.token_cache import get_cached_token, set_cached_token
+
         target_app_id = app_id or self.app_id
         target_app_secret = app_secret or self.app_secret
-        
+        cache_key = f"clawith:token:feishu_tenant:{target_app_id}"
+
+        cached = await get_cached_token(cache_key)
+        if cached:
+            if not app_id:
+                self._app_access_token = cached
+            return cached
+
         async with httpx.AsyncClient() as client:
             resp = await client.post(FEISHU_APP_TOKEN_URL, json={
                 "app_id": target_app_id,
                 "app_secret": target_app_secret,
             })
             data = resp.json()
-            
+
             token = data.get("tenant_access_token") or data.get("app_access_token", "")
-            if not app_id: # only cache default app token
-                self._app_access_token = token
-                
+            expire = data.get("expire", 7200)
+            if token:
+                ttl = max(expire - 300, 60)
+                await set_cached_token(cache_key, token, ttl)
+                if not app_id:  # only update instance var for default app token
+                    self._app_access_token = token
+
             return token
 
     async def exchange_code_for_user(self, code: str) -> dict:
