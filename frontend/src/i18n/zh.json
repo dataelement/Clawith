@@ -1788,6 +1788,31 @@
       "ws_step5": "复制生成的 Bot ID 和 Secret → 填入上方 → 点击保存配置",
       "ws_step6": "在企业微信中找到机器人，发送消息测试",
       "ws_note": "WebSocket 长连接模式无需公网 IP、回调地址或域名备案（ICP），连接由系统自动管理。"
+    },
+    "wecomMultiAccount": {
+      "accounts": "账号列表",
+      "addAccount": "添加账号",
+      "editAccount": "编辑账号",
+      "deleteAccount": "删除账号",
+      "nickname": "账号昵称",
+      "nicknamePlaceholder": "例如：客服机器人、销售助手",
+      "accountId": "账号ID",
+      "communicationModes": "通信模式",
+      "webhookUrls": "Webhook URLs",
+      "confirmDeleteTitle": "确认删除账号",
+      "cannotDeleteTitle": "无法删除",
+      "confirmDelete": "确定要删除该账号吗？此操作不可撤销。",
+      "errors": {
+        "nicknameRequired": "请填写账号昵称",
+        "botIdRequired": "Bot ID 是必填项",
+        "botSecretRequired": "Bot Secret 是必填项",
+        "tokenRequired": "Token 是必填项",
+        "encodingAesKeyRequired": "EncodingAESKey 是必填项",
+        "corpIdRequired": "CorpID 是必填项",
+        "agentIdRequired": "AgentID 是必填项",
+        "secretRequired": "Secret 是必填项",
+        "cannotDeleteLastAccount": "无法删除最后一个账号"
+      }
     }
   },
   "identity": {
