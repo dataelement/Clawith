@@ -29,6 +29,7 @@ class UserOut(BaseModel):
     username: str | None = None
     email: str | None = None
     display_name: str | None = None
+    primary_mobile: str | None = None
     role: str
     is_active: bool
     # Quota fields
@@ -85,6 +86,7 @@ async def list_users(
             "username": u.username or u.email or f"{u.registration_source or 'user'}_{str(u.id)[:8]}",
             "email": u.email or "",
             "display_name": u.display_name or u.username or "",
+            "primary_mobile": u.primary_mobile,
             "role": u.role,
             "is_active": u.is_active,
             "quota_message_limit": u.quota_message_limit,
@@ -146,7 +148,8 @@ async def update_user_quota(
 
     return UserOut(
         id=user.id, username=user.username, email=user.email,
-        display_name=user.display_name, role=user.role, is_active=user.is_active,
+        display_name=user.display_name, primary_mobile=user.primary_mobile,
+        role=user.role, is_active=user.is_active,
         quota_message_limit=user.quota_message_limit,
         quota_message_period=user.quota_message_period,
         quota_messages_used=user.quota_messages_used,
@@ -224,3 +227,99 @@ async def update_user_role(
     target_user.role = data.role
     await db.commit()
     return {"status": "ok", "user_id": str(user_id), "role": data.role}
+
+
+# ─── Profile Management ───────────────────────────────
+
+class UserProfileUpdate(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+    primary_mobile: str | None = None
+    is_active: bool | None = None
+    new_password: str | None = None
+
+
+@router.patch("/{user_id}/profile", response_model=UserOut)
+async def update_user_profile(
+    user_id: uuid.UUID,
+    data: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a user's basic profile information.
+
+    Permissions:
+    - platform_admin: can edit any user.
+    - org_admin: can only edit users within the same tenant.
+    - Cannot edit platform_admin users (unless caller is platform_admin).
+    """
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Fetch target user
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # org_admin can only edit users in the same tenant
+    if current_user.role == "org_admin":
+        if target.tenant_id != current_user.tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot modify users outside your organization")
+        if target.role == "platform_admin":
+            raise HTTPException(status_code=403, detail="Cannot modify platform admin users")
+
+    # Update fields
+    if data.display_name is not None:
+        if not data.display_name.strip():
+            raise HTTPException(status_code=400, detail="Display name cannot be empty")
+        target.display_name = data.display_name.strip()
+    if data.email is not None:
+        email_val = data.email.strip().lower()
+        if email_val:
+            # Check email uniqueness (exclude self)
+            existing = await db.execute(
+                select(User).where(User.email == email_val, User.id != user_id)
+            )
+            if existing.scalar_one_or_none():
+                raise HTTPException(status_code=400, detail="Email already in use by another user")
+            target.email = email_val
+    if data.primary_mobile is not None:
+        target.primary_mobile = data.primary_mobile.strip() or None
+    if data.is_active is not None:
+        target.is_active = data.is_active
+    if data.new_password is not None and data.new_password.strip():
+        from app.core.security import hash_password
+        if len(data.new_password.strip()) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        target.password_hash = hash_password(data.new_password.strip())
+
+    await db.commit()
+    await db.refresh(target)
+
+    # Count agents for response
+    count_result = await db.execute(
+        select(func.count()).select_from(Agent).where(
+            Agent.creator_id == target.id,
+            Agent.is_expired == False,
+        )
+    )
+    agents_count = count_result.scalar() or 0
+
+    return UserOut(
+        id=target.id,
+        username=target.username,
+        email=target.email,
+        display_name=target.display_name,
+        primary_mobile=target.primary_mobile,
+        role=target.role,
+        is_active=target.is_active,
+        quota_message_limit=target.quota_message_limit,
+        quota_message_period=target.quota_message_period,
+        quota_messages_used=target.quota_messages_used,
+        quota_max_agents=target.quota_max_agents,
+        quota_agent_ttl_hours=target.quota_agent_ttl_hours,
+        agents_count=agents_count,
+        created_at=target.created_at.isoformat() if target.created_at else None,
+        source=target.registration_source or "registered",
+    )
