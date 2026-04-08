@@ -2010,18 +2010,6 @@ def _is_error_result(result: str) -> bool:
     return result.startswith(("❌", "Tool execution error", "Error executing"))
 
 
-def _check_tool_cache_sync(tool_name: str, arguments: dict, agent_id: uuid.UUID | None) -> str | None:
-    """Check tool cache. Returns cached result or None. Extracted to avoid repetition (DRY)."""
-    if not agent_id:
-        return None
-    try:
-        from app.services.tool_artifacts import check_cache
-        _ws = WORKSPACE_ROOT / str(agent_id)
-        return check_cache(_ws, tool_name, arguments)
-    except Exception:
-        return None
-
-
 def _persist_tool_result_sync(ws: Path, tool_name: str, arguments: dict, result: str) -> str:
     """Persist tool result and append path hint. Returns (possibly modified) result string."""
     if _is_error_result(result):
@@ -2385,11 +2373,6 @@ async def _web_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str
 
     Config resolution priority: Agent config > Company config > Defaults.
     """
-    # Cache check
-    _cached = _check_tool_cache_sync("web_search", arguments, agent_id)
-    if _cached:
-        return _cached + "\n\n[📋 缓存命中]"
-
     import httpx
     import re
 
@@ -2468,11 +2451,6 @@ async def _get_jina_api_key() -> str:
 
 async def _jina_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
     """Search via Jina AI Search API (s.jina.ai). Returns full content per result, not just snippets."""
-    # Cache check
-    _cached = _check_tool_cache_sync("jina_search", arguments, agent_id)
-    if _cached:
-        return _cached + "\n\n[📋 缓存命中]"
-
     import httpx
 
     query = arguments.get("query", "").strip()
@@ -2521,11 +2499,6 @@ async def _jina_search(arguments: dict, agent_id: uuid.UUID | None = None) -> st
 
 async def _jina_read(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
     """Read web page via Jina AI Reader API (r.jina.ai). Returns clean structured markdown."""
-    # Cache check
-    _cached = _check_tool_cache_sync("jina_read", arguments, agent_id)
-    if _cached:
-        return _cached + "\n\n[📋 缓存命中]"
-
     import httpx
     from app.config import get_settings
 
