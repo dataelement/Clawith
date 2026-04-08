@@ -523,6 +523,7 @@ export interface GwsScopeOption {
     scope: string;
     label: string;
     category: string;
+    requires_api?: string;
 }
 
 export interface GwsScopePreset {

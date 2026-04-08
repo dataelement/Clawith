@@ -498,6 +498,11 @@ function OrgTab({ tenant }: { tenant: any }) {
                                                         style={{ margin: 0 }}
                                                     />
                                                     <span>{s.label}</span>
+                                                    {s.requires_api && (
+                                                        <span style={{ fontSize: '9px', color: 'var(--warning)', padding: '1px 4px', background: 'var(--warning-bg, rgba(255,165,0,0.1))', borderRadius: '3px' }}>
+                                                            Requires: {s.requires_api}
+                                                        </span>
+                                                    )}
                                                     <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>
                                                         {s.scope.replace('https://www.googleapis.com/auth/', '')}
                                                     </span>
