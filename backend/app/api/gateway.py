@@ -413,7 +413,7 @@ async def _send_to_agent_background(
                 "--- Agent-to-Agent Communication Alert ---\n"
                 f"You are receiving a direct message from another digital employee ({source_agent_name}). "
                 "CRITICAL INSTRUCTION: Your direct text reply will automatically be delivered back to them. "
-                "DO NOT use the `send_agent_message` tool to reply to this conversation. Just reply naturally in text.\n"
+                "DO NOT use the `send_message_to_agent` tool to reply to this conversation. Just reply naturally in text.\n"
                 "If they are asking you to create or analyze a file, deliver the file using `send_file_to_agent` after writing it."
             )
 

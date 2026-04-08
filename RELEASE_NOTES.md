@@ -1,137 +1,83 @@
-# v1.8.1 Release Notes
+# v1.8.2 Release Notes
 
-> Released: 2026-04-03
+## What's New
 
-This is a stability and polish release built on top of v1.8.0-beta.3, covering security hardening,
-Feishu reliability fixes, a redesigned tool-call visualization, new file-management tools, and
-a first-class Kubernetes deployment option.
+### Security
+- **Fix account takeover via username collision** (#300): Prevents an attacker from creating an account with a username matching an existing SSO user's email, which could lead to unauthorized account access.
+- **Fix duplicate user creation on repeated SSO logins**: Feishu and DingTalk SSO now correctly reuse existing accounts instead of creating duplicate users.
 
----
+### AgentBay — Cloud Computer & Browser Automation
+- **New: `agentbay_file_transfer` tool**: Transfer files between any two environments — agent workspace, browser sandbox, cloud desktop (computer), or code sandbox — in any direction.
+- **Fix: Computer Take Control (TC) white screen**: TC now connects to the correct environment session (computer vs. browser) based on `env_type`. Previously, an existing browser session could hijack the computer TC connection.
+- **Fix: OS-aware desktop paths**: The `agentbay_file_transfer` tool description now automatically reflects the correct paths for the agent's configured OS type:
+  - Windows: `C:\Users\Administrator\Desktop\`
+  - Linux: `/home/wuying/Desktop/`
+- **Fix: Desktop file refresh**: After uploading to the Linux desktop directory, GNOME is notified to refresh icon display.
+- Multiple Take Control stability fixes: CDP polling replaced with sleep, multi-tab cleanup, 40s navigate timeout, unhashable type errors.
 
-## Highlights
+### Feishu (Lark) — CardKit Streaming Cards
+- Feishu bot responses now stream as animated typing-effect cards using the CardKit API (#287).
+- Fixed SSE stream hang issues and websocket proxy bypass for system proxy conflicts.
 
-### Redesigned Tool-Call Visualization (AnalysisCard)
+### DingTalk & Organization Sync
+- Fixed DingTalk org sync permissions guide (`Contact.User.Read` scope).
+- Fixed `open_id` vs `employee_id` user type handling in Feishu org sync.
 
-The live chat view now shows agent reasoning and tool calls in a unified **AnalysisCard** that
-groups interleaved thinking and tool-call messages into one collapsible block. The card shows:
-- A pulse LED while the agent is running, turning green on completion
-- The currently-active tool name in collapsed state alongside tool-count badge
-- Individual `<details>` rows per tool for args and result (collapsed by default)
-- Italic thinking-content blocks inline for extended reasoning (deepthink) models
-
-### New File Management Tools
-
-Three new built-in tools are available to all agents:
-- **`edit_file`** — targeted line-range edits without rewriting the entire file
-- **`search_files`** — substring or regex search across a workspace
-- **`find_files`** — glob-pattern file lookup
-- **`read_file`** now supports `offset` / `limit` for reading large files in pages
-
-### Kubernetes Deployment (Helm Chart)
-
-A production-ready Helm chart is now included at `helm/clawith/`. Deploy Clawith on any
-Kubernetes cluster in one command:
-```bash
-helm upgrade --install clawith helm/clawith/ -f values.yaml
-```
-
-### Security Fixes
-
-- **Cross-tenant data leak** — org member and department search was returning results across
-  tenant boundaries. Now strictly scoped to the requesting tenant. (#security)
-- **Platform admin token scope** — `platform_admin` role was not pinned to `tenant_id` in the
-  JWT, allowing cross-tenant privilege escalation. Fixed.
-- **Duplicate OrgMember shell** — channel users could create duplicate OrgMember rows on
-  reconnect. A uniqueness guard has been added.
-
-### Feishu Integration Reliability
-
-- **`feishu_doc_append` intermittent failures** — Markdown `---` dividers were converted to
-  `block_type: 22` which the Feishu batch-children API rejects. They now render as a text
-  separator line (`────────────────────────`), always accepted.
-- **`index: -1` removed** from the children API call — Feishu defaults to append-at-end when
-  `index` is omitted, avoiding `1770001 invalid param` errors.
-- **Stale `websocket_chat` import** — `feishu_doc_create` was trying to import
-  `channel_feishu_sender_open_id` from a deleted module, generating a visible warning. Fixed.
-- **Feishu streaming card stalls** — ordered patch queue now correctly processes streaming
-  updates for Feishu cards without stalling.
-- **Tool status stuck on "running"** — Feishu-channel tool status now correctly transitions
-  from `running` → `done` after tool completion.
-- **Added `wiki:wiki` permission** to the recommended Full permission set in channel config.
-
-### Admin Chat UI
-
-- **Read-only session viewer** — Admins viewing other users' sessions see a clear "Read-only ·
-  username" badge at top-left (fixed overlay, never scrolls away).
-- **Card border** — the entire chat area is now enclosed in a 12px-radius bordered card for
-  visual clarity.
-- **Optimistic relationship deletion** — relationship rows fade out immediately on delete (no wait).
-
-### Cross-Domain Tenant Switch
-
-The `?token=` query param is now consumed on app bootstrap, so users switching between tenant
-instances via a generated link land directly in the correct tenant without requiring a page reload.
-
-### i18n Improvements
-
-- All emoji removed from `en.json` and `zh.json` translation keys (project policy).
-- Hardcoded "Copy", "Upload", and several status strings now properly use `t()`.
-- New i18n key `agent.chat.analysing` for the AnalysisCard header.
-- Credential-related UI strings in zh.json completed.
+### Other Bug Fixes
+- **Fix: SSE stream protection** — `finish_reason` break guard added for OpenAI and Gemini streams to prevent runaway streams.
+- **Fix: Duplicate tool `send_feishu_message`** — Removed duplicate DB entry; added dedup guard in tool loading to prevent `Tool names must be unique` LLM errors.
+- **Fix: JWT token not consumed** on reset-password and verify-email routes.
+- **Fix: NULL username/email** for SSO-created users in `list_users`.
+- **Fix: Company name slug generation** — Added `anyascii` + `pypinyin` for universal CJK/Latin transliteration.
+- **Fix: `publish_page` URL** — Correctly generates `try.clawith.ai` links on source deployments.
+- **Fix: Agent template directory** — Dynamic default for source deployments.
+- Various i18n fixes (TakeControlPanel, DingTalk guide).
 
 ---
 
 ## Upgrade Guide
 
-### No breaking changes. No database migrations required.
+> **No database migrations required.** No new environment variables.
 
-#### Option A — Docker Compose
+### Docker Deployment (Recommended)
 
 ```bash
-cd <clawith-dir>
 git pull origin main
 docker compose down && docker compose up -d --build
 ```
 
-Or the rolling update (no downtime):
+### Source Deployment
 
 ```bash
 git pull origin main
 
-# Frontend
-cd frontend && npm install && npm run build
-cp public/logo.png dist/ && cp public/logo.svg dist/
-cd dist && zip -r ../dist.zip . && cd ../..
-docker cp frontend/dist.zip clawith-frontend-1:/usr/share/nginx/html/dist.zip
-docker exec clawith-frontend-1 sh -c "cd /usr/share/nginx/html && unzip -o dist.zip"
-docker compose restart frontend
+# Install new Python dependency
+pip install anyascii>=0.3.2
 
-# Backend
-docker cp backend/app clawith-backend-1:/app/
-docker exec clawith-backend-1 find /app -name "__pycache__" -exec rm -rf {} + 2>/dev/null
-docker compose restart backend
-```
-
-#### Option B — Source Deployment
-
-```bash
-git pull origin main
+# Rebuild frontend
 cd frontend && npm install && npm run build
 cd ..
-# Restart backend process (e.g. supervisorctl restart clawith-backend)
+
+# Restart services
 ```
 
-#### Option C — Kubernetes (Helm)
+### nginx Update Required
+
+A new routing rule has been added to `nginx.conf`. If you manage nginx separately (not via Docker), add this block inside your `server {}` before the WebSocket proxy section:
+
+```nginx
+location ~ ^/WW_verify_[A-Za-z0-9]+\.txt$ {
+    proxy_pass http://backend:8000/api/wecom-verify$request_uri;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+### Kubernetes (Helm)
 
 ```bash
 helm upgrade clawith helm/clawith/ -f values.yaml
 ```
 
-No Alembic migration is required for this release.
+No migration job needed.
 
----
-
-## Full Changelog
-
-See all commits since v1.8.0-beta.3:
-https://github.com/dataelement/Clawith/compare/v1.8.0-beta.3...v1.8.1

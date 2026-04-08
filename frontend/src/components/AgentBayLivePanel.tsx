@@ -244,7 +244,7 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
                     <button
                         className="live-panel-take-control"
                         onClick={() => setShowTakeControl(true)}
-                        title="Take Control — manually interact with the browser"
+                        title={activeTab === 'desktop' ? 'Take Control — manually interact with the cloud desktop' : 'Take Control — manually interact with the browser'}
                     >
                         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M3 3l5.5 10 1.5-4 4-1.5z" />
@@ -312,13 +312,17 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
                 <TakeControlPanel
                     agentId={agentId}
                     sessionId={sessionId}
+                    // Pass the env type so TC connects to the right session:
+                    // desktop tab => computer session, browser tab => browser session
+                    envType={activeTab === 'desktop' ? 'computer' : 'browser'}
                     onClose={() => setShowTakeControl(false)}
                     onLastScreenshot={(dataUri) => {
                         // Use the ref to always call the LATEST onLiveUpdate,
                         // avoids React closure-staleness in async handleCancel.
-                        console.log('[LivePanel] Received last screenshot from TC, size:', dataUri.length, 'onLiveUpdate:', !!onLiveUpdateRef.current);
+                        const env = activeTab === 'desktop' ? 'desktop' : 'browser';
+                        console.log('[LivePanel] Received last screenshot from TC, size:', dataUri.length, 'env:', env, 'onLiveUpdate:', !!onLiveUpdateRef.current);
                         if (onLiveUpdateRef.current) {
-                            onLiveUpdateRef.current('browser', dataUri);
+                            onLiveUpdateRef.current(env, dataUri);
                         }
                     }}
                 />

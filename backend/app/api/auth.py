@@ -177,7 +177,22 @@ async def register_init(
         password=data.password,
         is_platform_admin=is_first_user
     )
-    
+
+    # Defense-in-depth: verify the returned identity actually belongs to the
+    # submitted email. Under normal circumstances this should never trigger
+    # (find_or_create_identity no longer uses username as a lookup key), but
+    # this guard protects against future regressions.
+    if identity.email and identity.email != data.email:
+        logger.warning(
+            "[REGISTER_INIT] Identity email mismatch: submitted=%s returned=%s — rejecting",
+            data.email,
+            identity.email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username already taken. Please choose a different username.",
+        )
+
     # If identity existed, verify password
     if identity.password_hash and not verify_password(data.password, identity.password_hash):
          raise HTTPException(
@@ -348,6 +363,20 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         password=data.password,
         is_platform_admin=is_first_user
     )
+
+    # Defense-in-depth: verify the returned identity actually belongs to the
+    # submitted email. Should be unreachable after the username-lookup fix, but
+    # acts as a safety net against future regressions.
+    if identity.email and identity.email != data.email:
+        logger.warning(
+            "[REGISTER_LEGACY] Identity email mismatch: submitted=%s returned=%s — rejecting",
+            data.email,
+            identity.email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username already taken. Please choose a different username.",
+        )
     
     if is_first_user:
         identity.email_verified = True

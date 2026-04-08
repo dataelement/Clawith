@@ -501,7 +501,7 @@ export const controlApi = {
     screenshot: (agentId: string, data: { session_id: string }) =>
         request<any>(`/agents/${agentId}/control/screenshot`, { method: 'POST', body: JSON.stringify(data) }),
 
-    lock: (agentId: string, data: { session_id: string; platform_hint?: string }) =>
+    lock: (agentId: string, data: { session_id: string; platform_hint?: string; env_type?: string }) =>
         request<any>(`/agents/${agentId}/control/lock`, { method: 'POST', body: JSON.stringify(data) }),
 
     unlock: (agentId: string, data: { session_id: string; export_cookies?: boolean; platform_hint?: string }) =>

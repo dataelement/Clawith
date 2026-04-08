@@ -104,24 +104,30 @@ class RegistrationService:
         password: str | None = None,
         is_platform_admin: bool = False,
     ) -> Identity:
-        """Find an existing identity or create a new one."""
+        """Find an existing identity or create a new one.
+
+        Security note: only email and phone are authoritative identity claims.
+        Username is NOT used as a lookup key — it is just a display name and
+        cannot prove ownership. Using it as a fallback would allow account
+        takeover when two users share the same email prefix (e.g. alice@gmail.com
+        and alice@yahoo.com both produce username 'alice').
+        """
         identity = None
-        
-        # Try to find by email
+
+        # Match by email (primary ownership claim)
         if email:
             res = await db.execute(select(Identity).where(Identity.email == email))
             identity = res.scalar_one_or_none()
-            
-        # Try to find by phone
+
+        # Match by phone (secondary ownership claim)
         if not identity and phone:
             normalized_phone = re.sub(r"[\s\-\+]", "", phone)
             res = await db.execute(select(Identity).where(Identity.phone == normalized_phone))
             identity = res.scalar_one_or_none()
-            
-        # Try to find by username
-        if not identity and username:
-            res = await db.execute(select(Identity).where(Identity.username == username))
-            identity = res.scalar_one_or_none()
+
+        # Username is intentionally NOT used as a lookup key.
+        # If we cannot establish ownership via email or phone, treat this as a
+        # new identity to avoid returning another user's record.
 
         if identity:
             # Auto-verify if SMTP is not configured anywhere (env or DB)
@@ -132,19 +138,34 @@ class RegistrationService:
                     identity.email_verified = True
                     db.add(identity)
             return identity
-        
+
         # Check if SMTP is configured anywhere (env or DB) for auto-verification
         from app.services.system_email_service import resolve_email_config_async
         email_config = await resolve_email_config_async(db)
-        is_verified = not email_config  # Auto-verify only if no SMTP configured anywhere
+        is_verified = not email_config  # Auto-verify only if no SMTP configured
+
+        # Resolve a safe username: if the desired username is already taken by
+        # another identity, append a short random hex suffix to avoid collisions
+        # without blocking the registration.
+        final_username = username
+        if username:
+            existing_res = await db.execute(
+                select(Identity).where(Identity.username == username)
+            )
+            if existing_res.scalar_one_or_none():
+                final_username = f"{username}_{uuid.uuid4().hex[:6]}"
+                logger.info(
+                    "Username '%s' already taken; assigned '%s' to new identity",
+                    username,
+                    final_username,
+                )
 
         # Create new identity
         normalized_phone = re.sub(r"[\s\-\+]", "", phone) if phone else None
         identity = Identity(
             email=email,
             phone=normalized_phone,
-
-            username=username,
+            username=final_username,
             password_hash=hash_password(password) if password else None,
             is_platform_admin=is_platform_admin,
             email_verified=is_verified,

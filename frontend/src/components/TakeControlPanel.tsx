@@ -19,6 +19,8 @@ interface Props {
     agentId: string;
     sessionId: string;
     onClose: () => void;
+    /** Which AgentBay environment to connect to: 'browser' | 'computer' | 'code'. Default: 'browser'. */
+    envType?: 'browser' | 'computer' | 'code';
     /** Called with the last screenshot data URI when TC panel closes,
      *  so the parent live preview can update immediately. */
     onLastScreenshot?: (dataUri: string) => void;
@@ -56,7 +58,7 @@ const SaveIcon = (
     </svg>
 );
 
-export default function TakeControlPanel({ agentId, sessionId, onClose, onLastScreenshot }: Props) {
+export default function TakeControlPanel({ agentId, sessionId, onClose, envType = 'browser', onLastScreenshot }: Props) {
     const [screenshot, setScreenshot] = useState<string | null>(null);
     const [textInput, setTextInput] = useState('');
     const [locked, setLocked] = useState(false);
@@ -86,7 +88,7 @@ export default function TakeControlPanel({ agentId, sessionId, onClose, onLastSc
         mountedRef.current = true;
         (async () => {
             try {
-                const res = await controlApi.lock(agentId, { session_id: sessionId });
+                const res = await controlApi.lock(agentId, { session_id: sessionId, env_type: envType });
                 if (mountedRef.current) {
                     setLocked(true);
                     setStatusText('You are in control. Click or drag on the screenshot.');

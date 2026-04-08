@@ -12,6 +12,7 @@ The agent's workspace uses well-known paths:
 The agent reads/writes these files directly. No per-concept tools needed.
 """
 
+import asyncio
 import json
 import os
 import uuid
@@ -1561,6 +1562,57 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "agentbay_file_transfer",
+            "description": (
+                "Transfer a file between any two endpoints: the agent workspace, "
+                "the AgentBay browser environment, the cloud desktop (computer), or the code sandbox.\n\n"
+                "VERIFIED PATH CONVENTIONS (all Linux environments run as user 'wuying', HOME=/home/wuying/):\n"
+                "- code env:     use /home/wuying/<filename>  (working directory, e.g. /home/wuying/data.csv)\n"
+                "- browser env:  use /home/wuying/下载/<filename>  (download folder, e.g. /home/wuying/下载/file.pdf)\n"
+                "- computer env: use /home/wuying/桌面/<filename>  (Desktop, e.g. /home/wuying/桌面/report.xlsx)\n"
+                "- workspace:    use relative path, e.g. 'workspace/data.csv'\n\n"
+                "Transfer directions:\n"
+                "- workspace -> env: upload a workspace file into a cloud environment\n"
+                "- env -> workspace: download a file from a cloud environment into the workspace\n"
+                "- env A -> env B:   transfer between environments (transparent backend temp, no workspace involvement)"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_type": {
+                        "type": "string",
+                        "enum": ["workspace", "browser", "computer", "code"],
+                        "description": "Source endpoint: 'workspace' for agent workspace, or the AgentBay environment name.",
+                    },
+                    "from_path": {
+                        "type": "string",
+                        "description": (
+                            "Source path. Relative if workspace (e.g. 'workspace/data.csv'). "
+                            "Absolute if env: code → /home/wuying/file, "
+                            "browser → /home/wuying/下载/file, computer → /home/wuying/桌面/file."
+                        ),
+                    },
+                    "to_type": {
+                        "type": "string",
+                        "enum": ["workspace", "browser", "computer", "code"],
+                        "description": "Destination endpoint: 'workspace' for agent workspace, or the AgentBay environment name.",
+                    },
+                    "to_path": {
+                        "type": "string",
+                        "description": (
+                            "Destination path. Relative if workspace (e.g. 'workspace/output.csv'). "
+                            "Absolute if env: code → /home/wuying/file, "
+                            "browser → /home/wuying/下载/file, computer → /home/wuying/桌面/file."
+                        ),
+                    },
+                },
+                "required": ["from_type", "from_path", "to_type", "to_path"],
+            },
+        },
+    },
 ]
 
 
@@ -1609,6 +1661,111 @@ _feishu_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _FEISHU_TOOL
 _channel_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _CHANNEL_MESSAGE_TOOL_NAMES]
 
 
+async def _get_computer_os_type(agent_id: uuid.UUID) -> str:
+    """Return the configured OS type for the agent's computer tool.
+
+    Reads from agentbay_browser_navigate tool config (which stores all AgentBay
+    settings including os_type). Defaults to 'windows' to match AgentBay's default.
+    """
+    try:
+        config = await _get_tool_config(agent_id, "agentbay_browser_navigate")
+        return (config or {}).get("os_type", "windows")
+    except Exception:
+        return "windows"
+
+
+def _patch_computer_tool_descriptions(tools: list[dict], os_type: str) -> list[dict]:
+    """Rewrite path examples in agentbay_file_transfer to match the agent's OS.
+
+    This ensures the Agent always sees the correct desktop and home-directory
+    paths for its specific computer environment without having to guess.
+    """
+    import copy
+
+    if os_type == "windows":
+        # Windows paths used by AgentBay's windows_latest image
+        desktop_path = r"C:\Users\Administrator\Desktop"
+        home_path    = r"C:\Users\Administrator"
+        computer_os_label = "Windows"
+    else:
+        # Linux paths used by AgentBay's linux_latest image
+        desktop_path = "/home/wuying/Desktop"
+        home_path    = "/home/wuying"
+        computer_os_label = "Linux"
+
+    # Build the OS-aware description for agentbay_file_transfer
+    new_file_transfer_desc = (
+        "Transfer a file between any two endpoints: the agent workspace, "
+        "the AgentBay browser environment, the cloud desktop (computer), or the code sandbox.\n\n"
+        f"COMPUTER ENVIRONMENT OS: {computer_os_label}\n"
+        f"VERIFIED PATH CONVENTIONS for the computer environment ({computer_os_label}):\n"
+        f"- computer desktop: {desktop_path}\\<filename>  (e.g. {desktop_path}\\report.xlsx)\n"
+        f"- computer home:    {home_path}\\<filename>\n\n"
+        "Other environments (Linux-based, user 'wuying', HOME=/home/wuying/):\n"
+        "- code env:     /home/wuying/<filename>  (e.g. /home/wuying/data.csv)\n"
+        "- browser env:  /home/wuying/下载/<filename>  (download folder)\n"
+        "- workspace:    relative path, e.g. 'workspace/data.csv'\n\n"
+        "Transfer directions:\n"
+        "- workspace -> env: upload a workspace file into a cloud environment\n"
+        "- env -> workspace: download a file from a cloud environment into the workspace\n"
+        "- env A -> env B:   transfer between environments (transparent backend temp)"
+    ) if os_type == "windows" else (
+        "Transfer a file between any two endpoints: the agent workspace, "
+        "the AgentBay browser environment, the cloud desktop (computer), or the code sandbox.\n\n"
+        f"COMPUTER ENVIRONMENT OS: {computer_os_label}\n"
+        f"VERIFIED PATH CONVENTIONS for the computer environment ({computer_os_label}):\n"
+        f"- computer desktop: {desktop_path}/<filename>  (e.g. {desktop_path}/report.xlsx)\n"
+        f"- computer home:    {home_path}/<filename>\n\n"
+        "Other environments (also Linux, user 'wuying'):\n"
+        "- code env:     /home/wuying/<filename>  (e.g. /home/wuying/data.csv)\n"
+        "- browser env:  /home/wuying/下载/<filename>  (download folder)\n"
+        "- workspace:    relative path, e.g. 'workspace/data.csv'\n\n"
+        "Transfer directions:\n"
+        "- workspace -> env: upload a workspace file into a cloud environment\n"
+        "- env -> workspace: download a file from a cloud environment into the workspace\n"
+        "- env A -> env B:   transfer between environments (transparent backend temp)"
+    )
+
+    patched = []
+    for tool in tools:
+        fn = tool.get("function", {})
+        name = fn.get("name", "")
+        if name == "agentbay_file_transfer":
+            # Deep copy to avoid mutating the shared AGENT_TOOLS constant
+            tool = copy.deepcopy(tool)
+            tool["function"]["description"] = new_file_transfer_desc
+            # Also patch from_path and to_path parameter hints
+            props = tool["function"].get("parameters", {}).get("properties", {})
+            if "from_path" in props:
+                if os_type == "windows":
+                    props["from_path"]["description"] = (
+                        r"Source path. Relative if workspace (e.g. 'workspace/data.csv'). "
+                        r"Absolute if env: computer → C:\Users\Administrator\Desktop\file, "
+                        r"code → /home/wuying/file, browser → /home/wuying/下载/file."
+                    )
+                else:
+                    props["from_path"]["description"] = (
+                        "Source path. Relative if workspace (e.g. 'workspace/data.csv'). "
+                        "Absolute if env: computer → /home/wuying/Desktop/file, "
+                        "code → /home/wuying/file, browser → /home/wuying/下载/file."
+                    )
+            if "to_path" in props:
+                if os_type == "windows":
+                    props["to_path"]["description"] = (
+                        r"Destination path. Relative if workspace (e.g. 'workspace/output.csv'). "
+                        r"Absolute if env: computer → C:\Users\Administrator\Desktop\file, "
+                        r"code → /home/wuying/file, browser → /home/wuying/下载/file."
+                    )
+                else:
+                    props["to_path"]["description"] = (
+                        "Destination path. Relative if workspace (e.g. 'workspace/output.csv'). "
+                        "Absolute if env: computer → /home/wuying/Desktop/file, "
+                        "code → /home/wuying/file, browser → /home/wuying/下载/file."
+                    )
+        patched.append(tool)
+    return patched
+
+
 async def _agent_has_feishu(agent_id: uuid.UUID) -> bool:
     """Check if agent has a configured Feishu channel."""
     try:
@@ -1651,10 +1808,16 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     Always includes core system tools (send_channel_file, write_file).
     Feishu tools are only included when the agent has a configured Feishu channel.
     send_channel_message is included when any channel (Feishu/DingTalk/WeCom) is configured.
+
+    Also patches agentbay_file_transfer description with OS-specific paths based on
+    the agent's computer tool configuration (os_type: 'windows' | 'linux').
     """
     has_feishu = await _agent_has_feishu(agent_id)
     has_any_channel = await _agent_has_any_channel(agent_id)
     _always_tools = _always_core_tools + (_feishu_tools if has_feishu else []) + (_channel_tools if has_any_channel else [])
+
+    # Read os_type once; used to patch agentbay_file_transfer paths below
+    computer_os_type = await _get_computer_os_type(agent_id)
 
     try:
         from app.models.tool import Tool, AgentTool
@@ -1714,12 +1877,13 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                 for t in _always_tools:
                     if t["function"]["name"] not in db_tool_names:
                         result.append(t)
-                return result
+                # Inject OS-aware paths into computer-related tool descriptions
+                return _patch_computer_tool_descriptions(result, computer_os_type)
     except Exception as e:
         logger.error(f"[Tools] DB load failed, using fallback: {e}")
 
-    # Fallback to hardcoded tools
-    return AGENT_TOOLS
+    # Fallback to hardcoded tools (still apply OS-aware path patching)
+    return _patch_computer_tool_descriptions(AGENT_TOOLS, computer_os_type)
 
 
 # ─── Workspace initialization ──────────────────────────────────
@@ -2148,6 +2312,8 @@ async def execute_tool(
             result = await _agentbay_computer_activate_window(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_list_visible_apps":
             result = await _agentbay_computer_list_visible_apps(agent_id, ws, arguments)
+        elif tool_name == "agentbay_file_transfer":
+            result = await _agentbay_file_transfer(agent_id, ws, arguments)
         # ── Skill Management ──
         elif tool_name == "search_clawhub":
             result = await _search_clawhub(agent_id, arguments)
@@ -8925,3 +9091,143 @@ async def _agentbay_computer_list_visible_apps(agent_id: Optional[uuid.UUID], ws
     except Exception as e:
         logger.exception(f"[AgentBay] Computer list_visible_apps failed")
         return f"List applications failed: {str(e)[:200]}"
+
+
+async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Transfer a file between workspace and an AgentBay environment, or between two environments.
+
+    Supported transfer directions:
+      - workspace  → env:      upload_file(local_workspace_path, remote_path)   [single SDK call]
+      - env        → workspace: download_file(remote_path, local_workspace_path) [single SDK call]
+      - env A      → env B:    download to /tmp/<uuid>, upload to env B, cleanup /tmp [transparent]
+
+    The 'local' side of the SDK calls is always the Clawith backend server,
+    which has access to the agent workspace directory.
+    """
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    from_type = arguments.get("from_type", "")
+    from_path = arguments.get("from_path", "")
+    to_type   = arguments.get("to_type", "")
+    to_path   = arguments.get("to_path", "")
+    session_id = arguments.pop("_session_id", "")
+
+    if not all([from_type, from_path, to_type, to_path]):
+        return "Missing required parameters: from_type, from_path, to_type, to_path"
+
+    # Reject no-op transfers
+    if from_type == "workspace" and to_type == "workspace":
+        return "Cannot transfer workspace → workspace. Use write_file or workspace tools instead."
+    if from_type == to_type and from_type != "workspace":
+        return f"Same environment ({from_type}) transfer: use agentbay_command_exec with 'cp' to copy files within the same environment."
+
+    env_types = {"browser", "computer", "code"}
+
+    # ── Helper: resolve and validate a workspace-relative path ──────────────
+    def resolve_workspace(rel_path: str) -> tuple[str | None, str]:
+        """Return (absolute_local_path_str, error_message). error_message is '' on success."""
+        local = (ws / rel_path).resolve()
+        if not str(local).startswith(str(ws.resolve())):
+            return None, "Permission denied: path must be inside the agent workspace"
+        return str(local), ""
+
+    try:
+        # ── Case 1: workspace → env ──────────────────────────────────────────
+        if from_type == "workspace" and to_type in env_types:
+            local_path, err = resolve_workspace(from_path)
+            if err:
+                return err
+            import os
+            if not os.path.exists(local_path):
+                return f"File not found in workspace: {from_path}"
+            client = await get_agentbay_client_for_agent(agent_id, to_type, session_id=session_id)
+            result = await asyncio.to_thread(
+                client._session.file_system.upload_file,
+                local_path, to_path
+            )
+            if result.success:
+                msg = (
+                    f"Transferred workspace/{from_path} → [{to_type}]{to_path} "
+                    f"({result.bytes_sent} bytes)"
+                )
+                # After uploading to the computer desktop directory, notify the GNOME
+                # file manager so the file icon appears immediately without manual refresh.
+                desktop_dir = "/home/wuying/桌面"
+                if to_type == "computer" and to_path.startswith(desktop_dir):
+                    try:
+                        await asyncio.to_thread(
+                            client._session.command.exec,
+                            f"DISPLAY=:0 gio info '{to_path}' 2>/dev/null || true"
+                        )
+                    except Exception:
+                        pass  # Non-critical: desktop refresh failure doesn't affect transfer result
+                return msg
+            return f"Upload failed: {result.error_message}"
+
+        # ── Case 2: env → workspace ──────────────────────────────────────────
+        elif from_type in env_types and to_type == "workspace":
+            local_path, err = resolve_workspace(to_path)
+            if err:
+                return err
+            import os
+            os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+            client = await get_agentbay_client_for_agent(agent_id, from_type, session_id=session_id)
+            result = await asyncio.to_thread(
+                client._session.file_system.download_file,
+                from_path, local_path
+            )
+            if result.success:
+                return (
+                    f"Transferred [{from_type}]{from_path} → workspace/{to_path} "
+                    f"({result.bytes_received} bytes). "
+                    f"File available in workspace at: {to_path}"
+                )
+            return f"Download failed: {result.error_message}"
+
+        # ── Case 3: env A → env B (transparent /tmp/ intermediary) ──────────
+        elif from_type in env_types and to_type in env_types:
+            import uuid as _uuid
+            import os
+            tmp_path = f"/tmp/agentbay_transfer_{_uuid.uuid4().hex}"
+            try:
+                # Step 1: download from source env to backend /tmp/
+                src_client = await get_agentbay_client_for_agent(agent_id, from_type, session_id=session_id)
+                dl_result = await asyncio.to_thread(
+                    src_client._session.file_system.download_file,
+                    from_path, tmp_path
+                )
+                if not dl_result.success:
+                    return f"Transfer failed (download from {from_type}): {dl_result.error_message}"
+
+                # Step 2: upload from backend /tmp/ to destination env
+                dst_client = await get_agentbay_client_for_agent(agent_id, to_type, session_id=session_id)
+                ul_result = await asyncio.to_thread(
+                    dst_client._session.file_system.upload_file,
+                    tmp_path, to_path
+                )
+                if not ul_result.success:
+                    return f"Transfer failed (upload to {to_type}): {ul_result.error_message}"
+
+                return (
+                    f"Transferred [{from_type}]{from_path} → [{to_type}]{to_path} "
+                    f"({dl_result.bytes_received} bytes)"
+                )
+            finally:
+                # Always clean up the temporary file regardless of success or failure
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass  # Non-critical: ignore cleanup errors
+
+        else:
+            return f"Unsupported transfer: {from_type} → {to_type}"
+
+    except RuntimeError as e:
+        return f"{str(e)}"
+    except Exception as e:
+        logger.exception(f"[AgentBay] File transfer failed for agent {agent_id}")
+        return f"File transfer failed: {str(e)[:200]}"
