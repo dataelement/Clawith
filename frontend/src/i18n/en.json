@@ -1725,5 +1725,22 @@
     "ssoEnabled": "Enable SSO",
     "ssoDomain": "Custom Access Domain",
     "ssoDomainPlaceholder": "e.g. acme.clawith.com"
+  },
+  "users": {
+    "editInfo": "Edit Info",
+    "quota": "Quota",
+    "editUser": "Edit User",
+    "username": "Username",
+    "displayName": "Display Name",
+    "displayNameRequired": "Display name is required",
+    "email": "Email",
+    "mobile": "Mobile",
+    "mobilePlaceholder": "Optional",
+    "newPassword": "New Password",
+    "newPasswordPlaceholder": "Leave blank to keep current password",
+    "newPasswordHint": "Optional. If provided, user password will be reset.",
+    "accountStatus": "Account Status",
+    "accountStatusHint": "Disabled users cannot log in",
+    "saveFailed": "Save failed"
   }
 }

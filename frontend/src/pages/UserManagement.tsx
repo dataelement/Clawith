@@ -519,3 +519,205 @@ export default function UserManagement() {
         </div>
     );
 }
+
+
+// ─── Edit User Profile Modal ───────────────────────────────
+interface EditUserModalProps {
+    user: UserInfo;
+    onClose: () => void;
+    onUpdated: () => void;
+}
+
+function EditUserModal({ user, onClose, onUpdated }: EditUserModalProps) {
+    const { t, i18n } = useTranslation();
+    const isChinese = i18n.language?.startsWith('zh');
+    const { user: currentUser } = useAuthStore();
+
+    const [form, setForm] = useState({
+        display_name: user.display_name || '',
+        email: user.email || '',
+        primary_mobile: user.primary_mobile || '',
+        is_active: user.is_active,
+        new_password: '',
+    });
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState('');
+
+    const handleSave = async () => {
+        if (!form.display_name.trim()) {
+            setError(t('users.displayNameRequired', isChinese ? '显示名称不能为空' : 'Display name is required'));
+            return;
+        }
+        setSaving(true);
+        setError('');
+        try {
+            const payload: any = {
+                display_name: form.display_name.trim(),
+                email: form.email.trim(),
+                primary_mobile: form.primary_mobile.trim() || null,
+                is_active: form.is_active,
+            };
+            if (form.new_password.trim()) {
+                payload.new_password = form.new_password.trim();
+            }
+            await fetchJson(`/users/${user.id}/profile`, {
+                method: 'PATCH',
+                body: JSON.stringify(payload),
+            });
+            onUpdated();
+            onClose();
+        } catch (e: any) {
+            const detail = (() => {
+                try { return JSON.parse(e.message)?.detail; }
+                catch { return e.message; }
+            })();
+            setError(detail || t('users.saveFailed', isChinese ? '保存失败' : 'Save failed'));
+        }
+        setSaving(false);
+    };
+
+    const isReadOnly = currentUser?.role === 'org_admin' && user.role === 'platform_admin';
+
+    return (
+        <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 10001,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backdropFilter: 'blur(4px)',
+        }} onClick={onClose}>
+            <div className="card" style={{
+                padding: '24px', maxWidth: '440px', width: '90%',
+                boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+            }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h2 style={{ fontSize: '16px', fontWeight: 600 }}>
+                        {t('users.editUser', isChinese ? '编辑用户信息' : 'Edit User')}
+                    </h2>
+                    <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+
+                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+                    {t('users.username', isChinese ? '用户名' : 'Username')}: <span style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>@{user.username}</span>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    <div className="form-group">
+                        <label className="form-label" style={{ fontSize: '12px' }}>
+                            {t('users.displayName', isChinese ? '显示名称' : 'Display Name')} <span style={{ color: 'var(--error)' }}>*</span>
+                        </label>
+                        <input
+                            className="form-input"
+                            value={form.display_name}
+                            onChange={e => setForm({ ...form, display_name: e.target.value })}
+                            disabled={isReadOnly}
+                            style={{ fontSize: '13px' }}
+                        />
+                    </div>
+
+                    <div className="form-group">
+                        <label className="form-label" style={{ fontSize: '12px' }}>
+                            {t('users.email', isChinese ? '邮箱' : 'Email')}
+                        </label>
+                        <input
+                            className="form-input"
+                            type="email"
+                            value={form.email}
+                            onChange={e => setForm({ ...form, email: e.target.value })}
+                            disabled={isReadOnly}
+                            style={{ fontSize: '13px' }}
+                        />
+                    </div>
+
+                    <div className="form-group">
+                        <label className="form-label" style={{ fontSize: '12px' }}>
+                            {t('users.mobile', isChinese ? '手机号' : 'Mobile')}
+                        </label>
+                        <input
+                            className="form-input"
+                            type="tel"
+                            value={form.primary_mobile}
+                            onChange={e => setForm({ ...form, primary_mobile: e.target.value })}
+                            disabled={isReadOnly}
+                            placeholder={t('users.mobilePlaceholder', isChinese ? '可选' : 'Optional')}
+                            style={{ fontSize: '13px' }}
+                        />
+                    </div>
+
+                    <div className="form-group">
+                        <label className="form-label" style={{ fontSize: '12px' }}>
+                            {t('users.newPassword', isChinese ? '新密码' : 'New Password')}
+                        </label>
+                        <input
+                            className="form-input"
+                            type="password"
+                            value={form.new_password}
+                            onChange={e => setForm({ ...form, new_password: e.target.value })}
+                            disabled={isReadOnly}
+                            placeholder={t('users.newPasswordPlaceholder', isChinese ? '留空则不修改密码' : 'Leave blank to keep current password')}
+                            style={{ fontSize: '13px' }}
+                            autoComplete="new-password"
+                        />
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                            {t('users.newPasswordHint', isChinese ? '可选。填写后将重置用户密码。' : 'Optional. If provided, user password will be reset.')}
+                        </div>
+                    </div>
+
+                    {user.role !== 'platform_admin' && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            padding: '10px 12px', borderRadius: '8px',
+                            background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
+                        }}>
+                            <div>
+                                <div style={{ fontSize: '13px', fontWeight: 500 }}>
+                                    {t('users.accountStatus', isChinese ? '账号状态' : 'Account Status')}
+                                </div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                                    {t('users.accountStatusHint', isChinese ? '禁用后用户无法登录' : 'Disabled users cannot log in')}
+                                </div>
+                            </div>
+                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={form.is_active}
+                                    onChange={e => setForm({ ...form, is_active: e.target.checked })}
+                                    style={{ opacity: 0, width: 0, height: 0 }}
+                                />
+                                <span style={{
+                                    position: 'absolute', inset: 0,
+                                    background: form.is_active ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                    borderRadius: '11px', transition: 'background 0.2s',
+                                }}>
+                                    <span style={{
+                                        position: 'absolute',
+                                        left: form.is_active ? '20px' : '2px', top: '2px',
+                                        width: '18px', height: '18px', background: '#fff',
+                                        borderRadius: '50%', transition: 'left 0.2s',
+                                    }} />
+                                </span>
+                            </label>
+                        </div>
+                    )}
+                </div>
+
+                {error && (
+                    <div style={{ color: 'var(--error)', fontSize: '12px', marginTop: '12px' }}>{error}</div>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
+                    <button className="btn btn-secondary" style={{ flex: 1 }} onClick={onClose} disabled={saving}>
+                        {t('common.cancel', 'Cancel')}
+                    </button>
+                    {!isReadOnly && (
+                        <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSave} disabled={saving}>
+                            {saving ? t('common.loading', 'Loading...') : t('common.save', 'Save')}
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}

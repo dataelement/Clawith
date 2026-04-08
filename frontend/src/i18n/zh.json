@@ -1850,5 +1850,22 @@
     },
     "loading": "加载中...",
     "noData": "暂无数据"
+  },
+  "users": {
+    "editInfo": "编辑信息",
+    "quota": "配额",
+    "editUser": "编辑用户信息",
+    "username": "用户名",
+    "displayName": "显示名称",
+    "displayNameRequired": "显示名称不能为空",
+    "email": "邮箱",
+    "mobile": "手机号",
+    "mobilePlaceholder": "可选",
+    "newPassword": "新密码",
+    "newPasswordPlaceholder": "留空则不修改密码",
+    "newPasswordHint": "可选。填写后将重置用户密码。",
+    "accountStatus": "账号状态",
+    "accountStatusHint": "禁用后用户无法登录",
+    "saveFailed": "保存失败"
   }
 }
