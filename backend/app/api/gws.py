@@ -24,6 +24,18 @@ router = APIRouter(prefix="/gws", tags=["google-workspace"])
 
 settings = get_settings()
 
+
+def _get_gws_redirect_uri() -> str:
+    """Resolve GWS OAuth redirect URI.
+
+    If GWS_OAUTH_REDIRECT_URI is explicitly set (e.g. http://localhost:8008/api/gws/auth/callback
+    for local development with Desktop app OAuth client), use it directly.
+    Otherwise, auto-generate from PUBLIC_BASE_URL + GWS_OAUTH_CALLBACK_PATH.
+    """
+    if settings.GWS_OAUTH_REDIRECT_URI:
+        return settings.GWS_OAUTH_REDIRECT_URI
+    return f"{settings.PUBLIC_BASE_URL}{settings.GWS_OAUTH_CALLBACK_PATH}"
+
 GWS_SCOPES = [
     "openid",
     "email",
@@ -135,7 +147,7 @@ async def get_gws_authorize_url(
         tenant_id=tenant_id,
     )
     
-    redirect_uri = f"{settings.PUBLIC_BASE_URL}{settings.GWS_OAUTH_CALLBACK_PATH}"
+    redirect_uri = _get_gws_redirect_uri()
     
     params = {
         "client_id": config["client_id"],
@@ -172,7 +184,7 @@ async def handle_gws_oauth_callback(
     user_id = uuid.UUID(state_data["user_id"])
     tenant_id = uuid.UUID(state_data["tenant_id"])
     
-    redirect_uri = f"{settings.PUBLIC_BASE_URL}{settings.GWS_OAUTH_CALLBACK_PATH}"
+    redirect_uri = _get_gws_redirect_uri()
     
     try:
         token_response = await gws_service.exchange_code_for_tokens(
