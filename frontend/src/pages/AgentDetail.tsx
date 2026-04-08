@@ -4052,43 +4052,17 @@ function AgentDetailInner() {
                                         )}
                                     </div>
                                     {!canViewAllAgentChatSessions && (
-                                        <div style={{ padding: '0 12px 10px' }}>
+                                        <div style={{ padding: '0 12px 8px' }}>
                                             <button
                                                 type="button"
                                                 onClick={createNewSession}
-                                                style={{
-                                                    width: '100%',
-                                                    height: '28px',
-                                                    padding: '0 10px',
-                                                    background: 'none',
-                                                    border: '1px solid var(--border-subtle)',
-                                                    borderRadius: '6px',
-                                                    cursor: 'pointer',
-                                                    fontSize: '12px',
-                                                    color: 'var(--text-secondary)',
-                                                    textAlign: 'left',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '6px',
-                                                    transition: 'all 0.15s ease',
-                                                    boxSizing: 'border-box',
-                                                }}
-                                                onMouseEnter={(e) => {
-                                                    e.currentTarget.style.background = 'var(--bg-secondary)';
-                                                    e.currentTarget.style.color = 'var(--text-primary)';
-                                                    e.currentTarget.style.borderColor = 'var(--accent-primary)';
-                                                }}
-                                                onMouseLeave={(e) => {
-                                                    e.currentTarget.style.background = 'none';
-                                                    e.currentTarget.style.color = 'var(--text-secondary)';
-                                                    e.currentTarget.style.borderColor = 'var(--border-subtle)';
-                                                }}
+                                                className="new-session-btn"
                                             >
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ display: 'block', flexShrink: 0 }}>
                                                     <line x1="12" y1="5" x2="12" y2="19" />
                                                     <line x1="5" y1="12" x2="19" y2="12" />
                                                 </svg>
-                                                {t('agent.chat.newSession')}
+                                                <span>{t('agent.chat.newSession')}</span>
                                             </button>
                                         </div>
                                     )}
@@ -4137,40 +4111,13 @@ function AgentDetailInner() {
                                                     <button
                                                         type="button"
                                                         onClick={createNewSession}
-                                                        style={{
-                                                            width: '100%',
-                                                            height: '28px',
-                                                            padding: '0 10px',
-                                                            background: 'none',
-                                                            border: '1px solid var(--border-subtle)',
-                                                            borderRadius: '6px',
-                                                            cursor: 'pointer',
-                                                            fontSize: '12px',
-                                                            color: 'var(--text-secondary)',
-                                                            textAlign: 'center',
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            justifyContent: 'center',
-                                                            gap: '6px',
-                                                            transition: 'all 0.15s ease',
-                                                            boxSizing: 'border-box',
-                                                        }}
-                                                        onMouseEnter={(e) => {
-                                                            e.currentTarget.style.background = 'var(--bg-secondary)';
-                                                            e.currentTarget.style.color = 'var(--text-primary)';
-                                                            e.currentTarget.style.borderColor = 'var(--accent-primary)';
-                                                        }}
-                                                        onMouseLeave={(e) => {
-                                                            e.currentTarget.style.background = 'none';
-                                                            e.currentTarget.style.color = 'var(--text-secondary)';
-                                                            e.currentTarget.style.borderColor = 'var(--border-subtle)';
-                                                        }}
+                                                        className="new-session-btn"
                                                     >
-                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ display: 'block', flexShrink: 0 }}>
                                                             <line x1="12" y1="5" x2="12" y2="19" />
                                                             <line x1="5" y1="12" x2="19" y2="12" />
                                                         </svg>
-                                                        {t('agent.chat.newSession')}
+                                                        <span>{t('agent.chat.newSession')}</span>
                                                     </button>
                                                 </div>
                                             )}
