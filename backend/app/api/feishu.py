@@ -446,6 +446,23 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
             ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
+            # Check for channel commands (/new, /reset)
+            from app.services.channel_commands import is_channel_command, handle_channel_command
+            if is_channel_command(user_text):
+                _cmd_result = await handle_channel_command(
+                    db=db, command=user_text, agent_id=agent_id,
+                    user_id=creator_id, external_conv_id=conv_id,
+                    source_channel="feishu",
+                )
+                await db.commit()
+                import json as _j_cmd
+                _cmd_reply = _j_cmd.dumps({"text": _cmd_result["message"]})
+                if chat_type == "group" and chat_id:
+                    await feishu_service.send_message(config.app_id, config.app_secret, chat_id, "text", _cmd_reply, receive_id_type="chat_id")
+                else:
+                    await feishu_service.send_message(config.app_id, config.app_secret, sender_open_id, "text", _cmd_reply)
+                return {"code": 0, "msg": "command handled"}
+
             # Pre-resolve session so history lookup uses the UUID  (session created later if new)
             _pre_sess_r = await db.execute(
                 select(__import__('app.models.chat_session', fromlist=['ChatSession']).ChatSession).where(
