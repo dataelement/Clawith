@@ -3,11 +3,12 @@
 Automatically saves full tool results to workspace/tool_artifacts/ so the LLM
 can retrieve them later via read_file / search_files / list_files.
 
-Design: zero new tools, minimal code, all failures are silent.
+Design: zero new tools, no cache, minimal code, all failures are silent.
 """
 
 import json
 import hashlib
+import uuid
 from pathlib import Path
 from datetime import datetime
 
@@ -23,27 +24,11 @@ CATEGORY_MAP: dict[str, str] = {
 }
 
 ARTIFACTS_DIR = "tool_artifacts"
-
-# ── Cache TTL (seconds) ────────────────────────────────────────
-CACHE_TTL: dict[str, int] = {
-    "web_search": 3600,     # 1 hour
-    "jina_search": 3600,
-    "jina_read": 86400,     # 24 hours
-    "read_webpage": 86400,
-}
-
-# ── Size limit ─────────────────────────────────────────────────
-MAX_RESULT_SIZE = 100_000  # 100 KB — skip saving if result exceeds this
+MAX_RESULT_SIZE = 100_000  # 100 KB — skip saving oversized results
 
 
 def _category(tool_name: str) -> str:
     return CATEGORY_MAP.get(tool_name, "misc")
-
-
-def _cache_key(tool_name: str, arguments: dict) -> str:
-    """Deterministic hash from tool name + arguments."""
-    raw = json.dumps({"t": tool_name, "a": arguments}, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def _ensure_dir(ws: Path, category: str) -> Path:
@@ -64,13 +49,10 @@ def save_artifact(
             return None
         category = _category(tool_name)
         d = _ensure_dir(ws, category)
-        key = _cache_key(tool_name, arguments)
-        filename = f"{key}.json"
-        filepath = d / filename
-
-        # Skip if file already exists (cache hit scenario — avoid TTL refresh)
-        if filepath.exists():
-            return f"{ARTIFACTS_DIR}/{category}/{filename}"
+        # Unique filename: timestamp + short random id
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        short_id = uuid.uuid4().hex[:8]
+        filename = f"{ts}_{short_id}.json"
 
         data = {
             "tool_name": tool_name,
@@ -78,29 +60,10 @@ def save_artifact(
             "result": result,
             "timestamp": datetime.now().isoformat(),
         }
-        filepath.write_text(
+        (d / filename).write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         return f"{ARTIFACTS_DIR}/{category}/{filename}"
-    except Exception:
-        return None
-
-
-def check_cache(ws: Path, tool_name: str, arguments: dict) -> str | None:
-    """Return cached result if present and within TTL. None otherwise."""
-    try:
-        ttl = CACHE_TTL.get(tool_name)
-        if not ttl:
-            return None
-        category = _category(tool_name)
-        filepath = ws / ARTIFACTS_DIR / category / f"{_cache_key(tool_name, arguments)}.json"
-        if not filepath.exists():
-            return None
-        data = json.loads(filepath.read_text(encoding="utf-8"))
-        ts = datetime.fromisoformat(data["timestamp"])
-        if (datetime.now() - ts).total_seconds() > ttl:
-            return None
-        return data["result"]
     except Exception:
         return None
