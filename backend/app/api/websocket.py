@@ -761,7 +761,20 @@ async def websocket_chat(
                     _sent_live_envs: set[str] = set()
 
                     async def tool_call_to_ws(data: dict):
-                        """Send tool call info to client and persist completed ones."""
+                        """Send tool call info to client and persist completed ones.
+
+                        Sensitive fields in tool args are sanitized before
+                        being sent over the WebSocket or saved to the DB.
+                        """
+                        from app.utils.sanitize import sanitize_tool_args, is_secrets_path
+                        data["args"] = sanitize_tool_args(data.get("args"))
+
+                        # Redact secrets.md content from read_file results
+                        tool_name = data.get("name", "")
+                        arguments = data.get("args") or {}
+                        if tool_name == "read_file" and is_secrets_path(arguments.get("path", "")):
+                            data["result"] = "[Content hidden - secrets.md is protected]"
+
                         # ── AgentBay live preview: embed screenshot URL in tool_call message ──
                         # We embed live preview data directly in the tool_call payload
                         # because separate WebSocket messages get silently dropped by nginx.
