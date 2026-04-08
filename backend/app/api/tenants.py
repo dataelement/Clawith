@@ -484,3 +484,194 @@ async def assign_user_to_tenant(
     user.role = role
     await db.flush()
     return {"status": "ok", "user_id": str(user_id), "tenant_id": str(tenant_id), "role": role}
+
+
+# ─── Platform Admin: Delete Tenant (Cascade) ─────────
+
+@router.delete("/{tenant_id}", status_code=204)
+async def delete_tenant(
+    tenant_id: uuid.UUID,
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete a tenant and all associated data.
+
+    Platform admin only. Cannot delete the first (default) tenant.
+    Cascade-deletes all related records in dependency order within a single transaction.
+    """
+    import logging
+    from sqlalchemy import delete as sa_delete, update as sa_update
+
+    from app.models.activity_log import AgentActivityLog, DailyTokenUsage
+    from app.models.agent import Agent, AgentPermission, AgentTemplate
+    from app.models.agent_credential import AgentCredential
+    from app.models.audit import AuditLog, ApprovalRequest, ChatMessage
+    from app.models.channel_config import ChannelConfig
+    from app.models.chat_session import ChatSession
+    from app.models.gateway_message import GatewayMessage
+    from app.models.identity import IdentityProvider, SSOScanSession
+    from app.models.invitation_code import InvitationCode
+    from app.models.llm import LLMModel
+    from app.models.notification import Notification
+    from app.models.org import OrgMember, OrgDepartment, AgentRelationship, AgentAgentRelationship
+    from app.models.participant import Participant
+    from app.models.plaza import PlazaPost, PlazaComment, PlazaLike
+    from app.models.published_page import PublishedPage
+    from app.models.schedule import AgentSchedule
+    from app.models.skill import Skill, SkillFile
+    from app.models.task import Task, TaskLog
+    from app.models.tenant_setting import TenantSetting
+    from app.models.tool import AgentTool
+    from app.models.trigger import AgentTrigger
+
+    logger = logging.getLogger(__name__)
+
+    # 1. Find the tenant
+    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    # 2. Cannot delete the first tenant (acts as the default/primary tenant)
+    first_tenant = await db.execute(
+        select(Tenant).order_by(Tenant.created_at.asc()).limit(1)
+    )
+    first = first_tenant.scalar_one_or_none()
+    if first and first.id == tenant.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete the default tenant.",
+        )
+
+    logger.info("Deleting tenant %s (%s) and all associated data", tenant.id, tenant.name)
+
+    # 3. Collect agent_ids and user_ids for this tenant
+    agent_ids = [
+        row[0]
+        for row in (await db.execute(select(Agent.id).where(Agent.tenant_id == tenant_id))).all()
+    ]
+    user_ids = [
+        row[0]
+        for row in (await db.execute(select(User.id).where(User.tenant_id == tenant_id))).all()
+    ]
+
+    # 4. Delete tables that reference agents (via agent_id FK)
+    if agent_ids:
+        # Task logs before tasks (task_logs.task_id -> tasks.id -> agents.id)
+        task_ids = [
+            row[0]
+            for row in (await db.execute(select(Task.id).where(Task.agent_id.in_(agent_ids)))).all()
+        ]
+        if task_ids:
+            await db.execute(sa_delete(TaskLog).where(TaskLog.task_id.in_(task_ids)))
+
+        await db.execute(sa_delete(AgentTrigger).where(AgentTrigger.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentSchedule).where(AgentSchedule.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentActivityLog).where(AgentActivityLog.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentCredential).where(AgentCredential.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(ChannelConfig).where(ChannelConfig.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentTool).where(AgentTool.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(Notification).where(Notification.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(Task).where(Task.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AuditLog).where(AuditLog.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(ApprovalRequest).where(ApprovalRequest.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(ChatMessage).where(ChatMessage.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(GatewayMessage).where(GatewayMessage.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(ChatSession).where(ChatSession.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentPermission).where(AgentPermission.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentAgentRelationship).where(AgentAgentRelationship.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentAgentRelationship).where(AgentAgentRelationship.target_agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(AgentRelationship).where(AgentRelationship.agent_id.in_(agent_ids)))
+        await db.execute(sa_delete(PublishedPage).where(PublishedPage.agent_id.in_(agent_ids)))
+
+        # Null out cross-tenant FK references (other tenants' records pointing to our agents)
+        await db.execute(
+            sa_update(ChatSession).where(ChatSession.peer_agent_id.in_(agent_ids)).values(peer_agent_id=None)
+        )
+        await db.execute(
+            sa_update(GatewayMessage).where(GatewayMessage.sender_agent_id.in_(agent_ids)).values(sender_agent_id=None)
+        )
+
+        # Delete Participant records for agents
+        await db.execute(
+            sa_delete(Participant).where(Participant.type == "agent", Participant.ref_id.in_(agent_ids))
+        )
+
+    # 5. Delete tables that reference users
+    if user_ids:
+        await db.execute(sa_delete(AgentTemplate).where(AgentTemplate.created_by.in_(user_ids)))
+
+        # Delete audit/notification rows that reference our users (with null or other-tenant agent_id)
+        await db.execute(sa_delete(AuditLog).where(AuditLog.user_id.in_(user_ids)))
+        await db.execute(sa_delete(Notification).where(Notification.user_id.in_(user_ids)))
+
+        # Null out cross-tenant user FK references
+        await db.execute(
+            sa_update(ApprovalRequest).where(ApprovalRequest.resolved_by.in_(user_ids)).values(resolved_by=None)
+        )
+        await db.execute(
+            sa_update(GatewayMessage).where(GatewayMessage.sender_user_id.in_(user_ids)).values(sender_user_id=None)
+        )
+
+        # Delete Participant records for users
+        await db.execute(
+            sa_delete(Participant).where(Participant.type == "user", Participant.ref_id.in_(user_ids))
+        )
+
+        # Plaza posts (and their comments/likes) authored by tenant users
+        plaza_post_ids = [
+            row[0]
+            for row in (await db.execute(
+                select(PlazaPost.id).where(PlazaPost.author_type == "user", PlazaPost.author_id.in_(user_ids))
+            )).all()
+        ]
+        if plaza_post_ids:
+            await db.execute(sa_delete(PlazaComment).where(PlazaComment.post_id.in_(plaza_post_ids)))
+            await db.execute(sa_delete(PlazaLike).where(PlazaLike.post_id.in_(plaza_post_ids)))
+            await db.execute(sa_delete(PlazaPost).where(PlazaPost.id.in_(plaza_post_ids)))
+
+    # Plaza posts authored by tenant agents
+    if agent_ids:
+        agent_plaza_post_ids = [
+            row[0]
+            for row in (await db.execute(
+                select(PlazaPost.id).where(PlazaPost.author_type == "agent", PlazaPost.author_id.in_(agent_ids))
+            )).all()
+        ]
+        if agent_plaza_post_ids:
+            await db.execute(sa_delete(PlazaComment).where(PlazaComment.post_id.in_(agent_plaza_post_ids)))
+            await db.execute(sa_delete(PlazaLike).where(PlazaLike.post_id.in_(agent_plaza_post_ids)))
+            await db.execute(sa_delete(PlazaPost).where(PlazaPost.id.in_(agent_plaza_post_ids)))
+
+    # 6. Delete tables with tenant_id (no agent/user dependency)
+    await db.execute(sa_delete(DailyTokenUsage).where(DailyTokenUsage.tenant_id == tenant_id))
+    await db.execute(sa_delete(OrgMember).where(OrgMember.tenant_id == tenant_id))
+    await db.execute(sa_delete(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id))
+    await db.execute(sa_delete(InvitationCode).where(InvitationCode.tenant_id == tenant_id))
+    await db.execute(sa_delete(LLMModel).where(LLMModel.tenant_id == tenant_id))
+    await db.execute(sa_delete(TenantSetting).where(TenantSetting.tenant_id == tenant_id))
+    await db.execute(sa_delete(IdentityProvider).where(IdentityProvider.tenant_id == tenant_id))
+    await db.execute(sa_delete(SSOScanSession).where(SSOScanSession.tenant_id == tenant_id))
+
+    # SkillFiles before Skills (skill_files.skill_id -> skills.id)
+    skill_ids = [
+        row[0]
+        for row in (await db.execute(select(Skill.id).where(Skill.tenant_id == tenant_id))).all()
+    ]
+    if skill_ids:
+        await db.execute(sa_delete(SkillFile).where(SkillFile.skill_id.in_(skill_ids)))
+    await db.execute(sa_delete(Skill).where(Skill.tenant_id == tenant_id))
+
+    # 7. Delete agents (after all agent-dependent tables)
+    await db.execute(sa_delete(Agent).where(Agent.tenant_id == tenant_id))
+
+    # 8. Delete users (after agents, since agents.creator_id -> users.id)
+    await db.execute(sa_delete(User).where(User.tenant_id == tenant_id))
+
+    # 9. Delete the tenant itself
+    await db.delete(tenant)
+    await db.flush()
+
+    logger.info("Tenant %s (%s) deleted successfully", tenant_id, tenant.name)
+
+    return None
