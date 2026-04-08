@@ -531,21 +531,21 @@ select:focus {
   opacity: 1;
 }
 
-/* Pinned icon swap: show pin by default, unpin on hover */
+/* Pinned icon swap: show pin by default, unpin only when hovering the button itself */
 .sidebar-pin-btn.pinned .pin-hover {
   display: none;
 }
 
-.sidebar-agent-item:hover .sidebar-pin-btn.pinned .pin-default {
+.sidebar-pin-btn.pinned:hover .pin-default {
   display: none;
 }
 
-.sidebar-agent-item:hover .sidebar-pin-btn.pinned .pin-hover {
+.sidebar-pin-btn.pinned:hover .pin-hover {
   display: inline;
 }
 
-/* When pinned and hovered, turn red to indicate unpin */
-.sidebar-agent-item:hover .sidebar-pin-btn.pinned {
+/* When hovering the pin button itself on a pinned agent, turn red to indicate unpin */
+.sidebar-pin-btn.pinned:hover {
   color: var(--error);
   background: var(--error-subtle);
 }
