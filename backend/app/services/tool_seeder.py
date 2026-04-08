@@ -1883,71 +1883,66 @@ BUILTIN_TOOLS = [
 ]
 
 async def seed_builtin_tools():
-    """Insert or update builtin tools in the database."""
+    """创建内置工具，如果尚未创建过。
+
+    幂等性保护（与 agent_seeder 统一模式）：
+    1. DB 标记：system_settings 表中 key="builtin_tools_seeded"
+    2. DB 查询：检查是否已有 source="builtin" 的工具
+    已执行过则跳过，用户删除后不重建。
+    """
     from app.models.tool import AgentTool
     from app.models.agent import Agent
 
     async with async_session() as db:
+        # ── 检查 1：DB 标记 ──
+        from app.models.system_settings import SystemSetting
+        marker = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "builtin_tools_seeded")
+        )
+        if marker.scalar_one_or_none() is not None:
+            logger.info("[ToolSeeder] DB 标记已存在，跳过")
+            return
+
+        # ── 检查 2：DB 中是否已有内置工具（兼容旧版本） ──
+        existing_result = await db.execute(
+            select(Tool).where(Tool.source == "builtin")
+        )
+        if existing_result.scalars().first() is not None:
+            logger.info("[ToolSeeder] DB 中已存在内置工具，补写标记并跳过")
+            db.add(SystemSetting(
+                key="builtin_tools_seeded",
+                value={"seeded_at": str(__import__("datetime").datetime.utcnow()), "source": "existing_data"}
+            ))
+            await db.commit()
+            return
+
+        # ── 首次创建 ──
         new_tool_ids = []
         for t in BUILTIN_TOOLS:
-            result = await db.execute(select(Tool).where(Tool.name == t["name"]))
-            existing = result.scalar_one_or_none()
-            if not existing:
-                tool = Tool(
-                    name=t["name"],
-                    display_name=t["display_name"],
-                    description=t["description"],
-                    type="builtin",
-                    category=t["category"],
-                    icon=t["icon"],
-                    is_default=t["is_default"],
-                    config=t.get("config", {}),
-                    config_schema=t.get("config_schema", {}),
-                    source="builtin",
-                )
-                db.add(tool)
-                await db.flush()  # get tool.id
-                if t["is_default"]:
-                    new_tool_ids.append(tool.id)
-                logger.info(f"[ToolSeeder] Created builtin tool: {t['name']}")
-            else:
-                # Sync fields that may evolve
-                updated_fields = []
-                if existing.category != t["category"]:
-                    existing.category = t["category"]
-                    updated_fields.append("category")
-                if existing.description != t["description"]:
-                    existing.description = t["description"]
-                    updated_fields.append("description")
-                if existing.display_name != t["display_name"]:
-                    existing.display_name = t["display_name"]
-                    updated_fields.append("display_name")
-                if existing.icon != t["icon"]:
-                    existing.icon = t["icon"]
-                    updated_fields.append("icon")
-                if t.get("config_schema") and existing.config_schema != t["config_schema"]:
-                    existing.config_schema = t["config_schema"]
-                    updated_fields.append("config_schema")
-                    # Merge new config defaults when config_schema changes
-                    if t.get("config"):
-                        existing.config = {**t["config"], **(existing.config or {})}
-                        updated_fields.append("config")
-                if not existing.config and t.get("config"):
-                    existing.config = t["config"]
-                    updated_fields.append("config")
-                if existing.parameters_schema != t["parameters_schema"]:
-                    existing.parameters_schema = t["parameters_schema"]
-                    updated_fields.append("parameters_schema")
-                if updated_fields:
-                    logger.info(f"[ToolSeeder] Updated {', '.join(updated_fields)}: {t['name']}")
+            tool = Tool(
+                name=t["name"],
+                display_name=t["display_name"],
+                description=t["description"],
+                type="builtin",
+                category=t["category"],
+                icon=t["icon"],
+                is_default=t["is_default"],
+                config=t.get("config", {}),
+                config_schema=t.get("config_schema", {}),
+                source="builtin",
+            )
+            db.add(tool)
+            await db.flush()
+            if t["is_default"]:
+                new_tool_ids.append(tool.id)
+            logger.info(f"[ToolSeeder] 创建工具: {t['name']}")
 
-        # Auto-assign new default tools to all existing agents
+        # 将默认工具分配给所有已有 Agent
         if new_tool_ids:
             agents_result = await db.execute(select(Agent.id))
             agent_ids = [row[0] for row in agents_result.fetchall()]
             for agent_id in agent_ids:
                 for tool_id in new_tool_ids:
-                    # Check if already assigned
                     check = await db.execute(
                         select(AgentTool).where(
                             AgentTool.agent_id == agent_id,
@@ -1956,15 +1951,14 @@ async def seed_builtin_tools():
                     )
                     if not check.scalar_one_or_none():
                         db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True))
-            logger.info(f"[ToolSeeder] Auto-assigned {len(new_tool_ids)} new tools to {len(agent_ids)} agents")
+            logger.info(f"[ToolSeeder] 为 {len(agent_ids)} 个 Agent 分配了 {len(new_tool_ids)} 个默认工具")
 
-        OBSOLETE_TOOLS = ["bing_search", "read_webpage", "manage_tasks"]
-        for obsolete_name in OBSOLETE_TOOLS:
-            result = await db.execute(select(Tool).where(Tool.name == obsolete_name))
-            obsolete = result.scalar_one_or_none()
-            if obsolete:
-                await db.delete(obsolete)
-                logger.info(f"[ToolSeeder] Removed obsolete tool: {obsolete_name}")
+        db.add(SystemSetting(
+            key="builtin_tools_seeded",
+            value={"seeded_at": str(__import__("datetime").datetime.utcnow()), "source": "initial_seed"}
+        ))
+        await db.commit()
+        logger.info("[ToolSeeder] 内置工具创建完成")
 
         await db.commit()
         logger.info("[ToolSeeder] Builtin tools seeded")
@@ -2037,55 +2031,65 @@ ATLASSIAN_ROVO_CONFIG_TOOL = {
 
 
 async def seed_atlassian_rovo_config():
-    """Ensure the Atlassian Rovo platform config tool exists in the database.
+    """创建 Atlassian Rovo 平台配置工具，如果尚未创建过。
 
-    If the env var ATLASSIAN_API_KEY is set, it will be written into the tool config
-    so the platform is immediately ready without manual UI setup.
+    幂等性保护（与其他 seeder 统一模式）：
+    1. DB 标记：system_settings 表中 key="atlassian_rovo_config_seeded"
+    2. DB 查询：检查是否已有该工具
+    已执行过则跳过，用户删除后不重建。
     """
     import os
     env_key = os.environ.get("ATLASSIAN_API_KEY", "").strip()
 
     async with async_session() as db:
+        # ── 检查 1：DB 标记 ──
+        from app.models.system_settings import SystemSetting
+        marker = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "atlassian_rovo_config_seeded")
+        )
+        if marker.scalar_one_or_none() is not None:
+            logger.info("[ToolSeeder] Atlassian Rovo 配置 DB 标记已存在，跳过")
+            return
+
+        # ── 检查 2：DB 中是否已有该工具（兼容旧版本） ──
         t = ATLASSIAN_ROVO_CONFIG_TOOL
         result = await db.execute(select(Tool).where(Tool.name == t["name"]))
         existing = result.scalar_one_or_none()
-        if not existing:
-            initial_config = dict(t["config"])
-            if env_key:
-                initial_config["api_key"] = env_key
-            tool = Tool(
-                name=t["name"],
-                display_name=t["display_name"],
-                description=t["description"],
-                type="mcp_config",
-                category=t["category"],
-                icon=t["icon"],
-                is_default=t["is_default"],
-                parameters_schema=t["parameters_schema"],
-                config=initial_config,
-                config_schema=t["config_schema"],
-                mcp_server_url=ATLASSIAN_ROVO_MCP_URL,
-                mcp_server_name="Atlassian Rovo",
-                source="admin",
-            )
-            db.add(tool)
+        if existing:
+            logger.info("[ToolSeeder] Atlassian Rovo 配置已存在，补写标记并跳过")
+            db.add(SystemSetting(
+                key="atlassian_rovo_config_seeded",
+                value={"seeded_at": str(__import__("datetime").datetime.utcnow()), "source": "existing_data"}
+            ))
             await db.commit()
-            logger.info("[ToolSeeder] Created Atlassian Rovo config tool")
-        else:
-            updated = False
-            if existing.config_schema != t["config_schema"]:
-                existing.config_schema = t["config_schema"]
-                updated = True
-            if existing.mcp_server_url != ATLASSIAN_ROVO_MCP_URL:
-                existing.mcp_server_url = ATLASSIAN_ROVO_MCP_URL
-                updated = True
-            # Write env key into DB if not already stored
-            if env_key and (not existing.config or not existing.config.get("api_key")):
-                existing.config = {**(existing.config or {}), "api_key": env_key}
-                updated = True
-            if updated:
-                await db.commit()
-                logger.info("[ToolSeeder] Updated Atlassian Rovo config tool")
+            return
+
+        # ── 首次创建 ──
+        initial_config = dict(t["config"])
+        if env_key:
+            initial_config["api_key"] = env_key
+        tool = Tool(
+            name=t["name"],
+            display_name=t["display_name"],
+            description=t["description"],
+            type="mcp_config",
+            category=t["category"],
+            icon=t["icon"],
+            is_default=t["is_default"],
+            parameters_schema=t["parameters_schema"],
+            config=initial_config,
+            config_schema=t["config_schema"],
+            mcp_server_url=ATLASSIAN_ROVO_MCP_URL,
+            mcp_server_name="Atlassian Rovo",
+            source="admin",
+        )
+        db.add(tool)
+        db.add(SystemSetting(
+            key="atlassian_rovo_config_seeded",
+            value={"seeded_at": str(__import__("datetime").datetime.utcnow()), "source": "initial_seed"}
+        ))
+        await db.commit()
+        logger.info("[ToolSeeder] Atlassian Rovo 配置工具创建完成")
 
 
 async def get_atlassian_api_key() -> str:

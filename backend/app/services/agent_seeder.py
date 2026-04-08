@@ -93,19 +93,41 @@ MEESEEKS_SKILLS = [
 
 
 async def seed_default_agents():
-    """Create Morty & Meeseeks if they don't already exist.
+    """创建默认 Agent（Morty & Meeseeks），如果尚未创建过。
 
-    Idempotency is guarded by a '.seeded' marker file in AGENT_DATA_DIR rather
-    than by agent name, so the seeder does NOT re-run if the user renames or
-    deletes the default agents.  Delete the marker manually to re-seed.
+    幂等性保护（双重检查）：
+    1. DB 标记：system_settings 表中 key="default_agents_seeded" → 跟随数据库，跨环境有效
+    2. DB 查询：检查 Agent 表中是否已有同名 agent → 兼容旧版本已 seed 但无标记的情况
+
+    设计原则：
+    - 标记存在 → 永远不重建（即使用户删了默认 agent，也尊重用户意图）
+    - 标记不存在但 DB 有数据 → 补写标记，不重建（兼容远程 DB 已有数据的场景）
+    - 标记不存在且 DB 无数据 → 首次创建，写入标记
     """
-    # --- Idempotency guard: file-based marker (survives agent renames/deletes) ---
     seed_marker = Path(settings.AGENT_DATA_DIR) / ".seeded"
-    if seed_marker.exists():
-        logger.info("[AgentSeeder] Seed marker found, skipping default agent creation")
-        return
 
     async with async_session() as db:
+        # ── 检查 1：DB 标记（主判断，跟随数据库走）──
+        from app.models.system_settings import SystemSetting
+        marker_result = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "default_agents_seeded")
+        )
+        if marker_result.scalar_one_or_none() is not None:
+            logger.info("[AgentSeeder] DB 标记已存在，跳过默认 Agent 创建")
+            return
+
+        # ── 检查 2：DB 中是否已有默认 Agent（兼容旧版本 / 远程 DB 已 seed）──
+        existing_result = await db.execute(
+            select(Agent).where(Agent.name.in_(["Morty", "Meeseeks"]))
+        )
+        if existing_result.scalars().first() is not None:
+            logger.info("[AgentSeeder] DB 中已存在默认 Agent，补写标记并跳过")
+            db.add(SystemSetting(
+                key="default_agents_seeded",
+                value={"seeded_at": str(__import__("datetime").datetime.utcnow()), "source": "existing_data"}
+            ))
+            await db.commit()
+            return
 
         # Get platform admin as creator
         admin_result = await db.execute(
@@ -260,13 +282,26 @@ async def seed_default_agents():
             encoding="utf-8",
         )
 
-        await db.commit()
-        logger.info(f"[AgentSeeder] Created default agents: Morty ({morty.id}), Meeseeks ({meeseeks.id})")
+        # 写入 DB 标记（主标记，跟随数据库）
+        db.add(SystemSetting(
+            key="default_agents_seeded",
+            value={
+                "seeded_at": str(__import__("datetime").datetime.utcnow()),
+                "morty_id": str(morty.id),
+                "meeseeks_id": str(meeseeks.id),
+                "source": "initial_seed",
+            }
+        ))
 
-    # Write seed marker AFTER a successful commit so a failed seed can be retried
-    seed_marker.parent.mkdir(parents=True, exist_ok=True)
-    seed_marker.write_text(
-        f"seeded\nmorty={morty.id}\nmeeseeks={meeseeks.id}\n",
-        encoding="utf-8",
-    )
-    logger.info(f"[AgentSeeder] Wrote seed marker to {seed_marker}")
+        await db.commit()
+        logger.info(f"[AgentSeeder] 默认 Agent 创建完成: Morty ({morty.id}), Meeseeks ({meeseeks.id})")
+
+    # 同时写文件标记（向后兼容旧版本）
+    try:
+        seed_marker.parent.mkdir(parents=True, exist_ok=True)
+        seed_marker.write_text(
+            f"seeded\nmorty={morty.id}\nmeeseeks={meeseeks.id}\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # 文件标记写入失败不影响功能，DB 标记已写入
