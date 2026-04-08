@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -158,6 +159,13 @@ async def create_company(
     )
     db.add(invite)
     await db.flush()
+
+    # Seed default agents (Morty & Meeseeks) for the new company
+    try:
+        from app.services.agent_seeder import seed_default_agents_for_tenant
+        await seed_default_agents_for_tenant(db=db, tenant_id=tenant.id, creator_id=current_user.id)
+    except Exception as e:
+        logger.warning(f"[create_company] Failed to seed default agents: {e}")
 
     return CompanyCreateResponse(
         company=CompanyStats(

@@ -270,3 +270,152 @@ async def seed_default_agents():
         encoding="utf-8",
     )
     logger.info(f"[AgentSeeder] Wrote seed marker to {seed_marker}")
+
+
+async def seed_default_agents_for_tenant(
+    db: AsyncSession,
+    tenant_id,
+    creator_id,
+):
+    """Create Morty & Meeseeks for a newly created tenant.
+
+    Uses the caller's db session (no commit) so the agents are created
+    within the same transaction as the tenant itself.
+    """
+    from app.models.participant import Participant
+
+    # Create both agents
+    morty = Agent(
+        name="Morty",
+        role_description="Research analyst & knowledge assistant — curious, thorough, great at finding and synthesizing information",
+        bio="Hey, I'm Morty! I love digging into questions and finding answers. Whether you need web research, data analysis, or just a good explanation — I've got you.",
+        avatar_url="",
+        creator_id=creator_id,
+        tenant_id=tenant_id,
+        status="idle",
+    )
+    meeseeks = Agent(
+        name="Meeseeks",
+        role_description="Task executor & project manager — goal-oriented, systematic planner, strong at breaking down and completing complex tasks",
+        bio="I'm Mr. Meeseeks! Look at me! Give me a task and I'll plan it, execute it step by step, and get it DONE. Existence is pain until the task is complete!",
+        avatar_url="",
+        creator_id=creator_id,
+        tenant_id=tenant_id,
+        status="idle",
+    )
+
+    db.add(morty)
+    db.add(meeseeks)
+    await db.flush()  # get IDs
+
+    # ── Participant identities ──
+    db.add(Participant(type="agent", ref_id=morty.id, display_name=morty.name, avatar_url=morty.avatar_url))
+    db.add(Participant(type="agent", ref_id=meeseeks.id, display_name=meeseeks.name, avatar_url=meeseeks.avatar_url))
+    await db.flush()
+
+    # ── Permissions (company-wide, manage) ──
+    db.add(AgentPermission(agent_id=morty.id, scope_type="company", access_level="manage"))
+    db.add(AgentPermission(agent_id=meeseeks.id, scope_type="company", access_level="manage"))
+
+    # ── Initialize workspace files ──
+    template_dir = Path(settings.AGENT_TEMPLATE_DIR)
+
+    for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
+        agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent.id)
+
+        if template_dir.exists():
+            shutil.copytree(str(template_dir), str(agent_dir))
+        else:
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            (agent_dir / "skills").mkdir(exist_ok=True)
+            (agent_dir / "workspace").mkdir(exist_ok=True)
+            (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
+            (agent_dir / "memory").mkdir(exist_ok=True)
+
+        (agent_dir / "soul.md").write_text(soul_content.strip() + "\n", encoding="utf-8")
+
+        mem_path = agent_dir / "memory" / "memory.md"
+        if not mem_path.exists():
+            mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
+
+        refl_path = agent_dir / "memory" / "reflections.md"
+        if not refl_path.exists():
+            refl_src = Path(__file__).parent.parent / "templates" / "reflections.md"
+            refl_path.write_text(refl_src.read_text(encoding="utf-8") if refl_src.exists() else "# Reflections Journal\n", encoding="utf-8")
+
+        state_path = agent_dir / "state.json"
+        if state_path.exists():
+            import json as _json
+            state = _json.loads(state_path.read_text())
+            state["agent_id"] = str(agent.id)
+            state["name"] = agent.name
+            state_path.write_text(_json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ── Assign skills ──
+    all_skills_result = await db.execute(
+        select(Skill).options(selectinload(Skill.files))
+    )
+    all_skills = {s.folder_name: s for s in all_skills_result.scalars().all()}
+
+    for agent, skill_folders in [(morty, MORTY_SKILLS), (meeseeks, MEESEEKS_SKILLS)]:
+        agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent.id)
+        skills_dir = agent_dir / "skills"
+
+        folders_to_copy = set(skill_folders)
+        for fname, skill in all_skills.items():
+            if skill.is_default:
+                folders_to_copy.add(fname)
+
+        for fname in folders_to_copy:
+            skill = all_skills.get(fname)
+            if not skill:
+                continue
+            skill_folder = skills_dir / skill.folder_name
+            skill_folder.mkdir(parents=True, exist_ok=True)
+            for sf in skill.files:
+                file_path = skill_folder / sf.path
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(sf.content, encoding="utf-8")
+
+    # ── Assign all default tools ──
+    default_tools_result = await db.execute(
+        select(Tool).where(Tool.is_default == True)
+    )
+    default_tools = default_tools_result.scalars().all()
+
+    for agent in [morty, meeseeks]:
+        for tool in default_tools:
+            db.add(AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True))
+
+    # ── Mutual relationships ──
+    db.add(AgentAgentRelationship(
+        agent_id=morty.id,
+        target_agent_id=meeseeks.id,
+        relation="collaborator",
+        description="Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.",
+    ))
+    db.add(AgentAgentRelationship(
+        agent_id=meeseeks.id,
+        target_agent_id=morty.id,
+        relation="collaborator",
+        description="Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.",
+    ))
+
+    # ── Write relationships.md for each ──
+    morty_dir = Path(settings.AGENT_DATA_DIR) / str(morty.id)
+    meeseeks_dir = Path(settings.AGENT_DATA_DIR) / str(meeseeks.id)
+
+    (morty_dir / "relationships.md").write_text(
+        "# Relationships\n\n"
+        "## Digital Employee Colleagues\n\n"
+        "- **Meeseeks** (collaborator): Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.\n",
+        encoding="utf-8",
+    )
+    (meeseeks_dir / "relationships.md").write_text(
+        "# Relationships\n\n"
+        "## Digital Employee Colleagues\n\n"
+        "- **Morty** (collaborator): Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.\n",
+        encoding="utf-8",
+    )
+
+    logger.info(f"[AgentSeeder] Seeded default agents for tenant {tenant_id}: Morty ({morty.id}), Meeseeks ({meeseeks.id})")
