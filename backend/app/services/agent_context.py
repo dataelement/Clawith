@@ -504,7 +504,9 @@ You have internet access through these tools — **use them proactively when you
 
 **When to search:** News, current events, technical documentation, fact-checking, market research, competitor analysis, or any question requiring up-to-date information.
 
-🚫 **NEVER say you cannot access the internet or search the web.** You HAVE these capabilities — use them.""")
+🚫 **NEVER say you cannot access the internet or search the web.** You HAVE these capabilities — use them.
+
+**Tool Artifacts**: Your tool call results are automatically saved in `tool_artifacts/`. Use `list_files("tool_artifacts")` to browse, `read_file("tool_artifacts/search/xxx.json")` to read a specific result, or `search_files("keyword", "tool_artifacts")` to find past results. Search results are cached — repeated queries within a short period return cached results.""")
 
     if soul and soul not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
         static_parts.append(f"\n## Personality\n{soul}")
