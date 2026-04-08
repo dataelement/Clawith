@@ -94,13 +94,17 @@ class DingTalkStreamManager:
                         if not user_text:
                             return dingtalk_stream.AckMessage.STATUS_OK, "empty message"
 
-                        sender_staff_id = incoming.sender_staff_id or incoming.sender_id or ""
+                        sender_staff_id = incoming.sender_staff_id or ""
+                        sender_id = incoming.sender_id or ""
+                        if not sender_staff_id and sender_id:
+                            sender_staff_id = sender_id  # fallback
+                        sender_nick = incoming.sender_nick or ""
                         conversation_id = incoming.conversation_id or ""
                         conversation_type = incoming.conversation_type or "1"
                         session_webhook = incoming.session_webhook or ""
 
                         logger.info(
-                            f"[DingTalk Stream] Message from [{incoming.sender_nick}]{sender_staff_id}: {user_text[:80]}"
+                            f"[DingTalk Stream] Message from [{sender_nick}]{sender_staff_id}: {user_text[:80]}"
                         )
 
                         # Dispatch to the main FastAPI event loop for DB + LLM processing
@@ -115,6 +119,8 @@ class DingTalkStreamManager:
                                     conversation_id=conversation_id,
                                     conversation_type=conversation_type,
                                     session_webhook=session_webhook,
+                                    sender_nick=sender_nick,
+                                    sender_id=sender_id,
                                 ),
                                 main_loop,
                             )

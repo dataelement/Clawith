@@ -6,29 +6,12 @@ from loguru import logger
 
 
 async def get_dingtalk_access_token(app_id: str, app_secret: str) -> dict:
-    """Get DingTalk access_token using app_id and app_secret.
-
-    API: https://open.dingtalk.com/document/orgapp/obtain-access_token
-    """
-    url = "https://oapi.dingtalk.com/gettoken"
-    params = {
-        "appkey": app_id,
-        "appsecret": app_secret,
-    }
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            resp = await client.get(url, params=params)
-            data = resp.json()
-
-            if data.get("errcode") == 0:
-                return {"access_token": data.get("access_token"), "expires_in": data.get("expires_in")}
-            else:
-                logger.error(f"[DingTalk] Failed to get access_token: {data}")
-                return {"errcode": data.get("errcode"), "errmsg": data.get("errmsg")}
-        except Exception as e:
-            logger.error(f"[DingTalk] Network error getting access_token: {e}")
-            return {"errcode": -1, "errmsg": str(e)}
+    """Get DingTalk access_token using centralized token manager with caching."""
+    from app.services.dingtalk_token import dingtalk_token_manager
+    token = await dingtalk_token_manager.get_token(app_id, app_secret)
+    if token:
+        return {"access_token": token, "expires_in": 7200}
+    return {"access_token": None, "expires_in": 0}
 
 
 async def send_dingtalk_v1_robot_oto_message(
