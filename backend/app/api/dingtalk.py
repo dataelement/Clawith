@@ -57,7 +57,7 @@ async def configure_dingtalk_channel(
         existing.is_configured = True
         existing.extra_config = {**existing.extra_config, "connection_mode": conn_mode, "agent_id": dingtalk_agent_id}
         await db.flush()
-        
+
         # Restart Stream client if in websocket mode
         if conn_mode == "websocket":
             from app.services.dingtalk_stream import dingtalk_stream_manager
@@ -68,7 +68,7 @@ async def configure_dingtalk_channel(
             from app.services.dingtalk_stream import dingtalk_stream_manager
             import asyncio
             asyncio.create_task(dingtalk_stream_manager.stop_client(agent_id))
-            
+
         return ChannelConfigOut.model_validate(existing)
 
     config = ChannelConfig(
@@ -145,8 +145,19 @@ async def process_dingtalk_message(
     conversation_id: str,
     conversation_type: str,
     session_webhook: str,
+    image_base64_list: list[str] | None = None,
+    saved_file_paths: list[str] | None = None,
+    sender_nick: str = "",
+    message_id: str = "",
 ):
-    """Process an incoming DingTalk bot message and reply via session webhook."""
+    """Process an incoming DingTalk bot message and reply via session webhook.
+
+    Args:
+        image_base64_list: List of base64-encoded image data URIs for vision LLM.
+        saved_file_paths: List of local file paths where media files were saved.
+        sender_nick: Display name of the sender from DingTalk.
+        message_id: DingTalk message ID (used for reactions).
+    """
     import json
     import httpx
     from datetime import datetime, timezone
@@ -207,21 +218,150 @@ async def process_dingtalk_message(
         )
         history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
+        # Re-hydrate historical images for multi-turn LLM context
+        from app.services.image_context import rehydrate_image_messages
+        history = rehydrate_image_messages(history, agent_id, max_images=3)
+
+        # Build saved_content for DB (no base64 blobs, keep it display-friendly)
+        import re as _re_dt
+        _clean_text = _re_dt.sub(
+            r'\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]',
+            "", user_text,
+        ).strip()
+        if saved_file_paths:
+            from pathlib import Path as _PathDT
+            _file_prefixes = "\n".join(
+                f"[file:{_PathDT(p).name}]" for p in saved_file_paths
+            )
+            saved_content = f"{_file_prefixes}\n{_clean_text}".strip() if _clean_text else _file_prefixes
+        else:
+            saved_content = _clean_text or user_text
+
         # Save user message
         db.add(ChatMessage(
             agent_id=agent_id, user_id=platform_user_id,
-            role="user", content=user_text,
+            role="user", content=saved_content,
             conversation_id=session_conv_id,
         ))
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
-        # Call LLM
-        reply_text = await _call_agent_llm(
-            db, agent_id, user_text,
-            history=history, user_id=platform_user_id,
+        # Build LLM input text: for images, inject base64 markers so vision models can see them
+        llm_user_text = user_text
+        if image_base64_list:
+            image_markers = "\n".join(
+                f"[image_data:{uri}]" for uri in image_base64_list
+            )
+            llm_user_text = f"{user_text}\n{image_markers}" if user_text else image_markers
+
+        # ── Set up channel_file_sender so the agent can send files via DingTalk ──
+        from app.services.agent_tools import channel_file_sender as _cfs
+        from app.services.dingtalk_stream import (
+            _upload_dingtalk_media,
+            _send_dingtalk_media_message,
         )
-        logger.info(f"[DingTalk] LLM reply: {reply_text[:100]}")
+
+        # Load DingTalk credentials from ChannelConfig
+        _dt_cfg_r = await db.execute(
+            _select(ChannelConfig).where(
+                ChannelConfig.agent_id == agent_id,
+                ChannelConfig.channel_type == "dingtalk",
+            )
+        )
+        _dt_cfg = _dt_cfg_r.scalar_one_or_none()
+        _dt_app_key = _dt_cfg.app_id if _dt_cfg else None
+        _dt_app_secret = _dt_cfg.app_secret if _dt_cfg else None
+
+        _cfs_token = None
+        if _dt_app_key and _dt_app_secret:
+            # Determine send target: group -> conversation_id, P2P -> sender_staff_id
+            _dt_target_id = conversation_id if conversation_type == "2" else sender_staff_id
+            _dt_conv_type = conversation_type
+
+            async def _dingtalk_file_sender(file_path: str, msg: str = ""):
+                """Send a file/image/video via DingTalk proactive message API."""
+                from pathlib import Path as _P
+
+                _fp = _P(file_path)
+                _ext = _fp.suffix.lower()
+
+                # Determine media type from extension
+                if _ext in (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"):
+                    _media_type = "image"
+                elif _ext in (".mp4", ".mov", ".avi", ".mkv"):
+                    _media_type = "video"
+                elif _ext in (".mp3", ".wav", ".ogg", ".amr", ".m4a"):
+                    _media_type = "voice"
+                else:
+                    _media_type = "file"
+
+                # Upload media to DingTalk
+                _mid = await _upload_dingtalk_media(
+                    _dt_app_key, _dt_app_secret, file_path, _media_type
+                )
+
+                if _mid:
+                    # Send via proactive message API
+                    _ok = await _send_dingtalk_media_message(
+                        _dt_app_key, _dt_app_secret,
+                        _dt_target_id, _mid, _media_type,
+                        _dt_conv_type, filename=_fp.name,
+                    )
+                    if _ok:
+                        # Also send accompany text if provided
+                        if msg:
+                            try:
+                                async with httpx.AsyncClient(timeout=10) as _cl:
+                                    await _cl.post(session_webhook, json={
+                                        "msgtype": "text",
+                                        "text": {"content": msg},
+                                    })
+                            except Exception:
+                                pass
+                        return
+
+                # Fallback: send a text message with file info
+                _fallback_parts = []
+                if msg:
+                    _fallback_parts.append(msg)
+                _fallback_parts.append(f"[File: {_fp.name}]")
+                try:
+                    async with httpx.AsyncClient(timeout=10) as _cl:
+                        await _cl.post(session_webhook, json={
+                            "msgtype": "text",
+                            "text": {"content": "\n\n".join(_fallback_parts)},
+                        })
+                except Exception as _fb_err:
+                    logger.error(f"[DingTalk] Fallback file text also failed: {_fb_err}")
+
+            _cfs_token = _cfs.set(_dingtalk_file_sender)
+
+        # Call LLM
+        try:
+            reply_text = await _call_agent_llm(
+                db, agent_id, llm_user_text,
+                history=history, user_id=platform_user_id,
+            )
+        finally:
+            # Reset ContextVar
+            if _cfs_token is not None:
+                _cfs.reset(_cfs_token)
+            # Recall thinking reaction (before sending reply)
+            if message_id and _dt_app_key:
+                try:
+                    from app.services.dingtalk_reaction import recall_thinking_reaction
+                    await recall_thinking_reaction(
+                        _dt_app_key, _dt_app_secret,
+                        message_id, conversation_id,
+                    )
+                except Exception as _recall_err:
+                    logger.warning(f"[DingTalk] Failed to recall thinking reaction: {_recall_err}")
+
+        has_media = bool(image_base64_list or saved_file_paths)
+        logger.info(
+            f"[DingTalk] LLM reply ({'media' if has_media else 'text'} input): "
+            f"{reply_text[:100]}"
+        )
 
         # Reply via session webhook (markdown)
         try:
