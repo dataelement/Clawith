@@ -718,6 +718,17 @@ async def _wecom_verify_webhook_handler(
     db: AsyncSession,
 ):
     """Internal handler for WeCom callback URL verification."""
+    import urllib.parse
+    
+    # URL decode parameters (required by WeCom)
+    msg_signature = urllib.parse.unquote(msg_signature) if msg_signature else ""
+    timestamp = urllib.parse.unquote(timestamp) if timestamp else ""
+    nonce = urllib.parse.unquote(nonce) if nonce else ""
+    echostr = urllib.parse.unquote(echostr) if echostr else ""
+    
+    logger.info(f"[WeCom] URL verification request for agent={agent_id}, account={account_id}")
+    logger.info(f"[WeCom] Parameters: msg_signature={msg_signature[:20]}..., timestamp={timestamp}, nonce={nonce}")
+    
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -726,16 +737,20 @@ async def _wecom_verify_webhook_handler(
     )
     config = result.scalar_one_or_none()
     if not config:
+        logger.warning(f"[WeCom] No config found for agent={agent_id}")
         return Response(status_code=404)
 
     # Get account-specific config (with migration support)
     account_config = _get_account_config(config, account_id)
+    logger.info(f"[WeCom] Account config keys: {list(account_config.keys())}")
     
     # Try to get webhook credentials from new nested format
     # First check bot config (for 智能机器人短链接)
     bot_config = account_config.get("bot", {})
     token = bot_config.get("token", "")
     encoding_aes_key = bot_config.get("encoding_aes_key", "")
+    
+    logger.info(f"[WeCom] Bot config: token={bool(token)}, encoding_aes_key={bool(encoding_aes_key)}")
     
     # If not found, try agent config (for 企业应用)
     if not token:
@@ -753,10 +768,16 @@ async def _wecom_verify_webhook_handler(
         token = config.verification_token or ""
         encoding_aes_key = config.encrypt_key or ""
 
+    if not token:
+        logger.warning(f"[WeCom] No token found for account {account_id}")
+        return Response(status_code=403)
+
     # Verify signature
     expected_sig = _verify_signature(token, timestamp, nonce, echostr)
+    logger.info(f"[WeCom] Signature verification: expected={expected_sig}, got={msg_signature}")
+    
     if expected_sig != msg_signature:
-        logger.warning(f"[WeCom] Signature mismatch for account {account_id}: expected={expected_sig}, got={msg_signature}")
+        logger.warning(f"[WeCom] Signature mismatch for account {account_id}")
         return Response(status_code=403)
 
     # Decrypt echostr and return plaintext

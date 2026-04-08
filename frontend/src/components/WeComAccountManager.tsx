@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import LinearCopyButton from './LinearCopyButton';
+import ConfirmModal from './ConfirmModal';
 
 // ── 新数据结构：支持三种通信模式 ──
 
@@ -73,6 +74,13 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
         agent: { corp_id: '', agent_id: '', secret: '', token: '', encoding_aes_key: '' },
     });
     const [errors, setErrors] = useState<Record<string, string>>({});
+    
+    // Delete confirmation state
+    const [deleteConfirm, setDeleteConfirm] = useState<{ open: boolean; accountId: string; nickname: string }>({ 
+        open: false, 
+        accountId: '', 
+        nickname: '' 
+    });
 
     // Handle connection mode change (single select)
     const handleModeChange = (mode: 'bot_websocket' | 'bot_webhook' | 'agent_webhook') => {
@@ -179,23 +187,13 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
             onAccountsChange([...accounts, account]);
         }
 
-        // For bot webhook mode, keep modal open and track saved account for URL display
-        if (connectionMode === 'bot_webhook') {
-            // Keep modal open for webhook mode - user needs to verify in WeCom first
-            setSavedAccountId(accountId);
-            setEditingAccount(account);
-            setFormData({ ...formData, id: accountId });
-            setPreviewAccountId(null); // Clear preview after save
-            setErrors({});
-        } else {
-            // Close modal for other modes
-            setIsModalOpen(false);
-            setEditingAccount(null);
-            setSavedAccountId(null);
-            setPreviewAccountId(null);
-            resetFormData();
-            setErrors({});
-        }
+        // Close modal for all modes
+        setIsModalOpen(false);
+        setEditingAccount(null);
+        setSavedAccountId(null);
+        setPreviewAccountId(null);
+        resetFormData();
+        setErrors({});
     };
 
     const resetFormData = () => {
@@ -214,7 +212,7 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
     };
 
     // Test button: save config first, then show Webhook URL
-    const handleTestWebhook = () => {
+    const handleTestWebhook = async () => {
         // Validate required fields for webhook mode
         const newErrors: Record<string, string> = {};
         if (!formData.nickname?.trim()) {
@@ -250,6 +248,58 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
             },
         };
 
+        // Build accounts list for saving
+        const updatedAccounts: Record<string, any> = {};
+        
+        // Include existing accounts
+        accounts.forEach(a => {
+            updatedAccounts[a.id] = {
+                nickname: a.nickname,
+                bot_websocket_enabled: a.bot_websocket_enabled || false,
+                bot_webhook_enabled: a.bot_webhook_enabled || false,
+                agent_webhook_enabled: a.agent_webhook_enabled || false,
+                bot: a.bot || {},
+                agent: a.agent || {},
+            };
+        });
+        
+        // Add/update current account
+        updatedAccounts[accountId] = {
+            nickname: account.nickname,
+            bot_websocket_enabled: account.bot_websocket_enabled,
+            bot_webhook_enabled: account.bot_webhook_enabled,
+            agent_webhook_enabled: account.agent_webhook_enabled,
+            bot: account.bot,
+        };
+
+        // Save to backend
+        if (agentId) {
+            try {
+                const token = localStorage.getItem('token');
+                const response = await fetch(`/api/agents/${agentId}/wecom-channel`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                    },
+                    body: JSON.stringify({ accounts: updatedAccounts }),
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    console.error('[WeCom] Failed to save config:', errorData);
+                    setErrors({ submit: errorData.detail || 'Failed to save configuration' });
+                    return;
+                }
+                
+                console.log('[WeCom] Configuration saved successfully');
+            } catch (error) {
+                console.error('[WeCom] Error saving config:', error);
+                setErrors({ submit: 'Failed to save configuration' });
+                return;
+            }
+        }
+
         // Update state
         setSavedAccountId(accountId);
         setEditingAccount(account);
@@ -263,7 +313,7 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
         });
         setErrors({});
 
-        // Save to backend via onAccountsChange
+        // Update parent state
         if (editingAccount || savedAccountId) {
             onAccountsChange(accounts.map(a => a.id === accountId ? account : a));
         } else {
@@ -310,14 +360,25 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
         setIsModalOpen(true);
     };
 
-    const handleDelete = (accountId: string) => {
+    const handleDelete = (accountId: string, nickname: string) => {
         if (accounts.length <= 1) {
-            alert(t('wecomMultiAccount.errors.cannotDeleteLastAccount', 'Cannot delete the last account'));
+            // Cannot delete the last account - show error modal instead of alert
+            setDeleteConfirm({ open: true, accountId: '', nickname: t('wecomMultiAccount.errors.cannotDeleteLastAccount', '无法删除最后一个账号') });
             return;
         }
-        if (confirm(t('wecomMultiAccount.confirmDelete', 'Are you sure you want to delete this account?'))) {
-            onAccountsChange(accounts.filter(a => a.id !== accountId));
+        // Show confirmation modal
+        setDeleteConfirm({ open: true, accountId, nickname });
+    };
+    
+    const confirmDelete = () => {
+        if (deleteConfirm.accountId) {
+            onAccountsChange(accounts.filter(a => a.id !== deleteConfirm.accountId));
         }
+        setDeleteConfirm({ open: false, accountId: '', nickname: '' });
+    };
+    
+    const cancelDelete = () => {
+        setDeleteConfirm({ open: false, accountId: '', nickname: '' });
     };
 
     const getEnabledModes = (account: WeComAccount): string[] => {
@@ -434,7 +495,7 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
                                     {IconEdit}
                                 </button>
                                 <button
-                                    onClick={() => handleDelete(account.id)}
+                                    onClick={() => handleDelete(account.id, account.nickname)}
                                     style={{
                                         padding: '4px 8px',
                                         background: 'transparent',
@@ -988,6 +1049,24 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
                     </div>
                 </div>
             )}
+            
+            {/* Delete Confirmation Modal */}
+            <ConfirmModal
+                open={deleteConfirm.open}
+                title={deleteConfirm.accountId 
+                    ? t('wecomMultiAccount.confirmDeleteTitle', '确认删除账号')
+                    : t('wecomMultiAccount.cannotDeleteTitle', '无法删除')
+                }
+                message={deleteConfirm.accountId
+                    ? t('wecomMultiAccount.confirmDelete', `确定要删除账号「${deleteConfirm.nickname}」吗？此操作不可撤销。`)
+                    : t('wecomMultiAccount.errors.cannotDeleteLastAccount', '至少需要保留一个账号')
+                }
+                confirmLabel={deleteConfirm.accountId ? t('common.delete', '删除') : t('common.ok', '确定')}
+                cancelLabel={t('common.cancel', '取消')}
+                danger={!!deleteConfirm.accountId}
+                onConfirm={confirmDelete}
+                onCancel={cancelDelete}
+            />
         </div>
     );
 }

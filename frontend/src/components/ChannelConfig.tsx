@@ -939,10 +939,11 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     </div>
                                 )}
 
-                                {/* Setup guide in configured view */}
-                                {renderGuide(ch.guide, !!(ch.connectionMode && configConnMode === 'websocket'), ch)}
+                                {/* Setup guide in configured view - NOT for wecom which uses WeComAccountManager */}
+                                {ch.id !== 'wecom' && renderGuide(ch.guide, !!(ch.connectionMode && configConnMode === 'websocket'), ch)}
 
-                                {/* Action buttons */}
+                                {/* Action buttons - NOT for wecom which uses WeComAccountManager */}
+                                {ch.id !== 'wecom' && (
                                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                                     {ch.hasTestConnection && ch.id === 'atlassian' && (
                                         <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAtlassian} disabled={atlassianTesting}>
@@ -963,19 +964,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 prefill.app_secret = config.app_secret || '';
                                                 prefill.encrypt_key = config.encrypt_key || '';
                                                 setConnectionModes(prev => ({ ...prev, feishu: config.extra_config?.connection_mode || 'websocket' }));
-                                            } else if (ch.id === 'wecom') {
-                                                const cm = config.extra_config?.connection_mode === 'websocket' ? 'websocket' : 'webhook';
-                                                setConnectionModes(prev => ({ ...prev, wecom: cm }));
-                                                if (cm === 'websocket') {
-                                                    prefill.bot_id = config.extra_config?.bot_id || '';
-                                                    prefill.bot_secret = config.extra_config?.bot_secret || '';
-                                                } else {
-                                                    prefill.corp_id = config.app_id || '';
-                                                    prefill.wecom_agent_id = config.extra_config?.wecom_agent_id || '';
-                                                    prefill.secret = config.app_secret || '';
-                                                    prefill.token = config.verification_token || '';
-                                                    prefill.encoding_aes_key = config.encrypt_key || '';
-                                                }
                                             } else if (ch.id === 'slack') {
                                                 prefill.bot_token = config.app_secret || '';
                                                 prefill.signing_secret = config.encrypt_key || '';
@@ -1011,6 +999,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }}
                                         onClick={() => deleteMutation.mutate({ ch })}>Disconnect</button>
                                 </div>
+                                )}
                             </div>
                         ) : (
                             /* ── Form view (new or editing) ── */
