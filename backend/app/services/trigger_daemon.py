@@ -565,16 +565,22 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 _internal_patterns = [
                     r'\b(a2a_wait_\w+|a2a_wake)\b',
                     r'\bwait_?\w+_?(task|reply|followup|meeting|sync|api_key)\w*\b',
+                    r'\bresolve_\w+\b',
                     r'\bfocus[_ ]?item\b',
                     r'\btask_delegate\b',
                     r'\bfocus_ref\b',
                     r'✅\s*(a2a\w+|wait\w+|触发器\w*|focus\w*).*(?:已取消|已为|保持|活跃|完成状态)[^\n]*',
                     r'[\-•]\s*(?:触发器|trigger|focus|wait_\w+|a2a\w+).*[^\n]*',
                     r'(?:触发器|trigger)\s+\S+\s*(?:已取消|保持活跃|已为完成状态|fired)',
+                    r'已静默清理触发器',
+                    r'已静默处理完毕',
+                    r'继续待命[。，]?\s*',
+                    r'，?\s*(?:继续)?待命。',
                 ]
                 for _pat in _internal_patterns:
                     cleaned = _re.sub(_pat, '', cleaned, flags=_re.IGNORECASE)
                 cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+                cleaned = _re.sub(r'[。，]\s*$', '', cleaned).strip()
                 if not cleaned:
                     cleaned = final_reply
 
