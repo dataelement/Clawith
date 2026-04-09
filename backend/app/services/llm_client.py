@@ -486,16 +486,25 @@ class OpenAICompatibleClient(LLMClient):
         tag_buffer = ""
         json_buffer = ""  # Buffer for non-standard APIs with split JSON (inspired by PR #120)
 
-        max_retries = 3
         client = await self._get_client()
 
-        for attempt in range(max_retries):
+        _RETRYABLE_HTTP_STATUS = {400, 408, 429, 500, 502, 503, 504, 529}
+
+        for attempt in range(3):  # HTTP-level retry (3 attempts per model)
             try:
                 async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
                     if resp.status_code >= 400:
                         error_body = ""
                         async for chunk in resp.aiter_bytes():
                             error_body += chunk.decode(errors="replace")
+                        # Retryable server errors (rate-limit, overload, gateway)
+                        if resp.status_code in _RETRYABLE_HTTP_STATUS and attempt < 2:
+                            _OVERLOAD_MARKERS = ("overload", "rate", "limit", "too many", "capacity", "try again", "访问量过大")
+                            _lower = error_body[:500].lower()
+                            if resp.status_code != 400 or any(m in _lower for m in _OVERLOAD_MARKERS):
+                                logger.warning(f"Stream attempt {attempt + 1} got HTTP {resp.status_code}, retrying...")
+                                await asyncio.sleep(1)
+                                continue
                         raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
                     async for line in resp.aiter_lines():
@@ -543,15 +552,11 @@ class OpenAICompatibleClient(LLMClient):
                 break
 
             except (httpx.TransportError, httpx.ConnectTimeout) as e:
-                # TransportError covers all network-layer issues:
-                # - ConnectError, ReadError, WriteError (NetworkError subclasses)
-                # - RemoteProtocolError, LocalProtocolError (ProtocolError subclasses)
-                # The last case is common with local vLLM when the server closes
-                # the connection mid-stream (e.g. OOM, context limit exceeded).
-                if attempt < max_retries - 1:
-                    wait = (attempt + 1) * 1
-                    logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}: {e}), retrying in {wait}s...")
-                    await asyncio.sleep(wait)
+                # TransportError: ConnectError, ReadError, WriteError, RemoteProtocolError, etc.
+                # Common with local vLLM when server closes connection mid-stream (OOM, etc.)
+                if attempt < 2:
+                    logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}: {e}), retrying...")
+                    await asyncio.sleep(1)
                     full_content = ""
                     full_reasoning = ""
                     tool_calls_data = []
@@ -559,7 +564,7 @@ class OpenAICompatibleClient(LLMClient):
                     tag_buffer = ""
                     json_buffer = ""
                 else:
-                    raise LLMError(f"Connection failed after {max_retries} attempts: {type(e).__name__}: {e}")
+                    raise LLMError(f"Connection failed after 3 attempts: {type(e).__name__}: {e}")
 
         # Clean up any remaining think tags
         full_content = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_content).strip()

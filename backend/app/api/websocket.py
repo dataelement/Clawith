@@ -121,6 +121,8 @@ async def call_llm(
     on_tool_call=None,
     on_thinking=None,
     supports_vision=False,
+    fallback_model: LLMModel | None = None,
+    on_notify=None,
 ) -> str:
     """Call LLM via unified client with function-calling tool loop.
 
@@ -128,6 +130,8 @@ async def call_llm(
         on_chunk: Optional async callback(text: str) for streaming chunks to client.
         on_thinking: Optional async callback(text: str) for reasoning/thinking content.
         on_tool_call: Optional async callback(dict) for tool call status updates.
+        fallback_model: Optional fallback model for retry alternation (LLM_RETRY_MAX config).
+        on_notify: Optional async callback(str) to notify client about retry status.
     """
     from app.services.agent_tools import AGENT_TOOLS, execute_tool, get_agent_tools_for_llm
     from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
@@ -222,18 +226,35 @@ async def call_llm(
                 )
 
     # Create the unified LLM client
-    try:
-        client = create_llm_client(
-            provider=model.provider,
-            api_key=model.api_key_encrypted,
-            model=model.model,
-            base_url=model.base_url,
-            timeout=float(getattr(model, 'request_timeout', None) or 120.0),
+    def _make_client(m: LLMModel):
+        return create_llm_client(
+            provider=m.provider,
+            api_key=m.api_key_encrypted,
+            model=m.model,
+            base_url=m.base_url,
+            timeout=float(getattr(m, 'request_timeout', None) or 120.0),
         )
+
+    try:
+        client = _make_client(model)
     except Exception as e:
         return f"[Error] Failed to create LLM client: {e}"
 
     max_tokens = get_max_tokens(model.provider, model.model, getattr(model, 'max_output_tokens', None))
+
+    # ── Retry config ──
+    from app.config import get_settings
+    _max_retries = max(get_settings().LLM_RETRY_MAX, 1)
+    _retry_models = [model]
+    if fallback_model:
+        _retry_models.append(fallback_model)
+
+    def _retry_delay(attempt: int) -> float:
+        """First 50% fixed 1s, rest exponential (max 30s)."""
+        half = _max_retries // 2
+        if attempt < half:
+            return 1.0
+        return min(2.0 ** (attempt - half + 1), 30.0)
 
     # ── Per-round token accumulator ──
     from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
@@ -261,34 +282,54 @@ async def call_llm(
                 content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 focus.md 并设置续接触发器。",
             ))
 
-        try:
-            # Use streaming API for real-time responses
-            response = await client.stream(
-                messages=api_messages,
-                tools=tools_for_llm if tools_for_llm else None,
-                temperature=model.temperature,
-                max_tokens=max_tokens,
-                on_chunk=on_chunk,
-                on_thinking=on_thinking,
-            )
-        except LLMError as e:
-            # Record accumulated tokens before returning error
-            logger.error(
-                f"[LLM] LLMError provider={getattr(model, 'provider', '?')} "
-                f"model={getattr(model, 'model', '?')} round={round_i + 1}: {e}"
-            )
+        # ── LLM call with retry + model alternation ──
+        response = None
+        _last_err = None
+        _prev_model_id = id(model)
+        for _attempt in range(_max_retries):
+            _cur_model = _retry_models[_attempt % len(_retry_models)]
+            _cur_label = getattr(_cur_model, 'model', '?')
+
+            if _attempt > 0:
+                _delay = _retry_delay(_attempt)
+                logger.info(f"[Retry] Round {round_i+1}, attempt {_attempt+1}/{_max_retries} → {_cur_label}, wait {_delay:.1f}s")
+                if on_notify:
+                    try:
+                        await on_notify(f"Retrying ({_attempt+1}/{_max_retries}) with {_cur_label}...")
+                    except Exception:
+                        pass
+                await asyncio.sleep(_delay)
+                # Recreate client only when model actually changes
+                if id(_cur_model) != _prev_model_id:
+                    try:
+                        client = _make_client(_cur_model)
+                        max_tokens = get_max_tokens(_cur_model.provider, _cur_model.model, getattr(_cur_model, 'max_output_tokens', None))
+                    except Exception:
+                        continue
+                    _prev_model_id = id(_cur_model)
+
+            try:
+                response = await client.stream(
+                    messages=api_messages,
+                    tools=tools_for_llm if tools_for_llm else None,
+                    temperature=_cur_model.temperature,
+                    max_tokens=max_tokens,
+                    on_chunk=on_chunk,
+                    on_thinking=on_thinking,
+                )
+                break  # success
+            except Exception as e:
+                _last_err = e
+                logger.warning(f"[Retry] Round {round_i+1} attempt {_attempt+1} failed: {type(e).__name__}: {str(e)[:150]}")
+                if _attempt >= _max_retries - 1:
+                    if agent_id and _accumulated_tokens > 0:
+                        await record_token_usage(agent_id, _accumulated_tokens)
+                    return f"[LLM Error] {e}"
+
+        if response is None:
             if agent_id and _accumulated_tokens > 0:
                 await record_token_usage(agent_id, _accumulated_tokens)
-            return f"[LLM Error] {e}"
-        except Exception as e:
-            logger.error(
-                f"[LLM] Unexpected error provider={getattr(model, 'provider', '?')} "
-                f"model={getattr(model, 'model', '?')} round={round_i + 1}: "
-                f"{type(e).__name__}: {str(e)[:300]}"
-            )
-            if agent_id and _accumulated_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_tokens)
-            return f"[LLM call error] {type(e).__name__}: {str(e)[:200]}"
+            return f"[LLM Error] {_last_err}"
 
         # ── Track tokens for this round ──
         logger.debug(f"[LLM] stream() returned: {len(response.content or '')} chars, finish={response.finish_reason}, tools={len(response.tool_calls or [])}")
@@ -823,7 +864,7 @@ async def websocket_chat(
 
                     import asyncio as _aio
 
-                    # Run call_llm as a cancellable task
+                    # Run call_llm as a cancellable task (retry logic is built-in)
                     llm_task = _aio.create_task(call_llm(
                         llm_model,
                         conversation[-ctx_size:],
@@ -836,6 +877,8 @@ async def websocket_chat(
                         on_tool_call=tool_call_to_ws,
                         on_thinking=thinking_to_ws,
                         supports_vision=getattr(llm_model, 'supports_vision', False),
+                        fallback_model=fallback_llm_model,
+                        on_notify=lambda msg: websocket.send_json({"type": "info", "content": msg}),
                     ))
 
                     # Listen for abort while LLM is running
@@ -899,34 +942,10 @@ async def websocket_chat(
                 except WebSocketDisconnect:
                     raise
                 except Exception as e:
-                    logger.error(f"[WS] LLM error: {e}")
+                    logger.error(f"[WS] LLM error (after all retries): {e}")
                     import traceback
                     traceback.print_exc()
-                    # Runtime fallback: primary model failed -> retry with fallback model
-                    if fallback_llm_model:
-                        logger.info(f"[WS] Primary model failed, retrying with fallback: {fallback_llm_model.model}")
-                        try:
-                            await websocket.send_json({"type": "info", "content": f"Primary model error, switching to fallback model ({fallback_llm_model.model})..."})
-                            assistant_response = await call_llm(
-                                fallback_llm_model,
-                                conversation[-ctx_size:],
-                                agent_name,
-                                role_description,
-                                agent_id=agent_id,
-                                user_id=user_id,
-                                session_id=conv_id,
-                                on_chunk=stream_to_ws,
-                                on_tool_call=tool_call_to_ws,
-                                on_thinking=thinking_to_ws,
-                                supports_vision=getattr(fallback_llm_model, 'supports_vision', False),
-                            )
-                            logger.info(f"[WS] Fallback LLM response: {assistant_response[:80]}")
-                        except Exception as e2:
-                            logger.error(f"[WS] Fallback LLM also failed: {e2}")
-                            traceback.print_exc()
-                            assistant_response = f"[LLM call error] Primary: {str(e)[:100]} | Fallback: {str(e2)[:100]}"
-                    else:
-                        assistant_response = f"[LLM call error] {str(e)[:200]}"
+                    assistant_response = f"[LLM call error] {str(e)[:200]}"
             else:
                 assistant_response = f"⚠️ {agent_name} has no LLM model configured. Please select a model in the agent's Settings tab."
 

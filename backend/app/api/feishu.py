@@ -1523,80 +1523,15 @@ async def _call_agent_llm(
                 on_chunk=on_chunk,
                 on_thinking=on_thinking,
                 on_tool_call=on_tool_call,
+                fallback_model=fallback_model,
             ),
             timeout=_timeout,
         )
         return reply
     except asyncio.TimeoutError:
-        logger.error(
-            f"[LLM] Call timed out after {_timeout}s "
-            f"(agent_id={agent_id}, model={getattr(model, 'model', 'unknown')})"
-        )
-        if fallback_model:
-            # Use the fallback model's own timeout budget.
-            _fb_timeout = _get_llm_timeout(fallback_model)
-            logger.info(f"[LLM] Retrying timed-out request with fallback model: {fallback_model.model} (timeout={_fb_timeout}s)")
-            try:
-                reply = await asyncio.wait_for(
-                    call_llm(
-                        fallback_model,
-                        messages,
-                        agent.name,
-                        agent.role_description or "",
-                        agent_id=agent_id,
-                        user_id=effective_user_id,
-                        supports_vision=getattr(fallback_model, 'supports_vision', False),
-                        on_chunk=on_chunk,
-                        on_thinking=on_thinking,
-                        on_tool_call=on_tool_call,
-                    ),
-                    timeout=_fb_timeout,
-                )
-                return reply
-            except asyncio.TimeoutError:
-                logger.error(
-                    f"[LLM] Fallback call also timed out after {_fb_timeout}s "
-                    f"(agent_id={agent_id}, model={getattr(fallback_model, 'model', 'unknown')})"
-                )
-                return f"⚠️ Model response timed out (>{int(_fb_timeout)}s). Please retry or shorten your request."
-            except Exception as e2:
-                import traceback
-                traceback.print_exc()
-                return f"⚠️ Model error: Primary Timeout | Fallback: {str(e2)[:80]}"
+        logger.error(f"[LLM] Call timed out after {_timeout}s (agent_id={agent_id})")
         return f"⚠️ Model response timed out (>{int(_timeout)}s). Please retry or shorten your request."
     except Exception as e:
         import traceback
         traceback.print_exc()
-        error_msg = str(e) or repr(e)
-        logger.error(f"[LLM] Primary model error: {error_msg}")
-        # Runtime fallback: primary model failed -> retry with fallback model
-        if fallback_model:
-            logger.info(f"[LLM] Retrying with fallback model: {fallback_model.model}")
-            try:
-                _fb_timeout = _get_llm_timeout(fallback_model)
-                reply = await asyncio.wait_for(
-                    call_llm(
-                        fallback_model,
-                        messages,
-                        agent.name,
-                        agent.role_description or "",
-                        agent_id=agent_id,
-                        user_id=effective_user_id,
-                        supports_vision=getattr(fallback_model, 'supports_vision', False),
-                        on_chunk=on_chunk,
-                        on_thinking=on_thinking,
-                        on_tool_call=on_tool_call,
-                    ),
-                    timeout=_fb_timeout,
-                )
-                return reply
-            except asyncio.TimeoutError:
-                logger.error(
-                    f"[LLM] Fallback call timed out after {_fb_timeout}s "
-                    f"(agent_id={agent_id}, model={getattr(fallback_model, 'model', 'unknown')})"
-                )
-                return f"⚠️ Model error: Primary: {str(e)[:80]} | Fallback Timeout"
-            except Exception as e2:
-                traceback.print_exc()
-                return f"⚠️ Model error: Primary: {str(e)[:80]} | Fallback: {str(e2)[:80]}"
-        return f"⚠️ 调用模型出错: {error_msg[:150]}"
+        return f"⚠️ 调用模型出错: {(str(e) or repr(e))[:150]}"
