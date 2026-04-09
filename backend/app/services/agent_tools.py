@@ -1899,6 +1899,10 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
     (ws / "memory").mkdir(exist_ok=True)
 
+    # Tool artifacts: auto-persisted tool call results
+    for _sub in ("search", "web_pages", "code_outputs", "misc"):
+        (ws / "tool_artifacts" / _sub).mkdir(parents=True, exist_ok=True)
+
     # Ensure tenant-scoped enterprise_info directory exists
     if tenant_id:
         enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
@@ -2001,6 +2005,25 @@ async def _get_agent_tenant_id(agent_id: uuid.UUID) -> str | None:
     return None
 
 
+def _is_error_result(result: str) -> bool:
+    """Check if a tool result indicates an error."""
+    return result.startswith(("❌", "Tool execution error", "Error executing"))
+
+
+def _persist_tool_result_sync(ws: Path, tool_name: str, arguments: dict, result: str) -> str:
+    """Persist tool result and append path hint. Returns (possibly modified) result string."""
+    if _is_error_result(result):
+        return result
+    try:
+        from app.services.tool_artifacts import save_artifact
+        _rel = save_artifact(ws, tool_name, arguments, result)
+        if _rel:
+            return result + f"\n\n📁 完整结果已保存: {_rel}"
+    except Exception:
+        pass
+    return result
+
+
 async def _execute_tool_direct(
     tool_name: str,
     arguments: dict,
@@ -2015,28 +2038,32 @@ async def _execute_tool_direct(
     ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
     try:
         if tool_name == "delete_file":
-            return _delete_file(ws, arguments.get("path", ""))
+            result = _delete_file(ws, arguments.get("path", ""))
         elif tool_name == "write_file":
             path = arguments.get("path")
             content = arguments.get("content", "")
             if not path:
-                return "Missing path"
-            return _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+                result = "Missing path"
+            else:
+                result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
-            return await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
+            result = await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
         elif tool_name == "web_search":
-            return await _web_search(arguments, agent_id)
+            result = await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
-            return await _jina_search(arguments)
+            result = await _jina_search(arguments, agent_id=agent_id)
         elif tool_name == "send_feishu_message":
-            return await _send_feishu_message(agent_id, arguments)
+            result = await _send_feishu_message(agent_id, arguments)
         elif tool_name == "send_message_to_agent":
-            return await _send_message_to_agent(agent_id, arguments)
+            result = await _send_message_to_agent(agent_id, arguments)
         elif tool_name == "send_file_to_agent":
-            return await _send_file_to_agent(agent_id, ws, arguments)
+            result = await _send_file_to_agent(agent_id, ws, arguments)
         else:
-            return f"Tool {tool_name} does not support post-approval execution"
+            result = f"Tool {tool_name} does not support post-approval execution"
+        # Persist tool result (same logic as execute_tool)
+        result = _persist_tool_result_sync(ws, tool_name, arguments, result)
+        return result
     except Exception as e:
         logger.exception(f"[DirectTool] Error executing {tool_name}: {e}")
         return f"Error executing {tool_name}: {e}"
@@ -2186,13 +2213,13 @@ async def execute_tool(
         elif tool_name == "web_search":
             result = await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
-            result = await _jina_search(arguments)
+            result = await _jina_search(arguments, agent_id=agent_id)
         elif tool_name == "bing_search":
-            result = await _jina_search(arguments)  # redirect legacy to jina
+            result = await _jina_search(arguments, agent_id=agent_id)  # redirect legacy to jina
         elif tool_name == "jina_read":
-            result = await _jina_read(arguments)
+            result = await _jina_read(arguments, agent_id=agent_id)
         elif tool_name == "read_webpage":
-            result = await _jina_read(arguments)  # redirect legacy to jina
+            result = await _jina_read(arguments, agent_id=agent_id)  # redirect legacy to jina
         elif tool_name == "plaza_get_new_posts":
             result = await _plaza_get_new_posts(agent_id, arguments)
         elif tool_name == "plaza_create_post":
@@ -2331,6 +2358,10 @@ async def execute_tool(
                 f"Called tool {tool_name}: {result[:80]}",
                 detail={"tool": tool_name, "args": {k: str(v)[:100] for k, v in arguments.items()}, "result": result[:300]},
             )
+
+        # --- Auto-persist tool result to workspace ---
+        result = _persist_tool_result_sync(ws, tool_name, arguments, result)
+
         return result
     except Exception as e:
         logger.exception(f"[Tool] Execution failed: {tool_name}")
@@ -2418,7 +2449,7 @@ async def _get_jina_api_key() -> str:
     return get_settings().JINA_API_KEY
 
 
-async def _jina_search(arguments: dict) -> str:
+async def _jina_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
     """Search via Jina AI Search API (s.jina.ai). Returns full content per result, not just snippets."""
     import httpx
 
@@ -2466,7 +2497,7 @@ async def _jina_search(arguments: dict) -> str:
         return f"❌ Jina Search error: {str(e)[:300]}"
 
 
-async def _jina_read(arguments: dict) -> str:
+async def _jina_read(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
     """Read web page via Jina AI Reader API (r.jina.ai). Returns clean structured markdown."""
     import httpx
     from app.config import get_settings
