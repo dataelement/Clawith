@@ -36,6 +36,13 @@ _A2A_WAKE_CHAIN: dict[str, int] = {}
 _A2A_WAKE_CHAIN_TTL = 300
 _A2A_MAX_WAKE_DEPTH = 3
 
+
+def _cleanup_stale_invoke_cache():
+    now = datetime.now(timezone.utc)
+    stale = [k for k, v in _last_invoke.items() if (now - v).total_seconds() > DEDUP_WINDOW * 2]
+    for k in stale:
+        del _last_invoke[k]
+
 # Webhook rate limiter: token -> list of timestamps
 _webhook_hits: dict[str, list[float]] = {}
 WEBHOOK_RATE_LIMIT = 5   # max hits per minute per token
@@ -268,8 +275,9 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 # --- Agent-to-agent message check (existing logic) ---
                 from app.models.participant import Participant
                 from app.models.agent import Agent as AgentModel
+                safe_agent_name = from_agent_name.replace("%", "").replace("_", r"\_")
                 agent_r = await db.execute(
-                    select(AgentModel).where(AgentModel.name.ilike(f"%{from_agent_name}%"))
+                    select(AgentModel).where(AgentModel.name.ilike(f"%{safe_agent_name}%"))
                 )
                 source_agent = agent_r.scalars().first()
                 if not source_agent:
@@ -316,13 +324,14 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 # Look up user by display name or username within tenant
                 from sqlalchemy import or_
                 from app.models.user import User, Identity
+                safe_user_name = from_user_name.replace("%", "").replace("_", r"\_")
                 query = (
                     select(User)
                     .join(User.identity)
                     .where(
                         or_(
-                            User.display_name.ilike(f"%{from_user_name}%"),
-                            Identity.username.ilike(f"%{from_user_name}%"),
+                            User.display_name.ilike(f"%{safe_user_name}%"),
+                            Identity.username.ilike(f"%{safe_user_name}%"),
                         )
                     )
                 )
@@ -563,28 +572,32 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                             trigger_reasons.append(r[:77] + "...")
                 summary = trigger_reasons[0] if trigger_reasons else "有新的事件需要处理"
 
-                import re as _re
-                cleaned = final_reply
-                _internal_patterns = [
-                    r'\b(a2a_wait_\w+|a2a_wake)\b',
-                    r'\bwait_?\w+_?(task|reply|followup|meeting|sync|api_key)\w*\b',
-                    r'\bresolve_\w+\b',
-                    r'\bfocus[_ ]?item\b',
-                    r'\btask_delegate\b',
-                    r'\bfocus_ref\b',
-                    r'✅\s*(a2a\w+|wait\w+|触发器\w*|focus\w*).*(?:已取消|已为|保持|活跃|完成状态)[^\n]*',
-                    r'[\-•]\s*(?:触发器|trigger|focus|wait_\w+|a2a\w+).*[^\n]*',
-                    r'(?:触发器|trigger)\s+\S+\s*(?:已取消|保持活跃|已为完成状态|fired)',
-                    r'已静默清理触发器',
-                    r'已静默处理完毕',
-                    r'继续待命[。，]?\s*',
-                    r'，?\s*(?:继续)?待命。',
-                ]
-                for _pat in _internal_patterns:
-                    cleaned = _re.sub(_pat, '', cleaned, flags=_re.IGNORECASE)
-                cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-                cleaned = _re.sub(r'[。，]\s*$', '', cleaned).strip()
-                if not cleaned:
+                _is_a2a_wait = any(t.name.startswith("a2a_wait_") for t in triggers)
+                if _is_a2a_wait:
+                    import re as _re
+                    cleaned = final_reply
+                    _internal_patterns = [
+                        r'\b(a2a_wait_\w+|a2a_wake)\b',
+                        r'\bwait_?\w+_?(task|reply|followup|meeting|sync|api_key)\w*\b',
+                        r'\bresolve_\w+\b',
+                        r'\bfocus[_ ]?item\b',
+                        r'\btask_delegate\b',
+                        r'\bfocus_ref\b',
+                        r'✅\s*(a2a\w+|wait\w+|触发器\w*|focus\w*).*(?:已取消|已为|保持|活跃|完成状态)[^\n]*',
+                        r'[\-•]\s*(?:触发器|trigger|focus|wait_\w+|a2a\w+).*[^\n]*',
+                        r'(?:触发器|trigger)\s+\S+\s*(?:已取消|保持活跃|已为完成状态|fired)',
+                        r'已静默清理触发器',
+                        r'已静默处理完毕',
+                        r'继续待命[。，]?\s*',
+                        r'，?\s*(?:继续)?待命。',
+                    ]
+                    for _pat in _internal_patterns:
+                        cleaned = _re.sub(_pat, '', cleaned, flags=_re.IGNORECASE)
+                    cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+                    cleaned = _re.sub(r'[。，]\s*$', '', cleaned).strip()
+                    if not cleaned:
+                        cleaned = final_reply
+                else:
                     cleaned = final_reply
 
                 notification = f"⚡ {summary}\n\n{cleaned}"
@@ -771,7 +784,7 @@ async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, 
 
         def _decay_chain():
             _A2A_WAKE_CHAIN.pop(chain_key, None)
-        asyncio.get_event_loop().call_later(_A2A_WAKE_CHAIN_TTL, _decay_chain)
+        asyncio.get_running_loop().call_later(_A2A_WAKE_CHAIN_TTL, _decay_chain)
 
     if not skip_dedup and agent_id in _last_invoke:
         elapsed = (now - _last_invoke[agent_id]).total_seconds()
@@ -820,6 +833,7 @@ async def start_trigger_daemon():
         _heartbeat_counter += 1
         if _heartbeat_counter >= 4:
             _heartbeat_counter = 0
+            _cleanup_stale_invoke_cache()
             try:
                 from app.services.heartbeat import _heartbeat_tick
                 await _heartbeat_tick()
