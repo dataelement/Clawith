@@ -26,6 +26,12 @@
   --accent-subtle: rgba(225, 225, 232, 0.08);
   --accent-text: #c0c0cc;
 
+  --segment-active-bg: var(--accent-primary);
+  --segment-active-text: var(--text-inverse);
+
+  /* Select chevron — @tabler/icons chevron-down, colored to --text-secondary */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%238b8b9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath stroke='none' d='M0 0h24v24H0z' fill='none'/%3E%3Cpath d='M6 9l6 6l6 -6'/%3E%3C/svg%3E");
+
   --success: #22c55e;
   --success-subtle: rgba(34, 197, 94, 0.12);
   --warning: #f59e0b;
@@ -195,6 +201,12 @@
   --accent-subtle: rgba(58, 58, 66, 0.08);
   --accent-text: #3a3a42;
 
+  --segment-active-bg: var(--bg-elevated);
+  --segment-active-text: var(--text-primary);
+
+  /* Select chevron — @tabler/icons chevron-down, colored to --text-secondary */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%236b6b80' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath stroke='none' d='M0 0h24v24H0z' fill='none'/%3E%3Cpath d='M6 9l6 6l6 -6'/%3E%3C/svg%3E");
+
   --success: #16a34a;
   --success-subtle: rgba(22, 163, 74, 0.08);
   --warning: #d97706;
@@ -279,8 +291,7 @@ button {
 }
 
 input,
-textarea,
-select {
+textarea {
   font-family: inherit;
   font-size: inherit;
   color: inherit;
@@ -290,6 +301,26 @@ select {
   padding: var(--space-2) var(--space-3);
   outline: none;
   transition: border-color var(--transition-fast);
+}
+
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background-color: var(--bg-elevated);
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 4px 32px 4px 12px;
+  outline: none;
+  transition: border-color var(--transition-fast);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  text-overflow: ellipsis;
 }
 
 /* Theme-colored radio and checkbox */
@@ -500,21 +531,21 @@ select:focus {
   opacity: 1;
 }
 
-/* Pinned icon swap: show pin by default, unpin on hover */
+/* Pinned icon swap: show pin by default, unpin only when hovering the button itself */
 .sidebar-pin-btn.pinned .pin-hover {
   display: none;
 }
 
-.sidebar-agent-item:hover .sidebar-pin-btn.pinned .pin-default {
+.sidebar-pin-btn.pinned:hover .pin-default {
   display: none;
 }
 
-.sidebar-agent-item:hover .sidebar-pin-btn.pinned .pin-hover {
+.sidebar-pin-btn.pinned:hover .pin-hover {
   display: inline;
 }
 
-/* When pinned and hovered, turn red to indicate unpin */
-.sidebar-agent-item:hover .sidebar-pin-btn.pinned {
+/* When hovering the pin button itself on a pinned agent, turn red to indicate unpin */
+.sidebar-pin-btn.pinned:hover {
   color: var(--error);
   background: var(--error-subtle);
 }
@@ -1044,23 +1075,100 @@ select:focus {
   border-bottom-color: var(--accent-primary);
 }
 
-/* Session sidebar admin tabs — same underline pattern as .tabs/.tab, compact for narrow column */
-.tabs.session-sidebar-session-tabs {
-  gap: var(--space-5);
-  margin-bottom: var(--space-2);
-  margin-top: 0;
-  padding: 2px 12px 0;
-  position: relative;
-  background: transparent;
-  z-index: auto;
-  top: auto;
+/* Session sidebar admin tabs — segment control style */
+.session-sidebar-segment-control {
+  display: flex;
+  margin: 0 12px 8px;
+  padding: 2px;
+  height: 28px;
+  background: var(--accent-subtle);
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  box-sizing: border-box;
 }
 
-.tabs.session-sidebar-session-tabs .tab {
-  flex: 0 1 auto;
-  padding: var(--space-2) var(--space-1) 10px;
+.session-sidebar-segment-control .segment-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
+  color: var(--text-tertiary);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
   white-space: nowrap;
+  user-select: none;
+  border: none;
+  background: none;
+  padding: 0;
+  line-height: 1;
+}
+
+.session-sidebar-segment-control .segment-item:hover {
+  color: var(--text-secondary);
+}
+
+.session-sidebar-segment-control .segment-item.active {
+  background: var(--segment-active-bg);
+  color: var(--segment-active-text);
+  font-weight: 500;
+}
+
+/* New session button */
+.new-session-btn {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+  box-sizing: border-box;
+  line-height: 1;
+}
+
+.new-session-btn:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border-color: var(--accent-primary);
+}
+
+/* Session item — delete button & message count hover behaviour */
+.session-del-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.35s ease-in-out, background 0.35s ease-in-out;
+}
+
+.session-item:hover .session-del-btn {
+  display: flex;
+}
+
+.session-del-btn:hover {
+  color: var(--status-error);
+  background: var(--bg-hover);
+}
+
+.session-item:hover .session-msg-count {
+  display: none;
 }
 
 /* Page header */
@@ -1345,7 +1453,7 @@ select:focus {
 .login-field input,
 .login-field select {
   height: 44px;
-  padding: 0 14px;
+  padding: 0 32px 0 14px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-default);
   border-radius: 10px;
