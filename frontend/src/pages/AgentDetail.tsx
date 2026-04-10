@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback, Component, Er
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { createPortal } from 'react-dom';
 
 import ConfirmModal from '../components/ConfirmModal';
 import type { FileBrowserApi } from '../components/FileBrowser';
@@ -1431,6 +1432,10 @@ function AgentDetailInner() {
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
     const [showContextBudgetPopover, setShowContextBudgetPopover] = useState(false);
+    const contextBudgetTriggerRef = useRef<HTMLButtonElement>(null);
+    const contextBudgetPopoverRef = useRef<HTMLDivElement>(null);
+    const [contextBudgetPopoverPos, setContextBudgetPopoverPos] = useState({ top: 0, left: 0 });
+    const contextBudgetCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [agentExpired, setAgentExpired] = useState(false);
     // Websocket chat state (for 'me' conversation)
     const token = useAuthStore((s) => s.token);
@@ -1808,6 +1813,45 @@ function AgentDetailInner() {
     const contextRingCircumference = 2 * Math.PI * contextRingRadius;
     const contextRingOffset = contextRingCircumference * (1 - usageRatioClamped);
     const formatBudgetCount = (value: number | undefined) => (typeof value === 'number' ? value.toLocaleString() : '—');
+    const clearContextBudgetCloseTimer = useCallback(() => {
+        if (contextBudgetCloseTimerRef.current) {
+            clearTimeout(contextBudgetCloseTimerRef.current);
+            contextBudgetCloseTimerRef.current = null;
+        }
+    }, []);
+    const updateContextBudgetPopoverPosition = useCallback(() => {
+        const rect = contextBudgetTriggerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setContextBudgetPopoverPos({
+            top: Math.max(8, rect.top - 10),
+            left: Math.min(window.innerWidth - 12, rect.right),
+        });
+    }, []);
+    const openContextBudgetPopover = useCallback(() => {
+        clearContextBudgetCloseTimer();
+        updateContextBudgetPopoverPosition();
+        setShowContextBudgetPopover(true);
+    }, [clearContextBudgetCloseTimer, updateContextBudgetPopoverPosition]);
+    const scheduleCloseContextBudgetPopover = useCallback(() => {
+        clearContextBudgetCloseTimer();
+        contextBudgetCloseTimerRef.current = setTimeout(() => {
+            setShowContextBudgetPopover(false);
+            contextBudgetCloseTimerRef.current = null;
+        }, 90);
+    }, [clearContextBudgetCloseTimer]);
+
+    useEffect(() => {
+        if (!showContextBudgetPopover) return;
+        const handleMove = () => updateContextBudgetPopoverPosition();
+        window.addEventListener('resize', handleMove);
+        window.addEventListener('scroll', handleMove, true);
+        return () => {
+            window.removeEventListener('resize', handleMove);
+            window.removeEventListener('scroll', handleMove, true);
+        };
+    }, [showContextBudgetPopover, updateContextBudgetPopoverPosition]);
+
+    useEffect(() => () => clearContextBudgetCloseTimer(), [clearContextBudgetCloseTimer]);
 
     // Settings form local state
     const [settingsForm, setSettingsForm] = useState({
@@ -4588,7 +4632,7 @@ function AgentDetailInner() {
                                             </div>
                                         ) : null}
                                         <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
-                                            <div className="chat-composer">
+                                            <div className="chat-composer" style={{ position: 'relative' }}>
                                             {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
                                                 <div className="chat-composer-attachments">
                                                     {chatUploadDrafts.map((draft) => (
@@ -4645,7 +4689,7 @@ function AgentDetailInner() {
                                                     ))}
                                                 </div>
                                             )}
-                                            <div className="chat-composer-input-block">
+                                            <div className="chat-composer-input-block" style={{ paddingRight: '40px' }}>
                                                 <textarea
                                                     ref={chatInputRef}
                                                     className="chat-input"
@@ -4711,130 +4755,112 @@ function AgentDetailInner() {
                                                         <IconSend size={16} stroke={1.75} />
                                                     </button>
                                                 )}
-                                                <div
-                                                    style={{ position: 'relative' }}
-                                                    onMouseEnter={() => setShowContextBudgetPopover(true)}
-                                                    onMouseLeave={() => setShowContextBudgetPopover(false)}
+                                            </div>
+                                            <div
+                                                style={{ position: 'absolute', top: '8px', right: '8px', zIndex: 5 }}
+                                                onMouseEnter={openContextBudgetPopover}
+                                                onMouseLeave={scheduleCloseContextBudgetPopover}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    ref={contextBudgetTriggerRef}
+                                                    className="chat-composer-btn"
+                                                    aria-label={t('agent.chat.contextBudget.aria')}
+                                                    style={{
+                                                        cursor: activeSession?.id ? 'pointer' : 'default',
+                                                        opacity: activeSession?.id ? 1 : 0.55,
+                                                        border: '1px solid var(--border-subtle)',
+                                                        borderRadius: '6px',
+                                                    }}
                                                 >
-                                                    <button
-                                                        type="button"
-                                                        aria-label={t('agent.chat.contextBudget.aria')}
-                                                        style={{
-                                                            width: '32px',
-                                                            height: '32px',
-                                                            borderRadius: '0',
-                                                            border: 'none',
-                                                            background: 'transparent',
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            justifyContent: 'center',
-                                                            padding: 0,
-                                                            cursor: 'default',
-                                                            boxShadow: 'none',
-                                                            opacity: activeSession?.id ? 1 : 0.5,
-                                                        }}
-                                                    >
-                                                        <svg width="28" height="28" viewBox="0 0 20 20" role="presentation">
-                                                            <defs>
-                                                                <linearGradient id="contextBudgetRingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                                                                    <stop offset="0%" stopColor={contextRingColor} stopOpacity="0.95" />
-                                                                    <stop offset="100%" stopColor={contextRingColor} stopOpacity="0.55" />
-                                                                </linearGradient>
-                                                                <filter id="contextBudgetRingGlow" x="-50%" y="-50%" width="200%" height="200%">
-                                                                    <feDropShadow dx="0" dy="0" stdDeviation="1.4" floodColor={contextRingColor} floodOpacity="0.45" />
-                                                                </filter>
-                                                            </defs>
-                                                            <circle
-                                                                cx="10"
-                                                                cy="10"
-                                                                r={contextRingRadius}
-                                                                fill="none"
-                                                                stroke="rgba(127,127,127,0.22)"
-                                                                strokeWidth="2.3"
-                                                            />
-                                                            <circle
-                                                                cx="10"
-                                                                cy="10"
-                                                                r={contextRingRadius}
-                                                                fill="none"
-                                                                stroke="url(#contextBudgetRingGradient)"
-                                                                strokeWidth="2.6"
-                                                                strokeLinecap="round"
-                                                                strokeDasharray={`${contextRingCircumference} ${contextRingCircumference}`}
-                                                                strokeDashoffset={contextRingOffset}
-                                                                transform="rotate(-90 10 10)"
-                                                                filter="url(#contextBudgetRingGlow)"
-                                                                style={{ transition: 'stroke-dashoffset 180ms ease' }}
-                                                            />
-                                                            <circle cx="10" cy="10" r="4.9" fill="#ffffff" />
-                                                            <text
-                                                                x="10"
-                                                                y="10.95"
-                                                                textAnchor="middle"
-                                                                dominantBaseline="middle"
-                                                                style={{
-                                                                    fill: '#2f3440',
-                                                                    fontSize: '3.95px',
-                                                                    fontWeight: 700,
-                                                                    fontFamily: '"Avenir Next", "SF Pro Display", "Inter", sans-serif',
-                                                                    letterSpacing: '-0.08px',
-                                                                }}
-                                                            >
-                                                                <tspan>{Math.max(0, Math.round(usagePercent))}</tspan>
-                                                                <tspan style={{ fontSize: '2.6px', fontWeight: 700 }}>%</tspan>
-                                                            </text>
-                                                        </svg>
-                                                    </button>
-                                                    {showContextBudgetPopover && (
-                                                        <div style={{
-                                                            position: 'absolute',
-                                                            bottom: 'calc(100% + 10px)',
-                                                            right: 0,
-                                                            minWidth: '292px',
-                                                            border: '1px solid color-mix(in srgb, var(--border-default) 78%, transparent)',
-                                                            borderRadius: '14px',
-                                                            padding: '12px 12px 11px',
-                                                            background: `
-                                                            radial-gradient(120% 140% at 0% 0%, rgba(255,255,255,0.05), transparent 48%),
-                                                            linear-gradient(180deg, var(--bg-elevated), color-mix(in srgb, var(--bg-elevated) 88%, var(--bg-secondary) 12%))
-                                                        `,
-                                                            boxShadow: 'none',
-                                                            zIndex: 30,
-                                                            backdropFilter: 'blur(6px)',
-                                                        }}>
-                                                            <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                                                <span>{t('agent.chat.contextBudget.title')}</span>
-                                                                <span style={{ color: contextRingColor, fontWeight: 700 }}>{usagePercent.toFixed(1)}%</span>
-                                                            </div>
-                                                            <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(127,127,127,0.18)', overflow: 'hidden', marginBottom: '10px' }}>
-                                                                <div style={{ height: '100%', width: `${Math.min(usageRatio, 1.2) * 100}%`, borderRadius: '999px', background: `linear-gradient(90deg, ${contextRingColor}, color-mix(in srgb, ${contextRingColor} 60%, white 40%))` }} />
-                                                            </div>
-                                                            {!activeSession?.id ? (
-                                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                                                                    {t('agent.chat.contextBudget.unavailable')}
-                                                                </div>
-                                                            ) : sessionContextBudgetFetching && !sessionContextBudget ? (
-                                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                                                                    {t('agent.chat.contextBudget.loading')}
-                                                                </div>
-                                                            ) : (
-                                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: '6px', columnGap: '10px', fontSize: '12px' }}>
-                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.windowSize')}</span>
-                                                                    <span>{formatBudgetCount(sessionContextBudget?.window_size_messages)}</span>
-                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.sessionMessages')}</span>
-                                                                    <span>{formatBudgetCount(sessionContextBudget?.session_messages_total)}</span>
-                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.estimatedTokens')}</span>
-                                                                    <span>{formatBudgetCount(sessionContextBudget?.estimated_tokens_current_window)}</span>
-                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.budgetTokens')}</span>
-                                                                    <span>{formatBudgetCount(sessionContextBudget?.budget_tokens)}</span>
-                                                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.usageRatio')}</span>
-                                                                    <span style={{ color: contextRingColor, fontWeight: 700 }}>{usagePercent.toFixed(1)}%</span>
-                                                                </div>
-                                                            )}
+                                                    <svg width="16" height="16" viewBox="0 0 20 20" role="presentation">
+                                                        <circle
+                                                            cx="10"
+                                                            cy="10"
+                                                            r={contextRingRadius}
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            strokeOpacity="0.3"
+                                                            strokeWidth="2.2"
+                                                        />
+                                                        <circle
+                                                            cx="10"
+                                                            cy="10"
+                                                            r={contextRingRadius}
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            strokeWidth="2.2"
+                                                            strokeLinecap="round"
+                                                            strokeDasharray={`${contextRingCircumference} ${contextRingCircumference}`}
+                                                            strokeDashoffset={contextRingOffset}
+                                                            transform="rotate(-90 10 10)"
+                                                            style={{ transition: 'stroke-dashoffset 180ms ease' }}
+                                                        />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                            {showContextBudgetPopover && typeof document !== 'undefined' && createPortal(
+                                                <div
+                                                    ref={contextBudgetPopoverRef}
+                                                    onMouseEnter={openContextBudgetPopover}
+                                                    onMouseLeave={scheduleCloseContextBudgetPopover}
+                                                    style={{
+                                                        position: 'fixed',
+                                                        top: contextBudgetPopoverPos.top,
+                                                        left: contextBudgetPopoverPos.left,
+                                                        transform: 'translate(-100%, -100%)',
+                                                        minWidth: '292px',
+                                                        border: '1px solid var(--border-default)',
+                                                        borderRadius: '12px',
+                                                        padding: '12px',
+                                                        background: 'var(--bg-elevated)',
+                                                        boxShadow: 'var(--shadow-md)',
+                                                        zIndex: 2000,
+                                                    }}
+                                                >
+                                                    <div style={{
+                                                        position: 'absolute',
+                                                        right: '12px',
+                                                        bottom: '-6px',
+                                                        width: '10px',
+                                                        height: '10px',
+                                                        borderRight: '1px solid var(--border-default)',
+                                                        borderBottom: '1px solid var(--border-default)',
+                                                        background: 'var(--bg-elevated)',
+                                                        transform: 'rotate(45deg)',
+                                                    }} />
+                                                    <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                        <span>{t('agent.chat.contextBudget.title')}</span>
+                                                        <span style={{ color: contextRingColor, fontWeight: 700 }}>{usagePercent.toFixed(1)}%</span>
+                                                    </div>
+                                                    <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(127,127,127,0.18)', overflow: 'hidden', marginBottom: '10px' }}>
+                                                        <div style={{ height: '100%', width: `${Math.min(usageRatio, 1.2) * 100}%`, borderRadius: '999px', background: contextRingColor }} />
+                                                    </div>
+                                                    {!activeSession?.id ? (
+                                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                            {t('agent.chat.contextBudget.unavailable')}
+                                                        </div>
+                                                    ) : sessionContextBudgetFetching && !sessionContextBudget ? (
+                                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                            {t('agent.chat.contextBudget.loading')}
+                                                        </div>
+                                                    ) : (
+                                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: '6px', columnGap: '10px', fontSize: '12px' }}>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.windowSize')}</span>
+                                                            <span>{formatBudgetCount(sessionContextBudget?.window_size_messages)}</span>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.sessionMessages')}</span>
+                                                            <span>{formatBudgetCount(sessionContextBudget?.session_messages_total)}</span>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.estimatedTokens')}</span>
+                                                            <span>{formatBudgetCount(sessionContextBudget?.estimated_tokens_current_window)}</span>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.budgetTokens')}</span>
+                                                            <span>{formatBudgetCount(sessionContextBudget?.budget_tokens)}</span>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.usageRatio')}</span>
+                                                            <span style={{ color: contextRingColor, fontWeight: 700 }}>{usagePercent.toFixed(1)}%</span>
                                                         </div>
                                                     )}
-                                                </div>
-                                            </div>
+                                                </div>,
+                                                document.body
+                                            )}
                                         </div>
                                         </div>
                                     </div>
