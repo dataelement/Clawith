@@ -336,6 +336,15 @@ async def create_agent(
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_text(sf.content, encoding="utf-8")
 
+        from app.services.gws_skill_seeder import is_gws_skill
+        has_gws = any(
+            d.is_dir() and is_gws_skill(d.name)
+            for d in skills_dir.iterdir()
+        ) if skills_dir.exists() else False
+        if has_gws:
+            from app.services.gws_skill_seeder import ensure_gws_tool_enabled_for_agent
+            await ensure_gws_tool_enabled_for_agent(agent.id)
+
     # Start container
     await agent_manager.start_container(db, agent)
     await db.flush()

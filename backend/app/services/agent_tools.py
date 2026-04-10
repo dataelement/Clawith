@@ -1464,6 +1464,23 @@ AGENT_TOOLS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "gws",
+            "description": "Execute Google Workspace CLI (gws) commands to interact with Gmail, Drive, Calendar, Sheets, Docs, and Chat. The user must have connected their Google account via agent settings. Examples: 'drive files list', 'gmail messages list --params \\'{\"maxResults\": 10}\\'', 'calendar events list'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The gws CLI command to execute (without the 'gws' prefix), e.g. 'drive files list --params \\'{\"pageSize\": 10}\\''",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
     # ── AgentBay Tools ────────────────────────────────────────────
     {
         "type": "function",
@@ -2319,6 +2336,8 @@ async def execute_tool(
             result = await _search_clawhub(agent_id, arguments)
         elif tool_name == "install_skill":
             result = await _install_skill(agent_id, ws, arguments)
+        elif tool_name == "gws":
+            result = await _execute_gws(agent_id, user_id, arguments)
         else:
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
@@ -8478,6 +8497,14 @@ async def _install_skill(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
             file_path.write_text(f["content"], encoding="utf-8")
             written.append(f["path"])
 
+        from app.services.gws_skill_seeder import is_gws_skill
+        if is_gws_skill(folder_name):
+            try:
+                from app.services.gws_skill_seeder import ensure_gws_tool_enabled_for_agent
+                await ensure_gws_tool_enabled_for_agent(agent_id)
+            except Exception as e:
+                logger.warning(f"[install_skill] Failed to auto-enable gws tool: {e}")
+
         return f"✅ Skill '{folder_name}' installed successfully ({len(written)} files written to skills/{folder_name}/).\n\nFiles: {', '.join(written)}"
 
     except Exception as e:
@@ -9186,3 +9213,26 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
     except Exception as e:
         logger.exception(f"[AgentBay] File transfer failed for agent {agent_id}")
         return f"File transfer failed: {str(e)[:200]}"
+
+
+async def _execute_gws(agent_id: uuid.UUID, user_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.gws_tool_executor import execute_gws_command
+
+    command = arguments.get("command", "")
+    if not command:
+        return "Error: command is required"
+
+    result = await execute_gws_command(agent_id, user_id, command)
+
+    if "error" in result and "output" not in result:
+        return f"❌ {result['error']}"
+
+    output_parts = []
+    if result.get("output"):
+        output_parts.append(result["output"])
+    if result.get("error"):
+        output_parts.append(f"⚠️ {result['error']}")
+    if result.get("exit_code") and result["exit_code"] != 0:
+        output_parts.append(f"Exit code: {result['exit_code']}")
+
+    return "\n\n".join(output_parts) if output_parts else "✅ Command executed successfully"

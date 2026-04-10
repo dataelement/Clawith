@@ -12,7 +12,7 @@ import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import AgentCredentials from '../components/AgentCredentials';
-import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
+import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, gwsApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
@@ -749,6 +749,143 @@ function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
         ...options,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     }).then(r => r.json());
+}
+
+function GoogleWorkspaceSection({ agentId }: { agentId: string }) {
+    const { t, i18n } = useTranslation();
+    const qc = useQueryClient();
+    const [authorizing, setAuthorizing] = useState(false);
+    const [revokingEmail, setRevokingEmail] = useState<string | null>(null);
+
+    const { data: credStatus } = useQuery({
+        queryKey: ['gws-credentials'],
+        queryFn: () => gwsApi.getCredentials(),
+    });
+
+    const { data: accounts = [], refetch: refetchAccounts } = useQuery({
+        queryKey: ['gws-accounts', agentId],
+        queryFn: () => gwsApi.listAccounts(agentId),
+        enabled: !!credStatus?.configured,
+    });
+
+    const handleConnect = async () => {
+        setAuthorizing(true);
+        try {
+            const { authorize_url } = await gwsApi.authorize(agentId);
+            window.open(authorize_url, '_blank', 'width=600,height=700');
+        } catch (e: any) {
+            alert(e?.message || 'Failed to start authorization');
+        }
+        setAuthorizing(false);
+    };
+
+    const handleRevoke = async (google_email: string) => {
+        setRevokingEmail(google_email);
+        try {
+            await gwsApi.revoke(agentId, { google_email });
+            refetchAccounts();
+        } catch (e: any) {
+            alert(e?.message || 'Failed to revoke access');
+        }
+        setRevokingEmail(null);
+    };
+
+    const isChinese = i18n.language?.startsWith('zh');
+    const statusColors: Record<string, { bg: string; color: string }> = {
+        active: { bg: 'rgba(34,197,94,0.12)', color: 'var(--success)' },
+        revoked: { bg: 'rgba(239,68,68,0.12)', color: 'var(--error)' },
+        expired: { bg: 'rgba(245,158,11,0.12)', color: 'var(--warning)' },
+    };
+
+    return (
+        <div className="card" style={{ marginBottom: '12px' }}>
+            <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                📧 {isChinese ? 'Google Workspace' : 'Google Workspace'}
+            </h4>
+            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+                {isChinese
+                    ? '连接 Google 账号以访问 Gmail、Google Calendar 和 Google Drive。'
+                    : 'Connect a Google account to access Gmail, Google Calendar, and Google Drive.'}
+            </p>
+
+            {!credStatus?.configured ? (
+                <div style={{
+                    padding: '16px', borderRadius: '8px',
+                    background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                    textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '13px',
+                }}>
+                    {isChinese
+                        ? '您的组织尚未配置 Google Workspace。请联系管理员。'
+                        : 'Google Workspace is not configured for your organization. Please contact your admin.'}
+                </div>
+            ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <button
+                        className="btn btn-primary"
+                        style={{ alignSelf: 'flex-start', fontSize: '12px' }}
+                        onClick={handleConnect}
+                        disabled={authorizing}
+                    >
+                        {authorizing
+                            ? (isChinese ? '连接中...' : 'Connecting...')
+                            : (isChinese ? '🔗 连接 Google 账号' : '🔗 Connect Google Account')}
+                    </button>
+
+                    {accounts.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                                {isChinese ? '已连接账号' : 'Connected Accounts'} ({accounts.length})
+                            </div>
+                            {accounts.map((acct) => {
+                                const sc = statusColors[acct.status] || statusColors.active;
+                                return (
+                                    <div key={acct.google_email} style={{
+                                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                        padding: '10px 14px', background: 'var(--bg-elevated)', borderRadius: '8px',
+                                        border: '1px solid var(--border-subtle)',
+                                    }}>
+                                        <div style={{ minWidth: 0 }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <span style={{ fontWeight: 500, fontSize: '13px' }}>{acct.google_email}</span>
+                                                <span style={{
+                                                    padding: '1px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 600,
+                                                    background: sc.bg, color: sc.color,
+                                                }}>
+                                                    {acct.status}
+                                                </span>
+                                            </div>
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                                                {isChinese ? '授权于' : 'Authorized'}: {new Date(acct.authorized_at).toLocaleString()}
+                                                {acct.last_used_at && (
+                                                    <> · {isChinese ? '最后使用' : 'Last used'}: {new Date(acct.last_used_at).toLocaleString()}</>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <button
+                                            className="btn btn-ghost"
+                                            style={{ fontSize: '12px', color: revokingEmail === acct.google_email ? 'var(--text-tertiary)' : 'var(--error)' }}
+                                            disabled={revokingEmail === acct.google_email}
+                                            onClick={() => handleRevoke(acct.google_email)}
+                                        >
+                                            {revokingEmail === acct.google_email
+                                                ? (isChinese ? '撤销中...' : 'Revoking...')
+                                                : (isChinese ? '撤销' : 'Revoke')}
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {accounts.length === 0 && (
+                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '12px' }}>
+                            {isChinese ? '暂无已连接的 Google 账号' : 'No Google accounts connected yet'}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
 }
 
 // ── Pulse LED keyframe (shared with Chat.tsx, guarded by ID) ──────────────
@@ -2632,6 +2769,27 @@ function AgentDetailInner() {
         setUploadToast({ message, type });
         setTimeout(() => setUploadToast(null), 3000);
     };
+
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const gwsStatus = params.get('gws');
+        if (gwsStatus === 'success') {
+            const isCh = i18n.language?.startsWith('zh');
+            showToast(isCh ? 'Google Workspace 连接成功！' : 'Google Workspace connected successfully!', 'success');
+            const clean = new URLSearchParams(location.search);
+            clean.delete('gws');
+            clean.delete('message');
+            window.history.replaceState({}, '', `${location.pathname}${clean.toString() ? '?' + clean : ''}${location.hash}`);
+        } else if (gwsStatus === 'error') {
+            const isCh = i18n.language?.startsWith('zh');
+            const errMsg = params.get('message') || '';
+            showToast(isCh ? `Google Workspace 连接失败${errMsg ? ': ' + errMsg : ''}` : `Failed to connect Google Workspace.${errMsg ? ' ' + errMsg : ''} Please try again.`, 'error');
+            const clean = new URLSearchParams(location.search);
+            clean.delete('gws');
+            clean.delete('message');
+            window.history.replaceState({}, '', `${location.pathname}${clean.toString() ? '?' + clean : ''}${location.hash}`);
+        }
+    }, [location.search]);
     const { data: fileContent } = useQuery({
         queryKey: ['file-content', id, viewingFile],
         queryFn: () => fileApi.read(id!, viewingFile!),
@@ -5230,6 +5388,11 @@ function AgentDetailInner() {
                                 {/* Credentials Management — for AgentBay cookie injection */}
                                 <div style={{ marginBottom: '12px' }}>
                                     <AgentCredentials agentId={id!} />
+                                </div>
+
+                                {/* Google Workspace Integration */}
+                                <div style={{ marginBottom: '12px' }}>
+                                    <GoogleWorkspaceSection agentId={id!} />
                                 </div>
 
                                 {/* Welcome Message */}

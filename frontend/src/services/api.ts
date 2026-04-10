@@ -508,3 +508,62 @@ export const controlApi = {
         request<any>(`/agents/${agentId}/control/unlock`, { method: 'POST', body: JSON.stringify(data) }),
 };
 
+// ─── Google Workspace ─────────────────────────────────
+export interface GwsCredentialStatus {
+    configured: boolean;
+    masked_client_id: string;
+    has_client_secret: boolean;
+    project_id: string;
+    scope_preset: string;
+    custom_scopes: string[];
+    resolved_scopes: string[];
+}
+
+export interface GwsScopeOption {
+    scope: string;
+    label: string;
+    category: string;
+    requires_api?: string;
+}
+
+export interface GwsScopePreset {
+    label: string;
+    description: string;
+    scopes: string[];
+}
+
+export interface GwsScopeOptions {
+    presets: Record<string, GwsScopePreset>;
+    available_scopes: GwsScopeOption[];
+    default_preset: string;
+}
+
+export const gwsApi = {
+    getCredentials: () =>
+        request<GwsCredentialStatus>('/gws/settings/credentials'),
+
+    saveCredentials: (data: {
+        client_id: string;
+        client_secret: string;
+        project_id: string;
+        scope_preset?: string;
+        custom_scopes?: string[];
+    }) =>
+        request<{ ok: boolean }>('/gws/settings/credentials', { method: 'PUT', body: JSON.stringify(data) }),
+
+    getScopeOptions: () =>
+        request<GwsScopeOptions>('/gws/settings/scope-options'),
+
+    authorize: (agentId: string) =>
+        request<{ authorize_url: string }>(`/gws/agents/${agentId}/auth/authorize`, { method: 'POST' }),
+
+    listAccounts: (agentId: string) =>
+        request<{ user_id: string; google_email: string; status: string; scopes: string[]; authorized_at: string; last_used_at: string | null }[]>(`/gws/agents/${agentId}/auth/accounts`),
+
+    revoke: (agentId: string, data: { google_email: string }) =>
+        request<{ ok: boolean }>(`/gws/agents/${agentId}/auth/revoke`, { method: 'DELETE', body: JSON.stringify(data) }),
+
+    importSkills: () =>
+        request<{ ok: boolean; imported: number }>('/gws/skills/import', { method: 'POST' }),
+};
+

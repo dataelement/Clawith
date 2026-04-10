@@ -207,7 +207,33 @@ At the `AgentDetail.tsx` page, the system battles extreme rendering pressure: ou
    Employs `react-markdown` executing ultimate filtration presentations. Imposing Copy buttons over code snippet blocks; demonstrating imagified placeholder renders mapped against localized hyperlinks.
 
 ---
+
+## Module 9: Google Workspace Integration (GWS CLI)
+
+Clawith integrates with Google Workspace via the open-source [`gws` CLI](https://github.com/googleworkspace/cli), giving agents access to Gmail, Drive, Calendar, Sheets, Docs, Chat, and all other Workspace APIs through structured JSON commands.
+
+### 9.1 Multi-User OAuth Architecture
+The GWS integration implements a three-layer authentication model:
+- **Company-level credentials**: Org admins configure GCP OAuth client credentials (`client_id`, `client_secret`, `project_id`) in `TenantSetting` with key `google_workspace`, scoped per tenant.
+- **Per-user OAuth authorization**: Each user authorizes a specific agent with their own Google account via `POST /api/gws/agents/{agent_id}/auth/authorize`. OAuth tokens are stored encrypted in `gws_oauth_tokens` with unique constraint on `(agent_id, user_id)`.
+- **Runtime credential injection**: When an agent invokes a `gws` command, the system resolves the current user's OAuth token, refreshes if expired, and injects it as `GOOGLE_WORKSPACE_CLI_TOKEN` environment variable into the agent's execution container.
+
+### 9.2 Token Storage & Encryption
+OAuth tokens (`access_token`, `refresh_token`) are encrypted at rest using AES-256-CBC via `encrypt_data`/`decrypt_data` from `app.core.security`. The `GwsOAuthToken` model stores per-(agent, user) encrypted tokens with metadata (email, scopes, expiry). Automatic token refresh occurs within a 5-minute expiry buffer before each command execution.
+
+### 9.3 Skill Import
+50+ `gws-*` skills from the `googleworkspace/cli` repository are imported into the Clawith skill registry. `gws-shared` (auth patterns and global flags) is imported first as a dependency for all other GWS skills. Skills are categorized as `google-workspace` (core), `google-workspace-workflow`, or `google-workspace-recipes`.
+
+### 9.4 API Surface
+- `PUT /api/gws/settings/credentials` — Admin configures GCP credentials
+- `POST /api/gws/agents/{id}/auth/authorize` — User initiates OAuth
+- `GET /api/gws/auth/callback` — OAuth callback handler
+- `DELETE /api/gws/agents/{id}/auth/revoke` — Revoke authorization
+- `GET /api/gws/agents/{id}/auth/accounts` — List connected accounts
+- `POST /api/gws/skills/import` — Manual skill re-import
+
+---
 **[The End] Architecture Document Completion.**
 
-> Clawith Architecture Document Engine Edition. 
+> Clawith Architecture Document Engine Edition.
 > This document currently engulfs all core logic within the system. Whether pivoting underlying engine circuits, appending new Database tables, or drafting novel outbound calling channel pipelines, please persistently harbor reverence toward the **Workspace/Tenant isolation barriers** alongside **Relationship object strictly bound** constraints.

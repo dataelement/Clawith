@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { enterpriseApi, skillApi } from '../services/api';
+import { enterpriseApi, gwsApi, skillApi } from '../services/api';
 import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
@@ -286,7 +286,269 @@ function OrgTab({ tenant }: { tenant: any }) {
     const { t } = useTranslation();
     const qc = useQueryClient();
 
+    const GoogleWorkspaceConfigCard = () => {
+        const [gwsForm, setGwsForm] = useState({ client_id: '', client_secret: '', project_id: '' });
+        const [scopePreset, setScopePreset] = useState('standard');
+        const [customScopes, setCustomScopes] = useState<string[]>([]);
+        const [gwsSaving, setGwsSaving] = useState(false);
+        const [gwsSaved, setGwsSaved] = useState(false);
+        const [gwsError, setGwsError] = useState('');
+        const [importingSkills, setImportingSkills] = useState(false);
+        const [skillsImported, setSkillsImported] = useState<number | null>(null);
+        const [scopeInitialized, setScopeInitialized] = useState(false);
 
+        const { data: gwsCred } = useQuery({
+            queryKey: ['gws-credentials'],
+            queryFn: () => gwsApi.getCredentials(),
+        });
+
+        const { data: scopeOptions } = useQuery({
+            queryKey: ['gws-scope-options'],
+            queryFn: () => gwsApi.getScopeOptions(),
+        });
+
+        useEffect(() => {
+            if (gwsCred && !scopeInitialized) {
+                setScopePreset(gwsCred.scope_preset || 'standard');
+                setCustomScopes(gwsCred.custom_scopes || []);
+                setScopeInitialized(true);
+            }
+        }, [gwsCred, scopeInitialized]);
+
+        const handleSave = async () => {
+            setGwsSaving(true);
+            setGwsError('');
+            try {
+                await gwsApi.saveCredentials({
+                    ...gwsForm,
+                    scope_preset: scopePreset,
+                    custom_scopes: scopePreset === 'custom' ? customScopes : [],
+                });
+                setGwsSaved(true);
+                setTimeout(() => setGwsSaved(false), 2000);
+                qc.invalidateQueries({ queryKey: ['gws-credentials'] });
+            } catch (e: any) {
+                setGwsError(e?.message || 'Failed to save');
+            }
+            setGwsSaving(false);
+        };
+
+        const handleImportSkills = async () => {
+            setImportingSkills(true);
+            try {
+                const result = await gwsApi.importSkills();
+                setSkillsImported(result.imported);
+                setTimeout(() => setSkillsImported(null), 4000);
+            } catch (e: any) {
+                setGwsError(e?.message || 'Failed to import skills');
+            }
+            setImportingSkills(false);
+        };
+
+        const toggleCustomScope = (scope: string) => {
+            setCustomScopes(prev =>
+                prev.includes(scope) ? prev.filter(s => s !== scope) : [...prev, scope]
+            );
+        };
+
+        const scopeCategories = useMemo(() => {
+            if (!scopeOptions?.available_scopes) return {};
+            const cats: Record<string, typeof scopeOptions.available_scopes> = {};
+            for (const s of scopeOptions.available_scopes) {
+                if (!cats[s.category]) cats[s.category] = [];
+                cats[s.category].push(s);
+            }
+            return cats;
+        }, [scopeOptions]);
+
+        return (
+            <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+                <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
+                    <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>
+                        Google Workspace
+                    </h3>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                        Configure Google Workspace OAuth credentials and permission scopes.
+                    </div>
+                </div>
+
+                <div style={{ padding: '20px' }}>
+                    {gwsCred?.configured && (
+                        <div style={{ marginBottom: '16px', display: 'flex', gap: '12px', alignItems: 'center' }}>
+                            <span className="badge badge-success" style={{ fontSize: '10px' }}>Configured</span>
+                            {gwsCred.masked_client_id && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                                    Client ID: {gwsCred.masked_client_id}
+                                </span>
+                            )}
+                            {gwsCred.project_id && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                    Project: {gwsCred.project_id}
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                        <div className="form-group">
+                            <label className="form-label">Client ID</label>
+                            <input
+                                className="form-input"
+                                value={gwsForm.client_id}
+                                onChange={e => setGwsForm(f => ({ ...f, client_id: e.target.value }))}
+                                placeholder={gwsCred?.masked_client_id || 'Enter Google OAuth Client ID'}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">Client Secret</label>
+                            <input
+                                className="form-input"
+                                type="password"
+                                value={gwsForm.client_secret}
+                                onChange={e => setGwsForm(f => ({ ...f, client_secret: e.target.value }))}
+                                placeholder={gwsCred?.has_client_secret ? '••••••••' : 'Enter Google OAuth Client Secret'}
+                            />
+                        </div>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <label className="form-label">Project ID</label>
+                            <input
+                                className="form-input"
+                                value={gwsForm.project_id}
+                                onChange={e => setGwsForm(f => ({ ...f, project_id: e.target.value }))}
+                                placeholder={gwsCred?.project_id || 'Enter Google Cloud Project ID'}
+                            />
+                        </div>
+                    </div>
+
+                    <div style={{ marginBottom: '16px', borderTop: '1px solid var(--border-subtle)', paddingTop: '16px' }}>
+                        <label className="form-label" style={{ marginBottom: '8px', display: 'block', fontWeight: 600 }}>
+                            OAuth Permission Scopes
+                        </label>
+                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                            Choose which Google Workspace permissions to request when users connect their accounts.
+                            {gwsCred?.configured && (
+                                <span style={{ color: 'var(--warning)', marginLeft: '4px' }}>
+                                    Changing scopes requires users to re-authorize their Google accounts.
+                                </span>
+                            )}
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                            {scopeOptions?.presets && Object.entries(scopeOptions.presets).map(([key, preset]) => (
+                                <button
+                                    key={key}
+                                    className={`btn btn-sm ${scopePreset === key ? 'btn-primary' : 'btn-secondary'}`}
+                                    onClick={() => setScopePreset(key)}
+                                    style={{ position: 'relative' }}
+                                    title={preset.description}
+                                >
+                                    {preset.label}
+                                </button>
+                            ))}
+                            <button
+                                className={`btn btn-sm ${scopePreset === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
+                                onClick={() => setScopePreset('custom')}
+                                title="Select individual scopes"
+                            >
+                                Custom
+                            </button>
+                        </div>
+
+                        {scopePreset !== 'custom' && scopeOptions?.presets?.[scopePreset] && (
+                            <div style={{
+                                fontSize: '11px', color: 'var(--text-secondary)',
+                                padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: '6px',
+                                marginBottom: '8px'
+                            }}>
+                                <div style={{ marginBottom: '4px', fontWeight: 500 }}>
+                                    {scopeOptions.presets[scopePreset].description}
+                                </div>
+                                <div style={{ color: 'var(--text-tertiary)' }}>
+                                    {scopeOptions.presets[scopePreset].scopes.filter(s => !['openid', 'email', 'profile'].includes(s)).length} permission(s)
+                                </div>
+                            </div>
+                        )}
+
+                        {scopePreset === 'custom' && (
+                            <div style={{
+                                border: '1px solid var(--border-subtle)', borderRadius: '8px',
+                                padding: '12px', maxHeight: '300px', overflowY: 'auto',
+                                background: 'var(--bg-secondary)'
+                            }}>
+                                {Object.entries(scopeCategories).map(([category, scopes]) => (
+                                    <div key={category} style={{ marginBottom: '12px' }}>
+                                        <div style={{
+                                            fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)',
+                                            textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px'
+                                        }}>
+                                            {category}
+                                        </div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                            {scopes.map(s => (
+                                                <label key={s.scope} style={{
+                                                    display: 'flex', alignItems: 'center', gap: '8px',
+                                                    fontSize: '12px', cursor: 'pointer', padding: '4px 8px',
+                                                    borderRadius: '4px',
+                                                    background: customScopes.includes(s.scope) ? 'var(--bg-hover)' : 'transparent'
+                                                }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={customScopes.includes(s.scope)}
+                                                        onChange={() => toggleCustomScope(s.scope)}
+                                                        style={{ margin: 0 }}
+                                                    />
+                                                    <span>{s.label}</span>
+                                                    {s.requires_api && (
+                                                        <span style={{ fontSize: '9px', color: 'var(--warning)', padding: '1px 4px', background: 'var(--warning-bg, rgba(255,165,0,0.1))', borderRadius: '3px' }}>
+                                                            Requires: {s.requires_api}
+                                                        </span>
+                                                    )}
+                                                    <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>
+                                                        {s.scope.replace('https://www.googleapis.com/auth/', '')}
+                                                    </span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))}
+                                {customScopes.length > 0 && (
+                                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', borderTop: '1px solid var(--border-subtle)', paddingTop: '8px', marginTop: '4px' }}>
+                                        {customScopes.length} scope(s) selected
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {gwsError && (
+                        <div style={{ fontSize: '12px', color: 'var(--error)', marginBottom: '12px' }}>{gwsError}</div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={gwsSaving}>
+                            {gwsSaving ? t('common.loading') : t('common.save', 'Save')}
+                        </button>
+                        {gwsSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>}
+
+                        <div style={{ flex: 1 }} />
+
+                        <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={handleImportSkills}
+                            disabled={importingSkills || !gwsCred?.configured}
+                        >
+                            {importingSkills ? t('common.loading') : 'Import GWS Skills'}
+                        </button>
+                        {skillsImported !== null && (
+                            <span style={{ fontSize: '12px', color: 'var(--success)' }}>
+                                Imported {skillsImported} skill{skillsImported !== 1 ? 's' : ''}
+                            </span>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    };
 
 
     const SsoStatus = () => {
@@ -863,7 +1125,7 @@ function OrgTab({ tenant }: { tenant: any }) {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            {/* SSO status is now derived from per-channel toggles — no global switch */}
+            <GoogleWorkspaceConfigCard />
 
             {/* 1. Identity Providers Section */}
             <div className="card" style={{ padding: '0', overflow: 'hidden' }}>

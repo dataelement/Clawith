@@ -109,6 +109,7 @@ async def lifespan(app: FastAPI):
         import app.models.notification   # noqa
         import app.models.gateway_message # noqa
         import app.models.agent_credential  # noqa
+        import app.models.gws_oauth_token  # noqa
 
         import app.models.identity       # noqa
         async with engine.begin() as conn:
@@ -187,6 +188,12 @@ async def lifespan(app: FastAPI):
         await push_default_skills_to_existing_agents()
     except Exception as e:
         logger.warning(f"[startup] Skills seed failed: {e}")
+
+    try:
+        from app.services.gws_skill_seeder import ensure_gws_tool_for_agents_with_skills
+        await ensure_gws_tool_for_agents_with_skills()
+    except Exception as e:
+        logger.warning(f"[startup] GWS tool auto-enable failed: {e}")
 
     try:
         from app.services.agent_seeder import seed_default_agents
@@ -288,6 +295,7 @@ from app.api.teams import router as teams_router
 from app.api.triggers import router as triggers_router
 
 from app.api.atlassian import router as atlassian_router
+from app.api.gws import router as gws_router
 
 from app.api.webhooks import router as webhooks_router
 from app.api.notification import router as notification_router
@@ -324,6 +332,7 @@ app.include_router(wecom_router, prefix=settings.API_PREFIX)
 app.include_router(teams_router, prefix=settings.API_PREFIX)
 
 app.include_router(atlassian_router, prefix=settings.API_PREFIX)
+app.include_router(gws_router, prefix=settings.API_PREFIX)
 
 app.include_router(triggers_router)
 app.include_router(chat_sessions_router)

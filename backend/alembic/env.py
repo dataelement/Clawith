@@ -31,6 +31,11 @@ from app.models.tenant import Tenant  # noqa: F401
 from app.models.tool import Tool  # noqa: F401
 from app.models.trigger import AgentTrigger  # noqa: F401
 from app.models.agent_credential import AgentCredential  # noqa: F401
+from app.models.gws_oauth_token import GwsOAuthToken  # noqa: F401
+from app.models.tenant_setting import TenantSetting  # noqa: F401
+from app.models.notification import Notification  # noqa: F401
+from app.models.published_page import PublishedPage  # noqa: F401
+from app.models.gateway_message import GatewayMessage  # noqa: F401
 
 config = context.config
 settings = get_settings()
@@ -68,6 +73,7 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"statement_cache_size": 0},
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

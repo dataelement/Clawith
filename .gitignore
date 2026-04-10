@@ -31,3 +31,8 @@ _agents/
 
 # Internal docs
 docs/
+
+.github/
+.opencode/
+openspec/
+.sisyphus/
