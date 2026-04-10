@@ -563,84 +563,88 @@ Plan would be:
 
 
 async def seed_skills():
-    """Insert builtin skills if they don't exist."""
+    """创建内置技能，如果尚未创建过。
+
+    幂等性保护（与 agent_seeder 统一模式）：
+    1. DB 标记：system_settings 表中 key="builtin_skills_seeded"
+    2. DB 查询：检查是否已有 is_builtin=True 的技能
+    已执行过则跳过，用户删除后不重建。
+    """
     from app.services.skill_creator_content import get_skill_creator_files
     from pathlib import Path as _Path
 
-    _files_dir = _Path(__file__).parent / "skill_creator_files"
-    _template_skills_dir = _Path(__file__).parent.parent.parent / "agent_template" / "skills"
-
-    # Populate skill-creator files at runtime
-    for s in BUILTIN_SKILLS:
-        if s["folder_name"] == "skill-creator" and not s["files"]:
-            s["files"] = get_skill_creator_files()
-        elif s["folder_name"] == "content-research-writer" and not s["files"]:
-            # Load from downloaded file
-            crw_file = _files_dir / "content_research_writer__SKILL.md"
-            if crw_file.exists():
-                s["files"] = [{"path": "SKILL.md", "content": crw_file.read_text(encoding="utf-8")}]
-        elif s["folder_name"] == "mcp-installer" and not s["files"]:
-            mcp_file = _template_skills_dir / "MCP_INSTALLER.md"
-            if mcp_file.exists():
-                s["files"] = [{"path": "SKILL.md", "content": mcp_file.read_text(encoding="utf-8")}]
-            else:
-                logger.warning("[SkillSeeder] MCP_INSTALLER.md not found in agent_template/skills/")
-
     async with async_session() as db:
+        # ── 检查 1：DB 标记 ──
+        from app.models.system_settings import SystemSetting
+        marker = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "builtin_skills_seeded")
+        )
+        if marker.scalar_one_or_none() is not None:
+            logger.info("[SkillSeeder] DB 标记已存在，跳过")
+            return
+
+        # ── 检查 2：DB 中是否已有内置技能（兼容旧版本） ──
+        existing_result = await db.execute(
+            select(Skill).where(Skill.is_builtin == True)
+        )
+        if existing_result.scalars().first() is not None:
+            logger.info("[SkillSeeder] DB 中已存在内置技能，补写标记并跳过")
+            db.add(SystemSetting(
+                key="builtin_skills_seeded",
+                value={"seeded_at": str(__import__("datetime").datetime.utcnow()), "source": "existing_data"}
+            ))
+            await db.commit()
+            return
+
+        # ── 首次创建 ──
+        _files_dir = _Path(__file__).parent / "skill_creator_files"
+        _template_skills_dir = _Path(__file__).parent.parent.parent / "agent_template" / "skills"
+
+        # 填充运行时文件内容
+        for s in BUILTIN_SKILLS:
+            if s["folder_name"] == "skill-creator" and not s["files"]:
+                s["files"] = get_skill_creator_files()
+            elif s["folder_name"] == "content-research-writer" and not s["files"]:
+                crw_file = _files_dir / "content_research_writer__SKILL.md"
+                if crw_file.exists():
+                    s["files"] = [{"path": "SKILL.md", "content": crw_file.read_text(encoding="utf-8")}]
+            elif s["folder_name"] == "mcp-installer" and not s["files"]:
+                mcp_file = _template_skills_dir / "MCP_INSTALLER.md"
+                if mcp_file.exists():
+                    s["files"] = [{"path": "SKILL.md", "content": mcp_file.read_text(encoding="utf-8")}]
+                else:
+                    logger.warning("[SkillSeeder] MCP_INSTALLER.md not found in agent_template/skills/")
+
         for skill_data in BUILTIN_SKILLS:
-            result = await db.execute(
-                select(Skill).where(Skill.folder_name == skill_data["folder_name"])
-            )
-            existing = result.scalar_one_or_none()
             is_default = skill_data.get("is_default", False)
-            if existing:
-                # Update metadata
-                existing.name = skill_data["name"]
-                existing.description = skill_data["description"]
-                existing.category = skill_data["category"]
-                existing.icon = skill_data["icon"]
-                existing.is_default = is_default
-                # Sync files — add missing ones
-                from sqlalchemy.orm import selectinload
-                res2 = await db.execute(
-                    select(Skill).where(Skill.id == existing.id).options(selectinload(Skill.files))
-                )
-                sk = res2.scalar_one()
-                existing_paths = {f.path: f for f in sk.files}
-                for f in skill_data["files"]:
-                    if f["path"] in existing_paths:
-                        # Update content if changed
-                        existing_file = existing_paths[f["path"]]
-                        if existing_file.content != f["content"]:
-                            existing_file.content = f["content"]
-                            logger.info(f"[SkillSeeder] Updated {f['path']} in {skill_data['name']}")
-                    else:
-                        db.add(SkillFile(skill_id=existing.id, path=f["path"], content=f["content"]))
-                        logger.info(f"[SkillSeeder] Added file {f['path']} to {skill_data['name']}")
-            else:
-                skill = Skill(
-                    name=skill_data["name"],
-                    description=skill_data["description"],
-                    category=skill_data["category"],
-                    icon=skill_data["icon"],
-                    folder_name=skill_data["folder_name"],
-                    is_builtin=True,
-                    is_default=is_default,
-                )
-                db.add(skill)
-                await db.flush()
-                for f in skill_data["files"]:
-                    db.add(SkillFile(skill_id=skill.id, path=f["path"], content=f["content"]))
-                logger.info(f"[SkillSeeder] Created skill: {skill_data['name']}")
+            skill = Skill(
+                name=skill_data["name"],
+                description=skill_data["description"],
+                category=skill_data["category"],
+                icon=skill_data["icon"],
+                folder_name=skill_data["folder_name"],
+                is_builtin=True,
+                is_default=is_default,
+            )
+            db.add(skill)
+            await db.flush()
+            for f in skill_data["files"]:
+                db.add(SkillFile(skill_id=skill.id, path=f["path"], content=f["content"]))
+            logger.info(f"[SkillSeeder] 创建技能: {skill_data['name']}")
+
+        db.add(SystemSetting(
+            key="builtin_skills_seeded",
+            value={"seeded_at": str(__import__("datetime").datetime.utcnow()), "source": "initial_seed"}
+        ))
         await db.commit()
-        logger.info("[SkillSeeder] Skills seeded")
+        logger.info("[SkillSeeder] 内置技能创建完成")
 
 
 async def push_default_skills_to_existing_agents():
-    """Deploy all is_default skills into the workspace of every existing agent that is missing them.
-    
-    Called at startup after seed_skills() so existing agents automatically receive new default skills
-    like MCP_INSTALLER without requiring manual re-creation.
+    """将 is_default 技能部署到所有已有 Agent 的工作区。
+
+    仅在 seed_skills() 首次创建技能时有意义。
+    如果 builtin_skills_seeded 标记已存在且不是本次刚写入的，说明技能没有变化，跳过扫描。
     """
     from pathlib import Path
     from app.models.agent import Agent
@@ -649,6 +653,16 @@ async def push_default_skills_to_existing_agents():
     from app.services.agent_manager import agent_manager
 
     async with async_session() as db:
+        # 检查标记来源：如果是 existing_data（旧数据补写），说明技能没变化，跳过推送
+        from app.models.system_settings import SystemSetting
+        marker_r = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "builtin_skills_seeded")
+        )
+        marker = marker_r.scalar_one_or_none()
+        if marker and marker.value and marker.value.get("source") == "existing_data":
+            logger.info("[SkillSeeder] 技能未变化（标记来源: existing_data），跳过推送")
+            return
+
         # Load all is_default skills with their files
         default_skills_r = await db.execute(
             select(Skill).where(Skill.is_default == True).options(selectinload(Skill.files))

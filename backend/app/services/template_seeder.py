@@ -158,59 +158,54 @@ DEFAULT_TEMPLATES = [
 
 
 async def seed_agent_templates():
-    """Insert default agent templates if they don't exist. Update stale ones."""
+    """创建内置 Agent 模板，如果尚未创建过。
+
+    幂等性保护（与 agent_seeder 统一模式）：
+    1. DB 标记：system_settings 表中 key="builtin_templates_seeded"
+    2. DB 查询：检查是否已有 is_builtin=True 的模板
+    已执行过则跳过，用户删除后不重建。
+    """
     async with async_session() as db:
-        with db.no_autoflush:
-            # Remove old builtin templates that are no longer in our list
-            # BUT skip templates that are still referenced by agents
-            from app.models.agent import Agent
-            from sqlalchemy import func
+        # ── 检查 1：DB 标记 ──
+        from app.models.system_settings import SystemSetting
+        marker = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "builtin_templates_seeded")
+        )
+        if marker.scalar_one_or_none() is not None:
+            logger.info("[TemplateSeeder] DB 标记已存在，跳过")
+            return
 
-            current_names = {t["name"] for t in DEFAULT_TEMPLATES}
-            result = await db.execute(
-                select(AgentTemplate).where(AgentTemplate.is_builtin == True)
-            )
-            existing_builtins = result.scalars().all()
-            for old in existing_builtins:
-                if old.name not in current_names:
-                    # Check if any agents still reference this template
-                    ref_count = await db.execute(
-                        select(func.count(Agent.id)).where(Agent.template_id == old.id)
-                    )
-                    if ref_count.scalar() == 0:
-                        await db.delete(old)
-                        logger.info(f"[TemplateSeeder] Removed old template: {old.name}")
-                    else:
-                        logger.info(f"[TemplateSeeder] Skipping delete of '{old.name}' (still referenced by agents)")
-
-            # Upsert new templates
-            for tmpl in DEFAULT_TEMPLATES:
-                result = await db.execute(
-                    select(AgentTemplate).where(
-                        AgentTemplate.name == tmpl["name"],
-                        AgentTemplate.is_builtin == True,
-                    )
-                )
-                existing = result.scalar_one_or_none()
-                if existing:
-                    # Update existing template
-                    existing.description = tmpl["description"]
-                    existing.icon = tmpl["icon"]
-                    existing.category = tmpl["category"]
-                    existing.soul_template = tmpl["soul_template"]
-                    existing.default_skills = tmpl["default_skills"]
-                    existing.default_autonomy_policy = tmpl["default_autonomy_policy"]
-                else:
-                    db.add(AgentTemplate(
-                        name=tmpl["name"],
-                        description=tmpl["description"],
-                        icon=tmpl["icon"],
-                        category=tmpl["category"],
-                        is_builtin=True,
-                        soul_template=tmpl["soul_template"],
-                        default_skills=tmpl["default_skills"],
-                        default_autonomy_policy=tmpl["default_autonomy_policy"],
-                    ))
-                    logger.info(f"[TemplateSeeder] Created template: {tmpl['name']}")
+        # ── 检查 2：DB 中是否已有内置模板（兼容旧版本） ──
+        existing_result = await db.execute(
+            select(AgentTemplate).where(AgentTemplate.is_builtin == True)
+        )
+        if existing_result.scalars().first() is not None:
+            logger.info("[TemplateSeeder] DB 中已存在内置模板，补写标记并跳过")
+            db.add(SystemSetting(
+                key="builtin_templates_seeded",
+                value={"seeded_at": str(__import__("datetime").datetime.utcnow()), "source": "existing_data"}
+            ))
             await db.commit()
-            logger.info("[TemplateSeeder] Agent templates seeded")
+            return
+
+        # ── 首次创建 ──
+        with db.no_autoflush:
+            for tmpl in DEFAULT_TEMPLATES:
+                db.add(AgentTemplate(
+                    name=tmpl["name"],
+                    description=tmpl["description"],
+                    icon=tmpl["icon"],
+                    category=tmpl["category"],
+                    is_builtin=True,
+                    soul_template=tmpl["soul_template"],
+                    default_skills=tmpl["default_skills"],
+                    default_autonomy_policy=tmpl["default_autonomy_policy"],
+                ))
+                logger.info(f"[TemplateSeeder] 创建模板: {tmpl['name']}")
+
+            db.add(SystemSetting(
+                key="builtin_templates_seeded",
+                value={"seeded_at": str(__import__("datetime").datetime.utcnow()), "source": "initial_seed"}
+            ))
+            await db.commit()
+            logger.info("[TemplateSeeder] 内置模板创建完成")
