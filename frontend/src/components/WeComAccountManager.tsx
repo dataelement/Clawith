@@ -94,6 +94,26 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
         setErrors({});
     };
 
+    const resetFormData = () => {
+        setFormData({
+            id: '',
+            nickname: '',
+            bot_websocket_enabled: true,
+            bot_webhook_enabled: false,
+            agent_webhook_enabled: false,
+            bot: { id: '', secret: '', token: '', encoding_aes_key: '' },
+            agent: { corp_id: '', agent_id: '', secret: '', token: '', encoding_aes_key: '' },
+        });
+        setPreviewAccountId(null);
+        setSavedAccountId(null);
+        setConnectionMode('bot_websocket');
+    };
+
+    const handleTestWebhook = async () => {
+        // Save config first, then user can verify webhook URL in WeCom admin
+        await handleSave();
+    };
+
     const validateForm = (): boolean => {
         const newErrors: Record<string, string> = {};
 
@@ -142,7 +162,7 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
         return Object.keys(newErrors).length === 0;
     };
 
-    const handleSave = () => {
+    const handleSave = async () => {
         if (!validateForm()) return;
 
         // Generate ID if new account - use previewAccountId if available
@@ -181,77 +201,8 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
             };
         }
 
-        if (editingAccount || savedAccountId) {
-            onAccountsChange(accounts.map(a => a.id === (editingAccount?.id || savedAccountId) ? account : a));
-        } else {
-            onAccountsChange([...accounts, account]);
-        }
-
-        // Close modal for all modes
-        setIsModalOpen(false);
-        setEditingAccount(null);
-        setSavedAccountId(null);
-        setPreviewAccountId(null);
-        resetFormData();
-        setErrors({});
-    };
-
-    const resetFormData = () => {
-        setFormData({
-            id: '',
-            nickname: '',
-            bot_websocket_enabled: true,
-            bot_webhook_enabled: false,
-            agent_webhook_enabled: false,
-            bot: { id: '', secret: '', token: '', encoding_aes_key: '' },
-            agent: { corp_id: '', agent_id: '', secret: '', token: '', encoding_aes_key: '' },
-        });
-        setSavedAccountId(null);
-        setPreviewAccountId(null);
-        setConnectionMode('bot_websocket');
-    };
-
-    // Test button: save config first, then show Webhook URL
-    const handleTestWebhook = async () => {
-        // Validate required fields for webhook mode
-        const newErrors: Record<string, string> = {};
-        if (!formData.nickname?.trim()) {
-            newErrors.nickname = t('wecomMultiAccount.errors.nicknameRequired', '请填写账号昵称');
-        }
-        if (!formData.bot?.token?.trim()) {
-            newErrors['bot.token'] = t('wecomMultiAccount.errors.tokenRequired', 'Token is required');
-        }
-        if (!formData.bot?.encoding_aes_key?.trim()) {
-            newErrors['bot.encoding_aes_key'] = t('wecomMultiAccount.errors.encodingAesKeyRequired', 'EncodingAESKey is required');
-        }
-        
-        if (Object.keys(newErrors).length > 0) {
-            setErrors(newErrors);
-            return;
-        }
-
-        // Generate or get account ID
-        const accountId = editingAccount?.id || savedAccountId || previewAccountId || generateAccountId();
-        
-        // Build account object
-        const account: WeComAccount = {
-            id: accountId,
-            nickname: formData.nickname?.trim() || '',
-            bot_websocket_enabled: false,
-            bot_webhook_enabled: true,
-            agent_webhook_enabled: false,
-            bot: {
-                id: formData.bot?.id?.trim() || '',
-                secret: formData.bot?.secret?.trim() || '',
-                token: formData.bot?.token?.trim() || '',
-                encoding_aes_key: formData.bot?.encoding_aes_key?.trim() || '',
-            },
-        };
-
         // Build accounts list for saving
         const updatedAccounts: Record<string, any> = {};
-        
-        // Include existing accounts
         accounts.forEach(a => {
             updatedAccounts[a.id] = {
                 nickname: a.nickname,
@@ -262,14 +213,13 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
                 agent: a.agent || {},
             };
         });
-        
-        // Add/update current account
         updatedAccounts[accountId] = {
             nickname: account.nickname,
             bot_websocket_enabled: account.bot_websocket_enabled,
             bot_webhook_enabled: account.bot_webhook_enabled,
             agent_webhook_enabled: account.agent_webhook_enabled,
-            bot: account.bot,
+            ...(account.bot ? { bot: account.bot } : {}),
+            ...(account.agent ? { agent: account.agent } : {}),
         };
 
         // Save to backend
@@ -284,14 +234,12 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
                     },
                     body: JSON.stringify({ accounts: updatedAccounts }),
                 });
-                
                 if (!response.ok) {
                     const errorData = await response.json().catch(() => ({}));
                     console.error('[WeCom] Failed to save config:', errorData);
                     setErrors({ submit: errorData.detail || 'Failed to save configuration' });
                     return;
                 }
-                
                 console.log('[WeCom] Configuration saved successfully');
             } catch (error) {
                 console.error('[WeCom] Error saving config:', error);
@@ -319,6 +267,11 @@ export default function WeComAccountManager({ accounts, onAccountsChange, webhoo
         } else {
             onAccountsChange([...accounts, account]);
         }
+
+        // Close modal after successful save
+        setIsModalOpen(false);
+        setEditingAccount(null);
+        setPreviewAccountId(null);
     };
 
     // Get the current account ID (preview or saved)

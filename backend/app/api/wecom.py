@@ -737,7 +737,7 @@ async def _wecom_verify_webhook_handler(
     )
     config = result.scalar_one_or_none()
     if not config:
-        logger.warning(f"[WeCom] No config found for agent={agent_id}")
+        logger.warning(f"[WeCom] No config found for agent={agent_id}, account={account_id}")
         return Response(status_code=404)
 
     # Get account-specific config (with migration support)

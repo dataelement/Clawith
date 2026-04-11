@@ -1001,6 +1001,14 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 </div>
                                 )}
                             </div>
+                        ) : ch.id === 'wecom' ? (
+                            /* ── WeCom: always use WeComAccountManager ── */
+                            <WeComAccountManager
+                                accounts={wecomAccounts}
+                                onAccountsChange={setWecomAccounts}
+                                webhookUrls={wecomWebhook}
+                                agentId={agentId}
+                            />
                         ) : (
                             /* ── Form view (new or editing) ── */
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
