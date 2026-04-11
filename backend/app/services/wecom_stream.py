@@ -238,6 +238,31 @@ class WeComStreamManager:
             client.on("message.file", on_file)
             client.on("event.enter_chat", on_enter_chat)
 
+            # Connection lifecycle event handlers
+            async def on_connected(frame):
+                logger.info(f"[WeCom Stream] WebSocket CONNECTED for agent {agent_id}, account {account_id}")
+
+            async def on_authenticated(frame):
+                logger.info(f"[WeCom Stream] AUTHENTICATED successfully for agent {agent_id}, account {account_id}")
+
+            async def on_disconnected(frame):
+                reason = frame.body if hasattr(frame, 'body') else 'unknown'
+                logger.warning(f"[WeCom Stream] DISCONNECTED for agent {agent_id}, account {account_id}: {reason}")
+
+            async def on_error(frame):
+                err = frame.body if hasattr(frame, 'body') else 'unknown'
+                logger.error(f"[WeCom Stream] ERROR for agent {agent_id}, account {account_id}: {err}")
+
+            client.on("connected", on_connected)
+            client.on("authenticated", on_authenticated)
+            client.on("disconnected", on_disconnected)
+            client.on("error", on_error)
+
+            # Also raise SDK's internal log level so we can see auth results
+            import logging as _logging
+            _sdk_logger = _logging.getLogger("wecom_aibot_sdk")
+            _sdk_logger.setLevel(_logging.INFO)
+
             # Connect and run (with retry on failure)
             retry_delay = 5  # Start with 5 seconds
             max_retry_delay = 120  # Cap at 2 minutes
@@ -246,6 +271,7 @@ class WeComStreamManager:
                     logger.info(f"[WeCom Stream] Connecting for agent {agent_id}...")
                     await client.connect_async()
                     self._connected[agent_id] = True
+                    logger.info(f"[WeCom Stream] connect_async() returned for agent {agent_id}, is_connected={client.is_connected}, is_authenticated={client.is_authenticated}")
 
                     # Keep alive
                     retry_delay = 5  # Reset on successful connect
