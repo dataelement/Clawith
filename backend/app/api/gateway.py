@@ -518,6 +518,9 @@ async def send_message(
     agent = await _get_agent_by_key(x_api_key, db)
     agent.openclaw_last_seen = datetime.now(timezone.utc)
 
+    # Initialize broadcast results
+    broadcast_results = []
+
     target_name = body.target.strip()
     content = body.content.strip()
     channel_hint = (body.channel or "").strip().lower()
@@ -544,10 +547,69 @@ async def send_message(
             )
             db.add(gw_msg)
             await db.commit()
+
+            # Broadcast to groups if destinations specified
+            if body.destinations:
+                from app.models.channel_config import ChannelConfig
+                from app.services.feishu_service import feishu_service
+                import json as _json
+
+                config_result = await db.execute(
+                    select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
+                )
+                config = config_result.scalar_one_or_none()
+
+                if config and config.extra_config:
+                    broadcast_groups = config.extra_config.get("broadcast_groups", [])
+
+                    for dest in body.destinations:
+                        matched_group = None
+                        for group in broadcast_groups:
+                            if (group.get("channel") == dest.channel and
+                                group.get("name") == dest.group):
+                                matched_group = group
+                                break
+
+                        if matched_group:
+                            chat_id = matched_group.get("chat_id")
+                            status = "failed"
+
+                            try:
+                                if dest.channel == "feishu":
+                                    resp = await feishu_service.send_message(
+                                        config.app_id, config.app_secret,
+                                        receive_id=chat_id,
+                                        msg_type="text",
+                                        content=_json.dumps({"text": content}, ensure_ascii=False),
+                                        receive_id_type="chat_id"
+                                    )
+                                    status = "sent" if resp.get("code") == 0 else "failed"
+                                elif dest.channel == "wecom":
+                                    status = "not_implemented"
+                                elif dest.channel == "dingtalk":
+                                    status = "not_implemented"
+                            except Exception as e:
+                                logger.error(f"[Gateway] Broadcast error: {e}")
+                                status = "error"
+
+                            broadcast_results.append({
+                                "channel": dest.channel,
+                                "group": dest.group,
+                                "chat_id": chat_id,
+                                "status": status
+                            })
+                        else:
+                            broadcast_results.append({
+                                "channel": dest.channel,
+                                "group": dest.group,
+                                "status": "not_found"
+                            })
+
             return {
                 "status": "accepted",
                 "target": target_agent.name,
                 "type": "openclaw_agent",
+                "broadcast": broadcast_results,
                 "message": f"Message sent to {target_agent.name}. Reply will appear in your next poll.",
             }
         else:
@@ -567,12 +629,132 @@ async def send_message(
             ))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
+
+            # Broadcast to groups if destinations specified
+            if body.destinations:
+                from app.models.channel_config import ChannelConfig
+                from app.services.feishu_service import feishu_service
+                import json as _json
+
+                config_result = await db.execute(
+                    select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
+                )
+                config = config_result.scalar_one_or_none()
+
+                if config and config.extra_config:
+                    broadcast_groups = config.extra_config.get("broadcast_groups", [])
+
+                    for dest in body.destinations:
+                        matched_group = None
+                        for group in broadcast_groups:
+                            if (group.get("channel") == dest.channel and
+                                group.get("name") == dest.group):
+                                matched_group = group
+                                break
+
+                        if matched_group:
+                            chat_id = matched_group.get("chat_id")
+                            status = "failed"
+
+                            try:
+                                if dest.channel == "feishu":
+                                    resp = await feishu_service.send_message(
+                                        config.app_id, config.app_secret,
+                                        receive_id=chat_id,
+                                        msg_type="text",
+                                        content=_json.dumps({"text": content}, ensure_ascii=False),
+                                        receive_id_type="chat_id"
+                                    )
+                                    status = "sent" if resp.get("code") == 0 else "failed"
+                                elif dest.channel == "wecom":
+                                    status = "not_implemented"
+                                elif dest.channel == "dingtalk":
+                                    status = "not_implemented"
+                            except Exception as e:
+                                logger.error(f"[Gateway] Broadcast error: {e}")
+                                status = "error"
+
+                            broadcast_results.append({
+                                "channel": dest.channel,
+                                "group": dest.group,
+                                "chat_id": chat_id,
+                                "status": status
+                            })
+                        else:
+                            broadcast_results.append({
+                                "channel": dest.channel,
+                                "group": dest.group,
+                                "status": "not_found"
+                            })
+
             return {
                 "status": "accepted",
                 "target": target_agent.name,
                 "type": "agent",
+                "broadcast": broadcast_results,
                 "message": f"Message sent to {target_agent.name}. Reply will appear in your next poll.",
             }
+
+
+    # 1.5. Try to find target as a Group (via AgentGroup relationships)
+    from app.models.org import AgentGroup
+    group_result = await db.execute(
+        select(AgentGroup).where(
+            AgentGroup.agent_id == agent.id,
+            AgentGroup.group_name.ilike(f"%{target_name}%")
+        )
+    )
+    target_group = group_result.scalars().first()
+
+    if target_group:
+        from app.models.channel_config import ChannelConfig
+        from app.services.feishu_service import feishu_service
+        import json as _json
+
+        config_result = await db.execute(
+            select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
+        )
+        config = config_result.scalar_one_or_none()
+
+        if not config:
+            await db.commit()
+            raise HTTPException(status_code=400, detail="No channel configured for this agent")
+
+        status = "failed"
+        resp = None
+        try:
+            if target_group.channel == "feishu":
+                resp = await feishu_service.send_message(
+                    config.app_id, config.app_secret,
+                    receive_id=target_group.chat_id,
+                    msg_type="text",
+                    content=_json.dumps({"text": content}, ensure_ascii=False),
+                    receive_id_type="chat_id"
+                )
+                status = "sent" if resp.get("code") == 0 else "failed"
+            elif target_group.channel == "wecom":
+                status = "not_implemented"
+            elif target_group.channel == "dingtalk":
+                status = "not_implemented"
+        except Exception as e:
+            logger.error(f"[Gateway] Group send error: {e}")
+            status = "error"
+
+        await db.commit()
+
+        if status == "sent":
+            return {
+                "status": "sent",
+                "target": target_group.group_name,
+                "type": "group",
+                "channel": target_group.channel,
+                "message": f"Message sent to group {target_group.group_name}.",
+            }
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to send to group {target_group.group_name}: {resp.get('msg') if resp else 'unknown error'} (code {resp.get('code') if resp else 'N/A'})"
+            )
 
     # 2. Try to find target as a human (via relationships)
     from app.models.org import AgentRelationship
@@ -646,11 +828,69 @@ async def send_message(
         await db.commit()
 
         if resp and resp.get("code") == 0:
+            # Broadcast to groups if destinations specified
+            if body.destinations:
+                from app.models.channel_config import ChannelConfig
+                from app.services.feishu_service import feishu_service
+                import json as _json
+
+                config_result = await db.execute(
+                    select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
+                )
+                config = config_result.scalar_one_or_none()
+
+                if config and config.extra_config:
+                    broadcast_groups = config.extra_config.get("broadcast_groups", [])
+
+                    for dest in body.destinations:
+                        matched_group = None
+                        for group in broadcast_groups:
+                            if (group.get("channel") == dest.channel and
+                                group.get("name") == dest.group):
+                                matched_group = group
+                                break
+
+                        if matched_group:
+                            chat_id = matched_group.get("chat_id")
+                            status = "failed"
+
+                            try:
+                                if dest.channel == "feishu":
+                                    resp_bc = await feishu_service.send_message(
+                                        config.app_id, config.app_secret,
+                                        receive_id=chat_id,
+                                        msg_type="text",
+                                        content=_json.dumps({"text": content}, ensure_ascii=False),
+                                        receive_id_type="chat_id"
+                                    )
+                                    status = "sent" if resp_bc.get("code") == 0 else "failed"
+                                elif dest.channel == "wecom":
+                                    status = "not_implemented"
+                                elif dest.channel == "dingtalk":
+                                    status = "not_implemented"
+                            except Exception as e:
+                                logger.error(f"[Gateway] Broadcast error: {e}")
+                                status = "error"
+
+                            broadcast_results.append({
+                                "channel": dest.channel,
+                                "group": dest.group,
+                                "chat_id": chat_id,
+                                "status": status
+                            })
+                        else:
+                            broadcast_results.append({
+                                "channel": dest.channel,
+                                "group": dest.group,
+                                "status": "not_found"
+                            })
+
             return {
                 "status": "sent",
                 "target": target_member.name,
                 "type": "human",
                 "channel": "feishu",
+                "broadcast": broadcast_results,
             }
         else:
             raise HTTPException(

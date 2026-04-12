@@ -1034,6 +1034,32 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
     // Track which rows are being deleted (for optimistic UI)
     const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
+    // Group relationships state
+    const [addingGroup, setAddingGroup] = useState(false);
+    const [newGroupName, setNewGroupName] = useState('');
+    const [newGroupChatId, setNewGroupChatId] = useState('');
+    const [newGroupChannel, setNewGroupChannel] = useState('feishu');
+    const [newGroupDesc, setNewGroupDesc] = useState('');
+
+    const { data: agentGroups = [], refetch: refetchGroups } = useQuery({
+        queryKey: ['agent-groups', agentId],
+        queryFn: () => fetchAuth<any[]>(`/agents/${agentId}/relationships/groups`),
+    });
+
+    const addGroupRelationship = async () => {
+        if (!newGroupName || !newGroupChatId) return;
+        const existing = agentGroups.map((g: any) => ({ group_name: g.group_name, chat_id: g.chat_id, channel: g.channel, description: g.description }));
+        existing.push({ group_name: newGroupName, chat_id: newGroupChatId, channel: newGroupChannel, description: newGroupDesc });
+        await fetchAuth(`/agents/${agentId}/relationships/groups`, { method: 'PUT', body: JSON.stringify(existing) });
+        setAddingGroup(false); setNewGroupName(''); setNewGroupChatId(''); setNewGroupChannel('feishu'); setNewGroupDesc('');
+        refetchGroups();
+    };
+
+    const removeGroupRelationship = async (groupId: string) => {
+        await fetchAuth(`/agents/${agentId}/relationships/groups/${groupId}`, { method: 'DELETE' });
+        refetchGroups();
+    };
+
     const { data: relationships = [], refetch } = useQuery({
         queryKey: ['relationships', agentId],
         queryFn: () => fetchAuth<any[]>(`/agents/${agentId}/relationships/`),
@@ -1304,6 +1330,64 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                         <div style={{ display: 'flex', gap: '8px' }}>
                             <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={addAgentRelationship} disabled={!selectedAgentId}>{t('common.confirm')}</button>
                             <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => { setAddingAgent(false); setAgentDescription(''); setSelectedAgentId(''); }}>{t('common.cancel')}</button>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* ── Group Relationships ── */}
+            <div className="card" style={{ marginBottom: '12px', border: '1px solid rgba(251,189,35,0.3)', background: 'rgba(251,189,35,0.03)' }}>
+                <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '16px' }}>📢</span> 群组广播
+                    <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--text-tertiary)' }}>— Agent可向以下群组发送广播消息</span>
+                </h4>
+                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                    配置Agent的关系网络中的群组，Agent发送消息时可直接发送到这些群。
+                </p>
+                {agentGroups.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
+                        {agentGroups.map((g: any) => (
+                            <div key={g.id} style={{ borderRadius: '8px', border: '1px solid rgba(251,189,35,0.3)', background: 'rgba(251,189,35,0.05)', overflow: 'hidden' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
+                                    <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(251,189,35,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: 0 }}>G</div>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ fontWeight: 600, fontSize: '13px' }}>
+                                            {g.group_name}
+                                            <span style={{ fontSize: '10px', marginLeft: '6px', padding: '1px 6px', borderRadius: '4px', background: 'rgba(251,189,35,0.15)', color: '#fbbf24', fontWeight: 600 }}>
+                                                {g.channel === 'feishu' ? '飞书' : g.channel === 'wecom' ? '企微' : g.channel === 'dingtalk' ? '钉钉' : g.channel}
+                                            </span>
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', wordBreak: 'break-all' }}>Chat ID: {g.chat_id}</div>
+                                        {g.description && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{g.description}</div>}
+                                    </div>
+                                    {!readOnly && (
+                                        <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px', flexShrink: 0 }} onClick={() => removeGroupRelationship(g.id)}>
+                                            {t('common.delete')}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+                {!readOnly && !addingGroup && (
+                    <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setAddingGroup(true)}>+ 添加群组</button>
+                )}
+                {!readOnly && addingGroup && (
+                    <div style={{ border: '1px solid rgba(251,189,35,0.5)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}>
+                        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                            <input className="input" placeholder="群组名称（如：熊团协作群）" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} style={{ flex: 1, fontSize: '12px' }} />
+                            <select className="input" value={newGroupChannel} onChange={e => setNewGroupChannel(e.target.value)} style={{ width: '100px', flexShrink: 0, fontSize: '12px' }}>
+                                <option value="feishu">飞书</option>
+                                <option value="wecom">企微</option>
+                                <option value="dingtalk">钉钉</option>
+                            </select>
+                        </div>
+                        <input className="input" placeholder="Chat ID（如：oc_xxxxxx）" value={newGroupChatId} onChange={e => setNewGroupChatId(e.target.value)} style={{ fontSize: '12px', marginBottom: '8px', width: '100%' }} />
+                        <textarea className="input" placeholder="描述（可选）" value={newGroupDesc} onChange={e => setNewGroupDesc(e.target.value)} rows={2} style={{ fontSize: '12px', resize: 'vertical', marginBottom: '8px', width: '100%' }} />
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={addGroupRelationship} disabled={!newGroupName || !newGroupChatId}>确认添加</button>
+                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => { setAddingGroup(false); setNewGroupName(''); setNewGroupChatId(''); setNewGroupDesc(''); }}>{t('common.cancel')}</button>
                         </div>
                     </div>
                 )}

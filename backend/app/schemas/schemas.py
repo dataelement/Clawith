@@ -567,7 +567,15 @@ class GatewayReportRequest(BaseModel):
     result: str = Field(min_length=1)
 
 
+
+
+class MessageDestination(BaseModel):
+    """Destination for broadcasting a message to a channel/group."""
+    channel: str  # feishu | wecom | dingtalk
+    group: str     # Group name (matches config name)
+
 class GatewaySendMessageRequest(BaseModel):
     target: str  # Name of target person or agent
     content: str = Field(min_length=1)
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
+    destinations: list[MessageDestination] | None = None  # Optional: broadcast destinations

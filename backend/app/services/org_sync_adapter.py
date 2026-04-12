@@ -179,7 +179,7 @@ class BaseOrgSyncAdapter(ABC):
                 config["last_synced_at"] = datetime.now().isoformat()
                 self.provider.config = config
                 await db.flush()
-                
+
                 # Reconciliation: mark records not updated in this sync as deleted
                 await self._reconcile(db, provider.id, sync_start)
                 await db.flush()
@@ -190,6 +190,7 @@ class BaseOrgSyncAdapter(ABC):
 
         except Exception as e:
             import traceback
+
             logger.error(f"[OrgSync] Critical error during sync: {e}\n{traceback.format_exc()}")
             errors.append(f"Critical: {str(e)}")
 
@@ -200,12 +201,12 @@ class BaseOrgSyncAdapter(ABC):
             "profiles_synced": profile_count,
             "errors": errors,
             "provider": self.provider_type,
-            "synced_at": datetime.now().isoformat()
+            "synced_at": datetime.now().isoformat(),
         }
 
     async def _reconcile(self, db: AsyncSession, provider_id: uuid.UUID, sync_start: datetime):
         """Mark records that were not updated in this sync as deleted."""
-        
+
         # 1. Members reconciled
         await db.execute(
             update(OrgMember)
@@ -214,7 +215,7 @@ class BaseOrgSyncAdapter(ABC):
             .where(OrgMember.status != "deleted")
             .values(status="deleted", synced_at=datetime.now())
         )
-        
+
         # 2. Departments reconciled
         await db.execute(
             update(OrgDepartment)
@@ -235,7 +236,7 @@ class BaseOrgSyncAdapter(ABC):
             .where(OrgMember.status == "active")
             .scalar_subquery()
         )
-        
+
         await db.execute(
             update(OrgDepartment)
             .where(OrgDepartment.provider_id == provider_id)
@@ -250,9 +251,11 @@ class BaseOrgSyncAdapter(ABC):
             .where(OrgDepartment.status == "active")
         )
         rows = result.all()
-        
+
         # Build tree structure and lookup
-        dept_map = {row.id: {"parent_id": row.parent_id, "direct": row.member_count, "total": 0, "children": []} for row in rows}
+        dept_map = {
+            row.id: {"parent_id": row.parent_id, "direct": row.member_count, "total": 0, "children": []} for row in rows
+        }
         root_ids = []
         for d_id, d_data in dept_map.items():
             parent_id = d_data["parent_id"]
@@ -260,7 +263,7 @@ class BaseOrgSyncAdapter(ABC):
                 dept_map[parent_id]["children"].append(d_id)
             else:
                 root_ids.append(d_id)
-                
+
         # Recursive function to calculate total
         def compute_total(node_id):
             node = dept_map[node_id]
@@ -269,22 +272,20 @@ class BaseOrgSyncAdapter(ABC):
                 total += compute_total(child_id)
             node["total"] = total
             return total
-            
+
         for root_id in root_ids:
             compute_total(root_id)
-            
+
         # 3. Bulk update all departments with their aggregated total counts
         # Skip if no updates needed to avoid unnecessary writes, but usually it's fast enough
         update_mappings = [{"id": d_id, "member_count": d_data["total"]} for d_id, d_data in dept_map.items()]
-        
+
         if update_mappings:
             # Execute individual UPDATE statements to avoid SQLAlchemy 2.x
             # "Bulk UPDATE by Primary Key" ambiguity when passing a list to execute().
             for m in update_mappings:
                 await db.execute(
-                    update(OrgDepartment)
-                    .where(OrgDepartment.id == m["id"])
-                    .values(member_count=m["member_count"])
+                    update(OrgDepartment).where(OrgDepartment.id == m["id"]).values(member_count=m["member_count"])
                 )
 
     async def _ensure_provider(self, db: AsyncSession) -> IdentityProvider:
@@ -293,7 +294,7 @@ class BaseOrgSyncAdapter(ABC):
             return self.provider
 
         # If we have an ID, look it up
-        if hasattr(self, 'provider_id') and self.provider_id:
+        if hasattr(self, "provider_id") and self.provider_id:
             result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == self.provider_id))
             self.provider = result.scalar_one_or_none()
             if self.provider:
@@ -305,7 +306,7 @@ class BaseOrgSyncAdapter(ABC):
             query = query.where(IdentityProvider.tenant_id == self.tenant_id)
         else:
             query = query.where(IdentityProvider.tenant_id.is_(None))
-            
+
         result = await db.execute(query)
         provider = result.scalars().first()
 
@@ -315,7 +316,7 @@ class BaseOrgSyncAdapter(ABC):
                 name=self.provider_type.capitalize(),
                 is_active=True,
                 config=self.config,
-                tenant_id=self.tenant_id
+                tenant_id=self.tenant_id,
             )
             db.add(provider)
             await db.flush()
@@ -323,9 +324,7 @@ class BaseOrgSyncAdapter(ABC):
         self.provider = provider
         return provider
 
-    async def _upsert_department(
-        self, db: AsyncSession, provider: IdentityProvider, dept: ExternalDepartment
-    ):
+    async def _upsert_department(self, db: AsyncSession, provider: IdentityProvider, dept: ExternalDepartment):
         """Insert or update a department."""
         # Check if exists by external_id and provider
         result = await db.execute(
@@ -422,19 +421,14 @@ class BaseOrgSyncAdapter(ABC):
             conditions.append(OrgMember.open_id == user.open_id)
 
         if conditions:
-            result = await db.execute(
-                select(OrgMember).where(
-                    OrgMember.provider_id == provider.id,
-                    or_(*conditions)
-                )
-            )
+            result = await db.execute(select(OrgMember).where(OrgMember.provider_id == provider.id, or_(*conditions)))
         existing_member = result.scalars().first()
 
         now = datetime.now()
 
         # Note: Platform user creation is disabled - just sync OrgMember
         # Users will be linked to platform users manually or via SSO login
-        
+
         # Search for existing platform user by email/phone to associate with this member
         user_id = None
         platform_user = None
@@ -467,7 +461,7 @@ class BaseOrgSyncAdapter(ABC):
             # 2. anyascii handles remaining non-ASCII scripts (Korean, Japanese kana, Arabic, etc.)
             existing_member.name_translit_full = _anyascii("".join(lazy_pinyin(user.name, errors="default")))
             existing_member.name_translit_initial = "".join([i[0] for i in pinyin(user.name, style=Style.FIRST_LETTER)])
-            
+
             if email is not None:
                 existing_member.email = email
             existing_member.avatar_url = user.avatar_url
@@ -477,7 +471,7 @@ class BaseOrgSyncAdapter(ABC):
             if mobile is not None:
                 existing_member.phone = mobile
             existing_member.status = user.status
-            
+
             # Universal ID fields
             existing_member.external_id = user.external_id
             existing_member.open_id = user.open_id
@@ -494,12 +488,11 @@ class BaseOrgSyncAdapter(ABC):
             # 2. anyascii handles remaining non-ASCII scripts (Korean, Japanese kana, Arabic, etc.)
             translit_full = _anyascii("".join(lazy_pinyin(user.name, errors="default")))
             translit_initial = "".join([i[0] for i in pinyin(user.name, style=Style.FIRST_LETTER)])
-            
+
             new_member = OrgMember(
                 external_id=user.external_id,
                 open_id=user.open_id,
                 unionid=user.unionid,
-
                 provider_id=provider.id,
                 user_id=user_id,
                 name=user.name,
@@ -539,20 +532,18 @@ class BaseOrgSyncAdapter(ABC):
         # 1. Try by Email matching (primary way now)
         email = _normalize_contact(user.email)
         if email:
-            result = await db.execute(
-                select(User).join(User.identity).where(Identity.email == email)
-            )
+            result = await db.execute(select(User).join(User.identity).where(Identity.email == email))
             u = result.scalars().first()
-            if u: return u
+            if u:
+                return u
 
         # 2. Try by mobile matching
         mobile = _normalize_contact(user.mobile)
         if mobile:
-            result = await db.execute(
-                select(User).join(User.identity).where(Identity.phone == mobile)
-            )
+            result = await db.execute(select(User).join(User.identity).where(Identity.phone == mobile))
             u = result.scalars().first()
-            if u: return u
+            if u:
+                return u
 
         return None
 
@@ -566,7 +557,9 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
     FEISHU_DEPT_URL = "https://open.feishu.cn/open-apis/contact/v3/departments"
     FEISHU_USERS_URL = "https://open.feishu.cn/open-apis/contact/v3/users/find_by_department"
 
-    def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None, tenant_id: uuid.UUID | None = None):
+    def __init__(
+        self, provider: IdentityProvider | None = None, config: dict | None = None, tenant_id: uuid.UUID | None = None
+    ):
         super().__init__(provider, config, tenant_id)
         self.app_id = self.config.get("app_id")
         self.app_secret = self.config.get("app_secret")
@@ -587,6 +580,7 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
     async def fetch_departments(self) -> list[ExternalDepartment]:
         """Fetch all departments from Feishu using concurrent recursive calls to get parent-child relationships."""
         import asyncio
+
         token = await self.get_access_token()
         all_depts: list[ExternalDepartment] = []
         # Add a virtual root for the tenant, consistent with DingTalk root behavior
@@ -596,13 +590,13 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                 name="Root",
                 parent_external_id=None,
                 member_count=0,
-                raw_data={"department_id": "0", "name": "Root"}
+                raw_data={"department_id": "0", "name": "Root"},
             )
         )
-        
+
         async with httpx.AsyncClient() as client:
             sem = asyncio.Semaphore(15)  # Limit concurrent requests to avoid rate limits
-            
+
             async def fetch_children(parent_id: str):
                 page_token = ""
                 tasks = []
@@ -617,9 +611,9 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
 
                     async with sem:
                         resp = await client.get(
-                            f"{self.FEISHU_DEPT_URL}/{parent_id}/children", 
-                            params=params, 
-                            headers={"Authorization": f"Bearer {token}"}
+                            f"{self.FEISHU_DEPT_URL}/{parent_id}/children",
+                            params=params,
+                            headers={"Authorization": f"Bearer {token}"},
                         )
                     data = resp.json()
 
@@ -631,11 +625,12 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                     items = res_data.get("items", []) or []
                     for item in items:
                         dept_id = item.get("open_department_id")
-                        if not dept_id: continue
-                        
+                        if not dept_id:
+                            continue
+
                         # Since we fetched using parent_id, we intrinsically know the parent!
                         parent_external = parent_id if parent_id and parent_id != "0" else "0"
-                        
+
                         dept = ExternalDepartment(
                             external_id=dept_id,
                             name=item.get("name", ""),
@@ -644,26 +639,170 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                             raw_data=item,
                         )
                         all_depts.append(dept)
-                        
+
                         # Recursively fetch children for this department
                         tasks.append(fetch_children(dept_id))
 
                     page_token = res_data.get("page_token", "")
                     if not page_token:
                         break
-                        
+
                 if tasks:
                     await asyncio.gather(*tasks)
 
             await fetch_children("0")
-                        
+
         logger.info(f"Feishu fetched {len(all_depts)} departments total.")
         return all_depts
 
-    async def fetch_users(self, department_external_id: str) -> list[ExternalUser]:
-        """Fetch users in a department.
+    async def sync_org_structure(self, db: AsyncSession) -> dict[str, Any]:
+        """Override to use global user list API so we can get users regardless of department hierarchy."""
+        errors = []
+        dept_count = 0
+        member_count = 0
+        user_count = 0
+        profile_count = 0
+        sync_start = datetime.now()
 
-        IMPORTANT: Uses user_id_type=user_id (employee_id), which requires the
+        provider = await self._ensure_provider(db)
+
+        try:
+            # Fetch and sync departments
+            departments = await self.fetch_departments()
+            for dept in departments:
+                try:
+                    async with db.begin_nested():
+                        await self._upsert_department(db, provider, dept)
+                    dept_count += 1
+                except Exception as e:
+                    errors.append(f"Department {dept.external_id}: {str(e)}")
+                    logger.error(f"[OrgSync] Failed to sync department {dept.external_id}: {e}")
+
+            # Fetch ALL users using global user list API (works even without department access)
+            all_users = await self._fetch_all_users()
+            logger.info(f"Feishu fetched {len(all_users)} total users globally.")
+
+            for user in all_users:
+                try:
+                    async with db.begin_nested():
+                        # Use first department from user's department_ids, fallback to "0"
+                        dept_ext_id = user.department_ids[0] if user.department_ids else "0"
+
+                        # Ensure department exists - if not found, create it on the fly
+                        dept_result = await db.execute(
+                            select(OrgDepartment).where(
+                                OrgDepartment.external_id == dept_ext_id,
+                                OrgDepartment.provider_id == provider.id,
+                            )
+                        )
+                        dept = dept_result.scalar_one_or_none()
+                        if not dept:
+                            # Check if department exists but was marked deleted
+                            del_result = await db.execute(
+                                select(OrgDepartment).where(
+                                    OrgDepartment.external_id == dept_ext_id,
+                                    OrgDepartment.provider_id == provider.id,
+                                    OrgDepartment.status == "deleted",
+                                )
+                            )
+                            dept = del_result.scalar_one_or_none()
+                        fetched_dept_name = None
+                        if dept:
+                            # Reactivate deleted department
+                            dept.status = "active"
+                            dept.synced_at = datetime.now()
+                            if fetched_dept_name:
+                                dept.name = fetched_dept_name
+                            await db.flush()
+                            logger.info(
+                                f"[OrgSync] Reactivated deleted department: {dept.external_id} -> {fetched_dept_name or dept.name}"
+                            )
+                            # Try to fetch real name for reactivated dept
+                            try:
+                                token = await self.get_access_token()
+                                async with httpx.AsyncClient() as client:
+                                    resp = await client.get(
+                                        f"https://open.feishu.cn/open-apis/contact/v3/departments/{dept.external_id}",
+                                        params={"department_id_type": "open_department_id"},
+                                        headers={"Authorization": f"Bearer {token}"},
+                                    )
+                                    data = resp.json()
+                                    if data.get("code") == 0:
+                                        fetched_dept_name = data.get("data", {}).get("department", {}).get("name")
+                            except Exception:
+                                pass
+
+                        if not dept:
+                            # Fetch department details from Feishu API
+                            dept_name = fetched_dept_name or f"部门{dept_ext_id[:8]}"
+                            try:
+                                token = await self.get_access_token()
+                                async with httpx.AsyncClient() as client:
+                                    resp = await client.get(
+                                        f"https://open.feishu.cn/open-apis/contact/v3/departments/{dept_ext_id}",
+                                        params={"department_id_type": "open_department_id"},
+                                        headers={"Authorization": f"Bearer {token}"},
+                                    )
+                                    data = resp.json()
+                                    if data.get("code") == 0:
+                                        dept_name = data.get("data", {}).get("department", {}).get("name", dept_name)
+                            except Exception as e:
+                                logger.warning(f"[OrgSync] Failed to fetch dept name for {dept_ext_id}: {e}")
+
+                            dept = OrgDepartment(
+                                external_id=dept_ext_id,
+                                provider_id=provider.id,
+                                name=dept_name,
+                                tenant_id=self.tenant_id,
+                                synced_at=datetime.now(),
+                            )
+                            db.add(dept)
+                            await db.flush()
+                            logger.warning(f"[OrgSync] Auto-created missing department: {dept_ext_id} - {dept_name}")
+                            # Add to departments list so reconciliation doesn't delete it
+                            departments.append(dept)
+
+                        stats = await self._upsert_member(db, provider, user, dept_ext_id)
+                        if stats.get("user_created"):
+                            user_count += 1
+                        if stats.get("profile_synced"):
+                            profile_count += 1
+                    member_count += 1
+                except Exception as e:
+                    logger.error(f"[OrgSync] Failed to sync member {user.external_id} ({user.name}): {e}")
+                    errors.append(f"Member {user.external_id}: {str(e)}")
+
+            # Update provider metadata
+            if self.provider:
+                config = (self.provider.config or {}).copy()
+                config["last_synced_at"] = datetime.now().isoformat()
+                self.provider.config = config
+                await db.flush()
+                await self._reconcile(db, provider.id, sync_start)
+                await db.flush()
+                await self._update_member_counts(db, provider.id)
+                await db.flush()
+
+        except Exception as e:
+            import traceback
+
+            logger.error(f"[OrgSync] Critical error during sync: {e}\n{traceback.format_exc()}")
+            errors.append(f"Critical: {str(e)}")
+
+        return {
+            "departments": dept_count,
+            "members": member_count,
+            "users_created": user_count,
+            "profiles_synced": profile_count,
+            "errors": errors,
+            "provider": self.provider_type,
+            "synced_at": datetime.now().isoformat(),
+        }
+
+    async def _fetch_all_users(self) -> list[ExternalUser]:
+        """Fetch all users from Feishu using global users API.
+
+        Uses user_id_type=user_id (employee_id), which requires the
         'contact:user.employee_id:readonly' permission in the Feishu app.
 
         WHY user_id (not open_id or union_id):
@@ -673,8 +812,6 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
         - union_id is ISV-scoped (same across apps from the same ISV), but not universal.
         - user_id (employee_id) is the only enterprise-wide stable identifier that works
           consistently across org sync, SSO, and bot channel user resolution.
-
-        This permission requires app re-publishing in Feishu console (not instant like DingTalk).
         """
         token = await self.get_access_token()
         users: list[ExternalUser] = []
@@ -683,18 +820,15 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
         async with httpx.AsyncClient() as client:
             while True:
                 params = {
-                    "department_id": department_external_id,
-                    "department_id_type": "open_department_id",
-                    # user_id (employee_id) is the enterprise-wide stable identifier.
-                    # Requires 'contact:user.employee_id:readonly' permission + app re-publish.
-                    "user_id_type": "user_id",
                     "page_size": "50",
+                    "user_id_type": "user_id",
+                    "sort_type": "NameOrder",
                 }
                 if page_token:
                     params["page_token"] = page_token
 
                 resp = await client.get(
-                    self.FEISHU_USERS_URL,
+                    "https://open.feishu.cn/open-apis/contact/v3/users",
                     params=params,
                     headers={"Authorization": f"Bearer {token}"},
                 )
@@ -703,10 +837,7 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                 if data.get("code") != 0:
                     error_code = data.get("code")
                     error_msg = data.get("msg", "")
-                    logger.error(
-                        f"Feishu fetch users error for dept {department_external_id}: "
-                        f"code={error_code}, msg={error_msg}"
-                    )
+                    logger.error(f"Feishu fetch all users error: code={error_code}, msg={error_msg}")
                     raise RuntimeError(
                         f"Feishu API error (code {error_code}): {error_msg}. "
                         f"Access denied. One of the following scopes is required: "
@@ -721,11 +852,9 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                 for item in items:
                     # Collect all departments the user belongs to
                     raw_dept_ids = item.get("department_ids", [])
-                    department_ids = [str(did) for did in raw_dept_ids] if raw_dept_ids else [department_external_id]
-                    
-                    # When user_id_type=open_id, Feishu returns the open_id value in the
-                    # "user_id" field of the response. So external_id == open_id == open_id field.
-                    # The open_id field is also present for consistency.
+                    department_ids = [str(did) for did in raw_dept_ids] if raw_dept_ids else ["0"]
+
+                    # user_id (employee_id) is the enterprise-wide stable identifier
                     external_id = item.get("user_id", "") or item.get("open_id", "")
 
                     # For Feishu, a user is considered inactive if they are explicitly frozen or resigned.
@@ -743,7 +872,7 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                         email=item.get("email", ""),
                         avatar_url=item.get("avatar_url", ""),
                         title=item.get("title", ""),
-                        department_external_id=department_external_id,
+                        department_external_id=department_ids[0] if department_ids else "0",
                         department_ids=department_ids,
                         mobile=item.get("mobile", ""),
                         status=member_status,
@@ -752,10 +881,15 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                     users.append(user)
 
                 page_token = res_data.get("page_token", "")
-                if not page_token:
+                has_more = res_data.get("has_more", False)
+                if not has_more or not page_token:
                     break
 
         return users
+
+    async def fetch_users(self, department_external_id: str) -> list[ExternalUser]:
+        # Dummy implementation - not used since we override sync_org_structure
+        return []
 
 
 class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
@@ -768,10 +902,14 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
     DINGTALK_DEPT_LIST_URL = "https://oapi.dingtalk.com/topapi/v2/department/listsub"
     DINGTALK_USER_LIST_URL = "https://oapi.dingtalk.com/topapi/v2/user/list"
 
-    def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None, tenant_id: uuid.UUID | None = None):
+    def __init__(
+        self, provider: IdentityProvider | None = None, config: dict | None = None, tenant_id: uuid.UUID | None = None
+    ):
         super().__init__(provider, config, tenant_id)
         self.app_key = self.config.get("app_key") or self.config.get("appkey") or self.config.get("app_id")
-        self.app_secret = self.config.get("app_secret") or self.config.get("appsecret") or self.config.get("app_secret_key")
+        self.app_secret = (
+            self.config.get("app_secret") or self.config.get("appsecret") or self.config.get("app_secret_key")
+        )
         self._access_token: str | None = None
         self._token_expires_at: datetime | None = None
         self._dept_path_map: dict[str, str] = {}
@@ -861,7 +999,15 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
         # Ensure root exists in index (for path building and possible member sync)
         if "1" not in dept_index:
             dept_index["1"] = ("Root", None)
-            all_depts.append(ExternalDepartment(external_id="1", name="Root", parent_external_id=None, member_count=0, raw_data={"dept_id": 1, "name": "Root"}))
+            all_depts.append(
+                ExternalDepartment(
+                    external_id="1",
+                    name="Root",
+                    parent_external_id=None,
+                    member_count=0,
+                    raw_data={"dept_id": 1, "name": "Root"},
+                )
+            )
 
         self._dept_path_map = self._build_dept_paths(dept_index)
         return all_depts
@@ -962,7 +1108,9 @@ class WeComOrgSyncAdapter(BaseOrgSyncAdapter):
     WECOM_USER_LIST_ID_URL = "https://qyapi.weixin.qq.com/cgi-bin/user/list_id"
     WECOM_USER_GET_URL = "https://qyapi.weixin.qq.com/cgi-bin/user/get"
 
-    def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None, tenant_id: uuid.UUID | None = None):
+    def __init__(
+        self, provider: IdentityProvider | None = None, config: dict | None = None, tenant_id: uuid.UUID | None = None
+    ):
         super().__init__(provider, config, tenant_id)
         # corp_id: the enterprise's WeCom corp ID
         # secret: the 通讯录同步 (contact-sync) secret — used for department/simplelist and user/list_id
@@ -1005,8 +1153,6 @@ class WeComOrgSyncAdapter(BaseOrgSyncAdapter):
         # Refresh slightly before true expiry to avoid clock-skew issues
         self._token_expires_at = datetime.now() + timedelta(seconds=7200 - 300)
         return token
-
-
 
     async def fetch_departments(self) -> list[ExternalDepartment]:
         """Fetch all departments from WeCom using the simplelist endpoint.
@@ -1093,13 +1239,15 @@ class WeComOrgSyncAdapter(BaseOrgSyncAdapter):
                         continue
                     # Use userid as the name placeholder so link_identity() knows
                     # to overwrite it once the user logs in via SSO.
-                    user_stubs.append(ExternalUser(
-                        external_id=uid,
-                        name=uid,  # placeholder — enriched on first SSO login
-                        open_id=entry.get("open_userid", ""),
-                        department_external_id=department_external_id,
-                        department_ids=[department_external_id],
-                    ))
+                    user_stubs.append(
+                        ExternalUser(
+                            external_id=uid,
+                            name=uid,  # placeholder — enriched on first SSO login
+                            open_id=entry.get("open_userid", ""),
+                            department_external_id=department_external_id,
+                            department_ids=[department_external_id],
+                        )
+                    )
 
                 cursor = data.get("next_cursor", "")
                 if not cursor:
@@ -1135,9 +1283,7 @@ async def get_org_sync_adapter(
     """
     # Get provider config from database - prefer specific provider_id if provided
     if provider_id:
-        result = await db.execute(
-            select(IdentityProvider).where(IdentityProvider.id == provider_id)
-        )
+        result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
     else:
         query = select(IdentityProvider).where(IdentityProvider.provider_type == provider_type)
         if tenant_id:
