@@ -1801,6 +1801,37 @@ async def _agent_has_any_channel(agent_id: uuid.UUID) -> bool:
 
 # ─── Dynamic Tool Loading from DB ──────────────────────────────
 
+
+def _strip_a2a_msg_type(tools: list[dict]) -> list[dict]:
+    """Remove the msg_type parameter from send_message_to_agent when async A2A is disabled.
+
+    This prevents the LLM from seeing and selecting notify/task_delegate modes
+    that would be silently overridden to consult anyway, which confuses users
+    who see the tool call arguments in the chat UI.
+    """
+    import copy
+    result = []
+    for t in tools:
+        fn = t.get("function", {})
+        if fn.get("name") == "send_message_to_agent":
+            t = copy.deepcopy(t)
+            fn = t["function"]
+            # Simplify description to only mention consult
+            fn["description"] = (
+                "Send a message to a digital employee colleague and receive their reply synchronously."
+            )
+            params = fn.get("parameters", {})
+            props = params.get("properties", {})
+            # Remove msg_type parameter entirely
+            props.pop("msg_type", None)
+            # Remove msg_type from required list
+            req = params.get("required", [])
+            if "msg_type" in req:
+                params["required"] = [r for r in req if r != "msg_type"]
+        result.append(t)
+    return result
+
+
 async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     """Load enabled tools for an agent from DB (OpenAI function-calling format).
 
@@ -1811,10 +1842,30 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 
     Also patches agentbay_file_transfer description with OS-specific paths based on
     the agent's computer tool configuration (os_type: 'windows' | 'linux').
+
+    When the tenant's a2a_async_enabled flag is False, the msg_type parameter is
+    removed from the send_message_to_agent tool so the LLM only sees the
+    synchronous consult behaviour.
     """
     has_feishu = await _agent_has_feishu(agent_id)
     has_any_channel = await _agent_has_any_channel(agent_id)
     _always_tools = _always_core_tools + (_feishu_tools if has_feishu else []) + (_channel_tools if has_any_channel else [])
+
+    # Check tenant-level a2a_async_enabled flag
+    _a2a_async = False
+    try:
+        from app.models.tenant import Tenant
+        from app.models.agent import Agent as AgentModel
+        async with async_session() as _flag_db:
+            _ag_r = await _flag_db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+            _tid = _ag_r.scalar_one_or_none()
+            if _tid:
+                _t_r = await _flag_db.execute(select(Tenant).where(Tenant.id == _tid))
+                _tenant = _t_r.scalar_one_or_none()
+                if _tenant:
+                    _a2a_async = getattr(_tenant, "a2a_async_enabled", False)
+    except Exception:
+        pass
 
     # Read os_type once; used to patch agentbay_file_transfer paths below
     computer_os_type = await _get_computer_os_type(agent_id)
@@ -1878,12 +1929,19 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                     if t["function"]["name"] not in db_tool_names:
                         result.append(t)
                 # Inject OS-aware paths into computer-related tool descriptions
-                return _patch_computer_tool_descriptions(result, computer_os_type)
+                result = _patch_computer_tool_descriptions(result, computer_os_type)
+                # Strip msg_type from send_message_to_agent when async A2A is disabled
+                if not _a2a_async:
+                    result = _strip_a2a_msg_type(result)
+                return result
     except Exception as e:
         logger.error(f"[Tools] DB load failed, using fallback: {e}")
 
     # Fallback to hardcoded tools (still apply OS-aware path patching)
-    return _patch_computer_tool_descriptions(AGENT_TOOLS, computer_os_type)
+    fallback = _patch_computer_tool_descriptions(AGENT_TOOLS, computer_os_type)
+    if not _a2a_async:
+        fallback = _strip_a2a_msg_type(fallback)
+    return fallback
 
 
 # ─── Workspace initialization ──────────────────────────────────
