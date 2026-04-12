@@ -81,8 +81,9 @@ async def restore_workspace_project(project) -> RuntimeRestoreItem:
     if not image or not port:
         return RuntimeRestoreItem("workspace", slug, "unrestorable", "missing image or port")
 
-    client = _get_docker_client()
+    client = None
     try:
+        client = _get_docker_client()
         try:
             container = _get_container(client, project.container_id, name)
             if container.status == "running":
@@ -104,12 +105,13 @@ async def restore_workspace_project(project) -> RuntimeRestoreItem:
                 await _reload_gateway()
             return RuntimeRestoreItem("workspace", slug, "created", container_id=container.id)
     except DockerImageMissing:
-        logger.warning("Cannot restore workspace %s: image %s missing", slug, image)
+        logger.warning("Cannot restore workspace {}: image {} missing", slug, image)
         return RuntimeRestoreItem("workspace", slug, "unrestorable", f"image missing: {image}")
     except DockerException as exc:
-        logger.exception("Docker error restoring workspace %s", slug)
+        logger.exception("Docker error restoring workspace {}", slug)
         return RuntimeRestoreItem("workspace", slug, "error", str(exc))
     finally:
-        close = getattr(client, "close", None)
-        if close:
-            close()
+        if client is not None:
+            close = getattr(client, "close", None)
+            if close:
+                close()
