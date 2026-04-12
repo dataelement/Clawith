@@ -4,6 +4,7 @@ This module provides a base class for syncing org structure (departments/members
 from various identity providers (Feishu, DingTalk, WeCom, etc.).
 """
 
+import asyncio
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -586,7 +587,6 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
 
     async def fetch_departments(self) -> list[ExternalDepartment]:
         """Fetch all departments from Feishu using concurrent recursive calls to get parent-child relationships."""
-        import asyncio
         token = await self.get_access_token()
         all_depts: list[ExternalDepartment] = []
         # Add a virtual root for the tenant, consistent with DingTalk root behavior
@@ -810,6 +810,7 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
 
         seen: set[int] = set()
         queue: list[int] = [1]  # DingTalk root dept id
+        _request_count = 0
 
         async with httpx.AsyncClient() as client:
             while queue:
@@ -817,6 +818,12 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
                 if parent_id in seen:
                     continue
                 seen.add(parent_id)
+
+                # DingTalk rate limit: ~20 QPS per app per interface.
+                # Sleep 60ms between requests to stay under the limit.
+                if _request_count > 0:
+                    await asyncio.sleep(0.06)
+                _request_count += 1
 
                 resp = await client.post(
                     self.DINGTALK_DEPT_LIST_URL,
@@ -875,6 +882,10 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
 
         async with httpx.AsyncClient() as client:
             while True:
+                # DingTalk rate limit: ~20 QPS per app per interface.
+                # Sleep 60ms between requests to stay under the limit.
+                await asyncio.sleep(0.06)
+
                 resp = await client.post(
                     self.DINGTALK_USER_LIST_URL,
                     params={"access_token": token},
