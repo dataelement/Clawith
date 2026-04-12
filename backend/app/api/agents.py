@@ -336,9 +336,11 @@ async def create_agent(
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_text(sf.content, encoding="utf-8")
 
-    # Start container
-    await agent_manager.start_container(db, agent)
-    await db.flush()
+    # Native agent 不需要 Docker 容器，直接设为 idle
+    # （只有 openclaw 类型的 agent 需要容器，已在上方 early return）
+    agent.status = "idle"
+    agent.last_active_at = datetime.now(timezone.utc)
+    await db.commit()
 
     return AgentOut.model_validate(agent)
 
