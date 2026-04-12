@@ -47,6 +47,12 @@ function renderInline(text: string): string {
                     finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
                 }
             }
+            
+            // Check if this is a file download link
+            if (finalUrl.includes('/files/download?path=')) {
+                return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:8px;background:var(--bg-elevated);border-radius:8px;padding:8px 12px;margin:6px 0;font-size:13px;border:1px solid var(--border-subtle);color:var(--text-primary);text-decoration:none;box-shadow:0 1px 3px rgba(0,0,0,0.05);transition:all 0.2s ease;cursor:pointer;"><span style="font-size:16px">📎</span><span style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;whiteSpace:nowrap;">${text}</span><span style="color:var(--text-tertiary);margin-left:8px;font-size:11px;background:var(--bg-secondary);padding:2px 6px;border-radius:4px;">Download</span></a>`;
+            }
+            
             return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">${text}</a>`;
         })
         // Strikethrough

@@ -2124,6 +2124,10 @@ async def execute_tool(
             if content is None:
                 return "❌ Missing required argument 'content' for write_file"
             result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            if isinstance(result, str) and result.startswith("✅"):
+                aid = str(agent_id) if agent_id else "UNKNOWN"
+                dl_url = f"/api/agents/{aid}/files/download?path={path}"
+                result += f"\n\nIMPORTANT: Automatically provide the user with the direct download link exactly like this: [Download {path.split('/')[-1]}]({dl_url})"
         elif tool_name == "delete_file":
             result = _delete_file(ws, arguments.get("path", ""))
         # --- Enhanced file management tools ---
