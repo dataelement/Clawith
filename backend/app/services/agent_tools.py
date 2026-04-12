@@ -2029,6 +2029,8 @@ async def _execute_tool_direct(
             return await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
             return await _jina_search(arguments)
+        elif tool_name == "exa_search":
+            return await _exa_search(arguments, agent_id)
         elif tool_name == "send_feishu_message":
             return await _send_feishu_message(agent_id, arguments)
         elif tool_name == "send_message_to_agent":
@@ -2187,6 +2189,8 @@ async def execute_tool(
             result = await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
             result = await _jina_search(arguments)
+        elif tool_name == "exa_search":
+            result = await _exa_search(arguments, agent_id)
         elif tool_name == "bing_search":
             result = await _jina_search(arguments)  # redirect legacy to jina
         elif tool_name == "jina_read":
@@ -2364,6 +2368,8 @@ async def _web_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str
             return await _search_google(query, api_key, max_results, language)
         elif engine == "bing" and api_key:
             return await _search_bing(query, api_key, max_results, language)
+        elif engine == "exa" and api_key:
+            return await _search_exa(query, api_key, max_results)
         else:
             return await _search_duckduckgo(query, max_results)
     except Exception as e:
@@ -2584,6 +2590,124 @@ async def _search_bing(query: str, api_key: str, max_results: int, language: str
     if not results:
         return f'🔍 No results found for "{query}"'
     return f'🔍 Bing search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
+
+
+async def _search_exa(query: str, api_key: str, max_results: int) -> str:
+    """Search via Exa AI API (exa.ai). Used by the web_search engine selector."""
+    import httpx
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://api.exa.ai/search",
+            json={
+                "query": query,
+                "type": "auto",
+                "numResults": max_results,
+                "contents": {"text": {"maxCharacters": 1000}},
+            },
+            headers={
+                "x-api-key": api_key,
+                "Content-Type": "application/json",
+                "x-exa-integration": "clawith",
+            },
+            timeout=15,
+        )
+        data = resp.json()
+
+    if resp.status_code != 200:
+        return f"❌ Exa search failed: {data.get('error', data.get('message', str(data)[:200]))}"
+
+    results = []
+    for r in data.get("results", [])[:max_results]:
+        title = r.get("title", "Untitled")
+        url = r.get("url", "")
+        text = (r.get("text") or "")[:300]
+        results.append(f"**{title}**\n{url}\n{text}")
+
+    if not results:
+        return f'🔍 No results found for "{query}"'
+    return f'🔍 Exa search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
+
+
+async def _exa_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
+    """Full-featured Exa AI search with category filtering, domain filtering, and content modes."""
+    import httpx
+
+    query = arguments.get("query", "").strip()
+    if not query:
+        return "❌ Please provide search keywords"
+
+    config = await _get_tool_config(agent_id, "exa_search") or {}
+    api_key = config.get("api_key", "") or get_settings().EXA_API_KEY
+    if not api_key:
+        return "❌ Exa API key is required. Set it in tool settings or the EXA_API_KEY environment variable."
+
+    max_results = min(arguments.get("max_results", 5), 10)
+    search_type = arguments.get("search_type", "auto")
+    category = arguments.get("category") or None
+    content_mode = arguments.get("content_mode", "text")
+    include_domains = arguments.get("include_domains")
+    exclude_domains = arguments.get("exclude_domains")
+
+    body: dict = {
+        "query": query,
+        "type": search_type,
+        "numResults": max_results,
+        "contents": {},
+    }
+
+    if category:
+        body["category"] = category
+    if include_domains:
+        body["includeDomains"] = [d.strip() for d in include_domains.split(",") if d.strip()]
+    if exclude_domains:
+        body["excludeDomains"] = [d.strip() for d in exclude_domains.split(",") if d.strip()]
+
+    if content_mode == "highlights":
+        body["contents"]["highlights"] = {"numSentences": 3}
+    elif content_mode == "summary":
+        body["contents"]["summary"] = {}
+    else:
+        body["contents"]["text"] = {"maxCharacters": 1000}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.exa.ai/search",
+                json=body,
+                headers={
+                    "x-api-key": api_key,
+                    "Content-Type": "application/json",
+                    "x-exa-integration": "clawith",
+                },
+                timeout=15,
+            )
+            data = resp.json()
+
+        if resp.status_code != 200:
+            return f"❌ Exa search failed: {data.get('error', data.get('message', str(data)[:200]))}"
+
+        items = data.get("results", [])[:max_results]
+        if not items:
+            return f'🔍 No results found for "{query}"'
+
+        parts = []
+        for i, r in enumerate(items, 1):
+            title = r.get("title", "Untitled")
+            url = r.get("url", "")
+            content = ""
+            if content_mode == "highlights" and r.get("highlights"):
+                content = " ... ".join(r["highlights"])
+            elif content_mode == "summary" and r.get("summary"):
+                content = r["summary"]
+            elif r.get("text"):
+                content = r["text"][:500]
+            parts.append(f"**{i}. {title}**\n{url}\n{content}")
+
+        return f'🔍 Exa search for "{query}" ({len(items)} items):\n\n' + "\n\n---\n\n".join(parts)
+
+    except Exception as e:
+        return f"❌ Exa search error: {str(e)[:300]}"
 
 
 async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:

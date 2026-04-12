@@ -310,7 +310,7 @@ BUILTIN_TOOLS = [
     {
         "name": "web_search",
         "display_name": "Web Search",
-        "description": "Search the internet using a configurable search engine. Supports DuckDuckGo (free), Tavily, Google, and Bing. Configure the search engine in the tool settings.",
+        "description": "Search the internet using a configurable search engine. Supports DuckDuckGo (free), Tavily, Google, Bing, and Exa. Configure the search engine in the tool settings.",
         "category": "search",
         "icon": "🔍",
         "is_default": True,
@@ -339,6 +339,7 @@ BUILTIN_TOOLS = [
                         {"value": "tavily", "label": "Tavily (AI search, needs API key)"},
                         {"value": "google", "label": "Google Custom Search (needs API key)"},
                         {"value": "bing", "label": "Bing Search API (needs API key)"},
+                        {"value": "exa", "label": "Exa (AI-powered search, needs API key)"},
                     ],
                     "default": "duckduckgo",
                 },
@@ -348,7 +349,7 @@ BUILTIN_TOOLS = [
                     "type": "password",
                     "default": "",
                     "placeholder": "Required for engines that need an API key",
-                    "depends_on": {"search_engine": ["tavily", "google", "bing"]},
+                    "depends_on": {"search_engine": ["tavily", "google", "bing", "exa"]},
                 },
                 {
                     "key": "max_results",
@@ -424,6 +425,56 @@ BUILTIN_TOOLS = [
                     "type": "password",
                     "default": "",
                     "placeholder": "jina_xxxxxxxxxxxxxxxx (get one at jina.ai)",
+                },
+            ]
+        },
+    },
+    {
+        "name": "exa_search",
+        "display_name": "Exa Search",
+        "description": "AI-powered web search using Exa (exa.ai). Supports semantic search, category filtering, domain filtering, and multiple content modes (text, highlights, summary). Requires an Exa API key.",
+        "category": "search",
+        "icon": "🔎",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "max_results": {"type": "integer", "description": "Number of results (default 5, max 10)"},
+                "search_type": {
+                    "type": "string",
+                    "description": "Search type: auto (default), neural, or fast",
+                    "enum": ["auto", "neural", "fast"],
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category: company, research paper, news, personal site, financial report, or people",
+                },
+                "include_domains": {
+                    "type": "string",
+                    "description": "Comma-separated domains to restrict results to (e.g. 'arxiv.org, github.com')",
+                },
+                "exclude_domains": {
+                    "type": "string",
+                    "description": "Comma-separated domains to exclude from results",
+                },
+                "content_mode": {
+                    "type": "string",
+                    "description": "Content retrieval mode: text (default), highlights, or summary",
+                    "enum": ["text", "highlights", "summary"],
+                },
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "Exa API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get your API key at exa.ai",
                 },
             ]
         },
