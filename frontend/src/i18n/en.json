@@ -206,6 +206,7 @@
       "chat": "Chat",
       "activityLog": "Activity Log",
       "approvals": "Approvals",
+      "projects": "Projects",
       "settings": "Settings"
     },
     "fields": {
@@ -1725,5 +1726,93 @@
     "ssoEnabled": "Enable SSO",
     "ssoDomain": "Custom Access Domain",
     "ssoDomainPlaceholder": "e.g. acme.clawith.com"
+  },
+  "project": {
+    "title": "Projects",
+    "newProject": "New Project",
+    "noProjects": "No projects yet",
+    "noProjectsDesc": "Create your first project to organise agents and tasks",
+    "search": "Search projects...",
+    "allFolders": "All",
+    "folders": "Folders",
+    "status": {
+      "all": "All",
+      "draft": "Draft",
+      "active": "Active",
+      "on_hold": "On Hold",
+      "completed": "Completed",
+      "archived": "Archived"
+    },
+    "role": {
+      "lead": "Lead",
+      "member": "Member",
+      "observer": "Observer"
+    },
+    "collabMode": {
+      "isolated": "Isolated",
+      "group_chat": "Group Chat",
+      "lead_helper": "Lead / Helper"
+    },
+    "tabs": {
+      "overview": "Overview",
+      "agents": "Agents",
+      "settings": "Settings"
+    },
+    "overview": {
+      "description": "Description",
+      "brief": "Agent Context (Brief)",
+      "briefPlaceholder": "Describe the project goal, background and key info. This will be injected into agents' system prompts.",
+      "noDescription": "No description",
+      "noBrief": "No brief",
+      "folder": "Folder",
+      "tags": "Tags",
+      "targetDate": "Target Date",
+      "createdAt": "Created",
+      "status": "Status",
+      "collabMode": "Collaboration Mode"
+    },
+    "agents": {
+      "empty": "No agents in this project yet",
+      "addAgent": "Add Agent",
+      "removeAgent": "Remove from project",
+      "changeRole": "Change role",
+      "a2aMatrix": "A2A Communication",
+      "a2aMatrixDesc": "Authorisation status for each agent pair. Only authorised agents can send messages to each other.",
+      "authorized": "Authorised",
+      "notAuthorized": "Not authorised",
+      "grantBoth": "Grant both ways",
+      "noAgents": "Add agents to see the A2A matrix"
+    },
+    "settings": {
+      "basicInfo": "Basic Info",
+      "name": "Project Name",
+      "namePlaceholder": "e.g. Clawith Go Global",
+      "folder": "Folder",
+      "folderPlaceholder": "e.g. 2026H1",
+      "targetDate": "Target Completion Date",
+      "collabMode": "Collaboration Mode",
+      "dangerZone": "Danger Zone",
+      "archiveProject": "Archive Project",
+      "archiveDesc": "Archived projects are read-only and can be deleted",
+      "deleteProject": "Delete Project",
+      "deleteDesc": "Only archived projects can be deleted. This action cannot be undone.",
+      "confirmDelete": "Confirm project deletion"
+    },
+    "transition": {
+      "start": "Start",
+      "pause": "Pause",
+      "resume": "Resume",
+      "complete": "Complete",
+      "archive": "Archive",
+      "confirmComplete": "Mark project as completed?",
+      "confirmArchive": "Archive this project? It will become read-only."
+    },
+    "tags": {
+      "manage": "Manage Tags",
+      "newTag": "New Tag",
+      "namePlaceholder": "Tag name",
+      "noTags": "No tags yet"
+    },
+    "myProjects": "My Projects"
   }
 }

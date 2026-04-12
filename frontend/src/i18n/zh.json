@@ -213,6 +213,7 @@
       "chat": "聊天",
       "activityLog": "工作日志",
       "approvals": "审批",
+      "projects": "项目",
       "settings": "设置"
     },
     "fields": {
@@ -1850,5 +1851,93 @@
     },
     "loading": "加载中...",
     "noData": "暂无数据"
+  },
+  "project": {
+    "title": "项目",
+    "newProject": "新建项目",
+    "noProjects": "暂无项目",
+    "noProjectsDesc": "创建你的第一个项目，把 Agent 和任务组织在一起",
+    "search": "搜索项目...",
+    "allFolders": "全部",
+    "folders": "文件夹",
+    "status": {
+      "all": "全部",
+      "draft": "草稿",
+      "active": "进行中",
+      "on_hold": "暂停",
+      "completed": "已完成",
+      "archived": "已归档"
+    },
+    "role": {
+      "lead": "负责人",
+      "member": "成员",
+      "observer": "观察者"
+    },
+    "collabMode": {
+      "isolated": "独立",
+      "group_chat": "群聊",
+      "lead_helper": "主从"
+    },
+    "tabs": {
+      "overview": "概览",
+      "agents": "参与 Agent",
+      "settings": "设置"
+    },
+    "overview": {
+      "description": "项目简介",
+      "brief": "Agent 上下文（Brief）",
+      "briefPlaceholder": "描述项目目标、背景和关键信息，将自动注入 Agent 的对话上下文",
+      "noDescription": "暂无简介",
+      "noBrief": "暂无 Brief",
+      "folder": "文件夹",
+      "tags": "标签",
+      "targetDate": "预期完成",
+      "createdAt": "创建时间",
+      "status": "状态",
+      "collabMode": "协作模式"
+    },
+    "agents": {
+      "empty": "还没有 Agent 加入此项目",
+      "addAgent": "添加 Agent",
+      "removeAgent": "移出项目",
+      "changeRole": "修改角色",
+      "a2aMatrix": "A2A 通信授权",
+      "a2aMatrixDesc": "项目内 Agent 两两之间的通信授权状态。只有授权的 Agent 才能互相发消息。",
+      "authorized": "已授权",
+      "notAuthorized": "未授权",
+      "grantBoth": "双向授权",
+      "noAgents": "添加 Agent 后此处将显示 A2A 授权矩阵"
+    },
+    "settings": {
+      "basicInfo": "基本信息",
+      "name": "项目名称",
+      "namePlaceholder": "例如：clawith 出海",
+      "folder": "文件夹",
+      "folderPlaceholder": "例如：2026H1",
+      "targetDate": "预期完成时间",
+      "collabMode": "协作模式",
+      "dangerZone": "危险操作",
+      "archiveProject": "归档项目",
+      "archiveDesc": "归档后项目变为只读，可以删除",
+      "deleteProject": "删除项目",
+      "deleteDesc": "只有已归档的项目才能删除，此操作不可撤销",
+      "confirmDelete": "确认删除项目"
+    },
+    "transition": {
+      "start": "开始",
+      "pause": "暂停",
+      "resume": "恢复",
+      "complete": "完成",
+      "archive": "归档",
+      "confirmComplete": "确认标记为完成？",
+      "confirmArchive": "确认归档此项目？归档后将变为只读。"
+    },
+    "tags": {
+      "manage": "管理标签",
+      "newTag": "新建标签",
+      "namePlaceholder": "标签名称",
+      "noTags": "暂无标签"
+    },
+    "myProjects": "我参与的项目"
   }
 }

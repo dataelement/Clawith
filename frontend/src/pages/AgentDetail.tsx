@@ -20,7 +20,7 @@ import { formatFileSize } from '../utils/formatFileSize';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 
-const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'projects', 'settings'] as const;
 
 // Format large token numbers with K/M suffixes
 const formatTokens = (n: number) => {
@@ -1318,7 +1318,7 @@ function AgentDetailInner() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
-    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'];
+    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'projects', 'settings'];
     const hashTab = location.hash?.replace('#', '');
     const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
 
@@ -2819,6 +2819,8 @@ function AgentDetailInner() {
                         if ((agent as any)?.access_level === 'use') {
                             if (tab === 'settings' || tab === 'approvals') return false;
                         }
+                        // projects tab: always visible
+                        if (tab === 'projects') return true;
                         // OpenClaw agents: only show status, chat, activityLog, settings
                         if ((agent as any)?.agent_type === 'openclaw') {
                             return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
@@ -4947,6 +4949,71 @@ function AgentDetailInner() {
                         };
                         return <ApprovalsTab />;
                     })()}
+
+                {/* ── Projects Tab ── */}
+                {activeTab === 'projects' && (() => {
+                    const AgentProjectsTab = () => {
+                        const { t } = useTranslation();
+                        const nav = useNavigate();
+                        const [projects, setProjects] = useState<any[]>([]);
+                        const [loading, setLoading] = useState(true);
+
+                        useEffect(() => {
+                            const token = localStorage.getItem('token');
+                            fetch(`/api/projects?status=all`, { headers: { Authorization: `Bearer ${token}` } })
+                                .then(r => r.ok ? r.json() : [])
+                                .then(all => setProjects(all.filter((p: any) => p.agents?.some((a: any) => a.agent_id === id))))
+                                .catch(() => setProjects([]))
+                                .finally(() => setLoading(false));
+                        }, []);
+
+                        const STATUS_COLORS: Record<string, string> = {
+                            draft: 'var(--text-tertiary)', active: 'var(--success)',
+                            on_hold: 'var(--warning)', completed: 'var(--primary)', archived: 'var(--text-tertiary)',
+                        };
+
+                        if (loading) return <div style={{ padding: 32, color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>;
+                        if (projects.length === 0) return (
+                            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                                <div style={{ fontSize: 14, marginBottom: 8 }}>{t('project.myProjects')}: 0</div>
+                                <button onClick={() => nav('/projects')} className="btn btn-ghost" style={{ fontSize: 13 }}>
+                                    {t('project.title')} →
+                                </button>
+                            </div>
+                        );
+
+                        return (
+                            <div style={{ padding: '20px 0' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                                    <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{t('project.myProjects')} ({projects.length})</h3>
+                                    <button onClick={() => nav('/projects')} className="btn btn-ghost" style={{ fontSize: 12 }}>{t('project.title')} →</button>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                    {projects.map((p: any) => (
+                                        <div key={p.id} onClick={() => nav(`/projects/${p.id}`)}
+                                            style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: 10, cursor: 'pointer' }}
+                                            onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-default)'}
+                                            onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-subtle)'}
+                                        >
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div style={{ fontWeight: 500, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                                                {p.folder && <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>{p.folder}</div>}
+                                            </div>
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 500, background: `${STATUS_COLORS[p.status]}18`, color: STATUS_COLORS[p.status], border: `1px solid ${STATUS_COLORS[p.status]}40` }}>
+                                                <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor' }} />
+                                                {t(`project.status.${p.status}`)}
+                                            </span>
+                                            <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginLeft: 4 }}>
+                                                {t(`project.role.${p.agents.find((a: any) => a.agent_id === id)?.role || 'member'}`)}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    };
+                    return <AgentProjectsTab />;
+                })()}
 
                 {/* ── Settings Tab ── */}
                 {
