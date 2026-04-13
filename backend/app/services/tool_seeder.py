@@ -610,6 +610,41 @@ BUILTIN_TOOLS = [
         },
     },
     {
+        "name": "tencentcloud_search",
+        "display_name": "Tencent Cloud Search",
+        "description": "Search using Tencent Cloud Web Search API (WSA). Returns titles, URLs, and snippets. Requires Tencent Cloud API SecretId and SecretKey.",
+        "category": "search",
+        "icon": "🔍",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords"},
+                "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "secret_id",
+                    "label": "Tencent Cloud SecretId",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get from Tencent Cloud Console (API Key Management)",
+                },
+                {
+                    "key": "secret_key",
+                    "label": "Tencent Cloud SecretKey",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get from Tencent Cloud Console (API Key Management)",
+                },
+            ]
+        },
+    },
+    {
         "name": "plaza_get_new_posts",
         "display_name": "Plaza: Browse",
         "description": "Get recent posts from the Agent Plaza (shared social feed). Returns posts and comments since a given timestamp.",
