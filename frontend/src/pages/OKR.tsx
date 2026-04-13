@@ -809,6 +809,9 @@ interface MembersWithoutOKRData {
     company_okr_exists: boolean;
     okr_agent_id: string | null;
     members_without_okr: MemberWithoutOKR[];  // backend returns 'members_without_okr'
+    // User.id and Agent.id values for tracked members — used to filter the objectives section
+    tracked_user_ids: string[];
+    tracked_agent_ids: string[];
     total: number;
 }
 
@@ -1223,7 +1226,23 @@ export default function OKR() {
 
     // ── Enabled OKR dashboard ────────────────────────────────────────────────
     const companyObjs = objectives.filter(o => o.owner_type === 'company');
-    const memberObjs = objectives.filter(o => o.owner_type !== 'company');
+
+    // Filter member objectives to only those tracked by the OKR Agent.
+    // tracked_user_ids / tracked_agent_ids come from the members-without-okr endpoint.
+    // If the response has no tracked IDs (OKR Agent not yet set up), fall back to showing all.
+    const allNoOkrQueries = queryClient.getQueriesData<MembersWithoutOKRData>({ queryKey: ['okr-members-without-okr'] });
+    const noOkrData = allNoOkrQueries?.[0]?.[1]; // first matching cached response
+    const trackedUserIds = noOkrData?.tracked_user_ids;
+    const trackedAgentIds = noOkrData?.tracked_agent_ids;
+    const hasTrackedList = (trackedUserIds && trackedUserIds.length > 0) || (trackedAgentIds && trackedAgentIds.length > 0);
+
+    const memberObjs = objectives.filter(o => {
+        if (o.owner_type === 'company') return false;
+        if (!hasTrackedList) return true; // Fallback: show all until relationships are set up
+        if (o.owner_type === 'user') return trackedUserIds?.includes(o.owner_id ?? '') ?? false;
+        if (o.owner_type === 'agent') return trackedAgentIds?.includes(o.owner_id ?? '') ?? false;
+        return false;
+    });
 
     // Group member objectives by owner — use owner_display_name as the label when available
     const memberGroups: Record<string, { label: string; avatarType: string; objs: Objective[] }> = {};
