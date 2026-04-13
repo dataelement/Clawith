@@ -2097,6 +2097,8 @@ async def _execute_tool_direct(
             return await _google_search_tool(arguments, agent_id)
         elif tool_name == "bing_search":
             return await _bing_search_tool(arguments, agent_id)
+        elif tool_name == "tencentcloud_search":
+            return await _tencentcloud_search_tool(arguments, agent_id)
         elif tool_name == "send_feishu_message":
             return await _send_feishu_message(agent_id, arguments)
         elif tool_name == "send_message_to_agent":
@@ -2265,6 +2267,8 @@ async def execute_tool(
             result = await _google_search_tool(arguments, agent_id)
         elif tool_name == "bing_search":
             result = await _bing_search_tool(arguments, agent_id)
+        elif tool_name == "tencentcloud_search":
+            result = await _tencentcloud_search_tool(arguments, agent_id)
         elif tool_name == "jina_read":
             result = await _jina_read(arguments)
         elif tool_name == "read_webpage":
@@ -2995,6 +2999,23 @@ async def _bing_search_tool(arguments: dict, agent_id: uuid.UUID | None = None) 
         return await _search_bing(query, api_key, max_results, language)
     except Exception as e:
         return f"Bing search error: {str(e)[:200]}"
+
+
+async def _tencentcloud_search_tool(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
+    """Standalone Tencent Cloud WSA Search tool (API keys read from per-tool config)."""
+    query = arguments.get("query", "").strip()
+    if not query:
+        return "Please provide search keywords"
+    config = await _get_tool_config(agent_id, "tencentcloud_search") or {}
+    secret_id = config.get("secret_id", "").strip()
+    secret_key = config.get("secret_key", "").strip()
+    if not secret_id or not secret_key:
+        return "Tencent Cloud API keys (secret_id, secret_key) are required. Set them in the tool settings."
+    max_results = min(arguments.get("max_results", 5), 10)
+    try:
+        return await _search_tencentcloud(query, secret_id, secret_key, max_results)
+    except Exception as e:
+        return f"Tencent Cloud search error: {str(e)[:200]}"
 
 
 async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
