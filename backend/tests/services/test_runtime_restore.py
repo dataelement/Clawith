@@ -58,6 +58,54 @@ def project(**overrides):
     return SimpleNamespace(**values)
 
 
+class FakeRows:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.rows
+
+
+class FakeSession:
+    def __init__(self, workspaces=None, agents=None):
+        self.workspaces = workspaces or []
+        self.agents = agents or []
+        self.commits = 0
+        self.statements = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        entity = statement.column_descriptions[0]["entity"]
+        params = statement.compile().params
+        if entity is runtime_restore.WorkspaceProject:
+            rows = self.workspaces
+            if "deploy_type_1" in params:
+                rows = [row for row in rows if getattr(row, "deploy_type", None) == params["deploy_type_1"]]
+            if "status_1" in params:
+                rows = [row for row in rows if getattr(row, "status", None) == params["status_1"]]
+            return FakeRows(rows)
+        if entity is runtime_restore.Agent:
+            rows = self.agents
+            if "status_1" in params:
+                rows = [row for row in rows if getattr(row, "status", None) == params["status_1"]]
+            if "agent_type_1" in params:
+                rows = [row for row in rows if getattr(row, "agent_type", None) == params["agent_type_1"]]
+            return FakeRows(rows)
+        return FakeRows([])
+
+    async def commit(self):
+        self.commits += 1
+
+
 @pytest.mark.asyncio
 async def test_restore_workspace_recreates_missing_container(monkeypatch, tmp_path):
     fake_docker = FakeDocker(FakeImages({"ws-node-demo:latest"}), FakeContainers())
@@ -209,6 +257,36 @@ async def test_restore_agent_stopped_container_starts_existing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_restore_agent_reattaches_existing_deterministic_container(monkeypatch):
+    agent = SimpleNamespace(id="12345678-0000-0000-0000-000000000000", container_id=None, status="running")
+    container = SimpleNamespace(id="actual-agent-container", status="running")
+    fake_docker = FakeDocker(
+        FakeImages(set()),
+        FakeContainers(by_name={"clawith-agent-12345678": container}),
+    )
+    monkeypatch.setattr(runtime_restore, "_get_docker_client", lambda: fake_docker)
+
+    calls = []
+
+    class FakeAgentManager:
+        def __init__(self):
+            self.docker_client = None
+
+        async def start_container(self, db, agent_arg):
+            calls.append((db, agent_arg))
+            raise AssertionError("existing deterministic container should be reused")
+
+    monkeypatch.setattr(runtime_restore, "AgentManager", FakeAgentManager)
+
+    result = await runtime_restore.restore_agent_runtime(object(), agent)
+
+    assert result.action == "unchanged"
+    assert result.container_id == "actual-agent-container"
+    assert agent.container_id == "actual-agent-container"
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_restore_agent_missing_container_reports_manager_error_and_closes(monkeypatch):
     agent = SimpleNamespace(id="agent-id", container_id="missing", status="running")
     fake_docker = FakeDocker(FakeImages(set()), FakeContainers())
@@ -295,4 +373,61 @@ async def test_restore_managed_runtimes_updates_workspace_container_id_and_commi
     assert [(item.runtime_type, item.key, item.action) for item in result.items] == [
         ("workspace", "node-demo", "created"),
         ("agent", "agent-id", "unchanged"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restore_managed_runtimes_skips_running_openclaw_agents(monkeypatch):
+    native_agent = SimpleNamespace(id="native-agent-id", status="running", agent_type="native")
+    openclaw_agent = SimpleNamespace(id="openclaw-agent-id", status="running", agent_type="openclaw")
+    fake_session = FakeSession(agents=[native_agent, openclaw_agent])
+    monkeypatch.setattr(runtime_restore, "async_session", lambda: fake_session)
+
+    calls = []
+
+    async def fake_restore_agent_runtime(db, agent_arg):
+        calls.append(agent_arg)
+        return runtime_restore.RuntimeRestoreItem("agent", str(agent_arg.id), "unchanged", container_id="agent-container")
+
+    monkeypatch.setattr(runtime_restore, "restore_agent_runtime", fake_restore_agent_runtime)
+
+    result = await runtime_restore.restore_managed_runtimes()
+
+    assert calls == [native_agent]
+    assert fake_session.commits == 1
+    assert [(item.runtime_type, item.key, item.action) for item in result.items] == [
+        ("agent", "native-agent-id", "unchanged"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restore_managed_runtimes_isolates_per_item_failures_and_still_commits(monkeypatch):
+    bad_workspace = SimpleNamespace(
+        slug="bad-workspace",
+        container_id=None,
+        deploy_type="container",
+        status="deployed",
+    )
+    later_agent = SimpleNamespace(id="later-agent-id", status="running", agent_type="native")
+    fake_session = FakeSession(workspaces=[bad_workspace], agents=[later_agent])
+    monkeypatch.setattr(runtime_restore, "async_session", lambda: fake_session)
+
+    async def fake_restore_workspace_project(project_arg):
+        assert project_arg is bad_workspace
+        raise RuntimeError("workspace conf denied")
+
+    async def fake_restore_agent_runtime(db, agent_arg):
+        assert db is fake_session
+        assert agent_arg is later_agent
+        return runtime_restore.RuntimeRestoreItem("agent", "later-agent-id", "unchanged", container_id="agent-container")
+
+    monkeypatch.setattr(runtime_restore, "restore_workspace_project", fake_restore_workspace_project)
+    monkeypatch.setattr(runtime_restore, "restore_agent_runtime", fake_restore_agent_runtime)
+
+    result = await runtime_restore.restore_managed_runtimes()
+
+    assert fake_session.commits == 1
+    assert [(item.runtime_type, item.key, item.action, item.message) for item in result.items] == [
+        ("workspace", "bad-workspace", "error", "workspace conf denied"),
+        ("agent", "later-agent-id", "unchanged", ""),
     ]

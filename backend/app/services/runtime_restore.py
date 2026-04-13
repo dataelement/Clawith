@@ -59,6 +59,10 @@ def _get_container(client, *keys: str):
     raise DockerContainerMissing(keys[-1] if keys else "")
 
 
+def _agent_container_name(agent) -> str:
+    return f"clawith-agent-{str(agent.id)[:8]}"
+
+
 def _ensure_image(client, image: str) -> None:
     try:
         client.images.get(image)
@@ -127,7 +131,9 @@ async def restore_agent_runtime(db, agent) -> RuntimeRestoreItem:
     try:
         client = _get_docker_client()
         try:
-            container = _get_container(client, agent.container_id)
+            container = _get_container(client, agent.container_id, _agent_container_name(agent))
+            if container.id != agent.container_id:
+                agent.container_id = container.id
             if container.status == "running":
                 return RuntimeRestoreItem("agent", str(agent.id), "unchanged", container_id=container.id)
             container.start()
@@ -174,14 +180,22 @@ async def restore_managed_runtimes() -> RuntimeRestoreResult:
             )
         )
         for project in workspace_rows.scalars().all():
-            item = await restore_workspace_project(project)
+            try:
+                item = await restore_workspace_project(project)
+            except Exception as exc:
+                logger.exception("Error restoring workspace {}", project.slug)
+                item = RuntimeRestoreItem("workspace", str(project.slug), "error", str(exc))
             result.add(item)
             if item.container_id and item.container_id != project.container_id:
                 project.container_id = item.container_id
 
-        agent_rows = await db.execute(select(Agent).where(Agent.status == "running"))
+        agent_rows = await db.execute(select(Agent).where(Agent.status == "running", Agent.agent_type == "native"))
         for agent in agent_rows.scalars().all():
-            item = await restore_agent_runtime(db, agent)
+            try:
+                item = await restore_agent_runtime(db, agent)
+            except Exception as exc:
+                logger.exception("Error restoring agent {}", agent.id)
+                item = RuntimeRestoreItem("agent", str(agent.id), "error", str(exc))
             result.add(item)
 
         await db.commit()
