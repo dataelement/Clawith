@@ -9,7 +9,7 @@ for convenient access.
 """
 
 from app.core.security import decrypt_data
-from app.core.config import get_settings
+from app.config import get_settings
 from app.models.llm import LLMModel
 
 # Re-export all client classes and functions from llm_client.py
