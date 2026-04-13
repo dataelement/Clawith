@@ -5,12 +5,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from app.config import get_settings
 from app.database import async_session
 from app.models.workspace import WorkspaceBugReport, WorkspaceProject
-from app.services.runtime_restore import restore_managed_runtimes
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +22,28 @@ MAX_AUTO_FIX = 3
 AUTO_FIX_WINDOW = timedelta(hours=24)
 
 
-async def run_health_checks():
+async def run_health_checks(skip_initial_restore: bool = False):
     """Background loop that restores and checks workspace project health every 5 minutes."""
     logger.info("Workspace health check task started")
+    first_cycle = True
     while True:
         try:
-            restore_result = await restore_managed_runtimes()
-            logger.info(
-                "Runtime restore checked %d managed runtimes before health checks",
-                len(restore_result.items),
-            )
+            if first_cycle and skip_initial_restore:
+                logger.info(
+                    "Runtime restore skipped before health checks because startup restore already ran"
+                )
+            else:
+                from app.services.runtime_restore import restore_managed_runtimes
+
+                restore_result = await restore_managed_runtimes()
+                logger.info(
+                    "Runtime restore checked %d managed runtimes before health checks",
+                    len(restore_result.items),
+                )
             await _check_all_projects()
         except Exception:
             logger.exception("Health check cycle failed")
+        first_cycle = False
         await asyncio.sleep(CHECK_INTERVAL)
 
 

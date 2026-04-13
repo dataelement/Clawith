@@ -1,4 +1,5 @@
 """Clawith Backend — FastAPI Application Entry Point."""
+# ruff: noqa: E402
 
 from contextlib import asynccontextmanager
 
@@ -17,7 +18,12 @@ settings = get_settings()
 
 async def _start_ss_local() -> None:
     """Start ss-local SOCKS5 proxy for Discord API calls. Tries nodes in priority order."""
-    import asyncio, json, os, shutil, tempfile
+    import asyncio
+    import json
+    import os
+    import shutil
+    import tempfile
+
     if not shutil.which("ss-local"):
         logger.info("[Proxy] ss-local not found — Discord proxy disabled")
         return
@@ -37,7 +43,8 @@ async def _start_ss_local() -> None:
         cfg = {"server": node["server"], "server_port": node["port"], "local_address": "127.0.0.1",
                "local_port": 1080, "password": node["password"], "method": node["method"], "timeout": 10}
         tf = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-        json.dump(cfg, tf); tf.close()
+        json.dump(cfg, tf)
+        tf.close()
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ss-local", "-c", tf.name,
@@ -63,7 +70,6 @@ async def lifespan(app: FastAPI):
     logger.info("[startup] Logging configured")
 
     import asyncio
-    import sys
     import os
     from app.services.trigger_daemon import start_trigger_daemon
     from app.services.tool_seeder import seed_builtin_tools
@@ -187,12 +193,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Default agents seed failed: {e}")
 
+    startup_restore_completed = False
     try:
         from app.services.runtime_restore import restore_managed_runtimes
         result = await restore_managed_runtimes()
+        startup_restore_completed = True
         logger.info(f"[startup] Runtime restore checked {len(result.items)} managed runtimes")
-    except Exception as e:
-        logger.warning(f"[startup] Runtime restore failed: {e}")
+    except Exception:
+        logger.exception("[startup] Runtime restore failed")
 
     # Start background tasks (always, even if seeding failed)
     try:
@@ -217,7 +225,10 @@ async def lifespan(app: FastAPI):
             ("dingtalk_stream", dingtalk_stream_manager.start_all()),
             ("wecom_stream", wecom_stream_manager.start_all()),
             ("discord_gw", discord_gateway_manager.start_all()),
-            ("workspace_health", run_health_checks()),
+            (
+                "workspace_health",
+                run_health_checks(skip_initial_restore=startup_restore_completed),
+            ),
         ]:
             task = asyncio.create_task(coro, name=name)
             task.add_done_callback(_bg_task_error)
@@ -343,7 +354,8 @@ async def health_check():
 # ── Version endpoint (public, no auth required) ──
 def _load_version_info() -> dict[str, str]:
     """Read version + commit hash once at startup."""
-    import os, subprocess
+    import subprocess
+
     version = "unknown"
     for candidate in ["../frontend/VERSION", "frontend/VERSION", "VERSION"]:
         try:
