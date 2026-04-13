@@ -25,7 +25,17 @@ async def _start_ss_local() -> None:
     import json as _json
     cfg_file = os.environ.get("SS_CONFIG_FILE", "/data/ss-nodes.json")
     if os.path.exists(cfg_file):
-        nodes = _json.load(open(cfg_file))
+        # Guard against empty or malformed config file — both produce a clear
+        # warning and a clean exit rather than an unhandled JSONDecodeError.
+        try:
+            raw = open(cfg_file).read().strip()
+            if not raw:
+                logger.warning(f"[Proxy] {cfg_file} exists but is empty — skipping proxy")
+                return
+            nodes = _json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(f"[Proxy] Failed to parse {cfg_file}: {exc} — skipping proxy")
+            return
         logger.info(f"[Proxy] Loaded {len(nodes)} node(s) from {cfg_file}")
     elif os.environ.get("SS_SERVER") and os.environ.get("SS_PASSWORD"):
         nodes = [{"server": os.environ["SS_SERVER"], "port": int(os.environ.get("SS_PORT", "1080")),
@@ -225,7 +235,8 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
 
     # Start ss-local SOCKS5 proxy for Discord API calls (non-fatal)
-    asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
+    ss_task = asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
+    ss_task.add_done_callback(_bg_task_error)
 
     yield
 

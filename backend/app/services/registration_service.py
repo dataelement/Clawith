@@ -104,47 +104,68 @@ class RegistrationService:
         password: str | None = None,
         is_platform_admin: bool = False,
     ) -> Identity:
-        """Find an existing identity or create a new one."""
+        """Find an existing identity or create a new one.
+
+        Security note: only email and phone are authoritative identity claims.
+        Username is NOT used as a lookup key — it is just a display name and
+        cannot prove ownership. Using it as a fallback would allow account
+        takeover when two users share the same email prefix (e.g. alice@gmail.com
+        and alice@yahoo.com both produce username 'alice').
+        """
         identity = None
-        
-        # Try to find by email
+
+        # Match by email (primary ownership claim)
         if email:
             res = await db.execute(select(Identity).where(Identity.email == email))
             identity = res.scalar_one_or_none()
-            
-        # Try to find by phone
+
+        # Match by phone (secondary ownership claim)
         if not identity and phone:
             normalized_phone = re.sub(r"[\s\-\+]", "", phone)
             res = await db.execute(select(Identity).where(Identity.phone == normalized_phone))
             identity = res.scalar_one_or_none()
-            
-        # Try to find by username
-        if not identity and username:
-            res = await db.execute(select(Identity).where(Identity.username == username))
-            identity = res.scalar_one_or_none()
+
+        # Username is intentionally NOT used as a lookup key.
+        # If we cannot establish ownership via email or phone, treat this as a
+        # new identity to avoid returning another user's record.
 
         if identity:
-            # Auto-verify if SMTP is missing
-            settings = get_settings()
-            if not settings.SYSTEM_SMTP_HOST or not settings.SYSTEM_EMAIL_FROM_ADDRESS:
+            # Auto-verify if SMTP is not configured anywhere (env or DB)
+            from app.services.system_email_service import resolve_email_config_async
+            email_config = await resolve_email_config_async(db)
+            if not email_config:
                 if not identity.email_verified:
                     identity.email_verified = True
                     db.add(identity)
             return identity
-        
-        # Check if SMTP is missing for auto-verification
-        settings = get_settings()
-        is_verified = False
-        if not settings.SYSTEM_SMTP_HOST or not settings.SYSTEM_EMAIL_FROM_ADDRESS:
-            is_verified = True
+
+        # Check if SMTP is configured anywhere (env or DB) for auto-verification
+        from app.services.system_email_service import resolve_email_config_async
+        email_config = await resolve_email_config_async(db)
+        is_verified = not email_config  # Auto-verify only if no SMTP configured
+
+        # Resolve a safe username: if the desired username is already taken by
+        # another identity, append a short random hex suffix to avoid collisions
+        # without blocking the registration.
+        final_username = username
+        if username:
+            existing_res = await db.execute(
+                select(Identity).where(Identity.username == username)
+            )
+            if existing_res.scalar_one_or_none():
+                final_username = f"{username}_{uuid.uuid4().hex[:6]}"
+                logger.info(
+                    "Username '%s' already taken; assigned '%s' to new identity",
+                    username,
+                    final_username,
+                )
 
         # Create new identity
         normalized_phone = re.sub(r"[\s\-\+]", "", phone) if phone else None
         identity = Identity(
             email=email,
             phone=normalized_phone,
-
-            username=username,
+            username=final_username,
             password_hash=hash_password(password) if password else None,
             is_platform_admin=is_platform_admin,
             email_verified=is_verified,
@@ -179,11 +200,12 @@ class RegistrationService:
         # (Using display_name or identity info)
         name = display_name or identity.username or "User"
 
-        # Check if SMTP is missing for auto-activation
-        settings = get_settings()
+        # Check if SMTP is configured anywhere (env or DB) for auto-activation
+        from app.services.system_email_service import resolve_email_config_async
+        email_config = await resolve_email_config_async(db)
         is_active = identity.email_verified
-        if not settings.SYSTEM_SMTP_HOST or not settings.SYSTEM_EMAIL_FROM_ADDRESS:
-            is_active = True
+        if not email_config:
+            is_active = True  # Auto-activate if no SMTP configured
 
         # Create tenant-user record
         user = User(
@@ -192,7 +214,7 @@ class RegistrationService:
             display_name=name,
             role=role,
             registration_source=registration_source,
-            is_active=is_active or is_platform_admin,
+            is_active=is_active or identity.is_platform_admin,
         )
 
         db.add(user)
@@ -393,15 +415,16 @@ class RegistrationService:
         """
         # First check invitation code
         if invitation_code:
-            from app.models.invitation import InvitationCode
+            from app.models.invitation_code import InvitationCode
             result = await db.execute(
                 select(InvitationCode).where(
                     InvitationCode.code == invitation_code,
-                    InvitationCode.uses_left > 0,
+                    InvitationCode.is_active == True,
+                    InvitationCode.tenant_id.is_not(None),
                 )
             )
             inv = result.scalar_one_or_none()
-            if inv:
+            if inv and inv.used_count < inv.max_uses:
                 # Get tenant from invitation
                 tenant_result = await db.execute(select(Tenant).where(Tenant.id == inv.tenant_id))
                 tenant = tenant_result.scalar_one_or_none()

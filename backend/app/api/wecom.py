@@ -78,6 +78,66 @@ def _verify_signature(token: str, timestamp: str, nonce: str, encrypt: str) -> s
     return hashlib.sha1("".join(items).encode("utf-8")).hexdigest()
 
 
+# ─── WeCom Domain Verification File Hosting ────────────
+
+# WeCom requires that each self-built app's trusted domain host a
+# verification file at: https://domain/WW_verify_<token>.txt
+# The file content is just the token string (plain text).
+#
+# For multi-tenant SaaS, we don't want every tenant to have their own server.
+# Instead, tenants paste their verification token into the enterprise settings,
+# and this endpoint serves the correct file content for any known token.
+#
+# Nginx config required to route requests at the root path:
+#   location ~ ^/(WW_verify_[A-Za-z0-9_.-]{1,64}\.txt)$ {
+#       proxy_pass http://backend:8000/api/wecom-verify/$1;
+#   }
+
+_VERIFY_FILENAME_RE = re.compile(r"^WW_verify_[A-Za-z0-9_]{1,64}\.txt$")
+
+
+@router.get("/wecom-verify/{filename}")
+async def serve_wecom_verify_file(
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve a WeCom domain verification file.
+
+    Looks across all active WeCom IdentityProviders for one whose config
+    contains the requested filename. Returns the verification content as
+    plain text so WeCom's ownership-check bot can confirm it.
+
+    Security: filename is validated against a strict whitelist regex before
+    any DB lookup to prevent path traversal or injection attacks.
+    """
+    from app.models.identity import IdentityProvider
+
+    # Strict allowlist: only WW_verify_*.txt filenames are legal
+    if not _VERIFY_FILENAME_RE.fullmatch(filename):
+        return Response(status_code=404)
+
+    # Search all active WeCom providers for a matching verification entry
+    result = await db.execute(
+        select(IdentityProvider).where(
+            IdentityProvider.provider_type == "wecom",
+            IdentityProvider.is_active == True,
+        )
+    )
+    providers = result.scalars().all()
+
+    for provider in providers:
+        config = provider.config or {}
+        verify_files: dict = config.get("wecom_verify_files", {})
+        if filename in verify_files:
+            content = verify_files[filename]
+            logger.info(
+                f"[WeCom Verify] Serving {filename} for tenant {provider.tenant_id}"
+            )
+            return Response(content=content, media_type="text/plain")
+
+    return Response(status_code=404)
+
+
 # ─── Config CRUD ────────────────────────────────────────
 
 @router.post("/agents/{agent_id}/wecom-channel", response_model=ChannelConfigOut, status_code=201)
@@ -470,7 +530,8 @@ async def _process_wecom_text(
             logger.warning(f"[WeCom] Agent {agent_id} not found")
             return
         creator_id = agent_obj.creator_id
-        ctx_size = agent_obj.context_window_size if agent_obj else 20
+        from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+        ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
         # Distinguish group chat from P2P by chat_id presence
         _is_group = bool(chat_id)
@@ -479,33 +540,10 @@ async def _process_wecom_text(
         else:
             conv_id = f"wecom_p2p_{from_user}"
 
-        # Try to resolve display name from WeCom API (optional enrichment)
-        extra_info: dict | None = None
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                tok_resp = await client.get(
-                    "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-                    params={"corpid": config.app_id, "corpsecret": config.app_secret},
-                )
-                access_token = tok_resp.json().get("access_token", "")
-                if access_token:
-                    user_resp = await client.get(
-                        "https://qyapi.weixin.qq.com/cgi-bin/user/get",
-                        params={"access_token": access_token, "userid": from_user},
-                    )
-                    user_data = user_resp.json()
-                    if user_data.get("errcode") == 0:
-                        extra_info = {
-                            "name": user_data.get("name"),
-                            "avatar_url": user_data.get("avatar_mediaid"),
-                        }
-        except Exception as e:
-            logger.debug(f"[WeCom] Failed to resolve user info: {e}")
-
-        # Ensure unionid is set (from_user is the WeCom userid)
-        if extra_info is None:
-            extra_info = {}
-        extra_info.setdefault("unionid", from_user)
+        # The channel_user_service resolves display names from OrgMember records
+        # (populated by org-sync or enriched on first SSO login). No need to
+        # make an extra API call here — it fails with 48009 when IP is not whitelisted.
+        extra_info = {"unionid": from_user}
 
         # Resolve channel user via unified service (uses OrgMember + SSO patterns)
         platform_user = await channel_user_service.resolve_channel_user(
@@ -667,7 +705,7 @@ async def wecom_callback(
             db, user_info, tenant_id=tenant_id or provider.tenant_id
         )
     except Exception as e:
-        logger.error(f"WeCom login/register error: {e}", exc_info=True)
+        logger.exception(f"WeCom login/register error: {e}")
         return HTMLResponse(f"Auth failed: {str(e)}")
 
 

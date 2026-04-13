@@ -113,7 +113,7 @@ bash restart.sh
 git clone https://github.com/dataelement/Clawith.git
 cd Clawith && cp .env.example .env
 docker compose up -d
-# → http://localhost:3000
+# → http://localhost:3008
 ```
 
 **To update an existing deployment:**

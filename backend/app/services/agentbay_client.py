@@ -87,20 +87,49 @@ class AgentBayClient:
             raise RuntimeError("No active browser session")
         if not getattr(self, "_browser_initialized", False):
             from agentbay import BrowserOption
-            success = await asyncio.to_thread(self._session.browser.initialize, BrowserOption())
+            from agentbay._common.models.browser import BrowserViewport, BrowserScreen
+            
+            # Use high-res viewport for clearer screenshots and better layout
+            options = BrowserOption(
+                viewport=BrowserViewport(width=1920, height=1080),
+                screen=BrowserScreen(width=1920, height=1080)
+            )
+            success = await asyncio.to_thread(self._session.browser.initialize, options)
             if success is False:
                 raise RuntimeError("SDK failed to initialize browser (returned False).")
             self._browser_initialized = True
 
     async def browser_navigate(self, url: str, wait_for: str = "", screenshot: bool = False) -> dict:
-        """Navigate browser to URL using SDK."""
+        """Navigate browser to URL using SDK.
+
+        The AgentBay SDK default navigation timeout is ~60 s. We wrap the call
+        with a 40-second asyncio soft-timeout so callers receive an actionable
+        error quickly rather than hanging the whole agent loop. The underlying
+        SDK thread may continue briefly in the background but its result is
+        discarded — the browser will eventually settle on its own.
+        """
         if not self._session or self._image_type not in ("browser", "browser_latest"):
             await self.create_session("browser_latest")
 
         await self._ensure_browser_initialized()
 
-        # Navigate to URL
-        await asyncio.to_thread(self._session.browser.operator.navigate, url)
+        # Navigate to URL with a 40-second soft timeout.
+        # asyncio.wait_for cancels the coroutine wrapper; the blocking thread
+        # inside asyncio.to_thread keeps running until SDK returns, but we
+        # no longer block the agent loop waiting for it.
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._session.browser.operator.navigate, url),
+                timeout=40.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[AgentBay] navigate to {url!r} timed out after 40 s")
+            raise RuntimeError(
+                f"Navigation to '{url}' timed out (>40 s). "
+                "The browser may be busy or the page is unreachable. "
+                "Try calling agentbay_browser_screenshot to check the current "
+                "state, or retry the navigation."
+            )
 
         result = {"url": url, "success": True, "title": url}
 
@@ -487,14 +516,14 @@ class AgentBayClient:
             from PIL import Image
 
             img = Image.open(BytesIO(screenshot_data))
-            # Resize to max 1280px wide for live preview
-            if img.width > 1280:
-                ratio = 1280 / img.width
+            # Resize to max 1920px wide for live preview (up from 1280px to preserve details)
+            if img.width > 1920:
+                ratio = 1920 / img.width
                 img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
             buffer = BytesIO()
-            img.save(buffer, format="JPEG", quality=60, optimize=True)
+            img.save(buffer, format="JPEG", quality=80, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
             return f"data:image/jpeg;base64,{b64}"
         except Exception as e:
@@ -543,14 +572,14 @@ class AgentBayClient:
 
 
             img = Image.open(BytesIO(screenshot_data))
-            # Resize to max 1280px wide for live preview
-            if img.width > 1280:
-                ratio = 1280 / img.width
+            # Resize to max 1920px wide for live preview (up from 1280px to preserve details)
+            if img.width > 1920:
+                ratio = 1920 / img.width
                 img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
             buffer = BytesIO()
-            img.save(buffer, format="JPEG", quality=60, optimize=True)
+            img.save(buffer, format="JPEG", quality=80, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
             return f"data:image/jpeg;base64,{b64}"
         except Exception as e:
@@ -608,14 +637,36 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
             except Exception:
                 return config.app_secret
 
-        # 2) Fallback: check global Tool.config.api_key for any agentbay tool
+        # 2) Fallback: check global Tool.config.api_key for agentbay tools.
+        #
+        # Only agentbay_browser_navigate (the "primary" AgentBay tool) has a
+        # config_schema with an api_key field, so it is the only tool whose
+        # config is ever populated with a key via the Company Settings UI.
+        # We therefore query it first, then fall back to scanning all agentbay
+        # tools — this prevents a non-deterministic .limit(1) from returning a
+        # tool with an empty config (e.g. agentbay_computer_screenshot), which
+        # would silently return None even when a key IS configured.
         tool_result = await session.execute(
             select(Tool).where(
-                Tool.category == "agentbay",
+                Tool.name == "agentbay_browser_navigate",
                 Tool.enabled == True,
             ).limit(1)
         )
         tool = tool_result.scalar_one_or_none()
+
+        # Also scan all agentbay tools in case the key was stored differently
+        if not (tool and tool.config and tool.config.get("api_key")):
+            all_result = await session.execute(
+                select(Tool).where(
+                    Tool.category == "agentbay",
+                    Tool.enabled == True,
+                )
+            )
+            for candidate in all_result.scalars().all():
+                if candidate.config and candidate.config.get("api_key"):
+                    tool = candidate
+                    break
+
         if tool and tool.config and tool.config.get("api_key"):
             api_key = tool.config["api_key"]
             # Try to decrypt (global config is encrypted via _encrypt_sensitive_fields)
@@ -640,6 +691,9 @@ async def test_agentbay_channel(agent_id: uuid.UUID, current_user, db) -> dict:
     try:
         from agentbay import AgentBay, CreateSessionParams
         sdk = AgentBay(api_key=key)
+        # Using linux_latest instead of browser_latest. AgentBay tokens may be
+        # scoped/bound to specific instance types, and requesting browser_latest
+        # might trigger an 'InvalidParameter.Authorization' error for this key.
         result = await asyncio.to_thread(sdk.create, CreateSessionParams(image_id="linux_latest"))
         if result.success:
             if result.session:
@@ -790,36 +844,83 @@ async def _inject_credentials(client: AgentBayClient, agent_id: uuid.UUID):
         logger.warning(f"[AgentBay] Cannot inject cookies — browser not initialized: {e}")
         return
 
-    # Build Node.js injection script and write to temp file
-    # Using a temp file avoids shell quoting issues with JSON in command args
+    # Build Node.js injection script.
+    # Use base64 encoding to write the script to the current working dir (not /tmp,
+    # which may lack write permissions in the Wuying browser sandbox).
+    #
+    # Cookies stored in DB were already sanitized at export time (sameSite title-cased,
+    # expires:-1 removed, domain without leading dot), so we only do a defensive
+    # re-sanitize here in case older records were stored before the fix.
+    import base64 as _base64
     cookies_json_str = json.dumps(all_cookies)
-    inject_script = f"""
-const {{ chromium }} = require('playwright');
-(async () => {{
-    try {{
+    inject_script = r"""
+const { chromium } = require('/usr/local/lib/node_modules/playwright');
+(async () => {
+    try {
         const browser = await chromium.connectOverCDP('http://localhost:9222');
         const context = browser.contexts()[0];
-        const cookies = {cookies_json_str};
-        await context.addCookies(cookies);
-        console.log('INJECT_OK:' + cookies.length + ' cookies injected');
-    }} catch (e) {{
+        const rawCookies = """ + cookies_json_str + r""";
+
+        // Defensive sanitize: normalize sameSite casing and strip invalid expires
+        const sameSiteMap = { none: 'None', lax: 'Lax', strict: 'Strict' };
+        const cookies = rawCookies.map(c => {
+            const out = { ...c };
+            if (out.sameSite != null) {
+                out.sameSite = sameSiteMap[String(out.sameSite).toLowerCase()] || 'Lax';
+            }
+            if (out.expires != null && out.expires <= 0) {
+                delete out.expires;
+            }
+            // Ensure domain has leading dot for subdomain matching
+            if (out.domain && !out.domain.startsWith('.')) {
+                out.domain = '.' + out.domain;
+            }
+            return out;
+        });
+
+        let injected = 0;
+        let failed = 0;
+        // Inject one at a time so a single bad cookie doesn't break the rest
+        for (const cookie of cookies) {
+            try {
+                await context.addCookies([cookie]);
+                injected++;
+            } catch (e) {
+                failed++;
+                if (failed <= 3) {
+                    // Log first few failures to aid debugging
+                    console.error('INJECT_SKIP:' + e.message + ' cookie=' + JSON.stringify(cookie).slice(0, 200));
+                }
+            }
+        }
+        console.log('INJECT_OK:' + injected + ' injected, ' + failed + ' skipped');
+        process.exit(0);
+    } catch (e) {
         console.error('INJECT_FAIL:' + e.message);
-    }}
-}})();
+        process.exit(1);
+    }
+})();
 """
 
+
     try:
-        # Write script to temp file inside the container
-        await asyncio.to_thread(
-            client._session.command.exec_command,
-            f"cat > /tmp/_inject_cookies.js << 'INJECT_EOF'\n{inject_script}\nINJECT_EOF"
+        # Write script via base64 decode to avoid shell quoting issues and /tmp permission errors
+        script_b64 = _base64.b64encode(inject_script.encode('utf-8')).decode('ascii')
+        write_result = await asyncio.to_thread(
+            client._session.command.exec,
+            f"echo '{script_b64}' | /usr/bin/base64 -d > tc_inject_cookies.js",
         )
-        # Execute the script
+        write_ok = getattr(write_result, 'success', False)
+        logger.info(f"[AgentBay] Cookie inject script write: success={write_ok}")
+
+        # Execute the injection script
         exec_result = await asyncio.to_thread(
-            client._session.command.exec_command,
-            "node /tmp/_inject_cookies.js",
+            client._session.command.exec,
+            "node tc_inject_cookies.js",
+            timeout_ms=15000,
         )
-        stdout = exec_result.output if hasattr(exec_result, 'output') else str(exec_result)
+        stdout = getattr(exec_result, 'stdout', '') or getattr(exec_result, 'output', '') or ''
+        stderr = getattr(exec_result, 'stderr', '') or ''
 
         if "INJECT_OK" in stdout:
             logger.info(f"[AgentBay] Cookie injection successful for agent {agent_id}: {stdout.strip()[:100]}")
@@ -835,6 +936,6 @@ const {{ chromium }} = require('playwright');
             except Exception as e:
                 logger.warning(f"[AgentBay] Failed to update last_injected_at: {e}")
         else:
-            logger.warning(f"[AgentBay] Cookie injection may have failed: {stdout[:200]}")
+            logger.warning(f"[AgentBay] Cookie injection may have failed: stdout={stdout[:200]}, stderr={stderr[:200]}")
     except Exception as e:
         logger.warning(f"[AgentBay] Cookie injection error: {e}")

@@ -167,6 +167,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             model_base_url = model.base_url
             model_temperature = model.temperature
             model_max_output_tokens = getattr(model, 'max_output_tokens', None)
+            model_request_timeout = getattr(model, 'request_timeout', None)
 
             # Read HEARTBEAT.md if it exists, otherwise use default
             from pathlib import Path
@@ -262,7 +263,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 api_key=model_api_key,
                 model=model_model,
                 base_url=model_base_url,
-                timeout=120.0,
+                timeout=float(model_request_timeout or 120.0),
             )
         except Exception as e:
             logger.error(f"Failed to create LLM client: {e}")
@@ -407,7 +408,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         logger.info(f"💓 Heartbeat for {agent_name}: {'OK' if is_ok else reply[:60]}")
 
     except Exception as e:
-        logger.error(f"Heartbeat error for agent {agent_id}: {e}", exc_info=True)
+        logger.exception(f"Heartbeat error for agent {agent_id}: {e}")
 
 
 async def _heartbeat_tick():
@@ -471,7 +472,7 @@ async def _heartbeat_tick():
                 await write_audit_log("heartbeat_tick", {"eligible_agents": len(agents), "triggered": triggered})
 
     except Exception as e:
-        logger.error(f"Heartbeat tick error: {e}", exc_info=True)
+        logger.exception(f"Heartbeat tick error: {e}")
         await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
 
 

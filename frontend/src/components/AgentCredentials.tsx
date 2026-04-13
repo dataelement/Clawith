@@ -51,13 +51,6 @@ const EMPTY_FORM: FormData = {
     cookies_json: '',
 };
 
-/* ── Status badge styles ── */
-const statusColors: Record<string, { bg: string; text: string; label: string }> = {
-    active: { bg: 'rgba(52, 199, 89, 0.12)', text: '#34c759', label: 'Active' },
-    expired: { bg: 'rgba(255, 149, 0, 0.12)', text: '#ff9500', label: 'Expired' },
-    needs_relogin: { bg: 'rgba(255, 59, 48, 0.12)', text: '#ff3b30', label: 'Needs Re-login' },
-};
-
 /* ── Icons ── */
 const PlusIcon = (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
@@ -99,19 +92,6 @@ const CookieIcon = (
     </svg>
 );
 
-/* ── Relative time helper ── */
-function timeAgo(dateStr: string | null): string {
-    if (!dateStr) return '';
-    const diff = Date.now() - new Date(dateStr).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return 'just now';
-    if (mins < 60) return `${mins}m ago`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    return `${days}d ago`;
-}
-
 /* ── Component ── */
 interface Props {
     agentId: string;
@@ -133,17 +113,40 @@ export default function AgentCredentials({ agentId }: Props) {
     // Delete confirmation
     const [deletingId, setDeletingId] = useState<string | null>(null);
 
+    // Status badge styles - using translation keys
+    const getStatusConfig = useCallback((status: string) => {
+        const configs: Record<string, { bg: string; text: string; labelKey: string }> = {
+            active: { bg: 'rgba(52, 199, 89, 0.12)', text: '#34c759', labelKey: 'agent.credentials.status.active' },
+            expired: { bg: 'rgba(255, 149, 0, 0.12)', text: '#ff9500', labelKey: 'agent.credentials.status.expired' },
+            needs_relogin: { bg: 'rgba(255, 59, 48, 0.12)', text: '#ff3b30', labelKey: 'agent.credentials.status.needs_relogin' },
+        };
+        return configs[status] || configs.active;
+    }, []);
+
+    // Relative time helper using translations
+    const timeAgo = useCallback((dateStr: string | null): string => {
+        if (!dateStr) return '';
+        const diff = Date.now() - new Date(dateStr).getTime();
+        const mins = Math.floor(diff / 60000);
+        if (mins < 1) return t('agent.credentials.timeAgo.justNow');
+        if (mins < 60) return t('agent.credentials.timeAgo.minutes', { count: mins });
+        const hours = Math.floor(mins / 60);
+        if (hours < 24) return t('agent.credentials.timeAgo.hours', { count: hours });
+        const days = Math.floor(hours / 24);
+        return t('agent.credentials.timeAgo.days', { count: days });
+    }, [t]);
+
     const fetchCredentials = useCallback(async () => {
         try {
             setLoading(true);
             const data = await credentialApi.list(agentId);
             setCredentials(data);
         } catch (e: any) {
-            setError(e.message || 'Failed to load credentials');
+            setError(e.message || t('agent.credentials.error'));
         } finally {
             setLoading(false);
         }
-    }, [agentId]);
+    }, [agentId, t]);
 
     useEffect(() => {
         fetchCredentials();
@@ -173,7 +176,7 @@ export default function AgentCredentials({ agentId }: Props) {
 
     const handleSave = async () => {
         if (!form.platform.trim()) {
-            setFormError('Platform is required');
+            setFormError(t('agent.credentials.platformRequired'));
             return;
         }
 
@@ -182,11 +185,11 @@ export default function AgentCredentials({ agentId }: Props) {
             try {
                 const parsed = JSON.parse(form.cookies_json);
                 if (!Array.isArray(parsed)) {
-                    setFormError('Cookies must be a JSON array');
+                    setFormError(t('agent.credentials.cookiesInvalid'));
                     return;
                 }
             } catch {
-                setFormError('Invalid JSON format for cookies');
+                setFormError(t('agent.credentials.cookiesJsonInvalid'));
                 return;
             }
         }
@@ -215,7 +218,7 @@ export default function AgentCredentials({ agentId }: Props) {
             setShowModal(false);
             await fetchCredentials();
         } catch (e: any) {
-            setFormError(e.message || 'Save failed');
+            setFormError(e.message || t('agent.credentials.saveError'));
         } finally {
             setSaving(false);
         }
@@ -227,7 +230,7 @@ export default function AgentCredentials({ agentId }: Props) {
             setDeletingId(null);
             await fetchCredentials();
         } catch (e: any) {
-            setError(e.message || 'Delete failed');
+            setError(e.message || t('agent.credentials.deleteError'));
         }
     };
 
@@ -237,20 +240,18 @@ export default function AgentCredentials({ agentId }: Props) {
             <div className="credentials-header">
                 <div className="credentials-title">
                     {KeyIcon}
-                    <span>{t('agent.credentials.title', 'Credentials')}</span>
+                    <span>{t('agent.credentials.title')}</span>
                     <span className="credentials-count">{credentials.length}</span>
                 </div>
                 <button className="credentials-add-btn" onClick={handleAdd}>
                     {PlusIcon}
-                    <span>{t('agent.credentials.add', 'Add')}</span>
+                    <span>{t('agent.credentials.add')}</span>
                 </button>
             </div>
 
             {/* Description */}
             <p className="credentials-desc">
-                {t('agent.credentials.description',
-                    'Store login credentials and cookies for websites. Cookies are automatically injected when the agent opens a browser via AgentBay.'
-                )}
+                {t('agent.credentials.description')}
             </p>
 
             {/* Error */}
@@ -258,16 +259,16 @@ export default function AgentCredentials({ agentId }: Props) {
 
             {/* Credential list */}
             {loading ? (
-                <div className="credentials-loading">Loading...</div>
+                <div className="credentials-loading">{t('agent.credentials.loading')}</div>
             ) : credentials.length === 0 ? (
                 <div className="credentials-empty">
                     {KeyIcon}
-                    <span>{t('agent.credentials.empty', 'No credentials configured')}</span>
+                    <span>{t('agent.credentials.empty')}</span>
                 </div>
             ) : (
                 <div className="credentials-list">
                     {credentials.map((cred) => {
-                        const statusInfo = statusColors[cred.status] || statusColors.active;
+                        const statusConfig = getStatusConfig(cred.status);
                         return (
                             <div key={cred.id} className="credential-card">
                                 <div className="credential-card-top">
@@ -276,9 +277,9 @@ export default function AgentCredentials({ agentId }: Props) {
                                     </div>
                                     <span
                                         className="credential-status-badge"
-                                        style={{ background: statusInfo.bg, color: statusInfo.text }}
+                                        style={{ background: statusConfig.bg, color: statusConfig.text }}
                                     >
-                                        {statusInfo.label}
+                                        {t(statusConfig.labelKey)}
                                     </span>
                                 </div>
                                 {cred.display_name && (
@@ -288,7 +289,7 @@ export default function AgentCredentials({ agentId }: Props) {
                                     {cred.has_cookies && (
                                         <span className="credential-meta-tag">
                                             {CookieIcon}
-                                            Cookies {cred.cookies_updated_at ? `(${timeAgo(cred.cookies_updated_at)})` : ''}
+                                            {t('agent.credentials.meta.cookies')} {cred.cookies_updated_at ? `(${timeAgo(cred.cookies_updated_at)})` : ''}
                                         </span>
                                     )}
                                     {cred.username && (
@@ -298,7 +299,7 @@ export default function AgentCredentials({ agentId }: Props) {
                                     )}
                                     {cred.last_injected_at && (
                                         <span className="credential-meta-tag">
-                                            Injected {timeAgo(cred.last_injected_at)}
+                                            {t('agent.credentials.meta.injected')} {timeAgo(cred.last_injected_at)}
                                         </span>
                                     )}
                                 </div>
@@ -306,14 +307,14 @@ export default function AgentCredentials({ agentId }: Props) {
                                     <button
                                         className="credential-action-btn"
                                         onClick={() => handleEdit(cred)}
-                                        title="Edit"
+                                        title={t('agent.credentials.actions.edit')}
                                     >
                                         {EditIcon}
                                     </button>
                                     <button
                                         className="credential-action-btn credential-action-danger"
                                         onClick={() => setDeletingId(cred.id)}
-                                        title="Delete"
+                                        title={t('agent.credentials.actions.delete')}
                                     >
                                         {TrashIcon}
                                     </button>
@@ -322,14 +323,14 @@ export default function AgentCredentials({ agentId }: Props) {
                                 {/* Delete confirmation */}
                                 {deletingId === cred.id && (
                                     <div className="credential-delete-confirm">
-                                        <span>Delete credential for {cred.platform}?</span>
+                                        <span>{t('agent.credentials.deleteConfirm.title', { platform: cred.platform })}</span>
                                         <div className="credential-delete-actions">
-                                            <button onClick={() => setDeletingId(null)}>Cancel</button>
+                                            <button onClick={() => setDeletingId(null)}>{t('agent.credentials.actions.cancel')}</button>
                                             <button
                                                 className="credential-delete-yes"
                                                 onClick={() => handleDelete(cred.id)}
                                             >
-                                                Delete
+                                                {t('agent.credentials.deleteConfirm.confirm')}
                                             </button>
                                         </div>
                                     </div>
@@ -345,7 +346,7 @@ export default function AgentCredentials({ agentId }: Props) {
                 <div className="credential-modal-overlay" onClick={() => setShowModal(false)}>
                     <div className="credential-modal" onClick={(e) => e.stopPropagation()}>
                         <div className="credential-modal-header">
-                            <h3>{editingId ? 'Edit Credential' : 'Add Credential'}</h3>
+                            <h3>{editingId ? t('agent.credentials.modal.editTitle') : t('agent.credentials.modal.addTitle')}</h3>
                             <button className="credential-modal-close" onClick={() => setShowModal(false)}>
                                 {CloseIcon}
                             </button>
@@ -355,104 +356,104 @@ export default function AgentCredentials({ agentId }: Props) {
                             {formError && <div className="credential-form-error">{formError}</div>}
 
                             <label className="credential-field">
-                                <span className="credential-field-label">Platform *</span>
+                                <span className="credential-field-label">{t('agent.credentials.modal.platform')} <span style={{ color: 'var(--error)' }}>*</span></span>
                                 <input
                                     type="text"
                                     value={form.platform}
                                     onChange={(e) => setForm(f => ({ ...f, platform: e.target.value }))}
-                                    placeholder="e.g. baidu.com, xiaohongshu.com"
+                                    placeholder={t('agent.credentials.modal.platformPlaceholder')}
                                     autoFocus
                                 />
                             </label>
 
                             <label className="credential-field">
-                                <span className="credential-field-label">Display Name</span>
+                                <span className="credential-field-label">{t('agent.credentials.modal.displayName')}</span>
                                 <input
                                     type="text"
                                     value={form.display_name}
                                     onChange={(e) => setForm(f => ({ ...f, display_name: e.target.value }))}
-                                    placeholder="e.g. Marketing Account"
+                                    placeholder={t('agent.credentials.modal.displayNamePlaceholder')}
                                 />
                             </label>
 
                             <label className="credential-field">
-                                <span className="credential-field-label">Type</span>
+                                <span className="credential-field-label">{t('agent.credentials.modal.type')}</span>
                                 <select
                                     value={form.credential_type}
                                     onChange={(e) => setForm(f => ({ ...f, credential_type: e.target.value }))}
                                 >
-                                    <option value="website">Website</option>
-                                    <option value="email">Email</option>
-                                    <option value="social">Social</option>
-                                    <option value="api_key">API Key</option>
+                                    <option value="website">{t('agent.credentials.modal.typeOptions.website')}</option>
+                                    <option value="email">{t('agent.credentials.modal.typeOptions.email')}</option>
+                                    <option value="social">{t('agent.credentials.modal.typeOptions.social')}</option>
+                                    <option value="api_key">{t('agent.credentials.modal.typeOptions.api_key')}</option>
                                 </select>
                             </label>
 
                             <label className="credential-field">
-                                <span className="credential-field-label">Username</span>
+                                <span className="credential-field-label">{t('agent.credentials.modal.username')}</span>
                                 <input
                                     type="text"
                                     value={form.username}
                                     onChange={(e) => setForm(f => ({ ...f, username: e.target.value }))}
-                                    placeholder="Login username or email"
+                                    placeholder={t('agent.credentials.modal.usernamePlaceholder')}
                                 />
                             </label>
 
                             <label className="credential-field">
                                 <span className="credential-field-label">
-                                    Password
-                                    {editingId && <span className="credential-field-hint">(leave empty to keep current)</span>}
+                                    {t('agent.credentials.modal.password')}
+                                    {editingId && <span className="credential-field-hint">{t('agent.credentials.modal.passwordHint')}</span>}
                                 </span>
                                 <input
                                     type="password"
                                     value={form.password}
                                     onChange={(e) => setForm(f => ({ ...f, password: e.target.value }))}
-                                    placeholder="Login password"
+                                    placeholder={t('agent.credentials.modal.passwordPlaceholder')}
                                     autoComplete="new-password"
                                 />
                             </label>
 
                             <label className="credential-field">
-                                <span className="credential-field-label">Login URL</span>
+                                <span className="credential-field-label">{t('agent.credentials.modal.loginUrl')}</span>
                                 <input
                                     type="text"
                                     value={form.login_url}
                                     onChange={(e) => setForm(f => ({ ...f, login_url: e.target.value }))}
-                                    placeholder="https://example.com/login"
+                                    placeholder={t('agent.credentials.modal.loginUrlPlaceholder')}
                                 />
                             </label>
 
                             <label className="credential-field">
                                 <span className="credential-field-label">
-                                    Cookies JSON
-                                    {editingId && <span className="credential-field-hint">(leave empty to keep current)</span>}
+                                    {t('agent.credentials.modal.cookies')}
+                                    {editingId && <span className="credential-field-hint">{t('agent.credentials.modal.cookiesHint')}</span>}
                                 </span>
                                 <textarea
                                     value={form.cookies_json}
                                     onChange={(e) => setForm(f => ({ ...f, cookies_json: e.target.value }))}
-                                    placeholder={'[\n  { "name": "session", "value": "abc123", "domain": ".example.com", "path": "/" }\n]'}
+                                    placeholder={t('agent.credentials.modal.cookiesPlaceholder')}
                                     rows={6}
                                 />
                                 <span className="credential-field-help">
-                                    Paste cookies exported from{' '}
+                                    {t('agent.credentials.modal.cookiesHelp')}{' '}
                                     <a href="https://cookie-editor.com" target="_blank" rel="noopener noreferrer">
-                                        Cookie-Editor
+                                        {t('agent.credentials.modal.cookiesHelpLink')}
                                     </a>
-                                    {' '}or similar browser extension. Must be a JSON array.
+                                    {' '}{t('agent.credentials.modal.cookiesHelpSuffix')}
                                 </span>
                             </label>
                         </div>
 
                         <div className="credential-modal-footer">
                             <button className="credential-btn-cancel" onClick={() => setShowModal(false)}>
-                                Cancel
+                                {t('agent.credentials.actions.cancel')}
                             </button>
                             <button
                                 className="credential-btn-save"
                                 onClick={handleSave}
                                 disabled={saving}
                             >
-                                {saving ? 'Saving...' : editingId ? 'Update' : 'Create'}
+                                {saving ? t('agent.credentials.actions.saving') : editingId ? t('agent.credentials.actions.update') : t('agent.credentials.actions.create')}
                             </button>
                         </div>
                     </div>

@@ -83,7 +83,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                     api_key=get_model_api_key(model),
                     model=model.model,
                     base_url=model.base_url,
-                    timeout=120.0,
+                    timeout=float(getattr(model, 'request_timeout', None) or 120.0),
                 )
             except Exception as e:
                 logger.error(f"Schedule {schedule_id}: Failed to create LLM client: {e}")
@@ -175,7 +175,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             logger.info(f"Schedule {schedule_id} executed for agent {agent.name}: {reply[:80]}")
 
     except Exception as e:
-        logger.error(f"Schedule {schedule_id} execution error: {e}", exc_info=True)
+        logger.exception(f"Schedule {schedule_id} execution error: {e}")
 
 
 async def _tick():
@@ -220,7 +220,7 @@ async def _tick():
                 logger.info(f"Triggered schedule '{sched.name}' (next: {next_run})")
 
     except Exception as e:
-        logger.error(f"Scheduler tick error: {e}", exc_info=True)
+        logger.exception(f"Scheduler tick error: {e}")
         await write_audit_log("schedule_error", {"error": str(e)[:300]})
 
 

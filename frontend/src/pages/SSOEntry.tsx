@@ -12,7 +12,9 @@ export default function SSOEntry() {
     const [error, setError] = useState('');
     const [providers, setProviders] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [polling, setPolling] = useState(false);
+    // Initialize polling=true when complete=1 to avoid briefly showing
+    // "No SSO providers configured." before the first poll completes.
+    const [polling, setPolling] = useState(complete);
 
     useEffect(() => {
         if (!sid) {
@@ -116,6 +118,16 @@ export default function SSOEntry() {
             <div style={{ padding: '40px', textAlign: 'center' }}>
                 <h3 style={{ color: 'var(--error)' }}>⚠ Error</h3>
                 <p>{error}</p>
+            </div>
+        );
+    }
+
+    // When complete=1, only show a completion spinner — no provider selection UI
+    if (complete) {
+        return (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', padding: '20px', textAlign: 'center' }}>
+                <div className="login-spinner" style={{ width: '40px', height: '40px', marginBottom: '20px' }}></div>
+                <p>Completing login...</p>
             </div>
         );
     }

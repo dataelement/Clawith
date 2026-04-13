@@ -30,8 +30,18 @@ DEDUP_WINDOW = 30   # seconds — same agent won't be invoked twice within this 
 MAX_AGENT_CHAIN_DEPTH = 5  # A→B→A→B→A max depth before stopping
 MIN_POLL_INTERVAL_MINUTES = 5  # minimum poll interval to prevent abuse
 
-# Track last invocation time per agent to enforce dedup window
 _last_invoke: dict[uuid.UUID, datetime] = {}
+
+_A2A_WAKE_CHAIN: dict[str, int] = {}
+_A2A_WAKE_CHAIN_TTL = 300
+_A2A_MAX_WAKE_DEPTH = 3
+
+
+def _cleanup_stale_invoke_cache():
+    now = datetime.now(timezone.utc)
+    stale = [k for k, v in _last_invoke.items() if (now - v).total_seconds() > DEDUP_WINDOW * 2]
+    for k in stale:
+        del _last_invoke[k]
 
 # Webhook rate limiter: token -> list of timestamps
 _webhook_hits: dict[str, list[float]] = {}
@@ -265,8 +275,9 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 # --- Agent-to-agent message check (existing logic) ---
                 from app.models.participant import Participant
                 from app.models.agent import Agent as AgentModel
+                safe_agent_name = from_agent_name.replace("%", "").replace("_", r"\_")
                 agent_r = await db.execute(
-                    select(AgentModel).where(AgentModel.name.ilike(f"%{from_agent_name}%"))
+                    select(AgentModel).where(AgentModel.name.ilike(f"%{safe_agent_name}%"))
                 )
                 source_agent = agent_r.scalars().first()
                 if not source_agent:
@@ -313,13 +324,14 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 # Look up user by display name or username within tenant
                 from sqlalchemy import or_
                 from app.models.user import User, Identity
+                safe_user_name = from_user_name.replace("%", "").replace("_", r"\_")
                 query = (
                     select(User)
                     .join(User.identity)
                     .where(
                         or_(
-                            User.display_name.ilike(f"%{from_user_name}%"),
-                            Identity.username.ilike(f"%{from_user_name}%"),
+                            User.display_name.ilike(f"%{safe_user_name}%"),
+                            Identity.username.ilike(f"%{safe_user_name}%"),
                         )
                     )
                 )
@@ -500,6 +512,8 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             except Exception as e:
                 logger.warning(f"Failed to persist tool call for trigger session: {e}")
 
+        _is_a2a_wake = all(t.name == "a2a_wake" for t in triggers)
+
         reply = await call_llm(
             model=model,
             messages=messages,
@@ -509,6 +523,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             user_id=agent.creator_id,
             on_chunk=on_chunk,
             on_tool_call=on_tool_call,
+            max_tool_rounds_override=2 if _is_a2a_wake else None,
         )
 
         # Save assistant reply to Reflection session
@@ -535,14 +550,57 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
 
         # Push trigger result to user's active WebSocket connections
         final_reply = reply or "".join(collected_content)
-        if final_reply:
+
+        is_a2a_internal = all(t.name == "a2a_wake" for t in triggers)
+
+        if final_reply and not is_a2a_internal:
             try:
                 from app.api.websocket import manager as ws_manager
                 agent_id_str = str(agent_id)
 
                 # Build notification message with trigger badge
-                trigger_badge = ", ".join(trigger_names)
-                notification = f"⚡ **触发器触发** `{trigger_badge}`\n\n{final_reply}"
+                trigger_reasons = []
+                for t in triggers:
+                    ns = (t.config or {}).get("_notification_summary", "").strip()
+                    if ns:
+                        trigger_reasons.append(ns)
+                    else:
+                        r = (t.reason or "").strip()
+                        if r and len(r) <= 80:
+                            trigger_reasons.append(r)
+                        elif r:
+                            trigger_reasons.append(r[:77] + "...")
+                summary = trigger_reasons[0] if trigger_reasons else "有新的事件需要处理"
+
+                _is_a2a_wait = any(t.name.startswith("a2a_wait_") for t in triggers)
+                if _is_a2a_wait:
+                    import re as _re
+                    cleaned = final_reply
+                    _internal_patterns = [
+                        r'\b(a2a_wait_\w+|a2a_wake)\b',
+                        r'\bwait_?\w+_?(task|reply|followup|meeting|sync|api_key)\w*\b',
+                        r'\bresolve_\w+\b',
+                        r'\bfocus[_ ]?item\b',
+                        r'\btask_delegate\b',
+                        r'\bfocus_ref\b',
+                        r'✅\s*(a2a\w+|wait\w+|触发器\w*|focus\w*).*(?:已取消|已为|保持|活跃|完成状态)[^\n]*',
+                        r'[\-•]\s*(?:触发器|trigger|focus|wait_\w+|a2a\w+).*[^\n]*',
+                        r'(?:触发器|trigger)\s+\S+\s*(?:已取消|保持活跃|已为完成状态|fired)',
+                        r'已静默清理触发器',
+                        r'已静默处理完毕',
+                        r'继续待命[。，]?\s*',
+                        r'，?\s*(?:继续)?待命。',
+                    ]
+                    for _pat in _internal_patterns:
+                        cleaned = _re.sub(_pat, '', cleaned, flags=_re.IGNORECASE)
+                    cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+                    cleaned = _re.sub(r'[。，]\s*$', '', cleaned).strip()
+                    if not cleaned:
+                        cleaned = final_reply
+                else:
+                    cleaned = final_reply
+
+                notification = f"⚡ {summary}\n\n{cleaned}"
 
                 # Save to user's active chat session(s) for persistence
                 async with async_session() as db:
@@ -693,6 +751,72 @@ async def _tick():
         asyncio.create_task(_invoke_agent_for_triggers(agent_id, agent_triggers))
 
 
+async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, from_agent_id: uuid.UUID | None = None, skip_dedup: bool = False) -> None:
+    """Public API: wake an agent asynchronously with a message context.
+
+    Creates a synthetic trigger invocation so the agent processes the
+    message in a Reflection Session via the standard trigger path.
+    Safe to call from any async context.
+
+    Args:
+        agent_id: The agent to wake.
+        message_context: The message to deliver.
+        from_agent_id: The agent that initiated this wake (for chain depth tracking).
+        skip_dedup: If True, bypass the dedup window check. Use this for
+                    genuine message deliveries (e.g. a task_delegate callback)
+                    where skipping the wake would lose a real message.
+    """
+    import time as _time
+
+    now = datetime.now(timezone.utc)
+
+    if from_agent_id:
+        chain_key = f"{from_agent_id}->{agent_id}"
+        current_depth = _A2A_WAKE_CHAIN.get(chain_key, 0)
+        if current_depth >= _A2A_MAX_WAKE_DEPTH:
+            logger.warning(
+                f"[A2A] Wake chain depth {current_depth} reached for {chain_key}, "
+                f"stopping to prevent wake storm"
+            )
+            return
+
+        _A2A_WAKE_CHAIN[chain_key] = current_depth + 1
+
+        def _decay_chain():
+            _A2A_WAKE_CHAIN.pop(chain_key, None)
+        asyncio.get_running_loop().call_later(_A2A_WAKE_CHAIN_TTL, _decay_chain)
+
+    if not skip_dedup and agent_id in _last_invoke:
+        elapsed = (now - _last_invoke[agent_id]).total_seconds()
+        if elapsed < DEDUP_WINDOW:
+            logger.info(
+                f"[A2A] Skipping wake for agent {agent_id} — "
+                f"invoked {elapsed:.0f}s ago (dedup window {DEDUP_WINDOW}s)"
+            )
+            return
+
+    _last_invoke[agent_id] = now
+
+    dummy_trigger = AgentTrigger(
+        id=uuid.uuid4(),
+        agent_id=agent_id,
+        name="a2a_wake",
+        type="on_message",
+        config={"from_agent_name": "", "_matched_message": message_context[:2000], "_matched_from": "agent"},
+        reason=(
+            "You received a notification from another agent. "
+            "Read the message content above, update your focus and memory if needed, "
+            "and take any action you deem necessary. "
+            "Do NOT reply back to the sender unless you have a genuine question — "
+            "this was a notification, not a request for response."
+        ),
+        is_enabled=True,
+        last_fired_at=now,
+        fire_count=0,
+    )
+    asyncio.create_task(_invoke_agent_for_triggers(agent_id, [dummy_trigger]))
+
+
 async def start_trigger_daemon():
     """Start the background trigger daemon loop. Called from FastAPI startup."""
     logger.info("⚡ Trigger Daemon started (15s tick, heartbeat every ~60s)")
@@ -709,6 +833,7 @@ async def start_trigger_daemon():
         _heartbeat_counter += 1
         if _heartbeat_counter >= 4:
             _heartbeat_counter = 0
+            _cleanup_stale_invoke_cache()
             try:
                 from app.services.heartbeat import _heartbeat_tick
                 await _heartbeat_tick()

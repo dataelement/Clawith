@@ -121,6 +121,7 @@ async def call_llm(
     on_tool_call=None,
     on_thinking=None,
     supports_vision=False,
+    max_tool_rounds_override: int | None = None,
 ) -> str:
     """Call LLM via unified client with function-calling tool loop.
 
@@ -142,12 +143,17 @@ async def call_llm(
                 _agent = _ar.scalar_one_or_none()
                 if _agent:
                     _max_tool_rounds = _agent.max_tool_rounds or 50
+                    if max_tool_rounds_override and max_tool_rounds_override < _max_tool_rounds:
+                        _max_tool_rounds = max_tool_rounds_override
                     if _agent.max_tokens_per_day and _agent.tokens_used_today >= _agent.max_tokens_per_day:
                         return f"⚠️ Daily token usage has reached the limit ({_agent.tokens_used_today:,}/{_agent.max_tokens_per_day:,}). Please try again tomorrow or ask admin to increase the limit."
                     if _agent.max_tokens_per_month and _agent.tokens_used_month >= _agent.max_tokens_per_month:
                         return f"⚠️ Monthly token usage has reached the limit ({_agent.tokens_used_month:,}/{_agent.max_tokens_per_month:,}). Please ask admin to increase the limit."
         except Exception:
             pass
+
+    if max_tool_rounds_override and max_tool_rounds_override < _max_tool_rounds:
+        _max_tool_rounds = max_tool_rounds_override
 
     # Build rich prompt with soul, memory, skills, relationships
     from app.services.agent_context import build_agent_context
@@ -228,7 +234,7 @@ async def call_llm(
             api_key=get_model_api_key(model),
             model=model.model,
             base_url=model.base_url,
-            timeout=120.0,
+            timeout=float(getattr(model, 'request_timeout', None) or 120.0),
         )
     except Exception as e:
         return f"[Error] Failed to create LLM client: {e}"
@@ -291,11 +297,11 @@ async def call_llm(
             return f"[LLM call error] {type(e).__name__}: {str(e)[:200]}"
 
         # ── Track tokens for this round ──
+        logger.debug(f"[LLM] stream() returned: {len(response.content or '')} chars, finish={response.finish_reason}, tools={len(response.tool_calls or [])}")
         real_tokens = extract_usage_tokens(response.usage)
         if real_tokens:
             _accumulated_tokens += real_tokens
         else:
-            # Fallback: estimate from message content length
             round_chars = sum(len(m.content or '') if isinstance(m.content, str) else 0 for m in api_messages) + len(response.content or '')
             _accumulated_tokens += estimate_tokens_from_chars(round_chars)
 
@@ -474,7 +480,8 @@ async def websocket_chat(
             agent_type = agent.agent_type or ""
             role_description = agent.role_description or ""
             welcome_message = agent.welcome_message or ""
-            ctx_size = agent.context_window_size or 100
+            from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+            ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
             logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}, ctx: {ctx_size}")
 
             # Load the agent's primary model
@@ -515,16 +522,26 @@ async def websocket_chat(
             from datetime import datetime as _dt, timezone as _tz
             conv_id = session_id
             if conv_id:
-                # Validate the session belongs to this agent
-                _sr = await db.execute(
-                    _sel(ChatSession).where(
-                        ChatSession.id == uuid.UUID(conv_id),
-                        ChatSession.agent_id == agent_id,
+                # Validate the session belongs to this agent and to this user (no hijacking others' sessions).
+                try:
+                    _sid = uuid.UUID(conv_id)
+                except (ValueError, TypeError):
+                    conv_id = None
+                    _existing = None
+                else:
+                    _sr = await db.execute(
+                        _sel(ChatSession).where(
+                            ChatSession.id == _sid,
+                            ChatSession.agent_id == agent_id,
+                        )
                     )
-                )
-                _existing = _sr.scalar_one_or_none()
-                if not _existing:
-                    conv_id = None  # fall through to create
+                    _existing = _sr.scalar_one_or_none()
+                    if not _existing:
+                        conv_id = None
+                    elif _existing.source_channel != "agent" and str(_existing.user_id) != str(user_id):
+                        await websocket.send_json({"type": "error", "content": "Not authorized for this session"})
+                        await websocket.close(code=4003)
+                        return
             if not conv_id:
                 # Find most recent session for this user+agent
                 _sr = await db.execute(
@@ -667,11 +684,28 @@ async def websocket_chat(
             # Add user message to conversation (full LLM context)
             conversation.append({"role": "user", "content": content})
 
-            # Save user message — display_content for history display, content for LLM
-            # Prefix with [file:name] if there's a file attachment so history can show it
-            saved_content = display_content if display_content else content
-            if file_name:
-                saved_content = f"[file:{file_name}]\n{saved_content}"
+            # Save user message to DB.
+            #
+            # Strategy:
+            #   - If the LLM content contains [image_data:...] markers (i.e. the user
+            #     attached an image and the model supports vision), persist the FULL
+            #     content including the base64 marker.  This makes history self-contained
+            #     so subsequent turns can forward the image to the LLM without any
+            #     disk-based rehydration step.
+            #   - For all other messages (text, non-image files) use display_content for
+            #     cleaner history (avoids e.g. the raw file-text blob appearing in chat).
+            #
+            # The call_llm() path already strips [image_data:] for non-vision models
+            # (websocket.py ~line 210), so no extra handling is needed at read time.
+            HAS_IMAGE_MARKER = "[image_data:" in content
+            if HAS_IMAGE_MARKER:
+                # Preserve the full LLM content (includes base64) for multi-turn context.
+                # Prefix with [file:name] for the UI history parser if a file name exists.
+                saved_content = f"[file:{file_name}]\n{content}" if file_name else content
+            else:
+                saved_content = display_content if display_content else content
+                if file_name:
+                    saved_content = f"[file:{file_name}]\n{saved_content}"
             async with async_session() as db:
                 user_msg = ChatMessage(
                     agent_id=agent_id,
@@ -692,7 +726,7 @@ async def websocket_chat(
                 if _sess:
                     _sess.last_message_at = _now
                     if not history_messages and _sess.title.startswith("Session "):
-                        # Use display_content for title (avoids raw base64/markers)
+                        # Always use display_content for title (never expose raw base64)
                         title_src = display_content if display_content else content
                         # Clean up common prefixes from image/file messages
                         clean_title = title_src.replace("[图片] ", "📷 ").replace("[image_data:", "").strip()
@@ -701,6 +735,7 @@ async def websocket_chat(
                         _sess.title = clean_title[:40] if clean_title else content[:40]
                 await db.commit()
             logger.info("[WS] User message saved")
+
 
             # ── OpenClaw routing: insert into gateway_messages instead of LLM ──
             if agent_type == "openclaw":

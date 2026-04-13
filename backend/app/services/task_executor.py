@@ -135,7 +135,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
             api_key=get_model_api_key(model),
             model=model.model,
             base_url=model.base_url,
-            timeout=1200.0,
+            timeout=float(getattr(model, 'request_timeout', None) or 1200.0),
         )
     except Exception as e:
         await _log_error(task_id, f"创建 LLM 客户端失败: {e}")

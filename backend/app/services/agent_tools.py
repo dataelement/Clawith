@@ -12,6 +12,7 @@ The agent's workspace uses well-known paths:
 The agent reads/writes these files directly. No per-concept tools needed.
 """
 
+import asyncio
 import json
 import os
 import uuid
@@ -190,14 +191,22 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read file contents from the workspace. Can read tasks.json for tasks, soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info.",
+            "description": "Read file contents from the workspace. Can read tasks.json for tasks, soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info. Use offset and limit for reading large files in chunks.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md, skills/xxx.md, enterprise_info/company_profile.md",
-                    }
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Starting line number (0-indexed, default 0). Use with limit for pagination.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of lines to read (default 2000). Use with offset for pagination.",
+                    },
                 },
                 "required": ["path"],
             },
@@ -207,7 +216,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write or update a file in the workspace. Can update memory/memory.md, focus.md, task_history.md, create documents in workspace/, create skills in skills/.",
+            "description": "Create or fully overwrite a file in the workspace. Use this when writing a new file or replacing the entire content. For targeted edits to an existing file (change one section without rewriting everything), prefer edit_file instead. Can update memory/memory.md, focus.md, task_history.md, create documents in workspace/, create skills in skills/.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -238,6 +247,86 @@ AGENT_TOOLS = [
                     }
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    # --- Enhanced file management tools ---
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections — it avoids accidentally overwriting content outside the edit target and is safer in multi-agent scenarios. The old_string must match exactly (including all whitespace and newlines).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path to edit, e.g.: memory/memory.md, skills/my-skill/SKILL.md",
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Exact text to find and replace. Must match exactly including whitespace and newlines.",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Replacement text",
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace all occurrences if true (default: false). Set to true when you want to replace every match.",
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Search for content patterns across files using regex. Returns matching lines with file paths and line numbers. Useful for finding code, configurations, or text across the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex pattern to search for, e.g.: 'API_KEY', 'def\\\\s+\\\\w+', '@app\\\\.(get|post)'",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to search in (default: root). e.g.: 'skills', 'workspace', 'memory'",
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "File pattern to match (default: all files). e.g.: '*.md', '*.py', '*.json'",
+                    },
+                    "ignore_case": {
+                        "type": "boolean",
+                        "description": "Case-insensitive search (default: false)",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_files",
+            "description": "Find files matching glob patterns. Returns file paths with sizes and modification info. Useful for discovering files in the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern to match files, e.g.: '**/*.md' (all markdown files), 'skills/*.md' (skill files), 'workspace/**/*' (all files under workspace)",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Base directory for search (default: root). e.g.: 'skills', 'workspace'",
+                    },
+                },
+                "required": ["pattern"],
             },
         },
     },
@@ -443,7 +532,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "send_message_to_agent",
-            "description": "Send a message to a digital employee colleague and receive a reply. The recipient is another AI agent, not a human. This triggers the recipient's LLM reasoning and returns their response. Suitable for asking questions, delegating tasks, or collaboration. Your relationships.md lists available digital employees under 'Digital Employee Colleagues'.",
+            "description": "Send a message to a digital employee colleague. The recipient is another AI agent, not a human. Your relationships.md lists available digital employees under 'Digital Employee Colleagues'.\n\nDECISION GUIDE for msg_type:\nAsk yourself: does the target agent need to DO WORK (analyze, research, summarize, write, compare, plan, etc.) and RETURN RESULTS to you or the user?\n\n- If YES, the target needs to do work → use task_delegate. Examples: 'summarize X', 'analyze Y', 'check Z', 'prepare a report', 'review and give feedback', 'find out X', 'confirm with X and report back'. The target works asynchronously and you will be woken when they finish.\n\n- If the target just needs to KNOW something → use notify. Examples: 'meeting cancelled', 'I updated the doc', 'heads up about X', 'FYI'. No reply expected.\n\n- If you need a quick factual answer right now → use consult. Examples: 'what is X?', 'do you know Y?'. Synchronous, blocks until reply.\n\nWhen in doubt between notify and task_delegate, prefer task_delegate — it is safer because it guarantees the user gets a result.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -458,10 +547,10 @@ AGENT_TOOLS = [
                     "msg_type": {
                         "type": "string",
                         "enum": ["notify", "consult", "task_delegate"],
-                        "description": "Message type: notify (notification), consult (ask a question), task_delegate (delegate a task). Defaults to notify.",
+                        "description": "Decision guide: (1) Will the target need to DO WORK and return results? → task_delegate. (2) Is this just a one-way FYI? → notify. (3) Quick factual question needing immediate answer? → consult. When unsure, prefer task_delegate.",
                     },
                 },
-                "required": ["agent_name", "message"],
+                "required": ["agent_name", "message", "msg_type"],
             },
         },
     },
@@ -553,7 +642,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_code",
-            "description": "Execute code (Python, Bash, or Node.js) in a sandboxed environment within the agent's root directory. Useful for data processing, calculations, file transformations, and automation scripts. Code runs with the agent root as the working directory, so you can access skills/, workspace/, memory/ etc. directly. Security restrictions apply: no network access commands, no system-level operations, 30-second timeout.",
+            "description": "Execute code (Python, Bash, or Node.js) in a local sandboxed subprocess within the agent's root directory. Useful for data processing, calculations, file transformations, and automation scripts. Code runs with the agent root as the working directory, so you can access skills/, workspace/, memory/ etc. directly. Security restrictions apply: no network access commands, no system-level operations, 30-second timeout.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -565,6 +654,32 @@ AGENT_TOOLS = [
                     "code": {
                         "type": "string",
                         "description": "Code to execute. For Python, you can import standard libraries (json, csv, math, re, collections, etc.). Working directory is the agent root (skills/, workspace/, memory/ are accessible).",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Max execution time in seconds (default 30, max 60)",
+                    },
+                },
+                "required": ["language", "code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_code_e2b",
+            "description": "Execute code (Python, Bash, or Node.js) in a secure E2B cloud sandbox. The sandbox has full network access and is fully isolated from the server. Use this when local execution is insufficient or when network access is required inside the code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["python", "bash", "node"],
+                        "description": "Programming language to execute",
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Code to execute in the E2B cloud sandbox.",
                     },
                     "timeout": {
                         "type": "integer",
@@ -600,6 +715,81 @@ AGENT_TOOLS = [
                         "description": "Optional CDN folder path, e.g. /agents/reports. Defaults to /clawith.",
                     },
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image_siliconflow",
+            "description": "Generate an image via SiliconFlow (FLUX). Save to workspace. Fast and China-friendly.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed image description in English.",
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "Image size. Default: 1024x1024. Options: 1024x1024, 1024x768, 768x1024",
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Workspace path to save the image (e.g. workspace/images/sunset.png).",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image_openai",
+            "description": "Generate an image via OpenAI. Save to workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed image description in English.",
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "Image size. Default: 1024x1024.",
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Workspace path to save the image.",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image_google",
+            "description": "Generate an image via Google Gemini Image (Nano Banana) or Vertex AI. Save to workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed image description in English.",
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "Image size. Default: 1024x1024.",
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Workspace path to save the image.",
+                    },
+                },
+                "required": ["prompt"],
             },
         },
     },
@@ -779,7 +969,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "feishu_doc_create",
-            "description": "Create a new Feishu document with a given title. Returns the new document token and URL.",
+            "description": "Create a new Feishu document. Supports creating in personal Drive (default) or directly inside a Wiki knowledge base (provide wiki_space_id). Returns the document token and URL.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -789,7 +979,15 @@ AGENT_TOOLS = [
                     },
                     "folder_token": {
                         "type": "string",
-                        "description": "Optional: parent folder token. Leave empty to create in root My Drive.",
+                        "description": "Optional: parent folder token in Drive. Leave empty to create in root My Drive. Ignored when wiki_space_id is provided.",
+                    },
+                    "wiki_space_id": {
+                        "type": "string",
+                        "description": "Optional: Wiki space ID. When provided, creates the document as a node inside this Wiki space instead of personal Drive. Get this from feishu_wiki_list or from the wiki URL.",
+                    },
+                    "parent_node_token": {
+                        "type": "string",
+                        "description": "Optional: parent node token within the Wiki space. When provided together with wiki_space_id, creates the document under this specific wiki node. If omitted, creates at the wiki space root.",
                     },
                 },
                 "required": ["title"],
@@ -1364,16 +1562,69 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "agentbay_file_transfer",
+            "description": (
+                "Transfer a file between any two endpoints: the agent workspace, "
+                "the AgentBay browser environment, the cloud desktop (computer), or the code sandbox.\n\n"
+                "VERIFIED PATH CONVENTIONS (all Linux environments run as user 'wuying', HOME=/home/wuying/):\n"
+                "- code env:     use /home/wuying/<filename>  (working directory, e.g. /home/wuying/data.csv)\n"
+                "- browser env:  use /home/wuying/下载/<filename>  (download folder, e.g. /home/wuying/下载/file.pdf)\n"
+                "- computer env: use /home/wuying/桌面/<filename>  (Desktop, e.g. /home/wuying/桌面/report.xlsx)\n"
+                "- workspace:    use relative path, e.g. 'workspace/data.csv'\n\n"
+                "Transfer directions:\n"
+                "- workspace -> env: upload a workspace file into a cloud environment\n"
+                "- env -> workspace: download a file from a cloud environment into the workspace\n"
+                "- env A -> env B:   transfer between environments (transparent backend temp, no workspace involvement)"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_type": {
+                        "type": "string",
+                        "enum": ["workspace", "browser", "computer", "code"],
+                        "description": "Source endpoint: 'workspace' for agent workspace, or the AgentBay environment name.",
+                    },
+                    "from_path": {
+                        "type": "string",
+                        "description": (
+                            "Source path. Relative if workspace (e.g. 'workspace/data.csv'). "
+                            "Absolute if env: code → /home/wuying/file, "
+                            "browser → /home/wuying/下载/file, computer → /home/wuying/桌面/file."
+                        ),
+                    },
+                    "to_type": {
+                        "type": "string",
+                        "enum": ["workspace", "browser", "computer", "code"],
+                        "description": "Destination endpoint: 'workspace' for agent workspace, or the AgentBay environment name.",
+                    },
+                    "to_path": {
+                        "type": "string",
+                        "description": (
+                            "Destination path. Relative if workspace (e.g. 'workspace/output.csv'). "
+                            "Absolute if env: code → /home/wuying/file, "
+                            "browser → /home/wuying/下载/file, computer → /home/wuying/桌面/file."
+                        ),
+                    },
+                },
+                "required": ["from_type", "from_path", "to_type", "to_path"],
+            },
+        },
+    },
 ]
 
 
 # Core tools that should always be available to agents regardless of
 # DB configuration.
+# Note: send_channel_message is intentionally NOT here — it lives in
+# _CHANNEL_MESSAGE_TOOL_NAMES and is only added when a channel is configured,
+# to avoid sending duplicate tool definitions to the LLM.
 _ALWAYS_INCLUDE_CORE = {
     "send_channel_file",
     "send_file_to_agent",
     "write_file",
-    "send_channel_message",
 }
 # Channel message tool - available when any channel (Feishu/DingTalk/WeCom) is configured
 _CHANNEL_MESSAGE_TOOL_NAMES = {
@@ -1408,6 +1659,111 @@ _FEISHU_TOOL_NAMES = {
 _always_core_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _ALWAYS_INCLUDE_CORE]
 _feishu_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _FEISHU_TOOL_NAMES]
 _channel_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _CHANNEL_MESSAGE_TOOL_NAMES]
+
+
+async def _get_computer_os_type(agent_id: uuid.UUID) -> str:
+    """Return the configured OS type for the agent's computer tool.
+
+    Reads from agentbay_browser_navigate tool config (which stores all AgentBay
+    settings including os_type). Defaults to 'windows' to match AgentBay's default.
+    """
+    try:
+        config = await _get_tool_config(agent_id, "agentbay_browser_navigate")
+        return (config or {}).get("os_type", "windows")
+    except Exception:
+        return "windows"
+
+
+def _patch_computer_tool_descriptions(tools: list[dict], os_type: str) -> list[dict]:
+    """Rewrite path examples in agentbay_file_transfer to match the agent's OS.
+
+    This ensures the Agent always sees the correct desktop and home-directory
+    paths for its specific computer environment without having to guess.
+    """
+    import copy
+
+    if os_type == "windows":
+        # Windows paths used by AgentBay's windows_latest image
+        desktop_path = r"C:\Users\Administrator\Desktop"
+        home_path    = r"C:\Users\Administrator"
+        computer_os_label = "Windows"
+    else:
+        # Linux paths used by AgentBay's linux_latest image
+        desktop_path = "/home/wuying/Desktop"
+        home_path    = "/home/wuying"
+        computer_os_label = "Linux"
+
+    # Build the OS-aware description for agentbay_file_transfer
+    new_file_transfer_desc = (
+        "Transfer a file between any two endpoints: the agent workspace, "
+        "the AgentBay browser environment, the cloud desktop (computer), or the code sandbox.\n\n"
+        f"COMPUTER ENVIRONMENT OS: {computer_os_label}\n"
+        f"VERIFIED PATH CONVENTIONS for the computer environment ({computer_os_label}):\n"
+        f"- computer desktop: {desktop_path}\\<filename>  (e.g. {desktop_path}\\report.xlsx)\n"
+        f"- computer home:    {home_path}\\<filename>\n\n"
+        "Other environments (Linux-based, user 'wuying', HOME=/home/wuying/):\n"
+        "- code env:     /home/wuying/<filename>  (e.g. /home/wuying/data.csv)\n"
+        "- browser env:  /home/wuying/下载/<filename>  (download folder)\n"
+        "- workspace:    relative path, e.g. 'workspace/data.csv'\n\n"
+        "Transfer directions:\n"
+        "- workspace -> env: upload a workspace file into a cloud environment\n"
+        "- env -> workspace: download a file from a cloud environment into the workspace\n"
+        "- env A -> env B:   transfer between environments (transparent backend temp)"
+    ) if os_type == "windows" else (
+        "Transfer a file between any two endpoints: the agent workspace, "
+        "the AgentBay browser environment, the cloud desktop (computer), or the code sandbox.\n\n"
+        f"COMPUTER ENVIRONMENT OS: {computer_os_label}\n"
+        f"VERIFIED PATH CONVENTIONS for the computer environment ({computer_os_label}):\n"
+        f"- computer desktop: {desktop_path}/<filename>  (e.g. {desktop_path}/report.xlsx)\n"
+        f"- computer home:    {home_path}/<filename>\n\n"
+        "Other environments (also Linux, user 'wuying'):\n"
+        "- code env:     /home/wuying/<filename>  (e.g. /home/wuying/data.csv)\n"
+        "- browser env:  /home/wuying/下载/<filename>  (download folder)\n"
+        "- workspace:    relative path, e.g. 'workspace/data.csv'\n\n"
+        "Transfer directions:\n"
+        "- workspace -> env: upload a workspace file into a cloud environment\n"
+        "- env -> workspace: download a file from a cloud environment into the workspace\n"
+        "- env A -> env B:   transfer between environments (transparent backend temp)"
+    )
+
+    patched = []
+    for tool in tools:
+        fn = tool.get("function", {})
+        name = fn.get("name", "")
+        if name == "agentbay_file_transfer":
+            # Deep copy to avoid mutating the shared AGENT_TOOLS constant
+            tool = copy.deepcopy(tool)
+            tool["function"]["description"] = new_file_transfer_desc
+            # Also patch from_path and to_path parameter hints
+            props = tool["function"].get("parameters", {}).get("properties", {})
+            if "from_path" in props:
+                if os_type == "windows":
+                    props["from_path"]["description"] = (
+                        r"Source path. Relative if workspace (e.g. 'workspace/data.csv'). "
+                        r"Absolute if env: computer → C:\Users\Administrator\Desktop\file, "
+                        r"code → /home/wuying/file, browser → /home/wuying/下载/file."
+                    )
+                else:
+                    props["from_path"]["description"] = (
+                        "Source path. Relative if workspace (e.g. 'workspace/data.csv'). "
+                        "Absolute if env: computer → /home/wuying/Desktop/file, "
+                        "code → /home/wuying/file, browser → /home/wuying/下载/file."
+                    )
+            if "to_path" in props:
+                if os_type == "windows":
+                    props["to_path"]["description"] = (
+                        r"Destination path. Relative if workspace (e.g. 'workspace/output.csv'). "
+                        r"Absolute if env: computer → C:\Users\Administrator\Desktop\file, "
+                        r"code → /home/wuying/file, browser → /home/wuying/下载/file."
+                    )
+                else:
+                    props["to_path"]["description"] = (
+                        "Destination path. Relative if workspace (e.g. 'workspace/output.csv'). "
+                        "Absolute if env: computer → /home/wuying/Desktop/file, "
+                        "code → /home/wuying/file, browser → /home/wuying/下载/file."
+                    )
+        patched.append(tool)
+    return patched
 
 
 async def _agent_has_feishu(agent_id: uuid.UUID) -> bool:
@@ -1445,6 +1801,37 @@ async def _agent_has_any_channel(agent_id: uuid.UUID) -> bool:
 
 # ─── Dynamic Tool Loading from DB ──────────────────────────────
 
+
+def _strip_a2a_msg_type(tools: list[dict]) -> list[dict]:
+    """Remove the msg_type parameter from send_message_to_agent when async A2A is disabled.
+
+    This prevents the LLM from seeing and selecting notify/task_delegate modes
+    that would be silently overridden to consult anyway, which confuses users
+    who see the tool call arguments in the chat UI.
+    """
+    import copy
+    result = []
+    for t in tools:
+        fn = t.get("function", {})
+        if fn.get("name") == "send_message_to_agent":
+            t = copy.deepcopy(t)
+            fn = t["function"]
+            # Simplify description to only mention consult
+            fn["description"] = (
+                "Send a message to a digital employee colleague and receive their reply synchronously."
+            )
+            params = fn.get("parameters", {})
+            props = params.get("properties", {})
+            # Remove msg_type parameter entirely
+            props.pop("msg_type", None)
+            # Remove msg_type from required list
+            req = params.get("required", [])
+            if "msg_type" in req:
+                params["required"] = [r for r in req if r != "msg_type"]
+        result.append(t)
+    return result
+
+
 async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     """Load enabled tools for an agent from DB (OpenAI function-calling format).
 
@@ -1452,10 +1839,36 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     Always includes core system tools (send_channel_file, write_file).
     Feishu tools are only included when the agent has a configured Feishu channel.
     send_channel_message is included when any channel (Feishu/DingTalk/WeCom) is configured.
+
+    Also patches agentbay_file_transfer description with OS-specific paths based on
+    the agent's computer tool configuration (os_type: 'windows' | 'linux').
+
+    When the tenant's a2a_async_enabled flag is False, the msg_type parameter is
+    removed from the send_message_to_agent tool so the LLM only sees the
+    synchronous consult behaviour.
     """
     has_feishu = await _agent_has_feishu(agent_id)
     has_any_channel = await _agent_has_any_channel(agent_id)
     _always_tools = _always_core_tools + (_feishu_tools if has_feishu else []) + (_channel_tools if has_any_channel else [])
+
+    # Check tenant-level a2a_async_enabled flag
+    _a2a_async = False
+    try:
+        from app.models.tenant import Tenant
+        from app.models.agent import Agent as AgentModel
+        async with async_session() as _flag_db:
+            _ag_r = await _flag_db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+            _tid = _ag_r.scalar_one_or_none()
+            if _tid:
+                _t_r = await _flag_db.execute(select(Tenant).where(Tenant.id == _tid))
+                _tenant = _t_r.scalar_one_or_none()
+                if _tenant:
+                    _a2a_async = getattr(_tenant, "a2a_async_enabled", False)
+    except Exception:
+        pass
+
+    # Read os_type once; used to patch agentbay_file_transfer paths below
+    computer_os_type = await _get_computer_os_type(agent_id)
 
     try:
         from app.models.tool import Tool, AgentTool
@@ -1491,20 +1904,44 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                         "parameters": t.parameters_schema or {"type": "object", "properties": {}},
                     },
                 }
+                # Defensive dedup: skip if this name was already added.
+                # Normally the UNIQUE constraint on tool.name prevents duplicate
+                # rows, but old DB dumps (pre-constraint) may have them. Without
+                # this guard, the LLM would receive duplicate tool names and
+                # return HTTP 400 "Tool names must be unique".
+                if t.name in db_tool_names:
+                    logger.warning(
+                        f"[Tools] Duplicate tool name '{t.name}' found in DB "
+                        f"(id={t.id}). Skipping to avoid LLM error. "
+                        "Run: DELETE FROM tools WHERE id IN (SELECT id FROM "
+                        "(SELECT id, ROW_NUMBER() OVER (PARTITION BY name "
+                        "ORDER BY created_at DESC) AS rn FROM tools) t WHERE rn > 1);"
+                    )
+                    continue
+
                 result.append(tool_def)
                 db_tool_names.add(t.name)
+
 
             if result:
                 # Append always-available system tools that aren't already in the DB list
                 for t in _always_tools:
                     if t["function"]["name"] not in db_tool_names:
                         result.append(t)
+                # Inject OS-aware paths into computer-related tool descriptions
+                result = _patch_computer_tool_descriptions(result, computer_os_type)
+                # Strip msg_type from send_message_to_agent when async A2A is disabled
+                if not _a2a_async:
+                    result = _strip_a2a_msg_type(result)
                 return result
     except Exception as e:
         logger.error(f"[Tools] DB load failed, using fallback: {e}")
 
-    # Fallback to hardcoded tools
-    return AGENT_TOOLS
+    # Fallback to hardcoded tools (still apply OS-aware path patching)
+    fallback = _patch_computer_tool_descriptions(AGENT_TOOLS, computer_os_type)
+    if not _a2a_async:
+        fallback = _strip_a2a_msg_type(fallback)
+    return fallback
 
 
 # ─── Workspace initialization ──────────────────────────────────
@@ -1603,6 +2040,7 @@ _TOOL_AUTONOMY_MAP = {
     "send_file_to_agent": "send_feishu_message",
     "web_search": "web_search",
     "execute_code": "execute_code",
+    "execute_code_e2b": "execute_code",
 }
 
 
@@ -1642,13 +2080,23 @@ async def _execute_tool_direct(
             if not path:
                 return "Missing path"
             return _write_file(ws, path, content, tenant_id=_agent_tenant_id)
-        elif tool_name == "execute_code":
-            logger.info(f"[DirectTool] Executing code with arguments: {arguments}")
-            return await _execute_code(agent_id, ws, arguments)
+        elif tool_name in ("execute_code", "execute_code_e2b"):
+            logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
+            return await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
         elif tool_name == "web_search":
             return await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
             return await _jina_search(arguments)
+        elif tool_name == "exa_search":
+            return await _exa_search(arguments, agent_id)
+        elif tool_name == "duckduckgo_search":
+            return await _duckduckgo_search_tool(arguments)
+        elif tool_name == "tavily_search":
+            return await _tavily_search_tool(arguments, agent_id)
+        elif tool_name == "google_search":
+            return await _google_search_tool(arguments, agent_id)
+        elif tool_name == "bing_search":
+            return await _bing_search_tool(arguments, agent_id)
         elif tool_name == "send_feishu_message":
             return await _send_feishu_message(agent_id, arguments)
         elif tool_name == "send_message_to_agent":
@@ -1727,7 +2175,9 @@ async def execute_tool(
             path = arguments.get("path")
             if not path:
                 return "❌ Missing required argument 'path' for read_file"
-            result = _read_file(ws, path, tenant_id=_agent_tenant_id)
+            offset = int(arguments.get("offset", 0))
+            limit = int(arguments.get("limit", 2000))
+            result = _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
         elif tool_name == "read_document":
             path = arguments.get("path")
             if not path:
@@ -1744,6 +2194,41 @@ async def execute_tool(
             result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
         elif tool_name == "delete_file":
             result = _delete_file(ws, arguments.get("path", ""))
+        # --- Enhanced file management tools ---
+        elif tool_name == "edit_file":
+            path = arguments.get("path")
+            old_string = arguments.get("old_string")
+            new_string = arguments.get("new_string")
+            if not path:
+                return "❌ Missing required argument 'path' for edit_file"
+            if old_string is None:
+                return "❌ Missing required argument 'old_string' for edit_file"
+            if new_string is None:
+                return "❌ Missing required argument 'new_string' for edit_file"
+            replace_all = arguments.get("replace_all", False)
+            result = _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id)
+        elif tool_name == "search_files":
+            pattern = arguments.get("pattern")
+            if not pattern:
+                return "❌ Missing required argument 'pattern' for search_files"
+            result = _search_files(
+                ws,
+                pattern,
+                path=arguments.get("path", "."),
+                file_pattern=arguments.get("file_pattern", "*"),
+                ignore_case=arguments.get("ignore_case", False),
+                tenant_id=_agent_tenant_id
+            )
+        elif tool_name == "find_files":
+            pattern = arguments.get("pattern")
+            if not pattern:
+                return "❌ Missing required argument 'pattern' for find_files"
+            result = _find_files(
+                ws,
+                pattern,
+                path=arguments.get("path", "."),
+                tenant_id=_agent_tenant_id
+            )
         elif tool_name == "manage_tasks":
             result = await _manage_tasks(agent_id, user_id, ws, arguments)
         elif tool_name == "set_trigger":
@@ -1770,8 +2255,16 @@ async def execute_tool(
             result = await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
             result = await _jina_search(arguments)
+        elif tool_name == "exa_search":
+            result = await _exa_search(arguments, agent_id)
+        elif tool_name == "duckduckgo_search":
+            result = await _duckduckgo_search_tool(arguments)
+        elif tool_name == "tavily_search":
+            result = await _tavily_search_tool(arguments, agent_id)
+        elif tool_name == "google_search":
+            result = await _google_search_tool(arguments, agent_id)
         elif tool_name == "bing_search":
-            result = await _jina_search(arguments)  # redirect legacy to jina
+            result = await _bing_search_tool(arguments, agent_id)
         elif tool_name == "jina_read":
             result = await _jina_read(arguments)
         elif tool_name == "read_webpage":
@@ -1782,11 +2275,17 @@ async def execute_tool(
             result = await _plaza_create_post(agent_id, arguments)
         elif tool_name == "plaza_add_comment":
             result = await _plaza_add_comment(agent_id, arguments)
-        elif tool_name == "execute_code":
-            logger.info(f"[DirectTool] Executing code with arguments: {arguments}")
-            result = await _execute_code(agent_id, ws, arguments)
+        elif tool_name in ("execute_code", "execute_code_e2b"):
+            logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
+            result = await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
         elif tool_name == "upload_image":
             result = await _upload_image(agent_id, ws, arguments)
+        elif tool_name == "generate_image_siliconflow":
+            result = await _generate_image(agent_id, ws, arguments, "siliconflow")
+        elif tool_name == "generate_image_openai":
+            result = await _generate_image(agent_id, ws, arguments, "openai")
+        elif tool_name == "generate_image_google":
+            result = await _generate_image(agent_id, ws, arguments, "google")
         elif tool_name == "discover_resources":
             result = await _discover_resources(arguments)
         elif tool_name == "import_mcp_server":
@@ -1816,7 +2315,7 @@ async def execute_tool(
         elif tool_name == "feishu_doc_append":
             result = await _feishu_doc_append(agent_id, arguments)
         # ── Feishu Calendar Tools ──
-        elif tool_name in ("feishu_drive_share", "feishu_doc_share"):  # backward compat
+        elif tool_name == "feishu_drive_share":
             result = await _feishu_drive_share(agent_id, arguments)
         elif tool_name == "feishu_drive_delete":
             result = await _feishu_drive_delete(agent_id, arguments)
@@ -1889,6 +2388,8 @@ async def execute_tool(
             result = await _agentbay_computer_activate_window(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_list_visible_apps":
             result = await _agentbay_computer_list_visible_apps(agent_id, ws, arguments)
+        elif tool_name == "agentbay_file_transfer":
+            result = await _agentbay_file_transfer(agent_id, ws, arguments)
         # ── Skill Management ──
         elif tool_name == "search_clawhub":
             result = await _search_clawhub(agent_id, arguments)
@@ -1939,6 +2440,8 @@ async def _web_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str
             return await _search_google(query, api_key, max_results, language)
         elif engine == "bing" and api_key:
             return await _search_bing(query, api_key, max_results, language)
+        elif engine == "exa" and api_key:
+            return await _search_exa(query, api_key, max_results)
         else:
             return await _search_duckduckgo(query, max_results)
     except Exception as e:
@@ -2159,6 +2662,190 @@ async def _search_bing(query: str, api_key: str, max_results: int, language: str
     if not results:
         return f'🔍 No results found for "{query}"'
     return f'🔍 Bing search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
+
+
+async def _search_exa(query: str, api_key: str, max_results: int) -> str:
+    """Search via Exa AI API (exa.ai). Used by the web_search engine selector."""
+    import httpx
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://api.exa.ai/search",
+            json={
+                "query": query,
+                "type": "auto",
+                "numResults": max_results,
+                "contents": {"text": {"maxCharacters": 1000}},
+            },
+            headers={
+                "x-api-key": api_key,
+                "Content-Type": "application/json",
+                "x-exa-integration": "clawith",
+            },
+            timeout=15,
+        )
+        data = resp.json()
+
+    if resp.status_code != 200:
+        return f"❌ Exa search failed: {data.get('error', data.get('message', str(data)[:200]))}"
+
+    results = []
+    for r in data.get("results", [])[:max_results]:
+        title = r.get("title", "Untitled")
+        url = r.get("url", "")
+        text = (r.get("text") or "")[:300]
+        results.append(f"**{title}**\n{url}\n{text}")
+
+    if not results:
+        return f'🔍 No results found for "{query}"'
+    return f'🔍 Exa search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
+
+
+async def _exa_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
+    """Full-featured Exa AI search with category filtering, domain filtering, and content modes."""
+    import httpx
+
+    query = arguments.get("query", "").strip()
+    if not query:
+        return "❌ Please provide search keywords"
+
+    config = await _get_tool_config(agent_id, "exa_search") or {}
+    api_key = config.get("api_key", "") or get_settings().EXA_API_KEY
+    if not api_key:
+        return "❌ Exa API key is required. Set it in tool settings or the EXA_API_KEY environment variable."
+
+    max_results = min(arguments.get("max_results", 5), 10)
+    search_type = arguments.get("search_type", "auto")
+    category = arguments.get("category") or None
+    content_mode = arguments.get("content_mode", "text")
+    include_domains = arguments.get("include_domains")
+    exclude_domains = arguments.get("exclude_domains")
+
+    body: dict = {
+        "query": query,
+        "type": search_type,
+        "numResults": max_results,
+        "contents": {},
+    }
+
+    if category:
+        body["category"] = category
+    if include_domains:
+        body["includeDomains"] = [d.strip() for d in include_domains.split(",") if d.strip()]
+    if exclude_domains:
+        body["excludeDomains"] = [d.strip() for d in exclude_domains.split(",") if d.strip()]
+
+    if content_mode == "highlights":
+        body["contents"]["highlights"] = {"numSentences": 3}
+    elif content_mode == "summary":
+        body["contents"]["summary"] = {}
+    else:
+        body["contents"]["text"] = {"maxCharacters": 1000}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.exa.ai/search",
+                json=body,
+                headers={
+                    "x-api-key": api_key,
+                    "Content-Type": "application/json",
+                    "x-exa-integration": "clawith",
+                },
+                timeout=15,
+            )
+            data = resp.json()
+
+        if resp.status_code != 200:
+            return f"❌ Exa search failed: {data.get('error', data.get('message', str(data)[:200]))}"
+
+        items = data.get("results", [])[:max_results]
+        if not items:
+            return f'🔍 No results found for "{query}"'
+
+        parts = []
+        for i, r in enumerate(items, 1):
+            title = r.get("title", "Untitled")
+            url = r.get("url", "")
+            content = ""
+            if content_mode == "highlights" and r.get("highlights"):
+                content = " ... ".join(r["highlights"])
+            elif content_mode == "summary" and r.get("summary"):
+                content = r["summary"]
+            elif r.get("text"):
+                content = r["text"][:500]
+            parts.append(f"**{i}. {title}**\n{url}\n{content}")
+
+        return f'🔍 Exa search for "{query}" ({len(items)} items):\n\n' + "\n\n---\n\n".join(parts)
+
+    except Exception as e:
+        return f"❌ Exa search error: {str(e)[:300]}"
+
+
+
+# ── Standalone search engine tool wrappers ───────────────────────────────────
+# Each function reads its own tool config (agent > company > defaults) and
+# delegates to the existing private search implementations above.
+
+
+async def _duckduckgo_search_tool(arguments: dict) -> str:
+    """Standalone DuckDuckGo search tool (no API key required)."""
+    query = arguments.get("query", "").strip()
+    if not query:
+        return "Please provide search keywords"
+    max_results = min(arguments.get("max_results", 5), 10)
+    return await _search_duckduckgo(query, max_results)
+
+
+async def _tavily_search_tool(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
+    """Standalone Tavily search tool (API key read from per-tool config)."""
+    query = arguments.get("query", "").strip()
+    if not query:
+        return "Please provide search keywords"
+    config = await _get_tool_config(agent_id, "tavily_search") or {}
+    api_key = config.get("api_key", "").strip()
+    if not api_key:
+        return "Tavily API key is required. Set it in the tool settings."
+    max_results = min(arguments.get("max_results", 5), 10)
+    try:
+        return await _search_tavily(query, api_key, max_results)
+    except Exception as e:
+        return f"Tavily search error: {str(e)[:200]}"
+
+
+async def _google_search_tool(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
+    """Standalone Google Custom Search tool (API key read from per-tool config)."""
+    query = arguments.get("query", "").strip()
+    if not query:
+        return "Please provide search keywords"
+    config = await _get_tool_config(agent_id, "google_search") or {}
+    api_key = config.get("api_key", "").strip()
+    if not api_key:
+        return "Google Search API key is required (format: API_KEY:SEARCH_ENGINE_ID). Set it in the tool settings."
+    # Allow per-call language override; fall back to tool config, then default
+    language = arguments.get("language") or config.get("language", "en")
+    max_results = min(arguments.get("max_results", 5), 10)
+    try:
+        return await _search_google(query, api_key, max_results, language)
+    except Exception as e:
+        return f"Google search error: {str(e)[:200]}"
+
+
+async def _bing_search_tool(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
+    """Standalone Bing Web Search tool (API key read from per-tool config)."""
+    query = arguments.get("query", "").strip()
+    if not query:
+        return "Please provide search keywords"
+    config = await _get_tool_config(agent_id, "bing_search") or {}
+    api_key = config.get("api_key", "").strip()
+    if not api_key:
+        return "Bing Search API key is required. Set it in the tool settings."
+    language = arguments.get("language") or config.get("language", "en-US")
+    max_results = min(arguments.get("max_results", 5), 10)
+    try:
+        return await _search_bing(query, api_key, max_results, language)
+    except Exception as e:
+        return f"Bing search error: {str(e)[:200]}"
 
 
 async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
@@ -2708,7 +3395,19 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     return header + "\n".join(items)
 
 
-def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
+def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: int = 0, limit: int = 2000) -> str:
+    """Read file contents with optional line range support.
+
+    Args:
+        ws: Workspace root path
+        rel_path: Relative file path
+        tenant_id: Optional tenant ID for enterprise_info
+        offset: Starting line number (0-indexed)
+        limit: Maximum number of lines to read
+
+    Returns:
+        File content with line numbers, or error message
+    """
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
@@ -2729,9 +3428,33 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
 
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
-        if len(content) > 6000:
-            content = content[:6000] + f"\n\n...[truncated, {len(content)} chars total]"
-        return content
+        lines = content.splitlines()
+        total_lines = len(lines)
+
+        # Apply offset and limit
+        start = max(0, offset)
+        end = min(total_lines, start + limit)
+
+        if start >= total_lines:
+            return f"Offset {offset} exceeds file length ({total_lines} lines total)"
+
+        selected_lines = lines[start:end]
+
+        # Format with line numbers (like cat -n)
+        result = []
+        for i, line in enumerate(selected_lines, start=start):
+            result.append(f"{i+1:6}\t{line}")
+
+        output = "\n".join(result)
+
+        # Add pagination info if file is larger than what we show
+        if total_lines > end:
+            output += f"\n\n... [{total_lines - end} more lines not shown, lines {end+1}-{total_lines}]"
+
+        # Add header with file info
+        header = f"📄 {rel_path} (lines {start+1}-{end} of {total_lines})\n"
+        return header + output
+
     except Exception as e:
         return f"Read failed: {e}"
 
@@ -2914,6 +3637,214 @@ def _delete_file(ws: Path, rel_path: str) -> str:
             return f"✅ Deleted {rel_path}"
     except Exception as e:
         return f"Delete failed: {e}"
+
+
+def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replace_all: bool = False, tenant_id: str | None = None) -> str:
+    """Perform surgical string replacement in a file.
+
+    Args:
+        ws: Workspace root path
+        rel_path: Relative file path
+        old_string: Exact text to find and replace
+        new_string: Replacement text
+        replace_all: Replace all occurrences if True
+        tenant_id: Optional tenant ID for enterprise_info
+
+    Returns:
+        Success message or error
+    """
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if rel_path and rel_path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(file_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+    else:
+        file_path = (ws / rel_path).resolve()
+        if not str(file_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
+
+    if not file_path.exists():
+        return f"File not found: {rel_path}"
+
+    if not file_path.is_file():
+        return f"Not a file: {rel_path}"
+
+    try:
+        content = file_path.read_text(encoding="utf-8")
+
+        if old_string not in content:
+            return f"❌ 'old_string' not found in {rel_path}. Please check the exact text including whitespace and newlines."
+
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+            count = content.count(old_string)
+        else:
+            # Ensure uniqueness for single replacement
+            count = content.count(old_string)
+            if count > 1:
+                return f"❌ 'old_string' appears {count} times in {rel_path}. Use replace_all=true or provide more context to make the match unique."
+            new_content = content.replace(old_string, new_string, 1)
+            count = 1
+
+        file_path.write_text(new_content, encoding="utf-8")
+        return f"✅ Replaced {count} occurrence(s) in {rel_path}"
+
+    except Exception as e:
+        return f"Edit failed: {e}"
+
+
+def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "*", ignore_case: bool = False, tenant_id: str | None = None) -> str:
+    """Search for content patterns across files using regex.
+
+    Args:
+        ws: Workspace root path
+        pattern: Regex pattern to search for
+        path: Directory to search in (relative to workspace root)
+        file_pattern: File pattern to match (glob)
+        ignore_case: Case-insensitive search
+        tenant_id: Optional tenant ID for enterprise_info
+
+    Returns:
+        Matching lines with file paths and line numbers
+    """
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if path and path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = path[len("enterprise_info"):].lstrip("/")
+        search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(search_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+        ws_for_relative = enterprise_root
+    else:
+        search_path = (ws / path).resolve() if path and path != "." else ws
+        if not str(search_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
+        ws_for_relative = ws
+
+    if not search_path.exists():
+        return f"Directory not found: {path}"
+
+    flags = re.IGNORECASE if ignore_case else 0
+
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        return f"Invalid regex pattern: {e}"
+
+    results = []
+    total_matches = 0
+    files_searched = 0
+
+    # Use rglob for recursive search
+    for file_path in search_path.rglob(file_pattern):
+        if not file_path.is_file():
+            continue
+        # Skip hidden files and common binary/extensions
+        if file_path.name.startswith("."):
+            continue
+        suffix = file_path.suffix.lower()
+        if suffix in {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}:
+            continue
+
+        files_searched += 1
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+            for i, line in enumerate(content.splitlines(), 1):
+                if regex.search(line):
+                    rel_path = file_path.relative_to(ws_for_relative)
+                    # Truncate long lines
+                    display_line = line.strip()[:100]
+                    results.append(f"{rel_path}:{i}: {display_line}")
+                    total_matches += 1
+                    if len(results) >= 50:  # Limit results per query
+                        break
+        except Exception:
+            continue
+
+        if len(results) >= 50:
+            break
+
+    if not results:
+        return f"No matches found for pattern '{pattern}' in {files_searched} file(s)"
+
+    # Warn the LLM if results were capped so it knows to refine the search.
+    truncated = total_matches > len(results)
+    truncation_note = f" (showing first {len(results)} of {total_matches}+ — refine pattern or path for more)" if truncated else ""
+    header = f"🔍 Found {total_matches}+ match(es) in {files_searched} file(s) for pattern '{pattern}'{truncation_note}:\n"
+    return header + "\n".join(results)
+
+
+def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None = None) -> str:
+    """Find files matching glob patterns.
+
+    Args:
+        ws: Workspace root path
+        pattern: Glob pattern to match files
+        path: Base directory for search (relative to workspace root)
+        tenant_id: Optional tenant ID for enterprise_info
+
+    Returns:
+        List of matching files with sizes
+    """
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if path and path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = path[len("enterprise_info"):].lstrip("/")
+        search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(search_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+        ws_for_relative = enterprise_root
+    else:
+        search_path = (ws / path).resolve() if path and path != "." else ws
+        if not str(search_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
+        ws_for_relative = ws
+
+    if not search_path.exists():
+        return f"Directory not found: {path}"
+
+    try:
+        matches = list(search_path.glob(pattern))
+    except Exception as e:
+        return f"Invalid glob pattern: {e}"
+
+    if not matches:
+        return f"No files matching pattern: {pattern}"
+
+    # Sort by modification time (most recent first)
+    matches.sort(key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
+
+    results = []
+    dir_count = 0
+    file_count = 0
+
+    for m in matches[:100]:  # Limit to 100 results
+        rel_path = m.relative_to(ws_for_relative)
+        if m.is_dir():
+            dir_count += 1
+            results.append(f"📁 {rel_path}/")
+        else:
+            file_count += 1
+            try:
+                size = m.stat().st_size
+                size_str = f"{size//1024}KB" if size > 1024 else f"{size}B"
+                results.append(f"📄 {rel_path} ({size_str})")
+            except Exception:
+                results.append(f"📄 {rel_path}")
+
+    header = f"📂 Found {len(matches)} item(s) ({dir_count} dirs, {file_count} files) matching '{pattern}':\n"
+    return header + "\n".join(results)
 
 
 async def _manage_tasks(
@@ -3594,7 +4525,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
 
             if not target_agent:
                 # Only show agents from relationships, not all agents
-                from app.models.org import AgentAgentRelationship
+                # (AgentAgentRelationship is imported at module level — no local import needed)
                 rel_r = await db.execute(
                     select(AgentModel.name).join(
                         AgentAgentRelationship,
@@ -3707,13 +4638,196 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
         return f"❌ Agent file send error: {str(e)[:200]}"
 
 
+async def _resolve_a2a_target(
+    db, from_agent_id: uuid.UUID, agent_name: str
+) -> tuple[AgentModel | None, str | None]:
+    """Resolve the target agent for A2A communication.
+
+    Returns (target_agent, error_message). If target is None, error_message
+    explains why.  Caller is responsible for relationship / expiry checks.
+    """
+    src_result = await db.execute(select(AgentModel).where(AgentModel.id == from_agent_id))
+    source_agent = src_result.scalar_one_or_none()
+    source_tenant_id = source_agent.tenant_id if source_agent else None
+
+    base_filter = [AgentModel.id != from_agent_id]
+    if source_tenant_id:
+        base_filter.append(AgentModel.tenant_id == source_tenant_id)
+
+    exact_result = await db.execute(
+        select(AgentModel).where(AgentModel.name == agent_name, *base_filter)
+    )
+    target = exact_result.scalars().first()
+    if not target:
+        safe_name = agent_name.replace("%", "").replace("_", r"\_")
+        fuzzy_result = await db.execute(
+            select(AgentModel).where(AgentModel.name.ilike(f"%{safe_name}%"), *base_filter)
+        )
+        target = fuzzy_result.scalars().first()
+    if not target:
+        rel_r = await db.execute(
+            select(AgentModel.name).join(
+                AgentAgentRelationship,
+                (AgentAgentRelationship.target_agent_id == AgentModel.id) & (AgentAgentRelationship.agent_id == from_agent_id)
+            )
+        )
+        rel_names = [n for (n,) in rel_r.all()]
+        return None, f"❌ No agent found matching '{agent_name}'. Your connected colleagues: {', '.join(rel_names) if rel_names else 'none — ask your administrator to set up relationships'}"
+
+    return target, None
+
+
+async def _ensure_a2a_session(
+    db, from_agent_id: uuid.UUID, target_id: uuid.UUID, source_name: str, owner_id: uuid.UUID
+) -> tuple[ChatSession, str]:
+    """Find or create the ChatSession for a pair of agents.
+
+    Returns (chat_session, session_id_str).
+    """
+    from app.models.participant import Participant
+
+    session_agent_id = min(from_agent_id, target_id, key=str)
+    session_peer_id = max(from_agent_id, target_id, key=str)
+    sess_r = await db.execute(
+        select(ChatSession).where(
+            ChatSession.agent_id == session_agent_id,
+            ChatSession.peer_agent_id == session_peer_id,
+            ChatSession.source_channel == "agent",
+        )
+    )
+    chat_session = sess_r.scalar_one_or_none()
+    if not chat_session:
+        src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
+        src_participant = src_part_r.scalar_one_or_none()
+        src_part_id = src_participant.id if src_participant else None
+        chat_session = ChatSession(
+            agent_id=session_agent_id,
+            user_id=owner_id,
+            title=f"{source_name} ↔ {(await db.execute(select(AgentModel.name).where(AgentModel.id == target_id))).scalar() or 'Unknown'}",
+            source_channel="agent",
+            participant_id=src_part_id,
+            peer_agent_id=session_peer_id,
+        )
+        db.add(chat_session)
+        await db.flush()
+    return chat_session, str(chat_session.id)
+
+
+async def _create_on_message_trigger(
+    agent_id: uuid.UUID,
+    trigger_name: str,
+    from_agent_name: str,
+    reason: str,
+    focus_ref: str | None = None,
+    notification_summary: str | None = None,
+) -> None:
+    """Programmatically create an on_message trigger for an agent."""
+    from app.models.trigger import AgentTrigger
+
+    config: dict = {"from_agent_name": from_agent_name}
+    if notification_summary:
+        config["_notification_summary"] = notification_summary
+
+    try:
+        from app.models.audit import ChatMessage as _CM
+        from app.models.chat_session import ChatSession as _CS
+        from sqlalchemy import cast as sa_cast, String as SaString
+        async with async_session() as _snap_db:
+            _snap_q = select(_CM.created_at).join(
+                _CS, _CM.conversation_id == sa_cast(_CS.id, SaString)
+            ).where(
+                _CS.agent_id == agent_id,
+                _CM.created_at.isnot(None),
+            ).order_by(_CM.created_at.desc()).limit(1)
+            _snap_r = await _snap_db.execute(_snap_q)
+            _latest_ts = _snap_r.scalar_one_or_none()
+            if _latest_ts:
+                config["_since_ts"] = _latest_ts.isoformat()
+    except Exception:
+        pass
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(AgentTrigger).where(
+                AgentTrigger.agent_id == agent_id,
+                AgentTrigger.name == trigger_name,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            if existing.is_enabled:
+                existing.config = {**(existing.config or {}), **config}
+                existing.reason = reason
+                if focus_ref:
+                    existing.focus_ref = focus_ref
+                await db.commit()
+                return
+            else:
+                existing.type = "on_message"
+                existing.config = config
+                existing.reason = reason
+                existing.focus_ref = focus_ref or None
+                existing.is_enabled = True
+                await db.commit()
+                return
+
+        trigger = AgentTrigger(
+            agent_id=agent_id,
+            name=trigger_name,
+            type="on_message",
+            config=config,
+            reason=reason,
+            focus_ref=focus_ref or None,
+            max_fires=1,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        )
+        db.add(trigger)
+        await db.commit()
+
+
+async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: str) -> None:
+    """Append a pending focus item to the agent's focus.md."""
+    focus_path = WORKSPACE_ROOT / str(agent_id) / "focus.md"
+    line = f"- [ ] {identifier}: {description}\n"
+    try:
+        if focus_path.exists():
+            content = focus_path.read_text(encoding="utf-8")
+            if identifier in content:
+                return
+            if not content.endswith("\n"):
+                content += "\n"
+            content += line
+        else:
+            content = f"# Focus\n\n{line}"
+        focus_path.parent.mkdir(parents=True, exist_ok=True)
+        focus_path.write_text(content, encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"[A2A] Failed to update focus.md for agent {agent_id}: {e}")
+
+
+async def _wake_agent_async(agent_id: uuid.UUID, reason_context: str, *, from_agent_id: uuid.UUID | None = None, skip_dedup: bool = False) -> None:
+    """Wake an agent asynchronously via the trigger invocation path.
+
+    Delegates to the public wake_agent_with_context API in trigger_daemon.
+    """
+    from app.services.trigger_daemon import wake_agent_with_context
+    await wake_agent_with_context(agent_id, reason_context, from_agent_id=from_agent_id, skip_dedup=skip_dedup)
+
+
 async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
-    """Send a message to another digital employee. Uses a single request-response pattern:
-    the source agent sends a message, the target agent replies once, and the result is returned.
-    If the source agent needs to continue the conversation, it can call this tool again.
+    """Send a message to another digital employee.
+
+    Behaviour depends on ``msg_type``:
+    - notify:   fire-and-forget — message is saved, target is woken asynchronously.
+                Returns immediately.
+    - task_delegate: async with callback — message is saved, source agent sets up
+                a focus item + on_message trigger so it is notified when the
+                target completes the task.  Returns immediately.
+    - consult:  synchronous request-response (original behaviour).
     """
     agent_name = args.get("agent_name", "").strip()
     message_text = args.get("message", "").strip()
+    msg_type = args.get("msg_type", "notify").strip().lower()
 
     if not agent_name or not message_text:
         return "❌ Please provide target agent name and message content"
@@ -3764,7 +4878,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 return f"⚠️ {target.name} is currently unavailable — their service period has ended. Please contact the platform administrator."
 
             # Enforce relationship: only allow communication with agents in relationships
-            from app.models.org import AgentAgentRelationship
+            # (AgentAgentRelationship is imported at module level — no local import needed)
             rel_check = await db.execute(
                 select(AgentAgentRelationship.id).where(
                     ((AgentAgentRelationship.agent_id == from_agent_id) & (AgentAgentRelationship.target_agent_id == target.id))
@@ -3844,6 +4958,119 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 status_hint = "online" if online else "offline (message will be delivered on next heartbeat)"
                 return f"✅ Message sent to {target.name} (OpenClaw agent, currently {status_hint}). The message has been queued and will be delivered when the agent polls for updates."
 
+            # ── Native target: branch by msg_type ──
+
+            # Save source message (common to all paths)
+            db.add(ChatMessage(
+                agent_id=session_agent_id,
+                user_id=owner_id,
+                role="user",
+                content=message_text,
+                conversation_id=session_id,
+                participant_id=src_participant.id if src_participant else None,
+            ))
+            chat_session.last_message_at = datetime.now(timezone.utc)
+            await db.commit()
+
+            # ── Feature flag: async A2A (tenant-level) ──
+            _a2a_async = False
+            if source_agent.tenant_id:
+                try:
+                    from app.models.tenant import Tenant
+                    _t_r = await db.execute(select(Tenant).where(Tenant.id == source_agent.tenant_id))
+                    _tenant = _t_r.scalar_one_or_none()
+                    if _tenant:
+                        _a2a_async = getattr(_tenant, "a2a_async_enabled", False)
+                except Exception:
+                    pass
+            if not _a2a_async:
+                if msg_type in ("notify", "task_delegate"):
+                    msg_type = "consult"
+
+            # ── notify: fire-and-forget ──
+            if msg_type == "notify":
+                try:
+                    from app.services.activity_logger import log_activity
+                    await log_activity(
+                        from_agent_id, "agent_msg_sent",
+                        f"Sent notification to {target.name}",
+                        detail={"partner": target.name, "message": message_text[:200], "msg_type": "notify"},
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    await _wake_agent_async(
+                        target.id,
+                        f"[From {source_name}] {message_text}",
+                        from_agent_id=from_agent_id,
+                        skip_dedup=True,
+                    )
+                except Exception as e:
+                    logger.warning(f"[A2A] Failed to wake {target.name} for notify: {e}")
+
+                return f"✅ Notification sent to {target.name}. They will process it asynchronously."
+
+            # ── task_delegate: async with callback ──
+            if msg_type == "task_delegate":
+                focus_id = f"wait_{target.name.lower().replace(' ', '_')}_task"
+                focus_desc = f"Waiting for {target.name} to complete delegated task: {message_text[:100]}"
+
+                try:
+                    await _append_focus_item(from_agent_id, focus_id, focus_desc)
+                except Exception as e:
+                    logger.warning(f"[A2A] Failed to write focus for delegate: {e}")
+
+                trigger_name = f"a2a_wait_{target.name.lower().replace(' ', '_')}"
+                trigger_reason = (
+                    f"{target.name} has replied with the result of a delegated task. "
+                    f"Original task: {message_text[:200]}. "
+                    f"Steps: 1) Process {target.name}'s reply. "
+                    f"2) Mark focus item '{focus_id}' as completed. "
+                    f"3) Cancel this trigger. "
+                    f"USER-FACING OUTPUT RULES: Your reply goes directly to the user's chat. "
+                    f"Write in natural, conversational language as if talking to a colleague. "
+                    f"NEVER use technical terms like: trigger name, focus item, a2a_wait, "
+                    f"task_delegate, focus_ref, or any internal identifier. "
+                    f"NEVER mention your internal operations (canceling triggers, updating focus, "
+                    f"marking items complete, trigger status, etc.). "
+                    f"Just summarize the task result in plain language."
+                )
+                try:
+                    await _create_on_message_trigger(
+                        agent_id=from_agent_id,
+                        trigger_name=trigger_name,
+                        from_agent_name=target.name,
+                        reason=trigger_reason,
+                        focus_ref=focus_id,
+                        notification_summary=f"等待{target.name}完成任务并回复",
+                    )
+                except Exception as e:
+                    logger.warning(f"[A2A] Failed to create trigger for delegate: {e}")
+
+                try:
+                    from app.services.activity_logger import log_activity
+                    await log_activity(
+                        from_agent_id, "agent_msg_sent",
+                        f"Delegated task to {target.name}",
+                        detail={"partner": target.name, "message": message_text[:200], "msg_type": "task_delegate"},
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    await _wake_agent_async(
+                        target.id,
+                        f"[From {source_name}] {message_text}",
+                        from_agent_id=from_agent_id,
+                        skip_dedup=True,
+                    )
+                except Exception as e:
+                    logger.warning(f"[A2A] Failed to wake {target.name} for delegate: {e}")
+
+                return f"✅ Task delegated to {target.name}. You will be notified when they complete it."
+
+            # ── consult (default): synchronous request-response ──
             # Prepare target LLM
             from app.services.agent_context import build_agent_context
             from app.models.llm import LLMModel
@@ -3895,24 +5122,8 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     role = "assistant"
                 conversation_messages.append({"role": role, "content": m.content})
 
-            # Add the new message from source
             conversation_messages.append({"role": "user", "content": f"[From {source_name}] {message_text}"})
 
-            # Save source message
-            owner_id = source_agent.creator_id if source_agent else from_agent_id
-            db.add(ChatMessage(
-                agent_id=session_agent_id,
-                user_id=owner_id,
-                role="user",
-                content=message_text,
-                conversation_id=session_id,
-                participant_id=src_participant.id if src_participant else None,
-            ))
-            chat_session.last_message_at = datetime.now(timezone.utc)
-            await db.commit()
-
-            # Call target LLM with tool support (multi-round)
-            import asyncio
             import random
             import httpx
             from app.services.llm_utils import (
@@ -3945,7 +5156,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 api_key=get_model_api_key(target_model),
                 model=target_model.model,
                 base_url=base_url,
-                timeout=120.0,
+                timeout=float(getattr(target_model, 'request_timeout', None) or 120.0),
             )
             _A2A_RETRYABLE_MARKERS = (
                 "http 408", "http 429", "http 500", "http 502", "http 503", "http 504",
@@ -4425,8 +5636,23 @@ def _check_code_safety(language: str, code: str) -> str | None:
     return None
 
 
-async def _execute_code(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
-    """Execute code using the configured sandbox backend."""
+async def _execute_code(
+    agent_id: Optional[uuid.UUID],
+    ws: Path,
+    arguments: dict,
+    *,
+    tool_name: str = "execute_code",
+) -> str:
+    """Execute code using the configured sandbox backend.
+
+    Args:
+        agent_id: The agent's UUID (used to fetch per-agent tool config).
+        ws: Agent workspace root path.
+        arguments: Tool call arguments (language, code, timeout).
+        tool_name: The originating tool name — either 'execute_code' (local)
+                   or 'execute_code_e2b' (cloud).  Used to look up the
+                   correct per-agent tool config entry in the database.
+    """
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
     timeout = min(arguments.get("timeout", 30), 60)  # Max 60 seconds
@@ -4437,10 +5663,14 @@ async def _execute_code(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict
     if language not in ("python", "bash", "node"):
         return f"❌ Unsupported language: {language}. Use: python, bash, or node"
 
-    # Working directory is the agent's root directory (must be absolute)
-    # This allows code to access skills/, workspace/, memory/ etc. directly
+    # Working directory is the agent's root directory (must be absolute).
+    # This allows code to access skills/, workspace/, memory/ etc. directly.
     work_dir = ws.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
+
+    # For E2B tool: do NOT fall back to local subprocess on error —
+    # the user explicitly chose cloud execution.
+    is_e2b_tool = (tool_name == "execute_code_e2b")
 
     try:
         # Import here to avoid circular imports
@@ -4448,18 +5678,19 @@ async def _execute_code(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict
         from app.services.sandbox.config import SandboxConfig
         from app.services.sandbox.registry import get_sandbox_backend
 
-        # Get sandbox config: prefer tool config from DB, fallback to env vars
+        # Get sandbox config: prefer per-agent tool config from DB,
+        # fall back to the platform-level env-var config.
         fallback_config = get_sandbox_config()
-        tool_config = await _get_tool_config(agent_id, "execute_code")
+        tool_config = await _get_tool_config(agent_id, tool_name)
 
         if tool_config:
             sandbox_config = SandboxConfig.from_dict(tool_config, fallback_config)
         else:
             sandbox_config = fallback_config
-            logger.info(f"[Sandbox] Using fallback config for agent {agent_id}")
+            logger.info(f"[Sandbox] No per-agent config found for '{tool_name}', using fallback")
 
         backend = get_sandbox_backend(sandbox_config)
-        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__}")
+        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name})")
         result = await backend.execute(
             code=code,
             language=language,
@@ -4471,16 +5702,22 @@ async def _execute_code(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict
         return backend._format_result(result)
 
     except ValueError as e:
-        # Sandbox disabled or misconfigured - fall back to legacy subprocess
-        logger.warning(f"[Sandbox] Config issue, falling back to legacy: {e}")
+        # Sandbox disabled or misconfigured
+        if is_e2b_tool:
+            # Do not silently fall back — surface the config error to the user
+            return f"❌ E2B sandbox configuration error: {str(e)[:300]}\nPlease check the API key in the tool settings."
+        logger.warning(f"[Sandbox] Config issue, falling back to legacy subprocess: {e}")
         return await _execute_code_legacy(ws, arguments)
 
     except Exception as e:
-        logger.exception(f"[Sandbox] Execution failed for agent {agent_id}")
-        # Try fallback to legacy subprocess
+        logger.exception(f"[Sandbox] Execution failed for agent {agent_id} (tool={tool_name})")
+        if is_e2b_tool:
+            # Do not silently fall back to local execution
+            return f"❌ E2B execution error: {str(e)[:200]}"
+        # For local tool: try legacy subprocess as last resort
         try:
             return await _execute_code_legacy(ws, arguments)
-        except Exception as fallback_error:
+        except Exception:
             logger.exception(f"[Sandbox] Fallback also failed for agent {agent_id}")
             return f"❌ Execution error: {str(e)[:200]}"
 
@@ -4747,12 +5984,10 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
         # Return webhook URL for webhook triggers
         if ttype == "webhook":
-            from app.config import get_settings
-            settings = get_settings()
-            base = getattr(settings, 'PUBLIC_URL', '') or ''
-            if not base:
-                base = 'https://try.clawith.ai'  # fallback
+            from app.services.platform_service import platform_service
+            base = await platform_service.get_public_base_url()
             webhook_url = f"{base.rstrip('/')}/api/webhooks/t/{config['token']}"
+
             return f"✅ Webhook trigger '{name}' created.\n\nWebhook URL: {webhook_url}\n\nTell the user to configure this URL in their external service (e.g. GitHub, Grafana). When the service sends a POST to this URL, you will be woken up with the payload as context."
 
         return f"✅ Trigger '{name}' created ({ttype}). It will fire according to your config and wake you up with the reason as context."
@@ -4992,6 +6227,272 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     except Exception as e:
         return f"❌ Upload error: {type(e).__name__}: {str(e)[:300]}"
 
+
+
+# ─── Image Generation (Multi-Provider) ────────────────────────────────────────
+
+async def _generate_image(agent_id: uuid.UUID, ws: Path, arguments: dict, provider: str) -> str:
+    """Generate an image using the configured provider and save to workspace.
+
+    Supported providers:
+    - siliconflow: OpenAI-compatible API (FLUX models, China-friendly)
+    - openai: Native OpenAI API (GPT Image)
+    - google: Google Gemini Native Image API (Nano Banana)
+
+    The tool config is resolved via the standard _get_tool_config() hierarchy:
+    global tool config (admin-set) -> per-agent tool config override.
+    """
+    import httpx
+    from datetime import datetime
+
+    prompt = arguments.get("prompt")
+    if not prompt:
+        return "❌ Missing required argument 'prompt' for generate_image"
+
+    size = arguments.get("size", "1024x1024")
+    save_path = arguments.get("save_path", "")
+
+    # Load tool config (global -> per-agent override)
+    tool_key = f"generate_image_{provider}"
+    config = await _get_tool_config(agent_id, tool_key) or {}
+    model = config.get("model", "")
+    api_key = config.get("api_key", "")
+    base_url = config.get("base_url", "")
+
+    if not api_key:
+        return (
+            "❌ Image generation API key not configured. "
+            "Ask your admin to configure it in Enterprise Settings → Tools → Generate Image."
+        )
+
+    # Generate the save path if not provided
+    if not save_path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Derive a short slug from the prompt for a more descriptive filename
+        slug = "_".join(prompt.split()[:4]).lower()
+        slug = "".join(c for c in slug if c.isalnum() or c == "_")[:40]
+        save_path = f"workspace/images/{slug}_{ts}.png"
+
+    # Ensure the target directory exists and path is within workspace
+    full_save_path = (ws / save_path).resolve()
+    if not str(full_save_path).startswith(str(ws.resolve())):
+        return "❌ Access denied: save path is outside the workspace"
+    full_save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if provider == "siliconflow":
+            image_bytes = await _generate_image_siliconflow(
+                api_key,
+                model or "black-forest-labs/FLUX.1-schnell",
+                base_url or "https://api.siliconflow.cn/v1",
+                prompt, size,
+            )
+        elif provider == "openai":
+            image_bytes = await _generate_image_openai(
+                api_key,
+                model or "gpt-image-1",
+                base_url or "https://api.openai.com/v1",
+                prompt, size,
+            )
+        elif provider == "google":
+            image_bytes = await _generate_image_google(
+                api_key,
+                model or "gemini-2.5-flash-image",
+                base_url or "https://generativelanguage.googleapis.com/v1beta",
+                prompt, size,
+            )
+        else:
+            return f"❌ Unknown image generation provider: {provider}. Supported: siliconflow, openai, google"
+
+        if not image_bytes:
+            return "❌ Image generation returned empty result. Please try a different prompt."
+
+        # Save the generated image to workspace
+        full_save_path.write_bytes(image_bytes)
+        size_kb = len(image_bytes) / 1024
+
+        # Build the API path for inline display in chat
+        # The MarkdownRenderer will auto-inject the auth token for /api/agents/ paths
+        api_image_path = f"/api/agents/{agent_id}/files/download?path={save_path}"
+
+        return (
+            f"✅ Image generated and saved to: {save_path}\n"
+            f"Size: {size_kb:.1f} KB | Provider: {provider} | Model: {model or '(default)'}\n\n"
+            f"Display this image to the user using this exact markdown:\n"
+            f"![generated image]({api_image_path})"
+        )
+    except httpx.TimeoutException:
+        logger.error(f"[GenerateImage] Timeout ({provider}): took longer than 120 seconds or network unreachable.")
+        return (
+            f"❌ Image generation failed ({provider}): API request timed out after 120 seconds. "
+            f"This is usually caused by network issues or the model taking too long to generate."
+        )
+    except Exception as e:
+        err_msg = str(e) or type(e).__name__
+        logger.error(f"[GenerateImage] Error ({provider}): {err_msg}")
+        return f"❌ Image generation failed ({provider}): {err_msg[:400]}"
+
+
+async def _generate_image_siliconflow(
+    api_key: str, model: str, base_url: str, prompt: str, size: str
+) -> bytes:
+    """Generate image via SiliconFlow (OpenAI-compatible images.generate API).
+
+    SiliconFlow returns a temporary URL (expires in ~1 hour), so we download
+    the image bytes immediately after generation.
+    """
+    import httpx
+    import base64
+
+    url = f"{base_url.rstrip('/')}/images/generations"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "image_size": size,  # SiliconFlow uses 'image_size' instead of 'size'
+        "n": 1,
+    }
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        if resp.status_code != 200:
+            # Extract API error message for better diagnostics
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("message") or err_body.get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                err_msg = resp.text[:300]
+            raise ValueError(f"SiliconFlow API error ({resp.status_code}): {err_msg}")
+        data = resp.json()
+
+        # SiliconFlow may return url or b64_json
+        image_data = data.get("data", [{}])[0]
+        image_url = image_data.get("url")
+        if image_url:
+            # Download the temporary URL immediately
+            img_resp = await client.get(image_url, timeout=60)
+            img_resp.raise_for_status()
+            return img_resp.content
+
+        b64 = image_data.get("b64_json")
+        if b64:
+            return base64.b64decode(b64)
+
+        raise ValueError(f"No image URL or b64_json in SiliconFlow response: {data}")
+
+
+async def _generate_image_openai(
+    api_key: str, model: str, base_url: str, prompt: str, size: str
+) -> bytes:
+    """Generate image via OpenAI GPT Image API.
+
+    Requests b64_json format to avoid dealing with URL expiry.
+    """
+    import httpx
+    import base64
+
+    url = f"{base_url.rstrip('/')}/images/generations"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "n": 1,
+        "response_format": "b64_json",
+    }
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        if resp.status_code != 200:
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                err_msg = resp.text[:300]
+            raise ValueError(f"OpenAI API error ({resp.status_code}): {err_msg}")
+        data = resp.json()
+
+        image_data = data.get("data", [{}])[0]
+        b64 = image_data.get("b64_json")
+        if b64:
+            return base64.b64decode(b64)
+
+        # Fallback: try URL
+        image_url = image_data.get("url")
+        if image_url:
+            img_resp = await client.get(image_url, timeout=60)
+            img_resp.raise_for_status()
+            return img_resp.content
+
+        raise ValueError(f"No b64_json or URL in OpenAI response: {data}")
+
+
+async def _generate_image_google(
+    api_key: str, model: str, base_url: str, prompt: str, size: str
+) -> bytes:
+    """Generate image via Google Gemini Native Image API (Nano Banana) or Vertex AI.
+
+    Uses the Gemini generateContent endpoint with responseModalities=["IMAGE"].
+    Converts WxH size to aspect ratio format (e.g. 1024x1024 -> 1:1).
+    Extracts the generated image from inlineData in the response parts.
+    """
+    import httpx
+    import base64
+
+    url = f"{base_url.rstrip('/')}/models/{model}:generateContent?key={api_key}"
+
+    # Convert WxH size to aspect ratio for Gemini API
+    # Supported: 1:1, 3:4, 4:3, 9:16, 16:9
+    size_to_ratio = {
+        "1024x1024": "1:1",
+        "768x1024": "3:4",
+        "1024x768": "4:3",
+        "768x1366": "9:16",
+        "1366x768": "16:9",
+        "1024x1536": "3:4",
+        "1536x1024": "4:3",
+    }
+    aspect_ratio = size_to_ratio.get(size, "1:1")
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {
+                "numberOfImages": 1,
+                "aspectRatio": aspect_ratio,
+            },
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(
+            url, json=payload, headers={"Content-Type": "application/json"}
+        )
+        if resp.status_code != 200:
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                err_msg = resp.text[:300]
+            raise ValueError(f"Google Gemini API error ({resp.status_code}): {err_msg}")
+        data = resp.json()
+
+        # Extract image from response candidates -> content -> parts
+        candidates = data.get("candidates", [])
+        if not candidates:
+            raise ValueError(f"No candidates in Gemini response: {data}")
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        for part in parts:
+            if "inlineData" in part:
+                b64 = part["inlineData"]["data"]
+                return base64.b64decode(b64)
+
+        raise ValueError(
+            f"No image (inlineData) found in Gemini response parts. "
+            f"Parts: {[p.get('text', '(image)') if 'text' in p else '(inline)' for p in parts]}"
+        )
 
 
 # ─── Feishu Helper ────────────────────────────────────────────────────────────
@@ -5725,7 +7226,7 @@ async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
     if not pages:
         return f"📂 Wiki 页面 `{node_token}` 下没有子页面。"
 
-    lines = [f"📂 Wiki 页面 `{node_token}` 的子页面（共 {len(pages)} 个）：\n"]
+    lines = [f"📂 Wiki 页面 `{node_token}` 的子页面（共 {len(pages)} 个）：\nspace_id: `{space_id}`\n"]
     for p in pages:
         indent = "  " * p["depth"]
         child_hint = " _(有子页面)_" if p["has_child"] else ""
@@ -5797,33 +7298,96 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
         return "Failed: Feishu app credentials not configured for this agent."
-        
-    folder_token = arguments.get("folder_token")
-    
+
+    folder_token = (arguments.get("folder_token") or "").strip()
+    wiki_space_id = (arguments.get("wiki_space_id") or "").strip()
+    parent_node_token = (arguments.get("parent_node_token") or "").strip()
+
     from app.services.feishu_service import feishu_service
+    tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+
     try:
+        import httpx
+
+        # ── Smart fallback: if folder_token is actually a wiki node token,
+        #    auto-redirect to wiki creation branch. This handles LLMs that
+        #    pass the wiki node token via the old folder_token param.
+        if folder_token and not wiki_space_id and not parent_node_token:
+            probe = await _feishu_wiki_get_node(folder_token, tenant_token)
+            if probe and probe.get("space_id"):
+                wiki_space_id = probe["space_id"]
+                parent_node_token = probe.get("node_token", folder_token)
+                folder_token = ""  # Don't use as Drive folder
+
+        # ── Wiki branch: create as a wiki node ──────────────────────────
+        # If parent_node_token is given but wiki_space_id is not,
+        # resolve space_id from the parent node automatically.
+        if parent_node_token and not wiki_space_id:
+            node_info = await _feishu_wiki_get_node(parent_node_token, tenant_token)
+            if node_info and node_info.get("space_id"):
+                wiki_space_id = node_info["space_id"]
+
+        if wiki_space_id:
+            body: dict = {
+                "obj_type": "docx",
+                "node_type": "origin",  # Required by Feishu Wiki API: "origin" = new entity
+                "title": title,
+            }
+            if parent_node_token:
+                body["parent_node_token"] = parent_node_token
+
+            import logging
+            _wiki_log = logging.getLogger("feishu_wiki_create")
+            _wiki_log.info(f"Creating wiki node in space={wiki_space_id}, body={body}")
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{wiki_space_id}/nodes",
+                    json=body,
+                    headers={"Authorization": f"Bearer {tenant_token}"},
+                )
+            result = resp.json()
+            _wiki_log.info(f"Wiki create response: code={result.get('code')}, msg={result.get('msg')}")
+            err = _check_feishu_err(result)
+            if err:
+                return err
+
+            node = result.get("data", {}).get("node", {})
+            # obj_token is the underlying docx token used by feishu_doc_append
+            doc_token = node.get("obj_token", "")
+            node_token = node.get("node_token", "")
+            # Wiki docs are accessed via /wiki/{node_token}, not /docx/{obj_token}
+            doc_url = await _get_feishu_tenant_doc_url(tenant_token, node_token, doc_type="wiki")
+
+            return (
+                f"✅ 知识库文档创建成功！\n"
+                f"标题：{title}\n"
+                f"文档 Token（用于 feishu_doc_append）：{doc_token}\n"
+                f"Wiki Node Token：{node_token}\n"
+                f"🔗 访问链接：{doc_url}\n"
+                f"下一步：调用 feishu_doc_append(document_token=\"{doc_token}\", content=\"...\") 写入正文内容。"
+            )
+
+        # ── Regular Drive branch (original behavior) ─────────────────────
         resp = await feishu_service.create_feishu_doc(app_id, app_secret, folder_token, title)
         err = _check_feishu_err(resp)
         if err: return err
         
         doc = resp.get("data", {}).get("document", {})
         doc_token = doc.get("document_id", "")
-        # Get tenant-specific doc URL via tenant domain resolution
-        tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
         doc_url = await _get_feishu_tenant_doc_url(tenant_token, doc_token)
         
-        # Auto-share with the Feishu sender so they can access the document
+        # Auto-share with the Feishu sender so they can access the document.
+        # channel_feishu_sender_open_id is a module-level ContextVar defined in this file;
+        # no import needed — it is already in scope.
         share_note = ""
         try:
-            from app.api.websocket_chat import channel_feishu_sender_open_id
             sender_open_id = channel_feishu_sender_open_id.get(None)
             if sender_open_id and doc_token:
-                import httpx
-                tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
                 async with httpx.AsyncClient(timeout=10) as client:
                     share_resp = await client.post(
                         f"https://open.feishu.cn/open-apis/drive/v1/permissions/{doc_token}/members",
-                        params={"type": "docx", "need_notification": "false"},
+                        params={"type": "docx"},
                         json={
                             "member_type": "openid",
                             "member_id": sender_open_id,
@@ -5946,8 +7510,13 @@ def _markdown_to_feishu_blocks(markdown: str) -> list[dict]:
 
         # ── Divider ──────────────────────────────────────────────────────────
         if _re.fullmatch(r'[-*_]{3,}', line.strip()):
-            # block_type 22 = Divider; no extra fields allowed (empty dict causes validation error)
-            blocks.append({"block_type": 22})
+            # NOTE: block_type 22 (Feishu native divider) is rejected by the batch children
+            # creation API with error 99992402 (field validation failed).  Render as a plain
+            # text block containing a visual em-dash separator instead — always accepted.
+            blocks.append({
+                "block_type": 2,
+                "text": {"elements": [{"text_run": {"content": "\u2500" * 24}}]},
+            })
             i += 1
             continue
 
@@ -6053,7 +7622,10 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
 
             result = (await client.post(
                 f"https://open.feishu.cn/open-apis/docx/v1/documents/{docx_token}/blocks/{body_block_id}/children",
-                json={"children": children, "index": -1}, # -1 appends to end
+                # Do NOT pass index: -1.  Omitting the field lets Feishu default to
+                # append-at-end, which is always valid.  Passing -1 explicitly can
+                # trigger error 1770001 (invalid param) with certain block type mixes.
+                json={"children": children},
                 headers={"Authorization": f"Bearer {tenant_token}"},
             )).json()
 
@@ -6069,22 +7641,20 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
         return f"Failed: {str(e)[:300]}"
 
 
-# ─── Feishu Drive Share (all file types) ──────────────────────────────────────
+# ─── Feishu Drive Share (All File Types) ────────────────────────────────────────
 
 async def _feishu_drive_share(agent_id: uuid.UUID, arguments: dict) -> str:
-    """Manage Feishu Drive file collaborators.
-    Supports all file types: docx, bitable, sheet, doc, folder, mindnote, slides.
-    Automatically handles both regular files (Drive permissions API)
+    """Manage Feishu drive file collaborators.
+    Automatically handles both regular docs/files (Drive permissions API)
     and Wiki node documents (Wiki space members API).
     """
     import httpx
     import re as _re
 
     document_token = (arguments.get("document_token") or "").strip()
+    doc_type = (arguments.get("doc_type") or "docx").strip()
     action = (arguments.get("action") or "list").strip()
     permission = (arguments.get("permission") or "edit").strip()
-    # doc_type defaults to 'docx' for backward compatibility
-    doc_type = (arguments.get("doc_type") or "docx").strip()
 
     if not document_token:
         return "❌ Missing required argument 'document_token'"
@@ -6989,14 +8559,34 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
     except Exception as e:
         return f"Failed to publish: {e}"
 
-    # Build public URL using configured PUBLIC_BASE_URL
-    from app.services.platform_service import platform_service
-    async with async_session() as db2:
-        public_base = await platform_service.get_public_base_url(db2)
+    # Build public URL.
+    # _publish_page is called from a tool handler — there is no HTTP request
+    # object available, so platform_service.get_public_base_url() would fall
+    # back to the hardcoded 'https://try.clawith.ai' when PUBLIC_BASE_URL is
+    # not set. Instead, read the env var directly and surface a clear error
+    # when it is missing, so source-code deployers know exactly what to fix.
+    public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    if not public_base:
+        # Relative path works inside the same deployment; include a note so
+        # the user can configure PUBLIC_BASE_URL for a fully-qualified link.
+        url = f"/p/{short_id}"
+        url_note = (
+            "\n\n> Note: PUBLIC_BASE_URL is not configured on this server. "
+            "The link above is a relative path — prepend your server's domain "
+            "to get the full URL. Set PUBLIC_BASE_URL in your .env to have "
+            "the agent generate complete links automatically."
+        )
+    else:
+        url = f"{public_base}/p/{short_id}"
+        url_note = ""
 
-    url = f"{public_base}/p/{short_id}" if public_base else f"/p/{short_id}"
+    return (
+        f"Published successfully!\n\n"
+        f"Public URL: {url}\n"
+        f"Title: {title}\n\n"
+        f"Anyone can access this page without logging in.{url_note}"
+    )
 
-    return f"Published successfully!\n\nPublic URL: {url}\nTitle: {title}\n\nAnyone can access this page without logging in."
 
 
 async def _list_published_pages(agent_id: uuid.UUID) -> str:
@@ -7999,3 +9589,143 @@ async def _agentbay_computer_list_visible_apps(agent_id: Optional[uuid.UUID], ws
     except Exception as e:
         logger.exception(f"[AgentBay] Computer list_visible_apps failed")
         return f"List applications failed: {str(e)[:200]}"
+
+
+async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Transfer a file between workspace and an AgentBay environment, or between two environments.
+
+    Supported transfer directions:
+      - workspace  → env:      upload_file(local_workspace_path, remote_path)   [single SDK call]
+      - env        → workspace: download_file(remote_path, local_workspace_path) [single SDK call]
+      - env A      → env B:    download to /tmp/<uuid>, upload to env B, cleanup /tmp [transparent]
+
+    The 'local' side of the SDK calls is always the Clawith backend server,
+    which has access to the agent workspace directory.
+    """
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    from_type = arguments.get("from_type", "")
+    from_path = arguments.get("from_path", "")
+    to_type   = arguments.get("to_type", "")
+    to_path   = arguments.get("to_path", "")
+    session_id = arguments.pop("_session_id", "")
+
+    if not all([from_type, from_path, to_type, to_path]):
+        return "Missing required parameters: from_type, from_path, to_type, to_path"
+
+    # Reject no-op transfers
+    if from_type == "workspace" and to_type == "workspace":
+        return "Cannot transfer workspace → workspace. Use write_file or workspace tools instead."
+    if from_type == to_type and from_type != "workspace":
+        return f"Same environment ({from_type}) transfer: use agentbay_command_exec with 'cp' to copy files within the same environment."
+
+    env_types = {"browser", "computer", "code"}
+
+    # ── Helper: resolve and validate a workspace-relative path ──────────────
+    def resolve_workspace(rel_path: str) -> tuple[str | None, str]:
+        """Return (absolute_local_path_str, error_message). error_message is '' on success."""
+        local = (ws / rel_path).resolve()
+        if not str(local).startswith(str(ws.resolve())):
+            return None, "Permission denied: path must be inside the agent workspace"
+        return str(local), ""
+
+    try:
+        # ── Case 1: workspace → env ──────────────────────────────────────────
+        if from_type == "workspace" and to_type in env_types:
+            local_path, err = resolve_workspace(from_path)
+            if err:
+                return err
+            import os
+            if not os.path.exists(local_path):
+                return f"File not found in workspace: {from_path}"
+            client = await get_agentbay_client_for_agent(agent_id, to_type, session_id=session_id)
+            result = await asyncio.to_thread(
+                client._session.file_system.upload_file,
+                local_path, to_path
+            )
+            if result.success:
+                msg = (
+                    f"Transferred workspace/{from_path} → [{to_type}]{to_path} "
+                    f"({result.bytes_sent} bytes)"
+                )
+                # After uploading to the computer desktop directory, notify the GNOME
+                # file manager so the file icon appears immediately without manual refresh.
+                desktop_dir = "/home/wuying/桌面"
+                if to_type == "computer" and to_path.startswith(desktop_dir):
+                    try:
+                        await asyncio.to_thread(
+                            client._session.command.exec,
+                            f"DISPLAY=:0 gio info '{to_path}' 2>/dev/null || true"
+                        )
+                    except Exception:
+                        pass  # Non-critical: desktop refresh failure doesn't affect transfer result
+                return msg
+            return f"Upload failed: {result.error_message}"
+
+        # ── Case 2: env → workspace ──────────────────────────────────────────
+        elif from_type in env_types and to_type == "workspace":
+            local_path, err = resolve_workspace(to_path)
+            if err:
+                return err
+            import os
+            os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+            client = await get_agentbay_client_for_agent(agent_id, from_type, session_id=session_id)
+            result = await asyncio.to_thread(
+                client._session.file_system.download_file,
+                from_path, local_path
+            )
+            if result.success:
+                return (
+                    f"Transferred [{from_type}]{from_path} → workspace/{to_path} "
+                    f"({result.bytes_received} bytes). "
+                    f"File available in workspace at: {to_path}"
+                )
+            return f"Download failed: {result.error_message}"
+
+        # ── Case 3: env A → env B (transparent /tmp/ intermediary) ──────────
+        elif from_type in env_types and to_type in env_types:
+            import uuid as _uuid
+            import os
+            tmp_path = f"/tmp/agentbay_transfer_{_uuid.uuid4().hex}"
+            try:
+                # Step 1: download from source env to backend /tmp/
+                src_client = await get_agentbay_client_for_agent(agent_id, from_type, session_id=session_id)
+                dl_result = await asyncio.to_thread(
+                    src_client._session.file_system.download_file,
+                    from_path, tmp_path
+                )
+                if not dl_result.success:
+                    return f"Transfer failed (download from {from_type}): {dl_result.error_message}"
+
+                # Step 2: upload from backend /tmp/ to destination env
+                dst_client = await get_agentbay_client_for_agent(agent_id, to_type, session_id=session_id)
+                ul_result = await asyncio.to_thread(
+                    dst_client._session.file_system.upload_file,
+                    tmp_path, to_path
+                )
+                if not ul_result.success:
+                    return f"Transfer failed (upload to {to_type}): {ul_result.error_message}"
+
+                return (
+                    f"Transferred [{from_type}]{from_path} → [{to_type}]{to_path} "
+                    f"({dl_result.bytes_received} bytes)"
+                )
+            finally:
+                # Always clean up the temporary file regardless of success or failure
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass  # Non-critical: ignore cleanup errors
+
+        else:
+            return f"Unsupported transfer: {from_type} → {to_type}"
+
+    except RuntimeError as e:
+        return f"{str(e)}"
+    except Exception as e:
+        logger.exception(f"[AgentBay] File transfer failed for agent {agent_id}")
+        return f"File transfer failed: {str(e)[:200]}"

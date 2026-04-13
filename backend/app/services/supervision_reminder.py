@@ -141,7 +141,7 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
         api_key=get_model_api_key(model),
         model=model.model,
         base_url=base_url,
-        timeout=60.0,
+        timeout=float(getattr(model, 'request_timeout', None) or 60.0),
     )
     try:
         response = await client.complete(
@@ -337,7 +337,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
             logger.info(f"📋 Supervision reminder for '{task.title}' -> {target_name}, sent={sent}")
 
     except Exception as e:
-        logger.error(f"Supervision reminder error for task {task.id}: {e}", exc_info=True)
+        logger.exception(f"Supervision reminder error for task {task.id}: {e}")
 
 
 async def _supervision_tick():
@@ -387,7 +387,7 @@ async def _supervision_tick():
                     logger.error(f"Error checking supervision task {task.id}: {e}")
 
     except Exception as e:
-        logger.error(f"Supervision tick error: {e}", exc_info=True)
+        logger.exception(f"Supervision tick error: {e}")
         await write_audit_log("supervision_error", {"error": str(e)[:300]})
 
 

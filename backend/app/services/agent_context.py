@@ -239,7 +239,7 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
 | `feishu_calendar_delete` | `event_id`. |
 | `feishu_wiki_list` | `node_token` (from wiki URL: feishu.cn/wiki/**NodeToken**), optional `recursive`(bool). Lists all sub-pages with titles and tokens. |
 | `feishu_doc_read` | `document_token`. Supports both regular docx tokens and **wiki node tokens** (auto-converts). |
-| `feishu_doc_create` | `title`. Returns real Token and 🔗 access link, pre-authorized for you. |
+| `feishu_doc_create` | `title`. Optional: `wiki_space_id` + `parent_node_token` to create directly in a Wiki. Returns Token and 🔗 access link. |
 | `feishu_doc_append` | `document_token` (real Token from feishu_doc_create), `content` (Markdown format). |
 | `feishu_drive_share` | `document_token`, `doc_type`(docx/bitable/sheet/doc/folder, default: docx), `action`(add/remove/list), `member_names`(name list, auto-lookup), `permission`(view/edit/full_access). |
 | `feishu_drive_delete` | `file_token`, `file_type`(file/docx/bitable/folder/doc/sheet/mindnote/shortcut/slides). Moves to recycle bin. |

@@ -94,13 +94,33 @@ class ChannelUserService:
         if user:
             if channel_type in ("feishu", "dingtalk", "wecom"):
                 if org_member and not org_member.user_id:
+                    # Existing shell OrgMember not yet linked → link it
                     org_member.user_id = user.id
                 elif not org_member:
-                    # Create OrgMember shell for this identity
-                    await self._create_org_member_shell(
-                        db, provider, channel_type, external_user_id, extra_info,
-                        linked_user_id=user.id
+                    # No OrgMember found by external_id. Before creating a new shell,
+                    # check if this user already has an OrgMember from org sync so
+                    # we reuse it instead of creating a duplicate entry.
+                    existing_member = await self._find_existing_org_member_for_user(
+                        db, user.id, provider.id, tenant_id
                     )
+                    if existing_member:
+                        # Reuse the org-synced record: update its channel-specific IDs
+                        # so future lookups by external_id work without a new shell.
+                        if channel_type == "feishu":
+                            if external_user_id.startswith("on_"):
+                                existing_member.unionid = existing_member.unionid or external_user_id
+                            elif external_user_id.startswith("ou_"):
+                                existing_member.open_id = existing_member.open_id or external_user_id
+                        logger.info(
+                            f"[{channel_type}] Reusing org-synced OrgMember {existing_member.id} "
+                            f"for user {user.id} instead of creating a duplicate shell"
+                        )
+                    else:
+                        # Truly no OrgMember for this user → create shell
+                        await self._create_org_member_shell(
+                            db, provider, channel_type, external_user_id, extra_info,
+                            linked_user_id=user.id
+                        )
             await db.flush()
             return user
 
@@ -230,6 +250,28 @@ class ChannelUserService:
         db.add(member)
         await db.flush()
         return member
+
+    async def _find_existing_org_member_for_user(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        provider_id: uuid.UUID,
+        tenant_id: uuid.UUID | None,
+    ) -> OrgMember | None:
+        """Find an existing OrgMember already linked to the given platform User.
+
+        Used before creating a shell record to avoid duplicate OrgMember entries
+        when an org-sync-sourced record already exists for the same user.
+        """
+        query = select(OrgMember).where(
+            OrgMember.user_id == user_id,
+            OrgMember.provider_id == provider_id,
+            OrgMember.status == "active",
+        )
+        if tenant_id:
+            query = query.where(OrgMember.tenant_id == tenant_id)
+        result = await db.execute(query.limit(1))
+        return result.scalar_one_or_none()
 
     async def _create_channel_user(
         self,

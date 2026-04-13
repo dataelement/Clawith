@@ -26,6 +26,7 @@ class LLMModel(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     supports_vision: Mapped[bool] = mapped_column(Boolean, default=False)
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    request_timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Request timeout in seconds, default 120
     max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Per-model output token limit override
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

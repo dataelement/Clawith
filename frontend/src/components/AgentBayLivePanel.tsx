@@ -15,6 +15,8 @@ interface Props {
     onToggle: () => void;
     agentId?: string;     // needed for Take Control
     sessionId?: string;   // needed for Take Control
+    /** Called by TC panel on close to push the latest screenshot into liveState */
+    onLiveUpdate?: (env: 'browser' | 'desktop', screenshotDataUri: string) => void;
 }
 
 /* ── Tab Icons (Linear-style minimal SVGs) ── */
@@ -59,8 +61,30 @@ type TabType = 'desktop' | 'browser' | 'code';
 const MIN_WIDTH = 300;  // minimum panel width in px
 const MAX_WIDTH_VW = 0.65; // maximum panel width as fraction of viewport width
 
-export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId }: Props) {
+/**
+ * Calculate initial panel width as 50% of the chat container.
+ * The chat container sits inside `.main-content` (after the sidebar),
+ * so we use the viewport width minus sidebar instead of a fixed value.
+ */
+function calcHalfContainerWidth(): number {
+    // Try to measure the actual chat container
+    const container = document.querySelector('.chat-container') as HTMLElement | null;
+    if (container) {
+        return Math.max(MIN_WIDTH, Math.floor(container.clientWidth / 2));
+    }
+    // Fallback: guess sidebar is ~60px, split the remaining viewport in half
+    return Math.max(MIN_WIDTH, Math.floor((window.innerWidth - 60) / 2));
+}
+
+export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId, onLiveUpdate }: Props) {
     const { t } = useTranslation();
+
+    // Keep a ref to the latest onLiveUpdate so TakeControl callbacks always
+    // call the current version, even when captured in stale closures.
+    const onLiveUpdateRef = useRef(onLiveUpdate);
+    useEffect(() => {
+        onLiveUpdateRef.current = onLiveUpdate;
+    });
 
     // Take Control state
     const [showTakeControl, setShowTakeControl] = useState(false);
@@ -74,8 +98,22 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
     const [activeTab, setActiveTab] = useState<TabType>('desktop');
     const codeEndRef = useRef<HTMLDivElement>(null);
 
-    const [panelWidth, setPanelWidth] = useState(420);
+    const [panelWidth, setPanelWidth] = useState(() => calcHalfContainerWidth());
+    const panelRef = useRef<HTMLDivElement>(null);
+
+    // Recalculate on window resize to keep approximate 50% split
+    useEffect(() => {
+        const onResize = () => {
+            // Only auto-resize if user hasn't manually dragged
+            if (!isDragging.current && !userResized.current) {
+                setPanelWidth(calcHalfContainerWidth());
+            }
+        };
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
     const isDragging = useRef(false);
+    const userResized = useRef(false);  // Once user manually drags, stop auto-resizing
     const dragStartX = useRef(0);
     const dragStartWidth = useRef(0);
 
@@ -144,6 +182,7 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
         const onMouseUp = () => {
             if (!isDragging.current) return;
             isDragging.current = false;
+            userResized.current = true;  // User manually chose a width; stop auto-resizing
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
         };
@@ -205,7 +244,7 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
                     <button
                         className="live-panel-take-control"
                         onClick={() => setShowTakeControl(true)}
-                        title="Take Control — manually interact with the browser"
+                        title={activeTab === 'desktop' ? 'Take Control — manually interact with the cloud desktop' : 'Take Control — manually interact with the browser'}
                     >
                         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M3 3l5.5 10 1.5-4 4-1.5z" />
@@ -273,7 +312,19 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
                 <TakeControlPanel
                     agentId={agentId}
                     sessionId={sessionId}
+                    // Pass the env type so TC connects to the right session:
+                    // desktop tab => computer session, browser tab => browser session
+                    envType={activeTab === 'desktop' ? 'computer' : 'browser'}
                     onClose={() => setShowTakeControl(false)}
+                    onLastScreenshot={(dataUri) => {
+                        // Use the ref to always call the LATEST onLiveUpdate,
+                        // avoids React closure-staleness in async handleCancel.
+                        const env = activeTab === 'desktop' ? 'desktop' : 'browser';
+                        console.log('[LivePanel] Received last screenshot from TC, size:', dataUri.length, 'env:', env, 'onLiveUpdate:', !!onLiveUpdateRef.current);
+                        if (onLiveUpdateRef.current) {
+                            onLiveUpdateRef.current(env, dataUri);
+                        }
+                    }}
                 />
             )}
         </div>

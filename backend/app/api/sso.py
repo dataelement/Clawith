@@ -48,9 +48,16 @@ async def get_sso_session_status(sid: uuid.UUID, db: AsyncSession = Depends(get_
     }
     
     if session.status == "authorized" and session.access_token:
-        # Include token and user data once
+        # Include token and user data once.
+        # Must eagerly load the identity relationship because UserOut reads
+        # hybrid properties (username, email, etc.) that proxy to Identity.
         from app.models.user import User
-        user_result = await db.execute(select(User).where(User.id == session.user_id))
+        from sqlalchemy.orm import selectinload
+        user_result = await db.execute(
+            select(User)
+            .where(User.id == session.user_id)
+            .options(selectinload(User.identity))
+        )
         user = user_result.scalar_one_or_none()
         
         response["access_token"] = session.access_token

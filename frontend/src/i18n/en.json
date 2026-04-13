@@ -229,7 +229,7 @@
       "title": "🤖 Model Config",
       "model": "🧠 Model",
       "provider": "🏢 Provider",
-      "contextRounds": "🔄 Context Rounds"
+      "contextRounds": "🔄 Context Window"
     },
     "actions": {
       "start": "Start",
@@ -342,7 +342,16 @@
       "cancel": "Cancel",
       "toolName": "Tool Name",
       "enabled": "Enabled",
-      "disabled": "Disabled"
+      "disabled": "Disabled",
+      "skillFormat": "Skill Format:",
+      "importFromGithub": "Import from GitHub URL",
+      "githubUrlDesc": "Paste a GitHub URL pointing to a skill directory (must contain SKILL.md).",
+      "importPreset": "Import from Presets",
+      "importDesc": "Select a preset skill to import into this agent. All skill files will be copied to the agent's skills folder.",
+      "importedSuccess": "Imported \"{{name}}\" ({{count}} files)",
+      "importFailed": "Import failed",
+      "importing": "Importing...",
+      "importBtn": "Import"
     },
     "toolMgmt": {
       "title": "Tool Management",
@@ -363,8 +372,15 @@
       "cancel": "Cancel"
     },
     "chat": {
+      "sessionListTitle": "Session list",
+      "collapseSidebar": "Collapse session list",
       "mySessions": "My Sessions",
       "allUsers": "All Users",
+      "viewOtherUsersSessions": "View other users' sessions",
+      "otherUsersTab": "Other users",
+      "selectUserToView": "Select user",
+      "selectUserFirstHint": "Choose a user above to view their sessions with this agent (read-only).",
+      "noOtherUsersSessions": "No other users have sessions with this agent yet.",
       "newSession": "New Session",
       "noSessionsYet": "No sessions yet.",
       "clickToStart": "Click \"New Session\" to start.",
@@ -379,7 +395,11 @@
       "attachment": "Attachment",
       "uploadFailed": "Upload failed",
       "askAboutFile": "Ask about {{name}}...",
-      "thinking": "Thinking..."
+      "thinking": "Thinking...",
+      "collapseSessions": "Collapse sessions",
+      "showSessions": "Show chat sessions",
+      "toolCallChain": "Tools Used",
+      "analysing": "Analysing"
     },
     "activityLog": {
       "title": "Activity Log",
@@ -395,9 +415,9 @@
       "primaryModel": "Primary Model",
       "fallbackModel": "Fallback Model",
       "noFallback": "No fallback",
-      "conversationContext": "Conversation Context",
-      "maxRounds": "Max Rounds",
-      "roundsDesc": "Maximum LLM call rounds per conversation",
+      "conversationContext": "Context Window",
+      "maxRounds": "Context Window Size",
+      "roundsDesc": "Number of recent messages included as context for each LLM request",
       "tokenLimits": "Token Limits",
       "dailyLimit": "Daily Limit",
       "monthlyLimit": "Monthly Limit",
@@ -476,6 +496,54 @@
         "useAccessDesc": "Task, Chat, Tools, Skills, Workspace",
         "manageAccess": "Manage",
         "manageAccessDesc": "Full access including Settings, Mind, Relationships"
+      },
+      "timezone": {
+        "label": "Timezone",
+        "description": "Set the timezone for scheduled tasks and time-based triggers",
+        "zones": {
+          "UTC": "UTC (Coordinated Universal Time)",
+          "Asia/Shanghai": "Asia/Shanghai (Beijing Time, UTC+8)",
+          "Asia/Tokyo": "Asia/Tokyo (Japan Time, UTC+9)",
+          "Asia/Seoul": "Asia/Seoul (Korea Time, UTC+9)",
+          "Asia/Singapore": "Asia/Singapore (Singapore Time, UTC+8)",
+          "Asia/Kolkata": "Asia/Kolkata (India Time, UTC+5:30)",
+          "Asia/Dubai": "Asia/Dubai (Gulf Time, UTC+4)",
+          "Europe/London": "Europe/London (UK Time, UTC+0/+1)",
+          "Europe/Paris": "Europe/Paris (Central European Time, UTC+1/+2)",
+          "Europe/Berlin": "Europe/Berlin (Central European Time, UTC+1/+2)",
+          "Europe/Moscow": "Europe/Moscow (Moscow Time, UTC+3)",
+          "America/New_York": "America/New_York (Eastern Time, UTC-5/-4)",
+          "America/Chicago": "America/Chicago (Central Time, UTC-6/-5)",
+          "America/Denver": "America/Denver (Mountain Time, UTC-7/-6)",
+          "America/Los_Angeles": "America/Los_Angeles (Pacific Time, UTC-8/-7)",
+          "America/Sao_Paulo": "America/Sao_Paulo (Brasilia Time, UTC-3)",
+          "Australia/Sydney": "Australia/Sydney (Australian Eastern Time, UTC+10/+11)",
+          "Pacific/Auckland": "Pacific/Auckland (New Zealand Time, UTC+12/+13)"
+        }
+      },
+      "approvals": {
+        "title": "Approvals",
+        "pending": "{{count}} Pending",
+        "approve": "Approve",
+        "reject": "Reject",
+        "history": "History",
+        "noRecords": "No approval records"
+      },
+      "triggerLimits": {
+        "title": "Trigger Limits",
+        "description": "Limit how many triggers this agent can create and their behavior",
+        "maxTriggers": "Max Triggers",
+        "maxTriggersDesc": "Max active triggers the agent can have",
+        "minPollInterval": "Min Poll Interval (min)",
+        "minPollIntervalDesc": "Minimum interval for polling external URLs",
+        "webhookRateLimit": "Webhook Rate Limit (/min)",
+        "webhookRateLimitDesc": "Max webhook calls per minute from external services"
+      },
+      "welcomeMessage": {
+        "title": "Welcome Message",
+        "description": "Greeting message sent automatically when a user starts a new web conversation. Supports Markdown. Leave empty to disable.",
+        "saved": "Saved",
+        "placeholder": "e.g. Hello! I'm your AI assistant. How can I help you?"
       }
     },
     "tools": {
@@ -483,7 +551,54 @@
       "companyTools": "Company Configured Tools",
       "agentInstalled": "Agent Self-Installed Tools",
       "noInstalled": "No tools installed yet",
-      "noCompany": "No company-configured tools"
+      "noCompany": "No company-configured tools",
+      "configured": "Configured",
+      "config": "️ Config",
+      "testConnection": "Test Connection",
+      "testing": "Testing...",
+      "testSuccessful": "Test successful",
+      "testFailed": "Test failed",
+      "resetToGlobal": "Reset to Global",
+      "configJson": "Config JSON (Agent Override)",
+      "globalDefault": "Global default:",
+      "adminOnly": "(Admin only)",
+      "company": "(company: {{val}})",
+      "sharedCategoryConfig": "Shared category configuration (affects all tools in this category)",
+      "perAgentConfig": "Per-agent configuration (overrides global defaults)",
+      "setupGuide": "Setup guide",
+      "configureCategory": "Configure {{category}}",
+      "enableDisableAll": "Enable/Disable all {{category}} tools",
+      "configurePerAgent": "Configure per-agent settings",
+      "removeTool": "Remove from agent",
+      "confirmDelete": "Remove \"{{name}}\" from this agent?",
+      "usingCompanyKey": "Using company key ({{val}})",
+      "usingCompanyConfig": "Using company config ({{val}})",
+      "leaveBlankDefault": "Leave blank to use global default",
+      "saveFailed": "Save failed",
+      "deleteFailed": "Delete failed",
+      "expired": "Expired",
+      "noPresetSkills": "No preset skills available",
+      "importedFiles": "Imported {{count}} files",
+      "importFailed": "Import failed",
+      "importing": "Importing...",
+      "import": "Import",
+      "importFromUrl": "Import from URL",
+      "browseClawhub": "Browse ClawHub",
+      "importFromPresets": "Import from Presets",
+      "searchSkills": "Search skills...",
+      "install": "Install",
+      "installing": "Installing...",
+      "installed": "Installed",
+      "browseClawhubTitle": "Browse ClawHub",
+      "browseClawhubDesc": "Search and install skills from ClawHub directly into this agent's workspace.",
+      "searchClawhubHint": "Search ClawHub to find skills",
+      "installedSuccess": "Installed \"{{name}}\" ({{count}} files)",
+      "somethingWentWrong": "Something went wrong",
+      "unexpectedError": "An unexpected error occurred while loading this page.",
+      "reloadPage": "Reload Page",
+      "selectAgent": "— Select Agent —",
+      "failedToCreateSession": "Failed to create session",
+      "failed": "Failed"
     },
     "toolCategories": {
       "file": "File Operations",
@@ -492,12 +607,109 @@
       "search": "Search",
       "custom": "Custom",
       "general": "General",
-      "email": "Email"
+      "email": "Email",
+      "aware": "Aware & Triggers",
+      "social": "Social",
+      "code": "Code & Execution",
+      "discovery": "Discovery",
+      "feishu": "Feishu / Lark",
+      "agentbay": "AgentBay"
     },
     "upload": {
       "success": "Upload successful",
       "failed": "Upload failed",
       "uploading": "Uploading..."
+    },
+    "skillNames": {
+      "web-research": "Web Research",
+      "data-analysis": "Data Analysis",
+      "content-writing": "Content Writing",
+      "competitive-analysis": "Competitive Analysis",
+      "meeting-notes": "Meeting Notes",
+      "complex-task-executor": "Complex Task Executor",
+      "skill-creator": "Skill Creator",
+      "content-research-writer": "Content Research Writer",
+      "mcp-installer": "MCP Tool Installer"
+    },
+    "skillDescriptions": {
+      "web-research": "Systematic web searching and information synthesis. Use when: needing factual data from the web, evaluating sources, or cross-referencing claims. NOT for: simple trivia or local file search.",
+      "data-analysis": "Data interpretation and structured reporting. Use when: analyzing CSV/dataset files, finding trends, or generating statistical summaries. NOT for: writing code to build data models.",
+      "content-writing": "Professional content creation and tone adaptation. Use when: drafting articles, emails, or marketing copy with specific stylistic requirements. NOT for: casual chat responses.",
+      "competitive-analysis": "Competitor research and comparison frameworks. Use when: asked to compare companies, products, or perform SWOT/feature matrix analysis. NOT for: general academic research.",
+      "meeting-notes": "Meeting summarization and follow-up tracking. Use when: given meeting transcripts or rough notes to extract structured action items and key decisions. NOT for: generic document summarization.",
+      "complex-task-executor": "Structured methodology for decomposing, planning, and executing complex multi-step tasks with progress tracking",
+      "skill-creator": "Create new skills, modify and improve existing skills, and measure skill performance",
+      "content-research-writer": "Assists in writing high-quality content by conducting research, adding citations, improving hooks, iterating on outlines, and providing real-time section feedback",
+      "mcp-installer": "Guide users through discovering, configuring, and installing MCP tools directly in chat — no Settings page required"
+    },
+    "credentials": {
+      "title": "Credentials",
+      "add": "Add",
+      "description": "Store login credentials and cookies for websites. Cookies are automatically injected when the agent opens a browser via AgentBay.",
+      "empty": "No credentials configured",
+      "loading": "Loading...",
+      "error": "Failed to load credentials",
+      "saveError": "Save failed",
+      "deleteError": "Delete failed",
+      "platformRequired": "Platform is required",
+      "cookiesInvalid": "Cookies must be a JSON array",
+      "cookiesJsonInvalid": "Invalid JSON format for cookies",
+      "status": {
+        "active": "Active",
+        "expired": "Expired",
+        "needs_relogin": "Needs Re-login"
+      },
+      "meta": {
+        "cookies": "Cookies",
+        "injected": "Injected"
+      },
+      "timeAgo": {
+        "justNow": "just now",
+        "minutes": "{{count}}m ago",
+        "hours": "{{count}}h ago",
+        "days": "{{count}}d ago"
+      },
+      "actions": {
+        "edit": "Edit",
+        "delete": "Delete",
+        "cancel": "Cancel",
+        "save": "Save",
+        "create": "Create",
+        "update": "Update",
+        "saving": "Saving..."
+      },
+      "deleteConfirm": {
+        "title": "Delete credential for {{platform}}?",
+        "confirm": "Delete"
+      },
+      "modal": {
+        "addTitle": "Add Credential",
+        "editTitle": "Edit Credential",
+        "platform": "Platform",
+        "platformPlaceholder": "e.g. baidu.com, xiaohongshu.com",
+        "displayName": "Display Name",
+        "displayNamePlaceholder": "e.g. Marketing Account",
+        "type": "Type",
+        "typeOptions": {
+          "website": "Website",
+          "email": "Email",
+          "social": "Social",
+          "api_key": "API Key"
+        },
+        "username": "Username",
+        "usernamePlaceholder": "Login username or email",
+        "password": "Password",
+        "passwordHint": "(leave empty to keep current)",
+        "passwordPlaceholder": "Login password",
+        "loginUrl": "Login URL",
+        "loginUrlPlaceholder": "https://example.com/login",
+        "cookies": "Cookies JSON",
+        "cookiesHint": "(leave empty to keep current)",
+        "cookiesPlaceholder": "[\n  { \"name\": \"session\", \"value\": \"abc123\", \"domain\": \".example.com\", \"path\": \"/\" }\n]",
+        "cookiesHelp": "Paste cookies exported from",
+        "cookiesHelpLink": "Cookie-Editor",
+        "cookiesHelpSuffix": "or similar browser extension. Must be a JSON array."
+      }
     }
   },
   "wizard": {
@@ -546,7 +758,47 @@
       "emailMgmt": "Email Management",
       "emailMgmtDesc": "Email and calendar management",
       "fileProcessing": "File Processing",
-      "fileProcessingDesc": "Document parsing and format conversion"
+      "fileProcessingDesc": "Document parsing and format conversion",
+      "required": "Required",
+      "noSkills": "No skills available. Add skills in Company Settings.",
+      "skills": {
+        "Web Research": {
+          "name": "Web Research",
+          "description": "Systematic web searching and information synthesis. Use when: needing factual data from the web, evaluating sources, or cross-referencing claims. NOT for: simple trivia or local file search."
+        },
+        "Data Analysis": {
+          "name": "Data Analysis",
+          "description": "Data interpretation and structured reporting. Use when: analyzing CSV/dataset files, finding trends, or generating statistical summaries. NOT for: writing code to build data models."
+        },
+        "Content Writing": {
+          "name": "Content Writing",
+          "description": "Professional content creation and tone adaptation. Use when: drafting articles, emails, or marketing copy with specific stylistic requirements. NOT for: casual chat responses."
+        },
+        "Competitive Analysis": {
+          "name": "Competitive Analysis",
+          "description": "Competitor research and comparison frameworks. Use when: asked to compare companies, products, or perform SWOT/feature matrix analysis. NOT for: general academic research."
+        },
+        "Meeting Notes": {
+          "name": "Meeting Notes",
+          "description": "Meeting summarization and follow-up tracking. Use when: given meeting transcripts or rough notes to extract structured action items and key decisions. NOT for: generic document summarization."
+        },
+        "Complex Task Executor": {
+          "name": "Complex Task Executor",
+          "description": "Structured methodology for decomposing, planning, and executing complex multi-step tasks with progress tracking"
+        },
+        "Skill Creator": {
+          "name": "Skill Creator",
+          "description": "Create new skills, modify and improve existing skills, and measure skill performance"
+        },
+        "Content Research Writer": {
+          "name": "Content Research Writer",
+          "description": "Assists in writing high-quality content by conducting research, adding citations, improving hooks, iterating on outlines, and providing real-time section feedback"
+        },
+        "MCP Tool Installer": {
+          "name": "MCP Tool Installer",
+          "description": "Guide users through discovering, configuring, and installing MCP tools directly in chat — no Settings page required"
+        }
+      }
     },
     "step4": {
       "title": "Permissions",
@@ -585,6 +837,34 @@
       "roleDescTooLong": "Role description cannot exceed 500 characters (current: {{count}})",
       "tokenLimitInvalid": "Please enter a valid positive integer",
       "modelRequired": "Please select a primary model"
+    },
+    "templates": {
+      "Project Manager": "Project Manager",
+      "Designer": "Designer",
+      "Product Intern": "Product Intern",
+      "Market Researcher": "Market Researcher",
+      "templateData": {
+        "Project Manager": {
+          "description": "Manages project timelines, task delegation, cross-team coordination, and progress reporting",
+          "personality": "- Organized, proactive, and detail-oriented\n- Strong communicator who keeps all stakeholders aligned\n- Balances urgency with quality, prioritizes ruthlessly",
+          "boundaries": "- Strategic decisions require leadership approval\n- Budget approvals must follow formal process\n- External communications on behalf of the company need sign-off"
+        },
+        "Designer": {
+          "description": "Assists with design requirements, design system maintenance, asset management, and competitive UI analysis",
+          "personality": "- Detail-oriented with strong visual aesthetics\n- Translates business requirements into design language\n- Proactively organizes design resources and maintains consistency",
+          "boundaries": "- Final design deliverables require design lead approval\n- Brand element modifications must go through review\n- Design source file management follows team conventions"
+        },
+        "Product Intern": {
+          "description": "Supports product managers with requirements analysis, competitive research, user feedback analysis, and documentation",
+          "personality": "- Eager learner, proactive, and inquisitive\n- Sensitive to user experience and product details\n- Thorough and well-structured in output",
+          "boundaries": "- Product recommendations should be labeled \"for reference only\"\n- Does not directly modify product specs without PM approval\n- User privacy data must be anonymized"
+        },
+        "Market Researcher": {
+          "description": "Focuses on market research, industry analysis, competitive intelligence tracking, and trend insights",
+          "personality": "- Rigorous, data-driven, and logically clear\n- Extracts key insights from complex data sets\n- Reports focus on actionable recommendations, not just data",
+          "boundaries": "- Analysis conclusions must be supported by data/sources\n- Commercially sensitive information must be labeled with confidentiality level\n- External research reports require approval before distribution"
+        }
+      }
     }
   },
   "task": {
@@ -631,6 +911,15 @@
       "invites": "Invitation Codes",
       "identity": "OA Management"
     },
+    "a2aAsync": {
+      "title": "Agent-to-Agent Async Communication",
+      "description": "Enable agents to communicate asynchronously with three modes: notify (one-way announcement), task_delegate (delegate work and get results back), and consult (synchronous question). When disabled, all agent-to-agent messages use synchronous consult mode — the same behavior as before this feature was introduced.",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "enabledHint": "Agents can use notify, task_delegate, and consult modes.",
+      "disabledHint": "All agent messages use synchronous consult mode.",
+      "enableWarning": "⚠️ You are about to enable the A2A Async Communication feature (Beta).\n\nThis feature allows agents to communicate asynchronously via notify and task_delegate modes.\n\nKnown potential issues:\n• Agent replies may contain internal technical terms (trigger names, focus items, etc.)\n• task_delegate callbacks may occasionally be delayed or dropped due to rate limiting\n• Token consumption will increase because each async message triggers a separate agent session\n• Agent loops may occur if triggers are not properly configured\n\nIf you encounter any issues, please return to this page and disable the toggle to restore stable synchronous behavior.\n\nAre you sure you want to enable this feature?"
+    },
     "invites": {
       "pageTitle": "Invitation Codes",
       "pageDesc": "Manage invitation codes for platform registration.",
@@ -660,7 +949,8 @@
       "password": "SMTP Password / App Password",
       "timeout": "Timeout (seconds)",
       "useSsl": "Use SSL/TLS",
-      "hint": "For Gmail, use an App Password. For QQ/163 mail, use the SMTP authorization code."
+      "hint": "For Gmail, use an App Password. For QQ/163 mail, use the SMTP authorization code.",
+      "sendTest": "Send Test Email"
     },
     "quotas": {
       "defaultUserQuotas": "Default User Quotas",
@@ -710,6 +1000,9 @@
       "maxOutputTokens": "Max Output Tokens",
       "maxOutputTokensPlaceholder": "Provider default",
       "maxOutputTokensDesc": "Override the default output token limit. Auto-filled from provider; adjust as needed.",
+      "requestTimeout": "Request Timeout (s)",
+      "requestTimeoutPlaceholder": "Leave empty for 120s default (300+ recommended for local models)",
+      "requestTimeoutDesc": "Override total HTTP timeout per request. Increase this for local models that are slow to generate.",
       "enabled": "Enabled",
       "disabled": "Disabled",
       "save": "Save",
@@ -722,7 +1015,12 @@
       "testing": "Testing...",
       "testSuccess": "OK ({{latency}}ms)",
       "testFailed": "Test failed: {{error}}\n\nLatency: {{latency}}ms",
-      "testError": "Test error: {{message}}"
+      "testError": "Test error: {{message}}",
+      "editModel": "Edit Model",
+      "vision": "Vision",
+      "temperature": "Temperature",
+      "temperaturePlaceholder": "e.g. 0.7 or 1.0 (Leave empty for default)",
+      "temperatureDesc": "Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0"
     },
     "tools": {
       "title": "Global Tool Management",
@@ -786,7 +1084,128 @@
       "githubUrlPlaceholder": "https://github.com/owner/repo/tree/main/skills/my-skill",
       "preview": "Preview",
       "loading": "Loading...",
-      "edit": "Edit"
+      "edit": "Edit",
+      "builtIn": "Built-in",
+      "configured": "Configured",
+      "default": "Default",
+      "toolNames": {
+        "list_files": "List Files",
+        "read_file": "Read File",
+        "write_file": "Write File",
+        "delete_file": "Delete File",
+        "read_document": "Read Document",
+        "set_trigger": "Set Trigger",
+        "update_trigger": "Update Trigger",
+        "cancel_trigger": "Cancel Trigger",
+        "list_triggers": "List Triggers",
+        "send_file_to_agent": "Send File",
+        "send_feishu_message": "Feishu Message",
+        "send_web_message": "Web Message",
+        "send_message_to_agent": "Agent Message",
+        "web_search": "Web Search",
+        "jina_search": "Jina Search",
+        "jina_read": "Jina Read",
+        "plaza_get_new_posts": "Plaza: Browse",
+        "plaza_create_post": "Plaza: Post",
+        "plaza_add_comment": "Plaza: Comment",
+        "execute_code": "Code Executor",
+        "execute_code_e2b": "Code Executor (E2B Cloud)",
+        "upload_image": "Upload Image",
+        "generate_image_siliconflow": "Generate Image (SiliconFlow)",
+        "generate_image_openai": "Generate Image (OpenAI)",
+        "generate_image_google": "Generate Image (Google/Vertex)",
+        "discover_resources": "Resource Discovery",
+        "import_mcp_server": "Import MCP Server",
+        "send_email": "Send Email",
+        "read_emails": "Read Emails",
+        "reply_email": "Reply Email",
+        "publish_page": "Publish Page",
+        "list_published_pages": "List Published Pages",
+        "search_clawhub": "Search ClawHub",
+        "install_skill": "Install Skill",
+        "agentbay_browser_navigate": "AgentBay: Browser Navigate",
+        "agentbay_browser_screenshot": "AgentBay: Browser Screenshot",
+        "agentbay_browser_click": "AgentBay: Browser Click",
+        "agentbay_browser_type": "AgentBay: Browser Type",
+        "agentbay_browser_extract": "AgentBay: Browser Extract",
+        "agentbay_browser_observe": "AgentBay: Browser Observe",
+        "agentbay_browser_login": "AgentBay: Browser Login",
+        "agentbay_code_execute": "AgentBay: Code Execute",
+        "agentbay_command_exec": "AgentBay: Shell Command",
+        "agentbay_computer_screenshot": "AgentBay: Desktop Screenshot",
+        "agentbay_computer_click": "AgentBay: Mouse Click",
+        "agentbay_computer_input_text": "AgentBay: Keyboard Input",
+        "agentbay_computer_press_keys": "AgentBay: Keyboard Shortcut",
+        "agentbay_computer_scroll": "AgentBay: Scroll",
+        "agentbay_computer_move_mouse": "AgentBay: Mouse Move",
+        "agentbay_computer_drag_mouse": "AgentBay: Mouse Drag",
+        "agentbay_computer_get_screen_size": "AgentBay: Get Screen Size",
+        "agentbay_computer_start_app": "AgentBay: Start Application",
+        "agentbay_computer_get_cursor_position": "AgentBay: Get Cursor Position",
+        "agentbay_computer_get_active_window": "AgentBay: Get Active Window",
+        "agentbay_computer_activate_window": "AgentBay: Activate Window",
+        "agentbay_computer_list_visible_apps": "AgentBay: List Running Apps",
+        "atlassian_rovo": "Atlassian Rovo (Jira / Confluence / Compass)"
+      },
+      "toolDescriptions": {
+        "list_files": "List files and folders in a directory within the workspace.",
+        "read_file": "Read file contents from the workspace.",
+        "write_file": "Write or update a file in the workspace.",
+        "delete_file": "Delete a file from the workspace.",
+        "read_document": "Read office document contents (PDF, Word, Excel, PPT) and extract text.",
+        "set_trigger": "Set a new trigger to wake yourself up at a specific time or condition.",
+        "update_trigger": "Update an existing trigger's configuration or reason.",
+        "cancel_trigger": "Cancel (disable) a trigger by name.",
+        "list_triggers": "List all your active triggers with details.",
+        "send_file_to_agent": "Send a file to a specific person or back to the current conversation.",
+        "send_feishu_message": "Send a message to a Feishu user or group.",
+        "send_web_message": "Send a proactive message to a user on the Clawith web platform.",
+        "send_message_to_agent": "Send a message to a digital employee colleague and receive a reply.",
+        "web_search": "Search the internet using a configurable search engine.",
+        "jina_search": "Search the internet using Jina AI.",
+        "jina_read": "Read and extract full content from a URL using Jina AI Reader.",
+        "plaza_get_new_posts": "Get recent posts from the Agent Plaza (shared social feed).",
+        "plaza_create_post": "Publish a new post to the Agent Plaza.",
+        "plaza_add_comment": "Add a comment to an existing plaza post.",
+        "execute_code": "Execute code (Python, Bash, Node.js) in a local sandboxed subprocess.",
+        "execute_code_e2b": "Execute code (Python, Bash, Node.js) in a secure E2B cloud sandbox.",
+        "upload_image": "Upload images from the workspace or a URL to ImageKit CDN.",
+        "generate_image_siliconflow": "Generate an image via SiliconFlow FLUX models.",
+        "generate_image_openai": "Generate an image via OpenAI DALL-E models.",
+        "generate_image_google": "Generate an image via Google Gemini Image or Vertex AI.",
+        "discover_resources": "Search public MCP registries for tools and capabilities.",
+        "import_mcp_server": "Import an MCP server from Smithery registry into the platform.",
+        "send_email": "Send an email to one or more recipients.",
+        "read_emails": "Read emails from your inbox.",
+        "reply_email": "Reply to an email by its Message-ID.",
+        "publish_page": "Publish an HTML file from workspace as a public page.",
+        "list_published_pages": "List all pages published by this agent.",
+        "search_clawhub": "Search the ClawHub skill registry for skills matching a query.",
+        "install_skill": "Install a skill into this agent's workspace.",
+        "agentbay_browser_navigate": "[ENV: Browser] Navigate to a URL in the AgentBay headless browser environment.",
+        "agentbay_browser_screenshot": "[ENV: Browser] Take a screenshot of the current page in the headless browser.",
+        "agentbay_browser_click": "[ENV: Browser] Click an element in the headless browser.",
+        "agentbay_browser_type": "[ENV: Browser] Type text into an element in the headless browser.",
+        "agentbay_browser_extract": "[ENV: Browser] Extract structured data from the current browser page.",
+        "agentbay_browser_observe": "[ENV: Browser] Observe and identify interactive elements on the page.",
+        "agentbay_browser_login": "[ENV: Browser] Handle login flow in the headless browser.",
+        "agentbay_code_execute": "[ENV: Code Sandbox] Execute code (Python, Bash, Node.js) in the AgentBay Code Sandbox.",
+        "agentbay_command_exec": "[ENV: Code Sandbox] Execute a shell command in the AgentBay Code Sandbox.",
+        "agentbay_computer_screenshot": "[ENV: Cloud Desktop] Take a screenshot of the cloud desktop.",
+        "agentbay_computer_click": "[ENV: Cloud Desktop] Click at coordinates in the cloud desktop.",
+        "agentbay_computer_input_text": "[ENV: Cloud Desktop] Type text in the cloud desktop.",
+        "agentbay_computer_press_keys": "[ENV: Cloud Desktop] Press keyboard shortcut in the cloud desktop.",
+        "agentbay_computer_scroll": "[ENV: Cloud Desktop] Scroll in the cloud desktop.",
+        "agentbay_computer_move_mouse": "[ENV: Cloud Desktop] Move mouse to coordinates in the cloud desktop.",
+        "agentbay_computer_drag_mouse": "[ENV: Cloud Desktop] Drag mouse in the cloud desktop.",
+        "agentbay_computer_get_screen_size": "[ENV: Cloud Desktop] Get the screen size of the cloud desktop.",
+        "agentbay_computer_start_app": "[ENV: Cloud Desktop] Start an application in the cloud desktop.",
+        "agentbay_computer_get_cursor_position": "[ENV: Cloud Desktop] Get the current cursor position in the cloud desktop.",
+        "agentbay_computer_get_active_window": "[ENV: Cloud Desktop] Get the active window in the cloud desktop.",
+        "agentbay_computer_activate_window": "[ENV: Cloud Desktop] Bring a specific window to the foreground on the Cloud Desktop.",
+        "agentbay_computer_list_visible_apps": "[ENV: Cloud Desktop] List running applications in the cloud desktop.",
+        "atlassian_rovo": "Connect to Atlassian Rovo MCP Server to access Jira, Confluence, and Compass."
+      }
     },
     "org": {
       "feishuSync": "Feishu Directory Sync",
@@ -808,19 +1227,19 @@
         "feishu": {
           "step1": "Go to open.feishu.cn → log in → Developer Console → Create Enterprise Self-Built App",
           "step2": "Left sidebar → Credentials & Basic Info → copy App ID and App Secret, paste below and Setup",
-          "step3": "Left sidebar → Permissions & Scopes → click Bulk Import/Export Permissions → paste the permission JSON below → confirm import",
+          "step3": "Left sidebar → Permissions & Scopes → click Bulk Import/Export Permissions → paste the permission JSON below → confirm import. [IMPORTANT] Org sync uses user_id (employee_id) as the stable user identifier, which is required to correctly match org members with Feishu bot channel users across different apps (open_id is app-specific and cannot be used as a cross-app identifier). Therefore, contact:user.employee_id:readonly is a mandatory permission.",
           "step4": "[For SSO] Left sidebar → Add App Capabilities → add Web App (网页应用), and paste the SSO Login URL below into the Desktop and Mobile homepage fields",
           "step5": "[For SSO] Left sidebar → Security Settings → Add the Redirect URL below into 'Redirect URLs'",
           "step6": "[For SSO] Turn on the 'SSO Login' switch below. Team members can now log in via the SSO Login URL with one click.",
-          "step7": "Left sidebar → App Release → Create Version (set Availability to All Employees) → Release for Review → approve it in your admin console"
+          "step7": "[REQUIRED] Left sidebar → App Release → Create Version (set Availability to All Employees) → Release for Review → approve it in your admin console. Note: unlike DingTalk, Feishu permissions only take effect after publishing a new version and getting enterprise admin approval. Sync and SSO will not work until the app is published and approved."
         },
         "dingtalk": {
-          "step1": "Go to open.dingtalk.com → log in → Developer Console → Create Enterprise Internal App → fill in name",
-          "step2": "App Features → click Add next to Contacts",
-          "step3": "App Info → copy AppKey and AppSecret",
-          "step4": "Contacts Permission → enable reading permissions for Departments and Members",
-          "step5": "Paste AppKey and AppSecret below → click Save",
-          "step6": "If you need SSO via DingTalk: Turn on the 'SSO Login' switch below, then in DingTalk configure: Login & Sharing → Add the 'Redirect URL' below as the Callback Domain. Share the 'SSO Login URL' with your team."
+          "step1": "Go to open.dingtalk.com → log in → go to App Development → Create Internal Enterprise App → enter a name",
+          "step2": "Once the app is created, go to the app page → left sidebar 'Credentials & Basic Info' → copy AppKey and AppSecret, paste them below and save",
+          "step3": "Left sidebar 'Development Config' → 'Permission Management' → Under the 'Contacts Management' category, find each permission below and click 'Enable Now' (no approval required, takes effect immediately): ① Contacts Dept Read Permission (includes: Get Department List [qyapi_get_department_list], Get Department Details, Get All Parent Depts of a Dept); ② Member Info Read Permission (qyapi_get_member, Query User Details); ③ Get Department Member Details (qyapi_get_department_member, required to sync dept user list); ④ Employee Mobile Number (fieldMobile); ⑤ Email & Personal Info (fieldEmail)",
+          "step4": "On the same 'Permission Management' page → switch to the 'Contacts Permission Scope' tab → set it to 'All Employees' (or select specific departments, but ensure coverage of all members you want to sync)",
+          "step5": "Paste AppKey and AppSecret below → click Save Config → click 'Sync' to run the first sync",
+          "step6": "If you need DingTalk SSO: ① In Permission Management → Personal Permissions category, find 'Contacts Personal Info Read' (Contact.User.Read) → Enable Now (required to fetch user info on SSO login); ② Turn on the 'SSO Login' switch below; ③ In the DingTalk developer console → Development Config → Share Settings → Login Access → add the Callback URL below as the Callback Domain; ④ Share the SSO Login URL below with your team for one-click login"
         },
         "wecom": {
           "step1": "Log in to WeCom Admin Console → Management Tools → Address Book Sync",
@@ -900,7 +1319,134 @@
         "oauth2": "OAuth2: Enter App ID, App Secret, Authorize URL, Token URL, User Info URL",
         "saml": "SAML: Requires entry_point, issuer, cert (public key).",
         "microsoft_teams": "Microsoft Teams: Requires client_id, client_secret, tenant_id."
+      },
+      "description": "Configure enterprise directory synchronization and Identity Provider settings.",
+      "notConfigured": "Not configured",
+      "active": "Active",
+      "providers": {
+        "feishu": {
+          "name": "Feishu",
+          "desc": "Feishu / Lark Integration"
+        },
+        "wecom": {
+          "name": "WeCom",
+          "desc": "WeChat Work Integration"
+        },
+        "dingtalk": {
+          "name": "DingTalk",
+          "desc": "DingTalk App Integration"
+        },
+        "oauth2": {
+          "name": "OAuth2",
+          "desc": "Generic OIDC Provider"
+        }
+      },
+      "ssoLoginToggle": "SSO Login",
+      "ssoLoginToggleHint": "Allow users to log in via this identity provider.",
+      "ssoSubdomain": "SSO Login URL",
+      "ssoSubdomainHint": "Share this URL with your team. SSO login buttons will appear when they visit this address.",
+      "callbackUrl": "Redirect URL (paste this in your app settings)",
+      "callbackUrlHint": "Add this URL as the OAuth redirect URI in your identity provider's app configuration.",
+      "clientId": "Client ID",
+      "clientSecret": "Client Secret",
+      "authorizeUrl": "Authorize URL",
+      "tokenUrl": "Token URL",
+      "userInfoUrl": "User Info URL",
+      "corpId": "Corp ID",
+      "secret": "Secret",
+      "agentId": "Agent ID (Optional)",
+      "botId": "Bot ID (Intelligent Robot)",
+      "botSecret": "Bot Secret",
+      "appKey": "App Key",
+      "appSecret": "App Secret",
+      "wecomNotice": {
+        "title": "Prerequisites for WeCom Integration",
+        "syncTitle": "1. User Directory Sync",
+        "syncDesc": "Directory sync via the contacts secret works for fetching user IDs. However, fetching full user details (name, avatar, email) requires the self-built app's IP to be whitelisted in WeCom — a setting that must be configured by the WeCom enterprise admin.",
+        "ssoTitle": "2. SSO Login (Single Sign-On)",
+        "ssoDesc": "WeCom OAuth requires the callback domain to be ICP-filed with a business entity matching the WeCom enterprise's registration. The platform domain (clawith.ai) is a .ai TLD which cannot be ICP-filed in mainland China, making SSO unavailable on the current domain. Requires either an ICP-filed .com/.cn domain or WeCom ISV (service provider) registration.",
+        "messagingTitle": "3. Proactive 1-to-1 Messaging (AI-initiated)",
+        "messagingDesc": "Sending messages to individual users requires a valid WeCom API access token, which can only be obtained from a server IP that has been whitelisted in the self-built app's settings. Unlike Feishu, WeCom mandates IP-level restrictions on all API calls — there is no token-only authentication option.",
+        "footerText": "Due to the above constraints, WeCom integration currently cannot be easily set up by most users. We are actively exploring alternative approaches — including WeCom ISV (service provider) registration and lower-friction API options — or we may advocate for WeCom to relax these restrictions for SaaS platforms. Configuration will be re-enabled once a viable path is available."
       }
+    },
+    "dangerZone": "️ Danger Zone",
+    "deleteCompanyDesc": "Permanently delete this company and all its data, including agents, models, tools, and skills. This action cannot be undone.",
+    "deleteCompany": "Delete this company",
+    "emailTemplates": {
+      "title": "Email Templates",
+      "description": "Customize email content for each scenario. Use {{variable}} placeholders to insert dynamic data.",
+      "saveTemplates": "Save Templates",
+      "availableVars": "Available Variables",
+      "subject": "Subject",
+      "body": "Body",
+      "resetDefault": "Reset to Default",
+      "saved": "Email templates saved",
+      "emailVerification": "Email Verification Code",
+      "emailVerificationDesc": "Sent when a user registers and needs to verify their email address.",
+      "emailVerificationSubject": "Verify your Clawith email address",
+      "emailVerificationBody": "Hello {{display_name}},\n\nWelcome to Clawith! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.",
+      "passwordReset": "Password Reset",
+      "passwordResetDesc": "Sent when a user requests to reset their password.",
+      "passwordResetSubject": "Reset your Clawith password",
+      "passwordResetBody": "Hello {{display_name}},\n\nWe received a request to reset your Clawith password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.",
+      "companyInvitation": "Company Invitation",
+      "companyInvitationDesc": "Sent when an admin invites a user to join their company.",
+      "companyInvitationSubject": "{{inviter_name}} invited you to join {{company_name}} on Clawith",
+      "companyInvitationBody": "Hello,\n\n{{inviter_name}} has invited you to join their team '{{company_name}}' on Clawith.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don't want to join this team or didn't expect this invitation, you can ignore this email."
+    },
+    "timezone": {
+      "title": "Company Timezone",
+      "description": "Default timezone for all agents. Agents can override individually.",
+      "zones": {
+        "UTC": "UTC (Coordinated Universal Time)",
+        "Asia/Shanghai": "Asia/Shanghai (Beijing Time, UTC+8)",
+        "Asia/Tokyo": "Asia/Tokyo (Japan Time, UTC+9)",
+        "Asia/Seoul": "Asia/Seoul (Korea Time, UTC+9)",
+        "Asia/Singapore": "Asia/Singapore (Singapore Time, UTC+8)",
+        "Asia/Kolkata": "Asia/Kolkata (India Time, UTC+5:30)",
+        "Asia/Dubai": "Asia/Dubai (Gulf Time, UTC+4)",
+        "Europe/London": "Europe/London (UK Time, UTC+0/+1)",
+        "Europe/Paris": "Europe/Paris (Central European Time, UTC+1/+2)",
+        "Europe/Berlin": "Europe/Berlin (Central European Time, UTC+1/+2)",
+        "Europe/Moscow": "Europe/Moscow (Moscow Time, UTC+3)",
+        "America/New_York": "America/New_York (Eastern Time, UTC-5/-4)",
+        "America/Chicago": "America/Chicago (Central Time, UTC-6/-5)",
+        "America/Denver": "America/Denver (Mountain Time, UTC-7/-6)",
+        "America/Los_Angeles": "America/Los_Angeles (Pacific Time, UTC-8/-7)",
+        "America/Sao_Paulo": "America/Sao_Paulo (Brasilia Time, UTC-3)",
+        "Australia/Sydney": "Australia/Sydney (Australian Eastern Time, UTC+10/+11)",
+        "Pacific/Auckland": "Pacific/Auckland (New Zealand Time, UTC+12/+13)"
+      }
+    },
+    "users": {
+      "user": "User",
+      "email": "Email",
+      "joined": "Joined",
+      "role": "Role",
+      "source": "Source",
+      "msgQuota": "Msg Quota",
+      "period": "Period",
+      "agents": "Agents",
+      "ttl": "TTL",
+      "edit": "Edit",
+      "clickToSort": "Click to toggle sort order",
+      "platformAdmin": "Platform\nAdmin",
+      "orgAdmin": "Admin",
+      "registered": "Registered",
+      "permanent": "Permanent",
+      "daily": "Daily",
+      "weekly": "Weekly",
+      "monthly": "Monthly"
+    },
+    "companyName": {
+      "title": "Company Name",
+      "placeholder": "Enter company name"
+    },
+    "companyIntro": {
+      "title": "Company Intro",
+      "description": "Describe your company's mission, products, and culture. This information will be included as context in every Agent conversation.",
+      "hint": "This content will appear in every Agent's system prompt"
     }
   },
   "common": {
@@ -928,7 +1474,18 @@
       "teams": "Microsoft Teams",
       "dingtalk": "DingTalk",
       "wecom": "WeCom"
-    }
+    },
+    "searching": "Searching...",
+    "upload": "⬆ Upload",
+    "apply": "Apply",
+    "reset": "Reset",
+    "copy": "Copy",
+    "copied": "Copied",
+    "lightMode": "Light Mode",
+    "darkMode": "Dark Mode",
+    "collapseSidebar": "Collapse Sidebar",
+    "expandSidebar": "Expand Sidebar",
+    "deleting": "Deleting..."
   },
   "openclaw": {
     "created": "OpenClaw Agent Created",
@@ -948,6 +1505,10 @@
   "channelGuide": {
     "setupGuide": "Setup Guide",
     "feishuPermJson": "Permission JSON (bulk import)",
+    "feishuPermBasic": "Basic",
+    "feishuPermFull": "Full",
+    "feishuPermBasicDesc": "Chat & messaging only",
+    "feishuPermFullDesc": "Includes Docs, Drive, Bitable, Calendar, Approval",
     "feishuPermCopy": "Copy",
     "feishuPermCopied": "✓ Copied",
     "slack": {
@@ -1032,5 +1593,146 @@
       "ws_step6": "Find the bot in WeCom and send a test message",
       "ws_note": "WebSocket mode requires no public IP, callback URL, or domain verification (ICP). The connection is managed automatically."
     }
+  },
+  "platformDashboard": {
+    "timeRange": {
+      "last7Days": "Last 7 Days",
+      "last30Days": "Last 30 Days"
+    },
+    "metrics": {
+      "avgTokensPerSession": {
+        "label": "Avg Tokens / Session",
+        "tooltip": "Average token consumption per chat session in the last 30 days. Calculated as total tokens / total sessions."
+      },
+      "retention7Day": {
+        "label": "7-Day Retention",
+        "tooltip": "Percentage of established companies (>14 days old) that were active last week and remain active this week.",
+        "tooltipWithCount": "Percentage of established companies (>14 days old) that were active last week and remain active this week. {{retained}} of {{total}} companies retained."
+      }
+    },
+    "charts": {
+      "legend": {
+        "cumulative": "Cumulative",
+        "new": "New",
+        "dau": "DAU",
+        "wau": "WAU",
+        "mau": "MAU",
+        "enabled": "Enabled"
+      },
+      "companies": {
+        "title": "Companies",
+        "tooltip": "Cumulative and daily new company registrations"
+      },
+      "users": {
+        "title": "Users",
+        "tooltip": "Cumulative and daily new user registrations"
+      },
+      "tokenUsage": {
+        "title": "Token Usage",
+        "tooltip": "Cumulative and daily token consumption across all agents"
+      },
+      "dailySessions": {
+        "title": "Daily Sessions",
+        "tooltip": "Number of new chat sessions created per day and cumulative total"
+      },
+      "activeUsers": {
+        "title": "Active Users",
+        "tooltip": "DAU: distinct users who sent at least 1 message that day. WAU: distinct users active in a rolling 7-day window. MAU: distinct users active in a rolling 30-day window."
+      },
+      "channelDistribution": {
+        "title": "Channel Distribution",
+        "tooltip": "Distribution of chat sessions by source channel in the last 30 days"
+      },
+      "toolCategories": {
+        "title": "Top 10 Tool Categories",
+        "tooltip": "Most popular tool categories across all active agent configurations"
+      }
+    },
+    "churn": {
+      "title": "Churn Warning",
+      "tooltip": "Companies that consumed >10M tokens but have had no activity in the past 14 days",
+      "company": "Company",
+      "totalTokens": "Total Tokens",
+      "lastActive": "Last Active",
+      "daysInactive": "Days Inactive",
+      "noWarnings": "No churn warnings — all active companies are healthy"
+    },
+    "leaderboards": {
+      "topCompanies": {
+        "title": "Top 20 Companies by Tokens",
+        "tooltip": "Companies ranked by total cumulative token consumption across all their agents"
+      },
+      "topAgents": {
+        "title": "Top 20 Agents by Tokens",
+        "tooltip": "Individual agents ranked by total cumulative token consumption"
+      }
+    },
+    "loading": "Loading...",
+    "noData": "No data"
+  },
+  "companySetup": {
+    "title": "Set Up Your Company",
+    "subtitle": "Join an existing company or create a new one",
+    "joinTitle": "Join a Company",
+    "joinDesc": "Enter the invitation code provided by your company administrator.",
+    "inviteCode": "Invitation Code",
+    "inviteCodePlaceholder": "e.g. ABC12345",
+    "joinBtn": "Join Company",
+    "or": "OR",
+    "createTitle": "Create a Company",
+    "createDesc": "Start a new workspace. You can invite team members later.",
+    "companyName": "Company Name",
+    "companyNamePlaceholder": "Company name",
+    "createBtn": "Create",
+    "hint": "You can invite members anytime from Company Settings.",
+    "contactAdmin": "Contact your platform administrator for an invitation code."
+  },
+  "admin": {
+    "tab": {
+      "dashboard": "Dashboard",
+      "platform": "️ Platform",
+      "companies": "Companies"
+    },
+    "platformSettings": "Platform Settings",
+    "platformSettingsDesc": "Manage platform-wide settings and company tenants.",
+    "settingUpdated": "Setting updated",
+    "company": "Company",
+    "sso": "SSO",
+    "orgAdmin": "Admin Email",
+    "users": "Users",
+    "agents": "Agents",
+    "tokens": "Token Usage",
+    "createdAt": "Created",
+    "status": "Status",
+    "action": "️ Action",
+    "active": "Active",
+    "disabled": "Disabled",
+    "all": "All",
+    "filterStatus": "Filter by status",
+    "enable": "Enable",
+    "disable": "Disable",
+    "confirmDisable": "Disable this company? All users and agents will be paused.",
+    "cannotDisableDefault": "Cannot disable the default company — platform admin would be locked out",
+    "createCompany": "Create Company",
+    "companyCreated": "Company Created",
+    "companyCreatedDesc": "has been created successfully.",
+    "inviteCodeLabel": "Admin Invitation Code",
+    "inviteCodeHowTo": "How to use this code:",
+    "inviteCodeExplain": "Send this code to the person who will manage this company. They should register a new account on the platform, then enter this code to join. The first person to use it will automatically become the Org Admin of this company. This code is single-use.",
+    "copyCode": "Copy Code",
+    "copied": "Copied",
+    "companyNamePlaceholder": "Company name",
+    "noFilterResults": "No companies match the current filter.",
+    "showing": "{{start}}-{{end}} of {{total}}",
+    "prev": "Prev",
+    "next": "Next",
+    "allowSelfCreate": "Allow users to create their own companies",
+    "allowSelfCreateDesc": "When disabled, only platform admins can create companies.",
+    "editCompany": "Edit Company",
+    "ssoConfigTitle": "SSO & Domain Configuration",
+    "ssoConfigDesc": "Configure SSO and custom domain for this company.",
+    "ssoEnabled": "Enable SSO",
+    "ssoDomain": "Custom Access Domain",
+    "ssoDomainPlaceholder": "e.g. acme.clawith.com"
   }
 }

@@ -208,12 +208,17 @@ class SSOService:
     ) -> Any:
         """Link an external identity to an existing user via OrgMember.
 
+        When an OrgMember already exists (e.g. from org-sync), this also
+        enriches its profile fields with fresh SSO data so placeholder
+        records become fully hydrated over time.
+
         Args:
             db: Database session
             user_id: User ID to link to
             provider_type: Type of provider
             provider_user_id: User ID in the external system
-            identity_data: Additional identity data (unused now, stored in OrgMember if needed)
+            identity_data: Raw data from the provider (ExternalUserInfo.raw_data);
+                           used for passive profile enrichment.
             tenant_id: Optional tenant ID for provider lookup
 
         Returns:
@@ -233,36 +238,106 @@ class SSOService:
         if not provider:
             raise ValueError(f"Provider {provider_type} not found for tenant {tenant_id}")
 
-        # Check if OrgMember already exists (only active members)
+        uid = uuid.UUID(user_id) if isinstance(user_id, str) else user_id
+
+        # Extract the raw open_id from identity_data (raw provider response).
+        # For Feishu: raw_data has 'open_id' and 'union_id' as separate fields.
+        # For DingTalk: raw_data has 'openId' and 'unionId'.
+        # Storing open_id separately prevents duplicate user creation when the
+        # lookup key alternates between open_id and union_id across SSO sessions.
+        raw_open_id = None
+        if identity_data:
+            raw_open_id = (
+                identity_data.get("open_id")      # Feishu
+                or identity_data.get("openId")    # DingTalk
+            )
+
+        # Check if OrgMember already exists for this provider user.
+        # Search across unionid, external_id, and open_id to handle the case where
+        # the lookup key differs between sync (uses user_id/employee_id as external_id)
+        # and SSO (uses union_id or open_id as provider_user_id).
+        conditions = [
+            OrgMember.unionid == provider_user_id,
+            OrgMember.external_id == provider_user_id,
+            OrgMember.open_id == provider_user_id,
+        ]
+        if raw_open_id and raw_open_id != provider_user_id:
+            # Also search by the actual open_id from raw data, in case the member
+            # was created with open_id as its primary key (e.g. from a previous SSO login)
+            conditions.append(OrgMember.open_id == raw_open_id)
+            conditions.append(OrgMember.external_id == raw_open_id)
+
         member_query = select(OrgMember).where(
             OrgMember.provider_id == provider.id,
             OrgMember.status == "active",
-            or_(
-                OrgMember.unionid == provider_user_id,
-                OrgMember.external_id == provider_user_id,
-                OrgMember.open_id == provider_user_id
-            )
+            or_(*conditions)
         )
         member_result = await db.execute(member_query)
         member = member_result.scalar_one_or_none()
 
         if member:
-            # Link existing member to user
-            member.user_id = uuid.UUID(user_id) if isinstance(user_id, str) else user_id
+            # Always link user
+            member.user_id = uid
+
+            # Fill in open_id if not already set — prevents future lookup misses
+            if raw_open_id and not member.open_id:
+                member.open_id = raw_open_id
+
+            # Passive identity enrichment: update profile fields from SSO data.
+            # OrgMember records created by org-sync may have placeholder values
+            # (e.g. name=userid, no avatar/email). We fill them in here so they
+            # become accurate after the user's first SSO login, without needing
+            # IP-whitelisted batch calls.
+            if identity_data:
+                incoming_name = (
+                    identity_data.get("name")
+                    or identity_data.get("display_name")
+                )
+                # Only overwrite name if the current value looks like a placeholder
+                # (e.g. was set to the raw userid during degraded org sync)
+                is_placeholder_name = (
+                    not member.name
+                    or member.name == member.external_id
+                    or member.name == provider_user_id
+                    or member.name.startswith(f"{provider_type.capitalize()} User")
+                )
+                if incoming_name and is_placeholder_name:
+                    member.name = incoming_name
+
+                incoming_email = identity_data.get("email") or identity_data.get("biz_mail")
+                if incoming_email and not member.email:
+                    member.email = incoming_email
+
+                incoming_avatar = identity_data.get("avatar")
+                if incoming_avatar and not member.avatar_url:
+                    member.avatar_url = incoming_avatar
+
+                incoming_mobile = identity_data.get("mobile")
+                if incoming_mobile and not member.phone:
+                    member.phone = incoming_mobile
+
         else:
-            # Create a shell OrgMember if not synced yet (though usually they should exist)
-            member_name = identity_data.get("name") if identity_data else None
-            if not member_name:
-                # Try to get name from user_info if passed differently
-                member_name = identity_data.get("display_name") if identity_data else None
+            # Create a shell OrgMember if not synced yet.
+            # This handles organizations that skip org-sync and rely purely on SSO.
+            member_name = (
+                (identity_data.get("name") or identity_data.get("display_name"))
+                if identity_data else None
+            )
             member = OrgMember(
                 name=member_name or f"{provider_type.capitalize()} User {provider_user_id[:8]}",
-                email=identity_data.get("email") if identity_data else None,
+                email=(identity_data.get("email") or identity_data.get("biz_mail")) if identity_data else None,
+                avatar_url=identity_data.get("avatar") if identity_data else None,
+                phone=identity_data.get("mobile") if identity_data else None,
                 provider_id=provider.id,
-                user_id=uuid.UUID(user_id) if isinstance(user_id, str) else user_id,
+                user_id=uid,
                 tenant_id=tenant_id,
+                # For Feishu/DingTalk: external_id stores union_id (cross-app stable).
+                # open_id is stored separately so it can also be matched on next login.
                 external_id=provider_user_id,
-                unionid=provider_user_id if provider_type != "wecom" else None
+                unionid=provider_user_id if provider_type != "wecom" else None,
+                # Explicitly store the raw open_id so future SSO lookups can match on it
+                # even if the lookup key is union_id (and vice versa).
+                open_id=raw_open_id,
             )
             db.add(member)
         

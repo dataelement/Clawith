@@ -1,6 +1,17 @@
 """Feishu (Lark) OAuth and API integration service."""
 
+import json
+from collections import OrderedDict
+
 import httpx
+from loguru import logger
+
+try:
+    import lark_oapi as lark
+    _HAS_LARK = True
+except ImportError:
+    lark = None  # type: ignore
+    _HAS_LARK = False
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,10 +31,55 @@ FEISHU_SEND_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
 class FeishuService:
     """Service for Feishu OAuth login and message API."""
 
+    # Maximum number of lark SDK client instances to keep alive simultaneously.
+    # Each entry corresponds to a unique (app_id, app_secret) pair.  Excess entries
+    # are evicted in LRU order (oldest-accessed first) to bound memory usage in
+    # long-running multi-tenant deployments.
+    _LARK_CLIENT_CACHE_MAX = 50
+
     def __init__(self):
         self.app_id = settings.FEISHU_APP_ID
         self.app_secret = settings.FEISHU_APP_SECRET
         self._app_access_token: str | None = None
+        # OrderedDict is used as a simple LRU cache: move_to_end() on each hit
+        # keeps the most-recently-used entries at the tail so we can evict from
+        # the head when the cache is full.
+        self._lark_clients: OrderedDict[str, lark.Client] = OrderedDict()
+
+    @staticmethod
+    def _parse_api_response(
+        resp: httpx.Response,
+        *,
+        stage: str,
+        message_id: str | None = None,
+    ) -> dict:
+        """Parse Feishu API response and verify both HTTP status and business code."""
+        try:
+            data = resp.json()
+        except Exception as e:
+            logger.warning(
+                f"[Feishu] {stage} returned non-JSON response "
+                f"(http_status={resp.status_code}, message_id={message_id}): {e}"
+            )
+            raise RuntimeError(f"Feishu {stage} returned invalid JSON")
+
+        if resp.status_code >= 400:
+            logger.warning(
+                f"[Feishu] {stage} HTTP failure "
+                f"(http_status={resp.status_code}, message_id={message_id}, body={str(data)[:300]})"
+            )
+            raise RuntimeError(f"Feishu {stage} HTTP {resp.status_code}")
+
+        code = data.get("code")
+        msg = data.get("msg", "")
+        if code is not None and code != 0:
+            logger.warning(
+                f"[Feishu] {stage} business failure "
+                f"(message_id={message_id}, code={code}, msg={msg})"
+            )
+            raise RuntimeError(f"Feishu {stage} failed: code={code}, msg={msg}")
+
+        return data
 
     async def get_app_access_token(self) -> str:
         """Get or refresh the app-level access token. Deprecated: Use get_tenant_access_token instead."""
@@ -213,8 +269,16 @@ class FeishuService:
         return user, token
 
 
-    async def send_message(self, app_id: str, app_secret: str, receive_id: str,
-                           msg_type: str, content: str, receive_id_type: str = "open_id") -> dict:
+    async def send_message(
+        self,
+        app_id: str,
+        app_secret: str,
+        receive_id: str,
+        msg_type: str,
+        content: str,
+        receive_id_type: str = "open_id",
+        stage: str = "send_message",
+    ) -> dict:
         """Send a message via a specific Feishu bot (per-agent credentials).
 
         Args:
@@ -242,9 +306,17 @@ class FeishuService:
                 },
                 headers={"Authorization": f"Bearer {app_token}"},
             )
-            return resp.json()
+            data = self._parse_api_response(resp, stage=stage)
+            return data
 
-    async def patch_message(self, app_id: str, app_secret: str, message_id: str, content: str) -> dict:
+    async def patch_message(
+        self,
+        app_id: str,
+        app_secret: str,
+        message_id: str,
+        content: str,
+        stage: str = "patch_message",
+    ) -> dict:
         """Patch an existing message (e.g. updating an interactive card for streaming)."""
         async with httpx.AsyncClient() as client:
             token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
@@ -260,7 +332,8 @@ class FeishuService:
                 },
                 headers={"Authorization": f"Bearer {app_token}"},
             )
-            return resp.json()
+            data = self._parse_api_response(resp, stage=stage, message_id=message_id)
+            return data
 
     async def resolve_open_id(self, app_id: str, app_secret: str,
                                email: str | None = None, mobile: str | None = None) -> str | None:
@@ -641,5 +714,217 @@ class FeishuService:
                 headers={"Authorization": f"Bearer {tenant_token}"}
             )
             return resp.json()
+
+    # --- CardKit Streaming API ---
+
+    def _get_lark_client(self, app_id: str, app_secret: str):
+        """Get or create a cached lark-oapi SDK client for the given app credentials.
+
+        Implements a simple LRU eviction policy: when the cache exceeds
+        _LARK_CLIENT_CACHE_MAX entries, the least-recently-used client is removed.
+        """
+        if not _HAS_LARK:
+            raise RuntimeError("lark-oapi package is not installed. Install with: pip install lark-oapi")
+        cache_key = f"{app_id}:{app_secret}"
+        client = self._lark_clients.get(cache_key)
+        if client is None:
+            # Evict the oldest entry if the cache is at capacity.
+            if len(self._lark_clients) >= self._LARK_CLIENT_CACHE_MAX:
+                evicted_key, _ = self._lark_clients.popitem(last=False)
+                logger.debug(f"[Feishu] _lark_clients LRU evict: {evicted_key[:8]}...")
+            client = lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
+            self._lark_clients[cache_key] = client
+        else:
+            # Move hit entry to the tail so it is considered most-recently-used.
+            self._lark_clients.move_to_end(cache_key)
+        return client
+
+    async def create_card_entity(
+        self,
+        app_id: str,
+        app_secret: str,
+        card_dict: dict,
+    ) -> str:
+        """Create a CardKit card entity and return its card_id."""
+        from lark_oapi.api.cardkit.v1.model import (
+            CreateCardRequest, CreateCardRequestBody,
+        )
+
+        client = self._get_lark_client(app_id, app_secret)
+        body = CreateCardRequestBody.builder() \
+            .type("card_json") \
+            .data(json.dumps(card_dict)) \
+            .build()
+        request = CreateCardRequest.builder().request_body(body).build()
+
+        try:
+            resp = await client.cardkit.v1.card.acreate(request)
+            logger.info(
+                f"[Feishu CardKit] create_card_entity response: "
+                f"code={resp.code}, msg={resp.msg}"
+            )
+            if not resp.success():
+                raise RuntimeError(
+                    f"Feishu CardKit create_card_entity failed: code={resp.code}, msg={resp.msg}"
+                )
+            return resp.data.card_id
+        except Exception as e:
+            if isinstance(e, RuntimeError):
+                raise
+            logger.error(f"[Feishu CardKit] create_card_entity error: {e}")
+            raise RuntimeError(f"Feishu CardKit create_card_entity error: {e}") from e
+
+    async def send_card_by_card_id(
+        self,
+        app_id: str,
+        app_secret: str,
+        receive_id: str,
+        card_id: str,
+        receive_id_type: str = "open_id",
+    ) -> None:
+        """Send an interactive message referencing an existing card_id."""
+        content = json.dumps({
+            "type": "card",
+            "data": {"card_id": card_id},
+        })
+        await self.send_message(
+            app_id=app_id,
+            app_secret=app_secret,
+            receive_id=receive_id,
+            msg_type="interactive",
+            content=content,
+            receive_id_type=receive_id_type,
+            stage="send_card_by_card_id",
+        )
+
+    async def stream_card_content(
+        self,
+        app_id: str,
+        app_secret: str,
+        card_id: str,
+        element_id: str,
+        content: str,
+        sequence: int,
+    ) -> None:
+        """Stream content to a specific card element via CardKit API."""
+        from lark_oapi.api.cardkit.v1.model import (
+            ContentCardElementRequest, ContentCardElementRequestBody,
+        )
+
+        client = self._get_lark_client(app_id, app_secret)
+        body = ContentCardElementRequestBody.builder() \
+            .content(content) \
+            .sequence(sequence) \
+            .build()
+        request = ContentCardElementRequest.builder() \
+            .card_id(card_id) \
+            .element_id(element_id) \
+            .request_body(body) \
+            .build()
+
+        try:
+            resp = await client.cardkit.v1.card_element.acontent(request)
+            logger.info(
+                f"[Feishu CardKit] stream_card_content response: "
+                f"code={resp.code}, msg={resp.msg}, card_id={card_id}, "
+                f"element_id={element_id}, sequence={sequence}"
+            )
+            if not resp.success():
+                raise RuntimeError(
+                    f"Feishu CardKit stream_card_content failed: "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+        except Exception as e:
+            if isinstance(e, RuntimeError):
+                raise
+            logger.error(f"[Feishu CardKit] stream_card_content error: {e}")
+            raise RuntimeError(f"Feishu CardKit stream_card_content error: {e}") from e
+
+    async def set_card_streaming_mode(
+        self,
+        app_id: str,
+        app_secret: str,
+        card_id: str,
+        streaming_mode: int,
+        sequence: int,
+    ) -> None:
+        """Toggle streaming mode on a card via CardKit settings API."""
+        from lark_oapi.api.cardkit.v1.model import (
+            SettingsCardRequest, SettingsCardRequestBody,
+        )
+
+        client = self._get_lark_client(app_id, app_secret)
+        body = SettingsCardRequestBody.builder() \
+            .settings(json.dumps({"streaming_mode": streaming_mode})) \
+            .sequence(sequence) \
+            .build()
+        request = SettingsCardRequest.builder() \
+            .card_id(card_id) \
+            .request_body(body) \
+            .build()
+
+        try:
+            resp = await client.cardkit.v1.card.asettings(request)
+            logger.info(
+                f"[Feishu CardKit] set_card_streaming_mode response: "
+                f"code={resp.code}, msg={resp.msg}, card_id={card_id}, "
+                f"streaming_mode={streaming_mode}, sequence={sequence}"
+            )
+            if not resp.success():
+                raise RuntimeError(
+                    f"Feishu CardKit set_card_streaming_mode failed: "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+        except Exception as e:
+            if isinstance(e, RuntimeError):
+                raise
+            logger.error(f"[Feishu CardKit] set_card_streaming_mode error: {e}")
+            raise RuntimeError(f"Feishu CardKit set_card_streaming_mode error: {e}") from e
+
+    async def update_cardkit_card(
+        self,
+        app_id: str,
+        app_secret: str,
+        card_id: str,
+        card_dict: dict,
+        sequence: int,
+    ) -> None:
+        """Full card update via CardKit API."""
+        from lark_oapi.api.cardkit.v1.model import (
+            UpdateCardRequest, UpdateCardRequestBody, Card,
+        )
+
+        client = self._get_lark_client(app_id, app_secret)
+        card = Card.builder() \
+            .type("card_json") \
+            .data(json.dumps(card_dict)) \
+            .build()
+        body = UpdateCardRequestBody.builder() \
+            .card(card) \
+            .sequence(sequence) \
+            .build()
+        request = UpdateCardRequest.builder() \
+            .card_id(card_id) \
+            .request_body(body) \
+            .build()
+
+        try:
+            resp = await client.cardkit.v1.card.aupdate(request)
+            logger.info(
+                f"[Feishu CardKit] update_cardkit_card response: "
+                f"code={resp.code}, msg={resp.msg}, card_id={card_id}, "
+                f"sequence={sequence}"
+            )
+            if not resp.success():
+                raise RuntimeError(
+                    f"Feishu CardKit update_cardkit_card failed: "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+        except Exception as e:
+            if isinstance(e, RuntimeError):
+                raise
+            logger.error(f"[Feishu CardKit] update_cardkit_card error: {e}")
+            raise RuntimeError(f"Feishu CardKit update_cardkit_card error: {e}") from e
+
 
 feishu_service = FeishuService()

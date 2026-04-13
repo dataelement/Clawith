@@ -26,14 +26,16 @@ BUILTIN_TOOLS = [
     {
         "name": "read_file",
         "display_name": "Read File",
-        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/.",
+        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks.",
         "category": "file",
         "icon": "📄",
         "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"}
+                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"},
+                "offset": {"type": "integer", "description": "Starting line number (0-indexed, default 0). Use with limit for pagination."},
+                "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000). Use with offset for pagination."},
             },
             "required": ["path"],
         },
@@ -75,6 +77,65 @@ BUILTIN_TOOLS = [
                 "path": {"type": "string", "description": "File path to delete"}
             },
             "required": ["path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # --- Enhanced file management tools ---
+    {
+        "name": "edit_file",
+        "display_name": "Edit File",
+        "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections.",
+        "category": "file",
+        "icon": "✂️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to edit, e.g.: memory/memory.md, skills/my-skill/SKILL.md"},
+                "old_string": {"type": "string", "description": "Exact text to find and replace. Must match exactly including whitespace and newlines."},
+                "new_string": {"type": "string", "description": "Replacement text"},
+                "replace_all": {"type": "boolean", "description": "Replace all occurrences if true (default: false)"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "search_files",
+        "display_name": "Search Files",
+        "description": "Search for content patterns across files using regex. Returns matching lines with file paths and line numbers. Results capped at 50 per query.",
+        "category": "file",
+        "icon": "🔍",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for, e.g.: 'API_KEY', 'def\\\\s+\\\\w+'"},
+                "path": {"type": "string", "description": "Directory to search in (default: root)"},
+                "file_pattern": {"type": "string", "description": "File pattern to match (default: all files). e.g.: '*.md', '*.py'"},
+                "ignore_case": {"type": "boolean", "description": "Case-insensitive search (default: false)"},
+            },
+            "required": ["pattern"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "find_files",
+        "display_name": "Find Files",
+        "description": "Find files matching glob patterns. Returns file paths with sizes and modification info. Results capped at 100 per query.",
+        "category": "file",
+        "icon": "📁",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to match files, e.g.: '**/*.md', 'skills/*.md'"},
+                "path": {"type": "string", "description": "Base directory for search (default: root)"},
+            },
+            "required": ["pattern"],
         },
         "config": {},
         "config_schema": {},
@@ -187,24 +248,9 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
-    {
-        "name": "send_feishu_message",
-        "display_name": "Feishu Message",
-        "description": "Send a message to a human colleague via Feishu. Can only message people in your relationships.",
-        "category": "communication",
-        "icon": "💬",
-        "is_default": True,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {
-                "member_name": {"type": "string", "description": "Recipient name"},
-                "message": {"type": "string", "description": "Message content"},
-            },
-            "required": ["member_name", "message"],
-        },
-        "config": {},
-        "config_schema": {},
-    },
+    # NOTE: send_feishu_message is defined in the 'feishu' category section below.
+    # It was previously duplicated here under 'communication', which could cause
+    # 'Tool names must be unique' errors when the DB lacked a UNIQUE constraint.
     {
         "name": "send_web_message",
         "display_name": "Web Message",
@@ -226,7 +272,7 @@ BUILTIN_TOOLS = [
     {
         "name": "send_message_to_agent",
         "display_name": "Agent Message",
-        "description": "Send a message to a digital employee colleague and receive a reply. Suitable for questions, delegation, or collaboration.",
+        "description": "Send a message to a digital employee colleague. Decision guide: target needs to DO WORK and return results? → task_delegate. Just FYI? → notify. Quick factual question? → consult. When unsure, prefer task_delegate.",
         "category": "communication",
         "icon": "🤖",
         "is_default": True,
@@ -235,9 +281,9 @@ BUILTIN_TOOLS = [
             "properties": {
                 "agent_name": {"type": "string", "description": "Target agent name"},
                 "message": {"type": "string", "description": "Message content"},
-                "msg_type": {"type": "string", "enum": ["chat", "task_request", "info_share"], "description": "Message type"},
+                "msg_type": {"type": "string", "enum": ["notify", "consult", "task_delegate"], "description": "(1) Target needs to DO WORK and return results? → task_delegate. (2) Just FYI? → notify. (3) Quick factual question? → consult. When unsure, prefer task_delegate."},
             },
-            "required": ["agent_name", "message"],
+            "required": ["agent_name", "message", "msg_type"],
         },
         "config": {},
         "config_schema": {},
@@ -264,10 +310,10 @@ BUILTIN_TOOLS = [
     {
         "name": "web_search",
         "display_name": "Web Search",
-        "description": "Search the internet using a configurable search engine. Supports DuckDuckGo (free), Tavily, Google, and Bing. Configure the search engine in the tool settings.",
+        "description": "[Deprecated] Unified search tool with engine selector. Use the dedicated tools (DuckDuckGo Search, Tavily Search, Google Search, Bing Search, Exa Search) instead for better control per engine.",
         "category": "search",
         "icon": "🔍",
-        "is_default": True,
+        "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
@@ -293,6 +339,7 @@ BUILTIN_TOOLS = [
                         {"value": "tavily", "label": "Tavily (AI search, needs API key)"},
                         {"value": "google", "label": "Google Custom Search (needs API key)"},
                         {"value": "bing", "label": "Bing Search API (needs API key)"},
+                        {"value": "exa", "label": "Exa (AI-powered search, needs API key)"},
                     ],
                     "default": "duckduckgo",
                 },
@@ -302,7 +349,7 @@ BUILTIN_TOOLS = [
                     "type": "password",
                     "default": "",
                     "placeholder": "Required for engines that need an API key",
-                    "depends_on": {"search_engine": ["tavily", "google", "bing"]},
+                    "depends_on": {"search_engine": ["tavily", "google", "bing", "exa"]},
                 },
                 {
                     "key": "max_results",
@@ -383,6 +430,186 @@ BUILTIN_TOOLS = [
         },
     },
     {
+        "name": "exa_search",
+        "display_name": "Exa Search",
+        "description": "AI-powered web search using Exa (exa.ai). Supports semantic search, category filtering, domain filtering, and multiple content modes (text, highlights, summary). Requires an Exa API key.",
+        "category": "search",
+        "icon": "🔎",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "max_results": {"type": "integer", "description": "Number of results (default 5, max 10)"},
+                "search_type": {
+                    "type": "string",
+                    "description": "Search type: auto (default), neural, or fast",
+                    "enum": ["auto", "neural", "fast"],
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category: company, research paper, news, personal site, financial report, or people",
+                },
+                "include_domains": {
+                    "type": "string",
+                    "description": "Comma-separated domains to restrict results to (e.g. 'arxiv.org, github.com')",
+                },
+                "exclude_domains": {
+                    "type": "string",
+                    "description": "Comma-separated domains to exclude from results",
+                },
+                "content_mode": {
+                    "type": "string",
+                    "description": "Content retrieval mode: text (default), highlights, or summary",
+                    "enum": ["text", "highlights", "summary"],
+                },
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "Exa API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get your API key at exa.ai",
+                },
+            ]
+        },
+    },
+    # ── Standalone search engines (each engine as its own tool) ──────────────
+    # These complement web_search (which remains for backward compatibility).
+    # Each tool wraps a single engine so agents can pick the right one for the
+    # task without going through the unified engine-selector flow.
+    {
+        "name": "duckduckgo_search",
+        "display_name": "DuckDuckGo Search",
+        "description": "Search the internet using DuckDuckGo. Free, no API key required. Returns titles, URLs, and snippets.",
+        "category": "search",
+        "icon": "🦆",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords"},
+                "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {"fields": []},
+    },
+    {
+        "name": "tavily_search",
+        "display_name": "Tavily Search",
+        "description": "AI-optimized web search using Tavily. Returns high-quality results with summaries. Requires a Tavily API key.",
+        "category": "search",
+        "icon": "🔍",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords"},
+                "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "Tavily API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "tvly-xxxxxxxxxxxxxxxx (get one at tavily.com)",
+                },
+            ]
+        },
+    },
+    {
+        "name": "google_search",
+        "display_name": "Google Search",
+        "description": "Search using Google Custom Search JSON API. Returns titles, URLs, and snippets. Requires a Google API key and Custom Search Engine ID (format: API_KEY:CX_ID).",
+        "category": "search",
+        "icon": "🔍",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords"},
+                "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+                "language": {"type": "string", "description": "Search language code (e.g. 'en', 'zh')"},
+            },
+            "required": ["query"],
+        },
+        "config": {"language": "en"},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "API Key & Search Engine ID",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "API_KEY:SEARCH_ENGINE_ID (get at console.cloud.google.com)",
+                },
+                {
+                    "key": "language",
+                    "label": "Search language",
+                    "type": "select",
+                    "options": [
+                        {"value": "en", "label": "English"},
+                        {"value": "zh-CN", "label": "Chinese"},
+                        {"value": "ja", "label": "Japanese"},
+                    ],
+                    "default": "en",
+                },
+            ]
+        },
+    },
+    {
+        "name": "bing_search",
+        "display_name": "Bing Search",
+        "description": "Search using Bing Web Search API. Returns titles, URLs, and snippets. Requires a Bing Search API key from Microsoft Azure.",
+        "category": "search",
+        "icon": "🔍",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords"},
+                "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+                "language": {"type": "string", "description": "Market language code (e.g. 'en-US', 'zh-CN')"},
+            },
+            "required": ["query"],
+        },
+        "config": {"language": "en-US"},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "Bing Search API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get from Azure Cognitive Services (Bing Search v7)",
+                },
+                {
+                    "key": "language",
+                    "label": "Market language",
+                    "type": "select",
+                    "options": [
+                        {"value": "en-US", "label": "English (US)"},
+                        {"value": "zh-CN", "label": "Chinese (Simplified)"},
+                        {"value": "ja-JP", "label": "Japanese"},
+                    ],
+                    "default": "en-US",
+                },
+            ]
+        },
+    },
+    {
         "name": "plaza_get_new_posts",
         "display_name": "Plaza: Browse",
         "description": "Get recent posts from the Agent Plaza (shared social feed). Returns posts and comments since a given timestamp.",
@@ -436,7 +663,7 @@ BUILTIN_TOOLS = [
     {
         "name": "execute_code",
         "display_name": "Code Executor",
-        "description": "Execute code (Python, Bash, Node.js) in a sandboxed environment within the agent's workspace. Useful for data processing, calculations, file transformations, and automation.",
+        "description": "Execute code (Python, Bash, Node.js) in a local sandboxed subprocess within the agent's workspace. Useful for data processing, calculations, file transformations, and automation.",
         "category": "code",
         "icon": "💻",
         "is_default": True,
@@ -451,8 +678,6 @@ BUILTIN_TOOLS = [
         },
         "config": {
             "sandbox_type": "subprocess",
-            "api_key": "",
-            "api_url": "",
             "cpu_limit": "0.5",
             "memory_limit": "256m",
             "allow_network": True,
@@ -461,24 +686,6 @@ BUILTIN_TOOLS = [
         },
         "config_schema": {
             "fields": [
-                {
-                    "key": "sandbox_type",
-                    "label": "Sandbox Type",
-                    "type": "select",
-                    "options": [
-                        {"value": "subprocess", "label": "Local (subprocess)"},
-                        {"value": "e2b", "label": "E2B (cloud)"},
-                    ],
-                    "default": "subprocess",
-                },
-                {
-                    "key": "api_key",
-                    "label": "API Key",
-                    "type": "password",
-                    "default": "",
-                    "placeholder": "Required for cloud/API sandboxes",
-                    "depends_on": {"sandbox_type": ["e2b"]},
-                },
                 {
                     "key": "cpu_limit",
                     "label": "CPU Limit",
@@ -498,7 +705,6 @@ BUILTIN_TOOLS = [
                     "label": "Allow Network Access",
                     "type": "checkbox",
                     "default": True,
-                    "depends_on": {"sandbox_type": ["subprocess"]},
                     "read_only_for_roles": ["agent_admin", "member"],
                 },
                 {
@@ -520,6 +726,58 @@ BUILTIN_TOOLS = [
             ]
         },
     },
+    {
+        "name": "execute_code_e2b",
+        "display_name": "Code Executor (E2B Cloud)",
+        "description": "Execute code (Python, Bash, Node.js) in a secure E2B cloud sandbox. Provides full network access and an isolated environment without consuming local resources. Requires an E2B API key.",
+        "category": "code",
+        "icon": "☁️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
+                "code": {"type": "string", "description": "Code to execute"},
+                "timeout": {"type": "integer", "description": "Max execution time in seconds (default 30, max 60)"},
+            },
+            "required": ["language", "code"],
+        },
+        "config": {
+            "sandbox_type": "e2b",
+            "api_key": "",
+            "default_timeout": 30,
+            "max_timeout": 60,
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "E2B API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get your API key at https://e2b.dev",
+                    "required": True,
+                },
+                {
+                    "key": "default_timeout",
+                    "label": "Default Timeout (seconds)",
+                    "type": "number",
+                    "default": 30,
+                    "min": 5,
+                    "max": 300,
+                },
+                {
+                    "key": "max_timeout",
+                    "label": "Max Timeout (seconds)",
+                    "type": "number",
+                    "default": 60,
+                    "min": 10,
+                    "max": 300,
+                },
+            ]
+        },
+    },
+
     {
         "name": "upload_image",
         "display_name": "Upload Image",
@@ -552,6 +810,147 @@ BUILTIN_TOOLS = [
                     "type": "text",
                     "default": "",
                     "placeholder": "https://ik.imagekit.io/your_imagekit_id",
+                },
+            ]
+        },
+    },
+    {
+        "name": "generate_image_siliconflow",
+        "display_name": "Generate Image (SiliconFlow)",
+        "description": "Generate an image via SiliconFlow FLUX models. China-friendly and fast.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024, 1024x768). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "black-forest-labs/FLUX.1-schnell",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "black-forest-labs/FLUX.1-schnell",
+                    "placeholder": "e.g. black-forest-labs/FLUX.1-schnell",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "SiliconFlow API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL (optional)",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "Default: https://api.siliconflow.cn/v1",
+                },
+            ]
+        },
+    },
+    {
+        "name": "generate_image_openai",
+        "display_name": "Generate Image (OpenAI)",
+        "description": "Generate an image via OpenAI DALL-E models.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "dall-e-3",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "dall-e-3",
+                    "placeholder": "e.g. dall-e-3 or dall-e-2",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "OpenAI API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL (optional)",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "Default: https://api.openai.com/v1",
+                },
+            ]
+        },
+    },
+    {
+        "name": "generate_image_google",
+        "display_name": "Generate Image (Google/Vertex)",
+        "description": "Generate an image via Google Gemini Image (Nano Banana) or Vertex AI.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "gemini-2.5-flash-image",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "gemini-2.5-flash-image",
+                    "placeholder": "e.g. gemini-2.5-flash-image",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Google AI Studio or Vertex API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL (optional)",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "Can be Vertex API URL: https://aiplatform.googleapis.com/...",
                 },
             ]
         },
@@ -1226,7 +1625,14 @@ AGENTBAY_TOOLS = [
             "properties": {
                 "url": {"type": "string", "description": "要访问的网址"},
                 "wait_for": {"type": "string", "description": "等待元素选择器（可选）"},
-                "screenshot": {"type": "boolean", "description": "是否截图", "default": False},
+                "save_to_workspace": {
+                    "type": "boolean",
+                    # Set to True ONLY when the user explicitly asks to SEE or SAVE
+                    # a screenshot (e.g. "截图给我看", "保存截图"). Default False means
+                    # the screenshot is held in memory for LLM vision only (invisible to user).
+                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
+                    "default": False,
+                },
             },
             "required": ["url"],
         },
@@ -1261,7 +1667,18 @@ AGENTBAY_TOOLS = [
         "category": "agentbay",
         "icon": "📸",
         "is_default": False,
-        "parameters_schema": {"type": "object", "properties": {}},
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "save_to_workspace": {
+                    "type": "boolean",
+                    # Set to True ONLY when the user explicitly asks to SEE or SAVE
+                    # a screenshot. Default False = in-memory for LLM vision only.
+                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
+                    "default": False,
+                },
+            },
+        },
         "config": {},
         "config_schema": {},
     },
@@ -1598,6 +2015,46 @@ AGENTBAY_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    {
+        "name": "agentbay_file_transfer",
+        "display_name": "AgentBay: File Transfer",
+        "description": (
+            "Transfer a file between any two endpoints: the agent workspace, "
+            "the AgentBay browser environment, the cloud desktop, or the code sandbox. "
+            "Workspace -> env: upload a workspace file into a cloud environment. "
+            "Env -> workspace: download a file from a cloud environment into the workspace. "
+            "Env -> env: transfer between environments transparently (no workspace involvement)."
+        ),
+        "category": "agentbay",
+        "icon": "🔄",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "from_type": {
+                    "type": "string",
+                    "enum": ["workspace", "browser", "computer", "code"],
+                    "description": "Source endpoint: 'workspace' for agent workspace, or the AgentBay environment name.",
+                },
+                "from_path": {
+                    "type": "string",
+                    "description": "Source path. Relative if workspace (e.g. 'workspace/data.csv'), absolute if env (e.g. '/root/data.csv').",
+                },
+                "to_type": {
+                    "type": "string",
+                    "enum": ["workspace", "browser", "computer", "code"],
+                    "description": "Destination endpoint: 'workspace' for agent workspace, or the AgentBay environment name.",
+                },
+                "to_path": {
+                    "type": "string",
+                    "description": "Destination path. Relative if workspace (e.g. 'workspace/output.csv'), absolute if env (e.g. '/root/output.csv').",
+                },
+            },
+            "required": ["from_type", "from_path", "to_type", "to_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
 ]
 
 BUILTIN_TOOLS = [
@@ -1625,6 +2082,7 @@ async def seed_builtin_tools():
                     category=t["category"],
                     icon=t["icon"],
                     is_default=t["is_default"],
+                    parameters_schema=t.get("parameters_schema", {"type": "object", "properties": {}}),
                     config=t.get("config", {}),
                     config_schema=t.get("config_schema", {}),
                     source="builtin",

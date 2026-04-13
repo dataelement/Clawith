@@ -12,7 +12,6 @@ import Dashboard from './pages/Dashboard';
 import Plaza from './pages/Plaza';
 import AgentDetail from './pages/AgentDetail';
 import AgentCreate from './pages/AgentCreate';
-import Chat from './pages/Chat';
 import Messages from './pages/Messages';
 import EnterpriseSettings from './pages/EnterpriseSettings';
 import InvitationCodes from './pages/InvitationCodes';
@@ -122,9 +121,40 @@ export default function App() {
         const savedTheme = localStorage.getItem('theme') || 'dark';
         document.documentElement.setAttribute('data-theme', savedTheme);
 
-        if (token && !user) {
+        // Cross-domain tenant switch: the backend appends ?token=<jwt> to the redirect URL
+        // so the new domain receives a fresh scoped token. Consume it here (before any other
+        // auth logic) so it always takes precedence over a stale token in localStorage.
+        //
+        // IMPORTANT: Only apply this on paths that do NOT use ?token= for their own purposes.
+        // /reset-password and /verify-email both receive a one-time token for their own flow —
+        // consuming it here as a session JWT would call /auth/me, fail, log out the user,
+        // and redirect them to /login instead of showing the correct page.
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlToken = urlParams.get('token');
+        const currentPath = window.location.pathname;
+        const pathsWithOwnToken = ['/reset-password', '/verify-email'];
+        let effectiveToken = token;
+
+        if (urlToken && !pathsWithOwnToken.includes(currentPath)) {
+            // Persist the new token and update the zustand store's in-memory value
+            localStorage.setItem('token', urlToken);
+            useAuthStore.setState({ token: urlToken, user: null });
+            effectiveToken = urlToken;
+
+            // Remove token from URL to prevent it from leaking into browser history
+            // and to avoid re-applying it on a manual page refresh.
+            urlParams.delete('token');
+            const cleanSearch = urlParams.toString();
+            const cleanUrl = window.location.pathname
+                + (cleanSearch ? `?${cleanSearch}` : '')
+                + window.location.hash;
+            window.history.replaceState({}, '', cleanUrl);
+        }
+
+
+        if (effectiveToken && !user) {
             authApi.me()
-                .then((u) => setAuth(u, token))
+                .then((u) => setAuth(u, effectiveToken!))
                 .catch(() => useAuthStore.getState().logout())
                 .finally(() => setLoading(false));
         } else {
@@ -157,7 +187,8 @@ export default function App() {
                     <Route path="plaza" element={<Plaza />} />
                     <Route path="agents/new" element={<AgentCreate />} />
                     <Route path="agents/:id" element={<AgentDetail />} />
-                    <Route path="agents/:id/chat" element={<Chat />} />
+                    {/* NOTE: Chat is a tab inside AgentDetail (#chat), not a separate route.
+                        The deprecated /agents/:id/chat path is intentionally removed. */}
                     <Route path="messages" element={<Messages />} />
                     <Route path="enterprise" element={<EnterpriseSettings />} />
                     <Route path="invitations" element={<InvitationCodes />} />

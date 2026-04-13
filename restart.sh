@@ -178,6 +178,10 @@ start_backend() {
     echo -e "${YELLOW}🚀 Starting backend...${NC}"
     cd "$BACKEND_DIR"
 
+    # Auto-run schema migrations via alembic
+    echo -e "${YELLOW}🔄 Running schema migrations...${NC}"
+    .venv/bin/alembic upgrade head 2>/dev/null || true
+
     # Auto-run data migrations (idempotent)
     echo -e "${YELLOW}🔄 Running data migrations...${NC}"
     .venv/bin/python -m app.scripts.migrate_schedules_to_triggers || true

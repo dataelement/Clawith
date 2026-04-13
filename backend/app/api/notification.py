@@ -144,12 +144,11 @@ async def broadcast_notification(
     email_recipients = []
 
     if req.send_email:
-        from app.services.system_email_service import get_system_email_config
+        from app.services.system_email_service import resolve_email_config_async
 
-        try:
-            get_system_email_config()
-        except Exception as exc:
-            raise HTTPException(400, f"System email is not configured: {exc}")
+        email_config = await resolve_email_config_async(db)
+        if not email_config:
+            raise HTTPException(400, "System email is not configured. Please configure it in Platform Settings.")
 
     # Notify all users in tenant
     users_result = await db.execute(
