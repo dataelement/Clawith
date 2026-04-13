@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.agent import Agent
 from app.models.llm import LLMModel
+from app.services.llm_utils import get_model_api_key
 
 settings = get_settings()
 
@@ -152,9 +153,9 @@ class AgentManager:
             },
         }
 
-        if model and model.api_key_encrypted:
+        if model:
             config["env"] = {
-                f"{model.provider.upper()}_API_KEY": model.api_key_encrypted,
+                f"{model.provider.upper()}_API_KEY": get_model_api_key(model),
             }
 
         return config

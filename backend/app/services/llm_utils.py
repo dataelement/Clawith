@@ -8,6 +8,10 @@ This module also exports the unified LLM client classes from llm_client.py
 for convenient access.
 """
 
+from app.core.security import decrypt_data
+from app.core.config import get_settings
+from app.models.llm import LLMModel
+
 # Re-export all client classes and functions from llm_client.py
 from app.services.llm_client import (
     AnthropicClient,
@@ -40,6 +44,18 @@ from app.services.llm_client import (
 ANTHROPIC_API_PROVIDERS = {"anthropic"}
 
 # Keep the original PROVIDER_URLS reference (already exported from llm_client)
+
+
+def get_model_api_key(model: LLMModel) -> str:
+    """Decrypt the model's API key, with backward compatibility for plaintext keys."""
+    raw = model.api_key_encrypted or ""
+    if not raw:
+        return ""
+    try:
+        settings = get_settings()
+        return decrypt_data(raw, settings.SECRET_KEY)
+    except ValueError:
+        return raw
 
 
 def get_tool_params(provider: str) -> dict:

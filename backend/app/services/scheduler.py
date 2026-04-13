@@ -64,7 +64,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             # Build context and call LLM
             from app.services.agent_context import build_agent_context
             from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
-            from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
+            from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
 
             static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "")
 
@@ -80,7 +80,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             try:
                 client = create_llm_client(
                     provider=model.provider,
-                    api_key=model.api_key_encrypted,
+                    api_key=get_model_api_key(model),
                     model=model.model,
                     base_url=model.base_url,
                     timeout=120.0,

@@ -27,7 +27,7 @@ from app.schemas.schemas import (
 )
 from app.services.autonomy_service import autonomy_service
 from app.services.enterprise_sync import enterprise_sync_service
-from app.services.llm_utils import get_provider_manifest
+from app.services.llm_utils import get_provider_manifest, get_model_api_key
 from app.services.platform_service import platform_service
 from app.services.sso_service import sso_service
 
@@ -69,7 +69,7 @@ async def test_llm_model(
         result = await db.execute(select(LLMModel).where(LLMModel.id == data.model_id))
         existing = result.scalar_one_or_none()
         if existing:
-            api_key = existing.api_key_encrypted
+            api_key = get_model_api_key(existing)
     if not api_key:
         return {"success": False, "latency_ms": 0, "error": "API Key is required"}
 
@@ -117,7 +117,7 @@ async def list_llm_models(
     for m in result.scalars().all():
         out = LLMModelOut.model_validate(m)
         # Mask API key: show last 4 chars
-        key = m.api_key_encrypted or ""
+        key = get_model_api_key(m)
         out.api_key_masked = f"****{key[-4:]}" if len(key) > 4 else "****"
         models.append(out)
     return models

@@ -110,6 +110,7 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
         create_llm_client,
         LLMMessage,
         LLMError,
+        get_model_api_key,
     )
 
     model_id = target_agent.primary_model_id or target_agent.fallback_model_id
@@ -137,7 +138,7 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
 
     client = create_llm_client(
         provider=model.provider,
-        api_key=model.api_key_encrypted,
+        api_key=get_model_api_key(model),
         model=model.model,
         base_url=base_url,
         timeout=60.0,

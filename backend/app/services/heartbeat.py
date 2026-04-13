@@ -162,7 +162,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             agent_role = agent.role_description or ""
             agent_creator_id = agent.creator_id
             model_provider = model.provider
-            model_api_key = model.api_key_encrypted
+            model_api_key = get_model_api_key(model)
             model_model = model.model
             model_base_url = model.base_url
             model_temperature = model.temperature
@@ -253,7 +253,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         full_instruction = heartbeat_instruction + recent_context + inbox_context
 
         # Call LLM with tools using unified client
-        from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
+        from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
         from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
 
         try:

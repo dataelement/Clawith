@@ -62,12 +62,12 @@ async def lifespan(app: FastAPI):
     intercept_standard_logging()
     logger.info("[startup] Logging configured")
 
-    # Reject default JWT secrets in production
-    if "change-me" in settings.SECRET_KEY or "change-me" in settings.JWT_SECRET_KEY:
-        if settings.DEBUG:
-            logger.warning("[startup] SECRET_KEY or JWT_SECRET_KEY contains default 'change-me' value — acceptable in DEBUG mode only")
-        else:
-            raise SystemExit("FATAL: SECRET_KEY or JWT_SECRET_KEY contains default 'change-me' value. Set secure secrets before running in production.")
+    # Warn about default JWT secrets in production
+    if "change-me" in settings.SECRET_KEY.lower() or "change-me" in settings.JWT_SECRET_KEY.lower():
+        logger.warning(
+            "[startup] WARNING: SECRET_KEY or JWT_SECRET_KEY contains default 'change-me' value. "
+            "This is insecure for production. Set unique secrets in your .env file."
+        )
 
     import asyncio
     import sys

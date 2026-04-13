@@ -6,17 +6,14 @@ to poll for messages, report results, send messages, and send heartbeat pings.
 
 import asyncio
 import hashlib
-import secrets
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Header, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, Header, HTTPException, Depends
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_user
-from app.core.permissions import check_agent_access, is_agent_creator
 from app.database import get_db, async_session
 from app.models.agent import Agent
 from app.models.gateway_message import GatewayMessage
@@ -59,47 +56,6 @@ async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
     if not agent:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return agent
-
-
-# ─── Generate / Regenerate API Key ──────────────────────
-
-@router.post("/generate-key/{agent_id}")
-async def generate_api_key(
-    agent_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    # JWT auth for this endpoint (requires the agent creator)
-    current_user: "User" = Depends(None),  # placeholder, will use real dependency
-):
-    """Generate or regenerate an API key for an OpenClaw agent.
-
-    Called from the frontend by the agent creator.
-    """
-    from app.api.agents import get_current_user
-    raise HTTPException(status_code=501, detail="Use the /agents/{id}/api-key endpoint instead")
-
-
-@router.post("/agents/{agent_id}/api-key")
-async def generate_agent_api_key(
-    agent_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Generate or regenerate API key for an OpenClaw agent.
-
-    This is an internal endpoint called by the agents API.
-    """
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent) and current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(status_code=403, detail="Only creator or admin can manage API keys")
-    if getattr(agent, "agent_type", "native") != "openclaw":
-        raise HTTPException(status_code=400, detail="API keys are only available for OpenClaw agents")
-
-    # Generate a new key
-    raw_key = f"oc-{secrets.token_urlsafe(32)}"
-    agent.api_key_hash = _hash_key(raw_key)
-    await db.commit()
-
-    return {"api_key": raw_key, "message": "Save this key — it won't be shown again."}
 
 
 # ─── Poll for messages ──────────────────────────────────
