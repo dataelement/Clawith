@@ -1756,9 +1756,12 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
             if (variables?.enabled && !settings?.enabled) {
                 setSeeding(true);
                 setTimeout(() => {
+                    // Re-fetch OKR Agent info
                     qc.invalidateQueries({ queryKey: ['okr-members-without-okr-settings'] });
+                    // Also update the sidebar agent list so the OKR Agent appears
+                    qc.invalidateQueries({ queryKey: ['agents'] });
                     setSeeding(false);
-                }, 2500);
+                }, 3000);
             }
         },
     });
@@ -1799,23 +1802,24 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                                 }
                             </div>
                         </div>
-                        <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '24px', flexShrink: 0 }}>
-                            <input
-                                type="checkbox"
-                                checked={s.enabled}
-                                onChange={(e) => updateSettings.mutate({ ...s, enabled: e.target.checked })}
-                                style={{ opacity: 0, width: 0, height: 0 }}
-                            />
+                        <button
+                            onClick={() => updateSettings.mutate({ ...s, enabled: !s.enabled })}
+                            title={s.enabled ? (zh ? '点击关闭 OKR' : 'Click to disable OKR') : (zh ? '点击开启 OKR' : 'Click to enable OKR')}
+                            style={{
+                                position: 'relative', width: '40px', height: '24px',
+                                borderRadius: '12px', border: 'none', cursor: 'pointer',
+                                background: s.enabled ? 'var(--accent-primary)' : 'var(--border-subtle)',
+                                transition: 'background 0.2s', padding: 0, flexShrink: 0,
+                            }}
+                        >
                             <span style={{
-                                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: '24px', cursor: 'pointer',
-                                background: s.enabled ? 'var(--accent-primary)' : 'var(--border-subtle)', transition: '0.2s'
-                            }}>
-                                <span style={{
-                                    position: 'absolute', left: s.enabled ? '18px' : '2px', top: '2px', width: '20px', height: '20px',
-                                    borderRadius: '50%', background: '#fff', transition: '0.2s', boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
-                                }} />
-                            </span>
-                        </label>
+                                position: 'absolute',
+                                left: s.enabled ? '18px' : '2px', top: '2px',
+                                width: '20px', height: '20px',
+                                borderRadius: '50%', background: '#fff',
+                                transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                            }} />
+                        </button>
                     </div>
                 </div>
 
