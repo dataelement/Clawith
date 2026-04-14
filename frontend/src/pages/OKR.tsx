@@ -535,27 +535,32 @@ function ObjectiveCard({
                 </svg>
 
                 <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                        {ownerLabel && (
-                            <span style={{
-                                marginTop: '2px',
-                                fontSize: '11px', 
-                                color: obj.owner_type === 'agent' ? '#6366f1' : 'var(--text-tertiary)',
-                                background: obj.owner_type === 'agent' ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
-                                border: obj.owner_type === 'agent' ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid var(--border-subtle)',
-                                borderRadius: '4px', padding: '2px 6px', flexShrink: 0,
-                                display: 'flex', alignItems: 'center', gap: '4px', fontWeight: obj.owner_type === 'agent' ? 600 : 400
-                            }}>
-                                {obj.owner_type === 'agent' && (
-                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
-                                )}
-                                {ownerLabel}
-                            </span>
-                        )}
-                        <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.4, wordBreak: 'break-word' }}>
+                    <div style={{ paddingRight: '12px' }}>
+                        <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.5, wordBreak: 'break-word', whiteSpace: 'normal' }}>
+                            {ownerLabel && (
+                                <span style={{
+                                    verticalAlign: 'text-bottom',
+                                    marginRight: '8px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    fontSize: '11px',
+                                    color: obj.owner_type === 'agent' ? '#6366f1' : 'var(--text-tertiary)',
+                                    background: obj.owner_type === 'agent' ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+                                    border: obj.owner_type === 'agent' ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid var(--border-subtle)',
+                                    borderRadius: '4px',
+                                    padding: '1px 6px',
+                                    lineHeight: 1,
+                                    fontWeight: obj.owner_type === 'agent' ? 600 : 400
+                                }}>
+                                    {obj.owner_type === 'agent' && (
+                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
+                                    )}
+                                    {ownerLabel}
+                                </span>
+                            )}
                             {obj.title}
-                        </span>
-                    </div>
+                        </div>
                     {obj.description && (
                         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{obj.description}</div>
                     )}
