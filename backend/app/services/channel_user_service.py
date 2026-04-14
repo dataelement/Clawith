@@ -124,34 +124,30 @@ class ChannelUserService:
             await self._enrich_user_from_extra_info(db, user, extra_info)
             if channel_type in ("feishu", "dingtalk", "wecom"):
                 if org_member and not org_member.user_id:
-                    # Existing shell OrgMember not yet linked → link it
+                    # Existing shell OrgMember not yet linked → link it + backfill ids
                     org_member.user_id = user.id
+                    self._backfill_org_member_ids(
+                        org_member, channel_type, external_user_id, extra_info
+                    )
                 elif not org_member:
-                    # No OrgMember found by external_id. Before creating a new shell,
-                    # check if this user already has an OrgMember from org sync so
-                    # we reuse it instead of creating a duplicate entry.
                     existing_member = await self._find_existing_org_member_for_user(
                         db, user.id, provider.id, tenant_id
                     )
                     if existing_member:
-                        unionid, open_id, external_id = self._get_channel_ids(
-                            channel_type, external_user_id, extra_info
+                        # Reuse the org-synced record: back-fill channel identifiers
+                        # so future direct lookups hit without another user/get call.
+                        self._backfill_org_member_ids(
+                            existing_member, channel_type, external_user_id, extra_info
                         )
-                        if unionid and not existing_member.unionid:
-                            existing_member.unionid = unionid
-                        if open_id and not existing_member.open_id:
-                            existing_member.open_id = open_id
-                        if external_id and not existing_member.external_id:
-                            existing_member.external_id = external_id
                         logger.info(
-                            f"[{channel_type}] Reusing org-synced OrgMember {existing_member.id} "
-                            f"for user {user.id} instead of creating a duplicate shell"
+                            f"[{channel_type}] Reusing org-synced OrgMember "
+                            f"{existing_member.id} for user {user.id}; "
+                            f"back-filled channel identifiers"
                         )
                     else:
-                        # Truly no OrgMember for this user → create shell
                         await self._create_org_member_shell(
                             db, provider, channel_type, external_user_id, extra_info,
-                            linked_user_id=user.id
+                            linked_user_id=user.id,
                         )
             await db.flush()
             return user
@@ -166,10 +162,13 @@ class ChannelUserService:
         if channel_type in ("feishu", "dingtalk", "wecom"):
             if org_member:
                 org_member.user_id = user.id
+                self._backfill_org_member_ids(
+                    org_member, channel_type, external_user_id, extra_info
+                )
             else:
                 await self._create_org_member_shell(
                     db, provider, channel_type, external_user_id, extra_info,
-                    linked_user_id=user.id
+                    linked_user_id=user.id,
                 )
             await db.flush()
         logger.info(
@@ -295,6 +294,41 @@ class ChannelUserService:
             query = query.where(OrgMember.tenant_id == tenant_id)
         result = await db.execute(query.limit(1))
         return result.scalar_one_or_none()
+
+    def _backfill_org_member_ids(
+        self,
+        member: OrgMember,
+        channel_type: str,
+        external_user_id: str,
+        extra_info: dict[str, Any],
+    ) -> None:
+        """回填 channel 特定的 identifier 到现有 OrgMember(只填空字段)。
+
+        幂等: 重复调用不覆盖非空值。不写库, 依赖外层 flush。
+        """
+        unionid_from_api = extra_info.get("unionid")
+
+        if channel_type == "dingtalk":
+            if not member.external_id and external_user_id:
+                member.external_id = external_user_id
+            if not member.unionid and unionid_from_api:
+                member.unionid = unionid_from_api
+
+        elif channel_type == "feishu":
+            if external_user_id.startswith("on_"):
+                if not member.unionid:
+                    member.unionid = external_user_id
+            elif external_user_id.startswith("ou_"):
+                if not member.open_id:
+                    member.open_id = external_user_id
+            if not member.external_id and external_user_id:
+                member.external_id = external_user_id
+            if not member.unionid and unionid_from_api:
+                member.unionid = unionid_from_api
+
+        elif channel_type == "wecom":
+            if not member.external_id and external_user_id:
+                member.external_id = external_user_id
 
     async def _enrich_user_from_extra_info(
         self,
