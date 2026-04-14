@@ -1,8 +1,11 @@
+import uuid
+
 from app.services.wecom_stream import (
     _build_wecom_conv_id,
     _extract_wecom_chat_id,
     _extract_wecom_chat_type,
     _extract_wecom_sender_id,
+    WeComStreamManager,
 )
 
 
@@ -38,3 +41,21 @@ def test_extract_wecom_context_from_nested_legacy_shape():
 
 def test_build_wecom_conv_id_falls_back_to_sender_for_missing_group_chat_id():
     assert _build_wecom_conv_id("wangwu", "", "group") == "wecom_p2p_wangwu"
+
+
+def test_status_uses_connection_state_not_task_liveness():
+    agent_id = uuid.uuid4()
+    manager = WeComStreamManager()
+
+    manager._connected[agent_id] = False
+
+    assert manager.status() == {str(agent_id): False}
+
+
+def test_status_reports_connected_agent():
+    agent_id = uuid.uuid4()
+    manager = WeComStreamManager()
+
+    manager._connected[agent_id] = True
+
+    assert manager.status() == {str(agent_id): True}

@@ -62,6 +62,7 @@ class WeComStreamManager:
     def __init__(self):
         self._clients: Dict[uuid.UUID, object] = {}
         self._tasks: Dict[uuid.UUID, asyncio.Task] = {}
+        self._connected: Dict[uuid.UUID, bool] = {}
 
     async def start_client(
         self,
@@ -81,6 +82,7 @@ class WeComStreamManager:
         if stop_existing:
             await self.stop_client(agent_id)
 
+        self._connected[agent_id] = False
         task = asyncio.create_task(
             self._run_client(agent_id, bot_id, bot_secret),
             name=f"wecom-stream-{str(agent_id)[:8]}",
@@ -97,6 +99,7 @@ class WeComStreamManager:
         try:
             from wecom_aibot_sdk import WSClient, generate_req_id
         except ImportError:
+            self._connected[agent_id] = False
             logger.warning(
                 "[WeCom Stream] wecom-aibot-sdk-python not installed. "
                 "Install with: pip install wecom-aibot-sdk-python"
@@ -227,14 +230,17 @@ class WeComStreamManager:
             # Connect and run
             logger.info(f"[WeCom Stream] Connecting for agent {agent_id}...")
             await client.connect_async()
+            self._connected[agent_id] = bool(client.is_connected)
 
             # Keep alive
             while client.is_connected:
                 await asyncio.sleep(1)
 
+            self._connected[agent_id] = False
             logger.info(f"[WeCom Stream] Client disconnected for agent {agent_id}")
 
         except asyncio.CancelledError:
+            self._connected[agent_id] = False
             logger.info(f"[WeCom Stream] Client task cancelled for agent {agent_id}")
             if agent_id in self._clients:
                 try:
@@ -242,10 +248,12 @@ class WeComStreamManager:
                 except Exception:
                     pass
         except Exception as e:
+            self._connected[agent_id] = False
             logger.error(f"[WeCom Stream] Client error for {agent_id}: {e}")
             import traceback
             traceback.print_exc()
         finally:
+            self._connected.pop(agent_id, None)
             self._clients.pop(agent_id, None)
             self._tasks.pop(agent_id, None)
 
@@ -261,6 +269,7 @@ class WeComStreamManager:
                 await client.disconnect()
             except Exception:
                 pass
+        self._connected.pop(agent_id, None)
 
     async def start_all(self):
         """Start WebSocket clients for all configured WeCom agents with bot credentials."""
@@ -291,8 +300,8 @@ class WeComStreamManager:
     def status(self) -> dict:
         """Return status of all active WebSocket clients."""
         return {
-            str(aid): not self._tasks[aid].done()
-            for aid in self._tasks
+            str(aid): connected
+            for aid, connected in self._connected.items()
         }
 
 
