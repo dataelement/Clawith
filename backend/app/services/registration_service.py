@@ -269,7 +269,11 @@ class RegistrationService:
         # Check if identity already exists
         lookup_provider_user_id = user_info.get("union_id") or user_info.get("unionId") or provider_user_id
         existing = await sso_service.resolve_user_identity(
-            db, lookup_provider_user_id, provider_type, tenant_id=tenant_id
+            db,
+            lookup_provider_user_id,
+            provider_type,
+            tenant_id=tenant_id,
+            identity_data=user_info,
         )
 
         if existing:
@@ -365,7 +369,11 @@ class RegistrationService:
             # Try to find existing user by identity
             lookup_provider_user_id = user_info_obj.provider_union_id or user_info_obj.provider_user_id
             existing_user = await sso_service.resolve_user_identity(
-                db, lookup_provider_user_id, provider_type, tenant_id=tenant_id
+                db,
+                lookup_provider_user_id,
+                provider_type,
+                tenant_id=tenant_id,
+                identity_data=user_info,
             )
 
             if existing_user:

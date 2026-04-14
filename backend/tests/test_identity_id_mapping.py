@@ -2,6 +2,26 @@ from app.services.channel_user_service import ChannelUserService
 from app.services.sso_service import sso_service
 
 
+def test_sso_identity_lookup_chain_prioritizes_unionid_then_userid_then_openid():
+    lookup_chain = sso_service._identity_lookup_chain(
+        "feishu",
+        "ou_open_123",
+        {
+            "raw_data": {
+                "open_id": "ou_open_123",
+                "union_id": "on_union_456",
+                "user_id": "u_emp_789",
+            }
+        },
+    )
+
+    assert lookup_chain == [
+        ("unionid", "on_union_456"),
+        ("external_id", "u_emp_789"),
+        ("open_id", "ou_open_123"),
+    ]
+
+
 def test_sso_extract_identity_ids_uses_real_union_id_not_open_id():
     union_id, open_id, external_id = sso_service._extract_identity_ids(
         "feishu",

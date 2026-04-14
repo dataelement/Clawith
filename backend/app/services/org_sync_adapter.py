@@ -136,6 +136,7 @@ class BaseOrgSyncAdapter(ABC):
         user_count = 0
         profile_count = 0
         sync_start = datetime.now()
+        partial_failure = False
 
         # Ensure provider exists
         provider = await self._ensure_provider(db)
@@ -149,6 +150,7 @@ class BaseOrgSyncAdapter(ABC):
                         await self._upsert_department(db, provider, dept)
                     dept_count += 1
                 except Exception as e:
+                    partial_failure = True
                     errors.append(f"Department {dept.external_id}: {str(e)}")
                     logger.error(f"[OrgSync] Failed to sync department {dept.external_id}: {e}")
 
@@ -157,6 +159,7 @@ class BaseOrgSyncAdapter(ABC):
                 try:
                     users = await self.fetch_users(dept.external_id)
                 except Exception as e:
+                    partial_failure = True
                     logger.error(f"[OrgSync] Failed to fetch users in department {dept.external_id}: {e}")
                     errors.append(f"Fetch users in dept {dept.external_id}: {str(e)}")
                     continue
@@ -171,6 +174,7 @@ class BaseOrgSyncAdapter(ABC):
                                 profile_count += 1
                         member_count += 1
                     except Exception as e:
+                        partial_failure = True
                         logger.error(f"[OrgSync] Failed to sync member {user.external_id} ({user.name}): {e}")
                         errors.append(f"Member {user.external_id}: {str(e)}")
 
@@ -181,9 +185,15 @@ class BaseOrgSyncAdapter(ABC):
                 self.provider.config = config
                 await db.flush()
                 
-                # Reconciliation: mark records not updated in this sync as deleted
-                await self._reconcile(db, provider.id, sync_start)
-                await db.flush()
+                if partial_failure:
+                    logger.warning(
+                        f"[OrgSync] Skipping reconcile for provider {provider.id} because this sync had partial failures"
+                    )
+                    errors.append("Reconcile skipped due to partial sync failures")
+                else:
+                    # Reconciliation: mark records not updated in this sync as deleted
+                    await self._reconcile(db, provider.id, sync_start)
+                    await db.flush()
 
                 # Recalculate member counts for all departments (crucial for DingTalk/WeCom)
                 await self._update_member_counts(db, provider.id)

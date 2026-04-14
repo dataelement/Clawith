@@ -972,7 +972,12 @@ async def bind_identity(
 
         # Check if identity is already linked to another user
         lookup_provider_user_id = user_info.provider_union_id or user_info.provider_user_id
-        existing_user = await sso_service.check_duplicate_identity(db, provider, lookup_provider_user_id)
+        existing_user = await sso_service.check_duplicate_identity(
+            db,
+            provider,
+            lookup_provider_user_id,
+            identity_data=user_info.raw_data,
+        )
         if existing_user and existing_user.id != current_user.id:
             raise HTTPException(
                 status_code=409,
