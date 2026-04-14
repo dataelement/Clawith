@@ -47,9 +47,8 @@ class LLMMessage:
             msg["tool_calls"] = self.tool_calls
         if self.tool_call_id:
             msg["tool_call_id"] = self.tool_call_id
-        # NOTE: reasoning_content is a DeepSeek R1 *response-only* field.
-        # It must NOT be included in outgoing request payloads — most providers
-        # (Doubao, Qwen, etc.) will reject it with HTTP 400.
+        if self.reasoning_content:
+            msg["reasoning_content"] = self.reasoning_content
         return msg
 
     def to_anthropic_format(self) -> dict | None:
@@ -214,7 +213,7 @@ class LLMClient(ABC):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -226,7 +225,7 @@ class LLMClient(ABC):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
@@ -452,7 +451,7 @@ class OpenAICompatibleClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -487,7 +486,7 @@ class OpenAICompatibleClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
@@ -828,7 +827,7 @@ class OpenAIResponsesClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -860,7 +859,7 @@ class OpenAIResponsesClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
@@ -1218,7 +1217,7 @@ class GeminiClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -1254,7 +1253,7 @@ class GeminiClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
@@ -2037,7 +2036,7 @@ async def chat_complete(
     messages: list[dict],
     base_url: str | None = None,
     tools: list[dict] | None = None,
-    temperature: float = 0.7,
+    temperature: float | None = None,
     max_tokens: int | None = None,
     timeout: float = 120.0,
 ) -> dict:
@@ -2079,7 +2078,7 @@ async def chat_stream(
     messages: list[dict],
     base_url: str | None = None,
     tools: list[dict] | None = None,
-    temperature: float = 0.7,
+    temperature: float | None = None,
     max_tokens: int | None = None,
     timeout: float = 120.0,
     on_chunk: ChunkCallback | None = None,
