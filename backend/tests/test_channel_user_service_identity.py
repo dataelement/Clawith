@@ -199,6 +199,12 @@ def _make_member(**kwargs):
     return SimpleNamespace(**defaults)
 
 
+def _fake_provider_for(channel_type: str):
+    return SimpleNamespace(
+        id=uuid.uuid4(), tenant_id=None, provider_type=channel_type
+    )
+
+
 def test_backfill_dingtalk_fills_external_and_unionid():
     svc = channel_user_service
     member = _make_member()
@@ -458,3 +464,129 @@ async def test_resolve_continues_when_enrich_raises(
         extra_info={"mobile": "13900000000", "email": "x@y.com"},
     )
     assert result.id == matched_user.id
+
+
+async def test_reuse_existing_org_member_triggers_backfill_feishu(
+    fake_session, agent, patch_provider, monkeypatch
+):
+    """Feishu reuse: extra_info has email + unionid; external_user_id is open_id (ou_...)
+    → backfill should populate open_id (from prefix), external_id, and unionid (from extra_info)
+    on the reused OrgMember.
+    """
+    import app.services.channel_user_service as cus_mod
+
+    async def _fake_ensure_feishu(self, db, ptype, tid):
+        return _fake_provider_for("feishu")
+
+    monkeypatch.setattr(cus_mod.ChannelUserService, "_ensure_provider", _fake_ensure_feishu)
+
+    matched_user = SimpleNamespace(
+        id=uuid.uuid4(), identity_id=None,
+        display_name=None, avatar_url=None,
+    )
+    existing_member = _make_member(user_id=matched_user.id)
+
+    async def _fake_find_none(self, db, provider_id, channel_type, candidate_ids):
+        return None
+
+    async def _fake_match_email(db, email, tenant_id):
+        return matched_user
+
+    async def _fake_match_mobile(db, mobile, tenant_id):
+        return None
+
+    async def _fake_find_existing(self, db, user_id, provider_id, tenant_id):
+        return existing_member
+
+    monkeypatch.setattr(cus_mod.ChannelUserService, "_find_org_member", _fake_find_none)
+    monkeypatch.setattr(cus_mod.sso_service, "match_user_by_email", _fake_match_email)
+    monkeypatch.setattr(cus_mod.sso_service, "match_user_by_mobile", _fake_match_mobile)
+    monkeypatch.setattr(
+        cus_mod.ChannelUserService,
+        "_find_existing_org_member_for_user",
+        _fake_find_existing,
+    )
+
+    async def _get_none(model, key):
+        return None
+    monkeypatch.setattr(fake_session, "get", _get_none, raising=False)
+
+    await channel_user_service.resolve_channel_user(
+        db=fake_session,
+        agent=agent,
+        channel_type="feishu",
+        external_user_id="ou_abc123xyz",  # Feishu open_id prefix
+        extra_info={
+            "unionid": "UNION-FEISHU-X",
+            "email": "feishu-user@example.com",
+            "name": "Feishu User",
+        },
+    )
+
+    # Backfill assertions — open_id from prefix, external_id from external_user_id,
+    # unionid from extra_info
+    assert existing_member.open_id == "ou_abc123xyz"
+    assert existing_member.external_id == "ou_abc123xyz"
+    assert existing_member.unionid == "UNION-FEISHU-X"
+
+
+async def test_reuse_existing_org_member_triggers_backfill_wecom(
+    fake_session, agent, patch_provider, monkeypatch
+):
+    """WeCom reuse: only external_id should be filled (from userid).
+    unionid in extra_info must NOT be written to the member (wecom doesn't track unionid
+    on OrgMember).
+    """
+    import app.services.channel_user_service as cus_mod
+
+    async def _fake_ensure_wecom(self, db, ptype, tid):
+        return _fake_provider_for("wecom")
+
+    monkeypatch.setattr(cus_mod.ChannelUserService, "_ensure_provider", _fake_ensure_wecom)
+
+    matched_user = SimpleNamespace(
+        id=uuid.uuid4(), identity_id=None,
+        display_name=None, avatar_url=None,
+    )
+    existing_member = _make_member(user_id=matched_user.id)
+
+    async def _fake_find_none(self, db, provider_id, channel_type, candidate_ids):
+        return None
+
+    async def _fake_match_email(db, email, tenant_id):
+        return matched_user
+
+    async def _fake_match_mobile(db, mobile, tenant_id):
+        return None
+
+    async def _fake_find_existing(self, db, user_id, provider_id, tenant_id):
+        return existing_member
+
+    monkeypatch.setattr(cus_mod.ChannelUserService, "_find_org_member", _fake_find_none)
+    monkeypatch.setattr(cus_mod.sso_service, "match_user_by_email", _fake_match_email)
+    monkeypatch.setattr(cus_mod.sso_service, "match_user_by_mobile", _fake_match_mobile)
+    monkeypatch.setattr(
+        cus_mod.ChannelUserService,
+        "_find_existing_org_member_for_user",
+        _fake_find_existing,
+    )
+
+    async def _get_none(model, key):
+        return None
+    monkeypatch.setattr(fake_session, "get", _get_none, raising=False)
+
+    await channel_user_service.resolve_channel_user(
+        db=fake_session,
+        agent=agent,
+        channel_type="wecom",
+        external_user_id="wecom-userid-42",
+        extra_info={
+            "unionid": "SHOULD-BE-IGNORED",  # wecom doesn't write unionid on member
+            "email": "wecom-user@example.com",
+            "name": "WeCom User",
+        },
+    )
+
+    assert existing_member.external_id == "wecom-userid-42"
+    assert existing_member.unionid is None  # not written for wecom
+    assert existing_member.open_id is None  # not written for wecom
