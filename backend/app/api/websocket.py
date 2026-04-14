@@ -180,7 +180,11 @@ async def websocket_chat(
                     select(LLMModel).where(LLMModel.id == agent.primary_model_id)
                 )
                 llm_model = model_result.scalar_one_or_none()
-                logger.info(f"[WS] Primary model loaded: {llm_model.model if llm_model else 'None'}")
+                if llm_model and not llm_model.enabled:
+                    logger.info(f"[WS] Primary model {llm_model.model} is disabled, skipping")
+                    llm_model = None
+                else:
+                    logger.info(f"[WS] Primary model loaded: {llm_model.model if llm_model else 'None'}")
 
             # Load fallback model
             if agent.fallback_model_id:
@@ -188,7 +192,10 @@ async def websocket_chat(
                     select(LLMModel).where(LLMModel.id == agent.fallback_model_id)
                 )
                 fallback_llm_model = fb_result.scalar_one_or_none()
-                if fallback_llm_model:
+                if fallback_llm_model and not fallback_llm_model.enabled:
+                    logger.info(f"[WS] Fallback model {fallback_llm_model.model} is disabled, skipping")
+                    fallback_llm_model = None
+                elif fallback_llm_model:
                     logger.info(f"[WS] Fallback model loaded: {fallback_llm_model.model}")
 
             # Config-level fallback: primary missing -> use fallback
@@ -203,16 +210,26 @@ async def websocket_chat(
             from datetime import datetime as _dt, timezone as _tz
             conv_id = session_id
             if conv_id:
-                # Validate the session belongs to this agent
-                _sr = await db.execute(
-                    _sel(ChatSession).where(
-                        ChatSession.id == uuid.UUID(conv_id),
-                        ChatSession.agent_id == agent_id,
+                # Validate the session belongs to this agent and to this user.
+                try:
+                    _sid = uuid.UUID(conv_id)
+                except (ValueError, TypeError):
+                    conv_id = None
+                    _existing = None
+                else:
+                    _sr = await db.execute(
+                        _sel(ChatSession).where(
+                            ChatSession.id == _sid,
+                            ChatSession.agent_id == agent_id,
+                        )
                     )
-                )
-                _existing = _sr.scalar_one_or_none()
-                if not _existing:
-                    conv_id = None  # fall through to create
+                    _existing = _sr.scalar_one_or_none()
+                    if not _existing:
+                        conv_id = None
+                    elif _existing.source_channel != "agent" and str(_existing.user_id) != str(user_id):
+                        await websocket.send_json({"type": "error", "content": "Not authorized for this session"})
+                        await websocket.close(code=4003)
+                        return
             if not conv_id:
                 # Find most recent session for this user+agent
                 _sr = await db.execute(
@@ -244,7 +261,7 @@ async def websocket_chat(
                     select(ChatMessage)
                     .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
                     .order_by(ChatMessage.created_at.desc())
-                    .limit(20)
+                    .limit(ctx_size)
                 )
                 history_messages = list(reversed(history_result.scalars().all()))
                 logger.info(f"[WS] Loaded {len(history_messages)} history messages for session {conv_id}")
@@ -263,6 +280,9 @@ async def websocket_chat(
         manager.active_connections[agent_id_str] = []
     manager.active_connections[agent_id_str].append((websocket, conv_id))
     logger.info(f"[WS] Ready! Agent={agent_name}")
+
+    # Send session_id to frontend so Take Control can reference the correct session.
+    await websocket.send_json({"type": "connected", "session_id": conv_id})
 
     # Build conversation context from history
     conversation: list[dict] = []
@@ -289,11 +309,13 @@ async def websocket_chat(
                 if tc_data.get("reasoning_content"):
                     asst_msg["reasoning_content"] = tc_data["reasoning_content"]
                 conversation.append(asst_msg)
-                # Tool result message
+                # Tool result message.
+                from app.services.vision_inject import sanitize_history_tool_result
+                sanitized_result = sanitize_history_tool_result(str(tc_result))
                 conversation.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
-                    "content": str(tc_result)[:500],
+                    "content": sanitized_result[:500],
                 })
             except Exception:
                 continue  # Skip malformed tool_call records
@@ -311,6 +333,13 @@ async def websocket_chat(
         while True:
             logger.info(f"[WS] Waiting for message from {agent_name}...")
             data = await websocket.receive_json()
+
+            # Set a unique trace ID for this specific message processing.
+            from app.core.logging_config import set_trace_id
+            import uuid as _trace_uuid
+            trace_id = str(_trace_uuid.uuid4())[:12]
+            set_trace_id(trace_id)
+
             content = data.get("content", "")
             display_content = data.get("display_content", "")  # User-facing display text
             file_name = data.get("file_name", "")  # Original file name for attachment display
@@ -338,10 +367,17 @@ async def websocket_chat(
             # Add user message to conversation (full LLM context)
             conversation.append({"role": "user", "content": content})
 
-            # Save user message — display_content for history display, content for LLM
-            saved_content = display_content if display_content else content
-            if file_name:
-                saved_content = f"[file:{file_name}]\n{saved_content}"
+            # Save user message to DB.
+            #
+            # If the LLM content contains [image_data:...] markers, persist the full
+            # payload so subsequent turns can still forward the image to the model.
+            has_image_marker = "[image_data:" in content
+            if has_image_marker:
+                saved_content = f"[file:{file_name}]\n{content}" if file_name else content
+            else:
+                saved_content = display_content if display_content else content
+                if file_name:
+                    saved_content = f"[file:{file_name}]\n{saved_content}"
             async with async_session() as db:
                 user_msg = ChatMessage(
                     agent_id=agent_id,
@@ -418,6 +454,28 @@ async def websocket_chat(
                     
                     async def tool_call_to_ws(data: dict):
                         """Send tool call info to client and persist completed ones."""
+                        if data.get("status") == "done":
+                            try:
+                                from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
+
+                                tool_name = data.get("name", "")
+                                env = detect_agentbay_env(tool_name)
+                                if env == "desktop":
+                                    b64_url = await get_desktop_screenshot(agent_id, session_id=conv_id)
+                                    if b64_url:
+                                        data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                        logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                elif env == "browser":
+                                    b64_url = await get_browser_snapshot(agent_id, session_id=conv_id)
+                                    if b64_url:
+                                        data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                        logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                elif env == "code":
+                                    tool_result = data.get("result", "") or ""
+                                    data["live_preview"] = {"env": "code", "output": tool_result[:5000]}
+                            except Exception as _lp_err:
+                                logger.warning(f"[WS][LivePreview] Embed failed: {_lp_err}")
+
                         await websocket.send_json({"type": "tool_call", **data})
                         # Save completed tool calls to DB so they persist in chat history
                         if data.get("status") == "done":
@@ -564,9 +622,14 @@ async def websocket_chat(
                             await db.refresh(task)
                             logger.info(f"[WS] Task created: {task.id}")
                             # Trigger background execution
-                            _asyncio.create_task(execute_task(task.id))
+                            task_id = task.id
+                        _asyncio.create_task(execute_task(task_id, agent_id))
+                        assistant_response += f"\n\n📋 Task synced to task board: [{task_title}]"
                     except Exception as te:
                         logger.error(f"[WS] Task creation failed: {te}")
+
+            # Add assistant response to in-memory conversation for subsequent turns.
+            conversation.append({"role": "assistant", "content": assistant_response})
 
             # Save assistant reply
             async with async_session() as db:
