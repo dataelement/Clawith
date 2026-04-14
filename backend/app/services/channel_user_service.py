@@ -30,6 +30,7 @@ class ChannelUserService:
         channel_type: str,
         external_user_id: str,
         extra_info: dict[str, Any] | None = None,
+        extra_ids: list[str] | None = None,
     ) -> User:
         """Resolve channel user identity, find or create platform User.
 
@@ -45,6 +46,8 @@ class ChannelUserService:
             channel_type: "dingtalk" | "wecom" | "feishu"
             external_user_id: User ID from external platform (staff_id/userid/open_id)
             extra_info: Optional name/avatar/mobile/email from platform API
+            extra_ids: Additional candidate identifiers (e.g. real unionid discovered
+                via user/get) OR-matched against OrgMember.unionid/external_id.
 
         Returns:
             Resolved User instance
@@ -55,9 +58,13 @@ class ChannelUserService:
         # Step 1: Ensure IdentityProvider exists
         provider = await self._ensure_provider(db, channel_type, tenant_id)
 
-        # Step 2: Try to find OrgMember by external identity
+        # Step 2: Try to find OrgMember by all candidate identifiers
+        candidate_ids: list[str] = [external_user_id]
+        for cid in (extra_ids or []):
+            if cid and cid not in candidate_ids:
+                candidate_ids.append(cid)
         org_member = await self._find_org_member(
-            db, provider.id, channel_type, external_user_id
+            db, provider.id, channel_type, candidate_ids
         )
 
         # Step 3: Resolve User from OrgMember or other means
@@ -179,47 +186,38 @@ class ChannelUserService:
         db: AsyncSession,
         provider_id: uuid.UUID,
         channel_type: str,
-        external_user_id: str,
+        candidate_ids: list[str],
     ) -> OrgMember | None:
-        """Find OrgMember by external identity.
+        """Find OrgMember by a list of candidate external identifiers.
 
-        For Feishu: try unionid first, then open_id, then external_id
-        For DingTalk: try unionid first, then external_id
-        For WeCom: try external_id (userid)
-
-        Returns None if OrgMember not found or org sync is not enabled for this channel.
+        所有候选 ID 走 OR 匹配, 适配钉钉同时拥有 staff_id 与 unionid 的场景。
         """
+        if not candidate_ids:
+            return None
         try:
-            # Build OR conditions for matching
-            conditions = [OrgMember.provider_id == provider_id, OrgMember.status == "active"]
+            from sqlalchemy import or_
+            base = [OrgMember.provider_id == provider_id, OrgMember.status == "active"]
 
-            # Channel-specific matching priority
             if channel_type == "feishu":
-                # Feishu: unionid is most stable, then open_id, then user_id
-                conditions.append(
-                    (OrgMember.unionid == external_user_id) |
-                    (OrgMember.open_id == external_user_id) |
-                    (OrgMember.external_id == external_user_id)
+                id_match = or_(
+                    OrgMember.unionid.in_(candidate_ids),
+                    OrgMember.open_id.in_(candidate_ids),
+                    OrgMember.external_id.in_(candidate_ids),
                 )
             elif channel_type == "dingtalk":
-                # DingTalk: unionid is stable across apps, then external_id
-                conditions.append(
-                    (OrgMember.unionid == external_user_id) |
-                    (OrgMember.external_id == external_user_id)
+                id_match = or_(
+                    OrgMember.unionid.in_(candidate_ids),
+                    OrgMember.external_id.in_(candidate_ids),
                 )
             elif channel_type == "wecom":
-                # WeCom: external_id (userid) is the primary identifier
-                conditions.append(OrgMember.external_id == external_user_id)
+                id_match = OrgMember.external_id.in_(candidate_ids)
             else:
-                # Generic fallback (discord, slack, etc. - no org sync)
-                # These channels don't have OrgMember, return None immediately
                 return None
 
-            query = select(OrgMember).where(*conditions)
+            query = select(OrgMember).where(*base, id_match)
             result = await db.execute(query)
             return result.scalar_one_or_none()
         except Exception as e:
-            # OrgMember table may not exist or org sync not enabled
             logger.debug(f"[{channel_type}] OrgMember lookup failed: {e}")
             return None
 
