@@ -1,95 +1,85 @@
-# v1.7.2
+# v1.8.3-beta.2 — A2A Async Communication, Image Context & Search Tools
 
-## Highlights
+## What's New
 
-- **Discord Gateway (WebSocket)** — Connect Discord bots without a public IP. Configure via Channel Settings.
-- **Clawith Pages** — Agents can publish static HTML pages with shareable `/p/{short_id}` URLs.
-- **Unified Notification System** — Plaza replies, @mentions, broadcasts, and heartbeat-drain notifications with category filtering.
-- **Baidu (Qianfan) LLM Provider** — Add Baidu models alongside OpenAI, Anthropic, and others.
-- **LLM Temperature Control** — Set per-model temperature from the LLM management page.
-- **OpenClaw Settings Page** — Dedicated API key management for OpenClaw integrations.
-- **Platform Settings Restructure** — Companies page reorganized into a tabbed Platform Settings layout.
-- **Runtime Version Display** — `/api/version` endpoint and sidebar footer showing the running version.
+### Agent-to-Agent (A2A) Async Communication — Beta
+- **Three communication modes** for `send_message_to_agent`:
+  - `notify` — fire-and-forget, one-way announcement
+  - `task_delegate` — delegate work and get results back asynchronously via `on_message` trigger
+  - `consult` — synchronous question-reply (original behaviour)
+- **Feature flag**: controlled at the tenant level via Company Settings → Company Info → A2A Async toggle (default: **OFF**)
+- When disabled, the `msg_type` parameter is **hidden from the LLM** so agents only see synchronous consult mode
+- Security: chain depth protection (max 3 hops), regex filtering of internal terms, SQL injection prevention
+- Performance: async wake sessions use the agent's own `max_tool_rounds` setting (default 50)
 
-## Bug Fixes
+### Multimodal Image Context
+- Base64 image markers are now persisted to the database at write time
+- Chat UI correctly strips `[image_data:]` markers and renders thumbnails
+- Fixed chat page vertical scrolling (flexbox `min-height: 0` constraint)
+- Removed deprecated `/agents/:id/chat` route
 
-- Fix Alembic migration cycle error during backend startup (resolved `multi_tenant_registration` loop)
-- Fix missing relationship type dropdown when adding an Agent Relationship
-- Align Agent-to-Agent relationship types with Human-to-Agent ones and complete missing i18n translations
-- Fix missing database migration for `max_output_tokens` in `llm_models` table
-- Fix default company heartbeat floor not being applied to newly created agents
-- Fix heartbeat/scheduler tool calls failing with empty arguments (empty-args guard ported from chat flow)
-- Fix agent-to-agent session duplication and LLM tool confusion
-- Harden A2A communication security with tenant isolation and relationship checks
-- Fix A2A LLM timeout retries with jitter and error surfacing
-- Fix system message always placed first for cross-model compatibility
-- Fix streaming state not reset when switching sessions
-- Fix trigger resurrection on restart
-- Fix non-standard API streaming with JSON buffer
-- Fix plaza tenant scoping and @mention navigation
-- Fix OpenClaw agent replies not appearing in chat UI
-- Fix chat message alignment by participant
-- Improve broadcast UI and @mention dropdown (scrollable, increased limit)
+### Search Engine Tools
+- New `Exa Search` tool — AI-powered semantic search with category filtering
+- New standalone search engine tools: DuckDuckGo, Tavily, Google, Bing (each as own tool)
 
-## Database Migrations
+### UI Improvements
+- Drag-and-drop file upload across the application
+- Chat sidebar polish: segment control, session items styling
+- Agent-to-agent sessions now visible in the admin "Other Users" tab
 
-Four new Alembic migrations run automatically on startup:
+### Bug Fixes
+- DingTalk org sync rate limiting to prevent API throttling
+- Tool seeder: `parameters_schema` now correctly included in new tool INSERT
+- Unified `msg_type` enum references across codebase
+- Docker access port corrected to 3008
 
-1. `add_published_pages` — Creates `published_pages` table
-2. `add_notification_agent_id` — Adds `agent_id`, `sender_name` columns to `notifications`; makes `user_id` nullable
-3. `add_llm_temperature` — Adds `temperature` column to `llm_models`
-4. `add_llm_max_output_tokens` — Adds `max_output_tokens` column to `llm_models`
+---
 
-All migrations are idempotent (safe to re-run).
+## v1.8.3-beta.2 — Bug Fixes
 
-## New Dependency
+### A2A Chat History Fixes
+- **A2A session now shows both sides of the conversation**: when a target agent is woken via `notify` or `task_delegate`, its reply is now mirrored into the shared A2A chat session so the full conversation is visible in the admin **Other Users** tab
+- **Removed hardcoded 2-round tool call limit** for A2A wake invocations: agents were hitting the limit before completing basic tasks; they now use their own configurable `max_tool_rounds` setting (default 50)
+- **Fixed message loading order**: sessions with many messages (e.g. long-running A2A threads) were only showing the oldest 500 messages; now correctly loads the most recent 500
 
-- `discord.py>=2.3.0` — Required for Discord Gateway mode
+## Upgrade Guide
 
-## Infrastructure
+> **Database migration required.** Run `alembic upgrade heads` to add the `a2a_async_enabled` column.
 
-- All Docker services now have `restart: unless-stopped`
-- `.dockerignore` updated to exclude `agent_data/` from build context
-- `entrypoint.sh` removed legacy schedule-to-triggers migration (completed in v1.7.0)
-- `restart.sh` supports external `DATABASE_URL`
-
-## Upgrade Instructions
-
-> **Important**: Users must upgrade one version at a time (e.g., v1.6.0 → v1.7.0 → v1.7.1 → v1.7.2). Skipping versions is not supported.
-
-### Option A: Docker Deployment
+### Docker Deployment (Recommended)
 
 ```bash
-cd /path/to/Clawith
 git pull origin main
-docker compose down
-docker compose up -d --build
+
+# Run database migration
+docker exec clawith-backend-1 alembic upgrade heads
+
+# Rebuild and restart
+docker compose down && docker compose up -d --build
 ```
 
-Migrations run automatically via `entrypoint.sh`.
-
-> [!IMPORTANT]
-> **`--build` is required for this release.** The following features depend on changes baked into the Docker image (Nginx config, Python dependencies) and will NOT work with hot-update (`docker cp`) alone:
-> - **Clawith Pages** — requires the new `/p/` Nginx proxy rule
-> - **Discord Gateway** — requires the new `discord.py` dependency
->
-> If you previously upgraded via `docker cp` without `--build`, run `docker compose down && docker compose up -d --build` to apply these changes.
-
-### Option B: Source Deployment
+### Source Deployment
 
 ```bash
-cd /path/to/Clawith
 git pull origin main
 
-# Install dependencies (run from the backend/ directory)
-cd backend
-pip install .
+# Run database migration
+alembic upgrade heads
 
-# Run migrations (must be run from backend/ directory where alembic.ini is located)
-alembic upgrade head
+# Rebuild frontend
+cd frontend && npm install && npm run build
+cd ..
 
-# Restart backend
-# (your restart method here)
+# Restart services
 ```
 
-No `.env` changes required.
+### Kubernetes (Helm)
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+# Run migration job for a2a_async_enabled column
+```
+
+### Notes
+- The A2A Async feature is **disabled by default**. No behaviour changes until explicitly enabled.
+- The `a2a_async_enabled` column defaults to `FALSE`, so existing tenants are unaffected.

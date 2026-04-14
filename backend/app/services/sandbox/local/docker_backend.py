@@ -1,13 +1,11 @@
 """Local docker-based sandbox backend."""
 
-import logging
 import time
 from pathlib import Path
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # Lazy import docker to make it optional
 _docker = None

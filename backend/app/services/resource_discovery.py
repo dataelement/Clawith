@@ -491,6 +491,7 @@ async def import_mcp_from_smithery(
                     mcp_tool_name=mcp_tool["name"],
                     enabled=True,
                     is_default=False,
+                    source="agent",
                 )
                 db.add(tool)
                 await db.flush()
@@ -524,6 +525,7 @@ async def import_mcp_from_smithery(
                 mcp_server_name=display_name,
                 enabled=True,
                 is_default=False,
+                source="agent",
             )
             db.add(tool)
             await db.flush()
@@ -627,6 +629,7 @@ async def import_mcp_direct(
                     mcp_tool_name=mcp_tool["name"],
                     enabled=True,
                     is_default=False,
+                    source="agent",
                 )
                 db.add(tool)
                 await db.flush()
@@ -653,6 +656,7 @@ async def import_mcp_direct(
                 mcp_server_name=display_name,
                 enabled=True,
                 is_default=False,
+                source="agent",
             )
             db.add(tool)
             await db.flush()
@@ -743,6 +747,7 @@ async def seed_atlassian_rovo_tools(api_key: str) -> None:
                     enabled=True,
                     is_default=False,
                     config={"api_key": api_key},
+                    source="admin",
                 )
                 db.add(tool)
                 upserted += 1

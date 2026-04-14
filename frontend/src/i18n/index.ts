@@ -14,9 +14,16 @@ i18n
         },
         fallbackLng: 'en',
         interpolation: { escapeValue: false },
+        supportedLngs: ['en', 'zh'],
+        nonExplicitSupportedLngs: true,
         detection: {
             order: ['localStorage', 'navigator'],
             caches: ['localStorage'],
+            convertDetectedLanguage: (lng) => {
+                if (lng.startsWith('zh')) return 'zh';
+                if (lng.startsWith('en')) return 'en';
+                return lng;
+            },
         },
     });
 

@@ -9,7 +9,7 @@ from app.models.skill import Skill, SkillFile
 BUILTIN_SKILLS = [
     {
         "name": "Web Research",
-        "description": "Systematic web searching, source evaluation, and information synthesis",
+        "description": "Systematic web searching and information synthesis. Use when: needing factual data from the web, evaluating sources, or cross-referencing claims. NOT for: simple trivia or local file search.",
         "category": "research",
         "icon": "🔍",
         "folder_name": "web-research",
@@ -84,7 +84,7 @@ Use this skill when you need to find, evaluate, and synthesize information from 
     },
     {
         "name": "Data Analysis",
-        "description": "Data interpretation, pattern recognition, and structured reporting",
+        "description": "Data interpretation and structured reporting. Use when: analyzing CSV/dataset files, finding trends, or generating statistical summaries. NOT for: writing code to build data models.",
         "category": "analysis",
         "icon": "📊",
         "folder_name": "data-analysis",
@@ -193,7 +193,7 @@ driven primarily by the Enterprise segment (+23%).
     },
     {
         "name": "Content Writing",
-        "description": "Professional content creation, editing, and tone adaptation",
+        "description": "Professional content creation and tone adaptation. Use when: drafting articles, emails, or marketing copy with specific stylistic requirements. NOT for: casual chat responses.",
         "category": "creation",
         "icon": "✍️",
         "folder_name": "content-writing",
@@ -243,7 +243,7 @@ Use this skill for creating, editing, and polishing written content across forma
     },
     {
         "name": "Competitive Analysis",
-        "description": "Market competitor research, comparison frameworks, and strategic insights",
+        "description": "Competitor research and comparison frameworks. Use when: asked to compare companies, products, or perform SWOT/feature matrix analysis. NOT for: general academic research.",
         "category": "research",
         "icon": "⚔️",
         "folder_name": "competitive-analysis",
@@ -296,7 +296,7 @@ Compare products across key dimensions:
     },
     {
         "name": "Meeting Notes",
-        "description": "Meeting summarization, action item extraction, and follow-up tracking",
+        "description": "Meeting summarization and follow-up tracking. Use when: given meeting transcripts or rough notes to extract structured action items and key decisions. NOT for: generic document summarization.",
         "category": "productivity",
         "icon": "📝",
         "folder_name": "meeting-notes",

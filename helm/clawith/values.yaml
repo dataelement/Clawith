@@ -1,0 +1,228 @@
+# Default values for clawith
+# This is a YAML-formatted file.
+
+# Global settings
+global:
+  # Namespace to deploy to
+  namespace: clawith
+  # Image registry
+  imageRegistry: your docker image registry, e.g. docker.io/yourusername
+
+# Backend configuration
+backend:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: clawith-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  # Secrets - will be used if secrets.create is true
+  secrets:
+    secretKey: "change-me-to-your-secret-key-at-least-50-characters-long"
+    jwtSecretKey: "change-me-to-your-jwt-secret-key-at-least-32-characters"
+
+  # SSL certificates from host (for private/self-signed certificates)
+  # Only enable this if you need to mount custom CA certificates
+  hostCerts:
+    enabled: false
+    paths:
+      certs: /etc/ssl/certs
+      shareCA: /usr/local/share/ca-certificates
+    # SSL Certificate paths in container (only used when hostCerts.enabled = true)
+    containerPaths:
+      sslCertFile: /app/cacert.pem
+      requestsCaBundle: /app/cacert.pem
+      curlCaBundle: /app/cacert.pem
+
+  # Environment variables for agent
+  env:
+    # Agent data directory
+    agentDataDir: /data/agents
+    agentTemplateDir: /app/agent_template
+    # Add custom environment variables here
+    # custom: {}
+
+  # Persistent storage for agent data
+  persistence:
+    enabled: true
+    # If using existing PVC, set existingClaim
+    existingClaim: ""
+    # Storage class for dynamic provisioning
+    # If empty, uses default storage class
+    storageClass: "your storage class, e.g. nfs-client"
+    accessMode: ReadWriteOnce
+    size: 10Gi
+
+  resources: {}
+    # limits:
+    #   cpu: 2000m
+    #   memory: 4Gi
+    # requests:
+    #   cpu: 500m
+    #   memory: 1Gi
+
+# Frontend configuration
+frontend:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: clawith-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3000
+
+  env:
+    viteApiUrl: "http://clawith-backend:8000"
+
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /
+      # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+      # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    host: your ingress host, e.g. clawith.example.com
+    tls:
+      enabled: false
+      secretName: clawith-tls-secret
+
+  resources: {}
+    # limits:
+    #   cpu: 500m
+    #   memory: 512Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  # Set to false if using external PostgreSQL
+
+  image:
+    repository: bitnami/postgresql
+    registry: your docker image registry, e.g. docker.io/yourusername
+    tag: 15.3.0-debian-11-r7
+    pullPolicy: IfNotPresent
+
+  auth:
+    database: clawith
+    username: postgres
+    # Password will be base64 encoded
+    password: clawith123456
+
+  primary:
+    service:
+      type: ClusterIP
+      port: 5432
+
+    persistence:
+      enabled: true
+      # If using existing PVC, set existingClaim
+      existingClaim: ""
+      # Storage class for dynamic provisioning
+      storageClass: "nfs-client"
+      accessMode: ReadWriteOnce
+      size: 8Gi
+
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+
+    podSecurityContext:
+      fsGroup: 1001
+
+    containerSecurityContext:
+      runAsUser: 1001
+
+  # External PostgreSQL settings (if postgresql.enabled = false)
+  external:
+    host: ""
+    port: 5432
+    database: clawith
+    username: postgres
+    password: ""
+
+# Redis configuration
+redis:
+  enabled: true
+  # Set to false if using external Redis
+
+  image:
+    repository: redis
+    registry: your docker image registry, e.g. docker.io/yourusername
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 6379
+
+  persistence:
+    enabled: true
+    # If using existing PVC, set existingClaim
+    existingClaim: ""
+    # Storage class for dynamic provisioning
+    storageClass: "your storage class, e.g. nfs-client"
+    accessMode: ReadWriteOnce
+    size: 2Gi
+
+  resources: {}
+    # limits:
+    #   cpu: 500m
+    #   memory: 512Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi
+
+  # External Redis settings (if redis.enabled = false)
+  external:
+    host: ""
+    port: 6379
+    database: 0
+    password: ""
+
+# Secrets configuration
+secrets:
+  # Create secrets or use existing
+  create: true
+  # Name of existing secret (if create is false)
+  existingSecret: ""
+
+# Storage Class configuration (optional)
+# Set createStorageClass to true if you want to create a custom storage class
+storageClass:
+  create: false
+  name: clawith-storage
+  provisioner: kubernetes.io/no-provisioner  # Change to your provisioner
+  reclaimPolicy: Retain
+  volumeBindingMode: WaitForFirstConsumer
+  allowVolumeExpansion: true
+  parameters: {}
+    # type: gp2
+    # fsType: ext4
+apiVersion: v2
+name: clawith
+description: A Helm chart for Clawith application deployment
+type: application
+version: 1.0.0
+appVersion: "v260331"
+keywords:
+  - clawith
+  - agent
+  - ai
+maintainers:
+  - name: Clawith Team
+home: https://github.com/clawith/clawith

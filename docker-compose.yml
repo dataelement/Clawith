@@ -45,6 +45,12 @@ services:
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       DOCKER_NETWORK: clawith_network
       SS_CONFIG_FILE: /data/ss-nodes.json
+      # Public base URL for constructing OAuth callback URLs and email links.
+      # Required when deployed behind a reverse proxy (e.g. Nginx, Cloudflare).
+      # If not set, the server infers the URL from the incoming request host.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      # Password reset token lifetime in minutes (default: 30)
+      PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
     volumes:
       - ./backend:/app
       - ./backend/agent_data:/data/agents

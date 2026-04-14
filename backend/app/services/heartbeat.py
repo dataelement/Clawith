@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 # Default heartbeat instruction used when HEARTBEAT.md doesn't exist
 DEFAULT_HEARTBEAT_INSTRUCTION = """[Heartbeat Check]
@@ -129,6 +129,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         from app.database import async_session
         from app.models.agent import Agent
         from app.models.llm import LLMModel
+        from app.services.llm import get_model_api_key
 
         # ── Phase 1: Read all context from DB (short transaction) ──
         agent_name = ""
@@ -162,11 +163,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             agent_role = agent.role_description or ""
             agent_creator_id = agent.creator_id
             model_provider = model.provider
-            model_api_key = model.api_key_encrypted
+            model_api_key = get_model_api_key(model)
             model_model = model.model
             model_base_url = model.base_url
             model_temperature = model.temperature
             model_max_output_tokens = getattr(model, 'max_output_tokens', None)
+            model_request_timeout = getattr(model, 'request_timeout', None)
 
             # Read HEARTBEAT.md if it exists, otherwise use default
             from pathlib import Path
@@ -199,7 +201,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 
             # Build context
             from app.services.agent_context import build_agent_context
-            system_prompt = await build_agent_context(agent_id, agent_name, agent_role)
+            static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent_role)
 
             # Fetch recent activity to give heartbeat context for curiosity exploration
             from app.models.activity_log import AgentActivityLog
@@ -214,16 +216,17 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 )
                 recent_activities = recent_result.scalars().all()
                 if recent_activities:
-                    items = []
+                    itms = []
                     for act in reversed(recent_activities):  # chronological order
                         ts = act.created_at.strftime("%m-%d %H:%M") if act.created_at else ""
-                        items.append(f"- [{ts}] {act.action_type}: {act.summary[:120]}")
-                    recent_context = "\n\n---\n## Recent Activity Context\nHere are your recent interactions and work to help you identify relevant topics:\n\n" + "\n".join(items)
+                        itms.append(f"- [{ts}] {act.action_type}: {act.summary[:120]}")
+                    recent_context = "\\n\\n---\\n## Recent Activity Context\\nHere are your recent interactions and work to help you identify relevant topics:\\n\\n" + "\\n".join(itms)
             except Exception as e:
                 logger.warning(f"Failed to fetch recent activity for heartbeat context: {e}")
 
             # Fetch unread notifications for this agent (plaza replies, mentions, broadcasts)
             inbox_context = ""
+            notif_lines = []
             try:
                 from app.models.notification import Notification
                 notif_result = await db.execute(
@@ -234,15 +237,16 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 )
                 unread = notif_result.scalars().all()
                 if unread:
-                    lines = ["\n\n---\n## Inbox (new messages for you — please review and respond if appropriate)"]
+                    notif_lines = ["\\n\\n---\\n## Inbox (new messages for you — please review and respond if appropriate)"]
                     for n in unread:
                         sender = f"from {n.sender_name}" if n.sender_name else ""
-                        lines.append(f"- [{n.type}] {n.title} {sender}: {(n.body or '')[:150]}")
+                        notif_lines.append(f"- [{n.type}] {n.title} {sender}: {(n.body or '')[:150]}")
                         n.is_read = True
-                    inbox_context = "\n".join(lines)
             except Exception as e:
                 logger.warning(f"Failed to drain agent notifications: {e}")
-
+            
+            inbox_context = "\\n".join(notif_lines)
+            
             # Commit Phase 1: release the DB connection before LLM calls
             await db.commit()
         # DB session is now closed — connection returned to pool
@@ -250,13 +254,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         # ── Phase 2: LLM calls (no DB connection held) ──
         full_instruction = heartbeat_instruction + recent_context + inbox_context
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": full_instruction},
-        ]
-
         # Call LLM with tools using unified client
-        from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
+        from app.services.llm import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
         from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
 
         try:
@@ -265,7 +264,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 api_key=model_api_key,
                 model=model_model,
                 base_url=model_base_url,
-                timeout=120.0,
+                timeout=float(model_request_timeout or 120.0),
             )
         except Exception as e:
             logger.error(f"Failed to create LLM client: {e}")
@@ -283,7 +282,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 
         # Convert messages to LLMMessage format
         llm_messages = [
-            LLMMessage(role=m["role"], content=m["content"]) for m in messages
+            LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),
+            LLMMessage(role="user", content=full_instruction)
         ]
 
         for round_i in range(20):  # More rounds for search + write + plaza
@@ -378,8 +378,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             else:
                 reply = response.content or ""
                 break
-        else:
-            reply = ""
 
         await client.close()
 
@@ -389,27 +387,29 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             if _hb_accumulated_tokens > 0:
                 await record_token_usage(agent_id, _hb_accumulated_tokens)
 
-            # Suppress HEARTBEAT_OK
-            is_ok = "HEARTBEAT_OK" in reply.upper().replace(" ", "_") if reply else False
-            if not is_ok and reply:
-                from app.services.activity_logger import log_activity
-                await log_activity(
-                    agent_id, "heartbeat",
-                    f"Heartbeat: {reply[:80]}",
-                    detail={"reply": reply[:500]},
-                )
-
             # Update last_heartbeat_at
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
-            agent = result.scalar_one_or_none()
-            if agent:
-                agent.last_heartbeat_at = datetime.now(timezone.utc)
+            # Using an update statement is safer to avoid state drift if the object was updated elsewhere
+            await db.execute(
+                update(Agent)
+                .where(Agent.id == agent_id)
+                .values(last_heartbeat_at=datetime.now(timezone.utc))
+            )
             await db.commit()
+
+        # Log activity if not empty
+        is_ok = "HEARTBEAT_OK" in reply.upper().replace(" ", "_") if reply else False
+        if not is_ok and reply:
+            from app.services.activity_logger import log_activity
+            await log_activity(
+                agent_id, "heartbeat",
+                f"Heartbeat: {reply[:80]}",
+                detail={"reply": reply[:500]},
+            )
 
         logger.info(f"💓 Heartbeat for {agent_name}: {'OK' if is_ok else reply[:60]}")
 
     except Exception as e:
-        logger.error(f"Heartbeat error for agent {agent_id}: {e}", exc_info=True)
+        logger.exception(f"Heartbeat error for agent {agent_id}: {e}")
 
 
 async def _heartbeat_tick():
@@ -473,7 +473,7 @@ async def _heartbeat_tick():
                 await write_audit_log("heartbeat_tick", {"eligible_agents": len(agents), "triggered": triggered})
 
     except Exception as e:
-        logger.error(f"Heartbeat tick error: {e}", exc_info=True)
+        logger.exception(f"Heartbeat tick error: {e}")
         await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
 
 

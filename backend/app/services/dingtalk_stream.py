@@ -100,7 +100,7 @@ class DingTalkStreamManager:
                         session_webhook = incoming.session_webhook or ""
 
                         logger.info(
-                            f"[DingTalk Stream] Message from {sender_staff_id}: {user_text[:80]}"
+                            f"[DingTalk Stream] Message from [{incoming.sender_nick}]{sender_staff_id}: {user_text[:80]}"
                         )
 
                         # Dispatch to the main FastAPI event loop for DB + LLM processing
