@@ -33,6 +33,12 @@ if TYPE_CHECKING:
     from app.models.llm import LLMModel
 
 
+TOOLS_REQUIRING_ARGS = frozenset({
+    "write_file", "read_file", "delete_file", "read_document",
+    "send_message_to_agent", "send_feishu_message", "send_email"
+})
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Failover Guard
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -69,30 +75,14 @@ class FailoverGuard:
 
 
 def is_retryable_error(result: str) -> bool:
-    """Check if an error result is retryable (network, timeout, 429, 5xx).
-
-    Non-retryable: auth errors (401, 403), validation (400, 422), content policy
-    Retryable: timeout, connection, 429, 5xx, transient errors
+    """Check if an error result is retryable.
+    
+    Uses unified classification from failover.py.
     """
     if not (result.startswith("[LLM Error]") or result.startswith("[LLM call error]") or result.startswith("[Error]")):
         return False
-
-    result_lower = result.lower()
-
-    # Non-retryable: authentication and authorization
-    if any(kw in result_lower for kw in ["auth", "unauthorized", "forbidden", "invalid api key", "api key invalid", "401", "403"]):
-        return False
-
-    # Non-retryable: validation and schema
-    if any(kw in result_lower for kw in ["validation", "invalid request", "schema", "bad request", "400", "422"]):
-        return False
-
-    # Non-retryable: content policy
-    if any(kw in result_lower for kw in ["content policy", "content_filter", "safety", "moderation"]):
-        return False
-
-    # Retryable by default (any other error is potentially retryable)
-    return True
+        
+    return classify_error(Exception(result)) != FailoverErrorType.NON_RETRYABLE
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -142,41 +132,57 @@ def _convert_messages_for_vision(
 ) -> list:
     """Convert image markers to vision format if supported, or strip them."""
     import re as _re_v
+    import copy
+
+    # Deep copy to avoid modifying the original list in place
+    new_messages = copy.deepcopy(api_messages)
 
     if supports_vision:
-        # Vision format: convert image markers to OpenAI Vision API format
-        for i, msg in enumerate(api_messages):
+        # Vision format: convert image markers in strings to OpenAI Vision API list format
+        for i, msg in enumerate(new_messages):
             if msg.role != "user" or not msg.content or not isinstance(msg.content, str):
                 continue
+            
             content_str = msg.content
             pattern = r'\[image_data:(data:image/[^;]+;base64,[A-Za-z0-9+/=]+)\]'
             images = _re_v.findall(pattern, content_str)
+            
             if not images:
                 continue
+
             text = _re_v.sub(pattern, '', content_str).strip()
             parts = [{"type": "image_url", "image_url": {"url": img}} for img in images]
             if text:
+                # Per OpenAI spec, text part should come after image parts
                 parts.append({"type": "text", "text": text})
-            api_messages[i] = type(msg)(role=msg.role, content=parts)
+            
+            new_messages[i] = type(msg)(role=msg.role, content=parts, tool_calls=msg.tool_calls, tool_call_id=msg.tool_call_id)
     else:
-        # Strip base64 markers for non-vision models
-        _img_pattern = r'\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]'
-        for i, msg in enumerate(api_messages):
-            if msg.role != "user" or not isinstance(msg.content, str):
-                continue
-            if "[image_data:" in msg.content:
-                _n_imgs = len(_re_v.findall(_img_pattern, msg.content))
-                cleaned = _re_v.sub(_img_pattern, '', msg.content).strip()
+        # Non-vision format: ensure content is a string for all roles, stripping image data.
+        _img_marker_pattern = r'\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]'
+        for i, msg in enumerate(new_messages):
+            
+            if isinstance(msg.content, list):
+                # It's a list, join all text parts. This handles user messages
+                # with vision content and tool messages from vision_inject.
+                text_parts = [part.get("text", "") for part in msg.content if part.get("type") == "text"]
+                content_str = "\n".join(text_parts).strip()
+                new_messages[i] = type(msg)(role=msg.role, content=content_str, tool_calls=msg.tool_calls, tool_call_id=msg.tool_call_id)
+
+            elif isinstance(msg.content, str) and "[image_data:" in msg.content:
+                # It's a string with image markers, strip them
+                _n_imgs = len(_re_v.findall(_img_marker_pattern, msg.content))
+                cleaned = _re_v.sub(_img_marker_pattern, '', msg.content).strip()
                 if _n_imgs > 0:
                     cleaned += f"\n[用户发送了 {_n_imgs} 张图片，但当前模型不支持视觉，无法查看图片内容]"
-                api_messages[i] = type(msg)(role=msg.role, content=cleaned)
-    return api_messages
+                new_messages[i] = type(msg)(role=msg.role, content=cleaned, tool_calls=msg.tool_calls, tool_call_id=msg.tool_call_id)
+
+    return new_messages
 
 
 def _check_tool_requires_args(tool_name: str, args: dict) -> tuple[bool, str]:
     """Check if tool requires arguments and return (should_execute, result_or_error)."""
-    _TOOLS_REQUIRING_ARGS = {"write_file", "read_file", "delete_file", "read_document", "send_message_to_agent", "send_feishu_message", "send_email"}
-    if not args and tool_name in _TOOLS_REQUIRING_ARGS:
+    if not args and tool_name in TOOLS_REQUIRING_ARGS:
         return False, f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments."
     return True, ""
 
@@ -186,6 +192,8 @@ async def _process_tool_call(
     api_messages: list,
     agent_id,
     user_id,
+    session_id: str,
+    supports_vision: bool,
     on_tool_call,
     full_reasoning_content: str,
 ) -> str:
@@ -222,8 +230,23 @@ async def _process_tool_call(
         tool_name, args,
         agent_id=agent_id,
         user_id=user_id or agent_id,
+        session_id=session_id,
     )
     logger.debug(f"[LLM] Tool result: {result[:100]}")
+
+    # ── Vision injection for screenshot tools ──
+    tool_content: str | list = str(result)
+    if supports_vision and agent_id:
+        try:
+            from app.services.vision_inject import try_inject_screenshot_vision
+            from app.config import get_settings
+            ws_path = get_settings().get_agent_workspace_path(agent_id)
+            vision_content = try_inject_screenshot_vision(tool_name, str(result), ws_path)
+            if vision_content:
+                tool_content = vision_content
+                logger.info(f"[LLM] Injected screenshot vision for {tool_name}")
+        except Exception as e:
+            logger.warning(f"[LLM] Vision injection failed for {tool_name}: {e}")
 
     # Notify client about tool call result
     if on_tool_call:
@@ -237,8 +260,13 @@ async def _process_tool_call(
             })
         except Exception:
             pass
-
-    return str(result)
+    
+    api_messages.append(LLMMessage(
+        role="tool",
+        tool_call_id=tc["id"],
+        content=tool_content,
+    ))
+    return ""
 
 
 
@@ -253,6 +281,7 @@ async def call_llm(
     role_description: str,
     agent_id=None,
     user_id=None,
+    session_id: str = "",
     on_chunk=None,
     on_tool_call=None,
     on_thinking=None,
@@ -270,13 +299,13 @@ async def call_llm(
     # Build rich prompt with soul, memory, skills, relationships
     from app.services.agent_context import build_agent_context
     # Look up current user's display name so the agent knows who it's talking to
-    system_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_user_name)
+    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_user_name)
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
 
     # Convert messages to LLMMessage format
-    api_messages = [LLMMessage(role="system", content=system_prompt)]
+    api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
     for msg in messages:
         api_messages.append(LLMMessage(
             role=msg.get("role", "user"),
@@ -378,9 +407,6 @@ async def call_llm(
 
         full_reasoning_content = response.reasoning_content or ""
 
-        # Tools that require arguments
-        _TOOLS_REQUIRING_ARGS = {"write_file", "read_file", "delete_file", "read_document", "send_message_to_agent", "send_feishu_message", "send_email"}
-
         for tc in response.tool_calls:
             fn = tc["function"]
             tool_name = fn["name"]
@@ -392,7 +418,7 @@ async def call_llm(
                 args = {}
 
             # Guard: if a tool that requires arguments received empty args
-            if not args and tool_name in _TOOLS_REQUIRING_ARGS:
+            if not args and tool_name in TOOLS_REQUIRING_ARGS:
                 logger.warning(f"[LLM] Empty arguments for {tool_name}, asking LLM to retry")
                 api_messages.append(LLMMessage(
                     role="tool",
@@ -418,6 +444,7 @@ async def call_llm(
                 tool_name, args,
                 agent_id=agent_id,
                 user_id=user_id or agent_id,
+                session_id=session_id,
             )
             logger.debug(f"[LLM] Tool result: {result[:100]}")
 
@@ -455,6 +482,7 @@ async def call_llm_with_failover(
     role_description: str,
     agent_id=None,
     user_id=None,
+    session_id: str = "",
     on_chunk=None,
     on_thinking=None,
     on_tool_call=None,
@@ -493,6 +521,7 @@ async def call_llm_with_failover(
         role_description,
         agent_id=agent_id,
         user_id=user_id,
+        session_id=session_id,
         on_chunk=_wrapped_on_chunk,
         on_tool_call=_wrapped_on_tool_call,
         on_thinking=on_thinking,
@@ -501,6 +530,7 @@ async def call_llm_with_failover(
 
     # Check if we need to failover
     if not is_retryable_error(primary_result):
+        logger.warning(f"[Failover] Canceled: Primary model returned a non-retryable error: {primary_result[:150]}")
         return primary_result
 
     # Check guard conditions
@@ -551,6 +581,7 @@ async def call_llm_with_failover(
         role_description,
         agent_id=agent_id,
         user_id=user_id,
+        session_id=session_id,
         on_chunk=_fallback_on_chunk,
         on_tool_call=_fallback_on_tool_call,
         on_thinking=on_thinking,
@@ -574,6 +605,7 @@ async def call_agent_llm(
     user_text: str,
     history: list[dict] | None = None,
     user_id: uuid.UUID | None = None,
+    session_id: str = "",
     on_chunk=None,
     on_thinking=None,
     supports_vision: bool = False,
@@ -629,6 +661,7 @@ async def call_agent_llm(
             role_description=agent.role_description or "",
             agent_id=agent_id,
             user_id=user_id or agent_id,
+            session_id=session_id,
             on_chunk=on_chunk,
             on_thinking=on_thinking,
             supports_vision=supports_vision or getattr(primary_model, 'supports_vision', False),
@@ -646,6 +679,7 @@ async def call_agent_llm_with_tools(
     system_prompt: str,
     user_prompt: str,
     max_rounds: int = 50,
+    session_id: str = "",
 ) -> str:
     """Call agent LLM with tool-calling loop (for background services)."""
     from app.models.agent import Agent
@@ -687,6 +721,7 @@ async def call_agent_llm_with_tools(
 
     async def _try_model(model: LLMModel) -> tuple[str, bool]:
         """Try to complete with a model. Returns (response, success)."""
+        _accumulated_tokens = 0
         try:
             client = create_llm_client(
                 provider=model.provider,
@@ -714,9 +749,21 @@ async def call_agent_llm_with_tools(
                 except Exception as e:
                     logger.error(f"[call_agent_llm_with_tools] Agent {agent_id}: LLM call error: {e}")
                     await client.close()
+                    if agent_id and _accumulated_tokens > 0:
+                        await record_token_usage(agent_id, _accumulated_tokens)
                     raise
 
+                # Track tokens for this round
+                real_tokens = extract_usage_tokens(response.usage)
+                if real_tokens:
+                    _accumulated_tokens += real_tokens
+                else:
+                    round_chars = sum(len(m.content or '') if isinstance(m.content, str) else 0 for m in api_messages) + len(response.content or '')
+                    _accumulated_tokens += estimate_tokens_from_chars(round_chars)
+
                 if not response.tool_calls:
+                    if agent_id and _accumulated_tokens > 0:
+                        await record_token_usage(agent_id, _accumulated_tokens)
                     await client.close()
                     return response.content or "[Empty response]", True
 
@@ -729,7 +776,7 @@ async def call_agent_llm_with_tools(
                         "type": "function",
                         "function": tc["function"],
                     } for tc in response.tool_calls],
-		            reasoning_content=response.reasoning_content,
+                    reasoning_content=response.reasoning_content,
                 ))
 
                 for tc in response.tool_calls:
@@ -745,6 +792,7 @@ async def call_agent_llm_with_tools(
                         tool_name, args,
                         agent_id=agent_id,
                         user_id=agent.creator_id,
+                        session_id=session_id,
                     )
                     api_messages.append(LLMMessage(
                         role="tool",
@@ -752,10 +800,14 @@ async def call_agent_llm_with_tools(
                         content=str(result),
                     ))
 
+            if agent_id and _accumulated_tokens > 0:
+                await record_token_usage(agent_id, _accumulated_tokens)
             await client.close()
             return "[Error] Too many tool call rounds", False
 
         except Exception as e:
+            if agent_id and _accumulated_tokens > 0:
+                await record_token_usage(agent_id, _accumulated_tokens)
             return f"[Error] {e}", False
 
     # Try primary model

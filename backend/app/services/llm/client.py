@@ -26,23 +26,30 @@ class LLMMessage:
     """Unified message format."""
 
     role: Literal["system", "user", "assistant", "tool"]
-    content: str | None = None
+    content: str | list | None = None
     tool_calls: list[dict] | None = None
     tool_call_id: str | None = None
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
+    dynamic_content: str | None = None
 
     def to_openai_format(self) -> dict:
         """Convert to OpenAI format."""
         msg: dict[str, Any] = {"role": self.role}
-        if self.content is not None:
-            msg["content"] = self.content
+        
+        content = self.content
+        if self.role == "system" and self.dynamic_content:
+            content = f"{content}\n\n{self.dynamic_content}"
+            
+        if content is not None:
+            msg["content"] = content
         if self.tool_calls:
             msg["tool_calls"] = self.tool_calls
         if self.tool_call_id:
             msg["tool_call_id"] = self.tool_call_id
-        if self.reasoning_content:
-            msg["reasoning_content"] = self.reasoning_content
+        # NOTE: reasoning_content is a DeepSeek R1 *response-only* field.
+        # It must NOT be included in outgoing request payloads — most providers
+        # (Doubao, Qwen, etc.) will reject it with HTTP 400.
         return msg
 
     def to_anthropic_format(self) -> dict | None:
@@ -54,13 +61,39 @@ class LLMMessage:
         
         # Tool response (from user to assistant)
         if role == "tool":
+            # Build tool_result content: support both string and vision array formats
+            if isinstance(self.content, list):
+                # Vision content array: extract text parts and image parts
+                # Anthropic tool_result content supports [{type: "text", text: ...}, {type: "image", source: ...}]
+                tool_content_blocks = []
+                for part in self.content:
+                    if part.get("type") == "text":
+                        tool_content_blocks.append({"type": "text", "text": part.get("text", "")})
+                    elif part.get("type") == "image_url":
+                        # Convert OpenAI image_url format to Anthropic image source format
+                        img_url = part.get("image_url", {}).get("url", "")
+                        if img_url.startswith("data:image/"):
+                            # Parse data URL: data:image/jpeg;base64,xxxxx
+                            header, b64_data = img_url.split(",", 1)
+                            media_type = header.split(":")[1].split(";")[0]  # e.g. image/jpeg
+                            tool_content_blocks.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64_data,
+                                }
+                            })
+                result_content = tool_content_blocks if tool_content_blocks else (self.content or "")
+            else:
+                result_content = self.content or ""
             return {
                 "role": "user",
                 "content": [
                     {
                         "type": "tool_result",
                         "tool_use_id": self.tool_call_id,
-                        "content": self.content or ""
+                        "content": result_content,
                     }
                 ]
             }
@@ -76,7 +109,25 @@ class LLMMessage:
             })
 
         if self.content:
-            content_blocks.append({"type": "text", "text": self.content})
+            if isinstance(self.content, list):
+                for part in self.content:
+                    if part.get("type") == "text":
+                        content_blocks.append({"type": "text", "text": part.get("text", "")})
+                    elif part.get("type") == "image_url":
+                        img_url = part.get("image_url", {}).get("url", "")
+                        if img_url.startswith("data:image/"):
+                            header, b64_data = img_url.split(",", 1)
+                            media_type = header.split(":")[1].split(";")[0]
+                            content_blocks.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64_data,
+                                }
+                            })
+            else:
+                content_blocks.append({"type": "text", "text": self.content})
             
         # Tool requests (from assistant to user)
         if self.tool_calls:
@@ -214,7 +265,7 @@ class OpenAICompatibleClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -234,18 +285,21 @@ class OpenAICompatibleClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
         stream: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
+        messages_payload = [m.to_openai_format() for m in messages]
+        logger.debug(f"[LLM-Debug] OpenAICompatibleClient payload messages for model {self.model}: {json.dumps(messages_payload, indent=2, ensure_ascii=False)}")
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [m.to_openai_format() for m in messages],
-            "temperature": temperature,
+            "messages": messages_payload,
             "stream": stream,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
 
         # Request usage stats in streaming responses (OpenAI extension)
         if stream:
@@ -442,7 +496,6 @@ class OpenAICompatibleClient(LLMClient):
         """Streaming completion."""
         url = f"{self._normalize_base_url()}/chat/completions"
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=True, **kwargs)
-
         full_content = ""
         full_reasoning = ""
         tool_calls_data: list[dict] = []
@@ -564,7 +617,7 @@ class OpenAIResponsesClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -861,7 +914,7 @@ class GeminiClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     async def _get_openai_fallback_client(self) -> OpenAICompatibleClient:
@@ -1321,7 +1374,7 @@ class GeminiClient(LLMClient):
 
 class AnthropicClient(LLMClient):
     """Client for Anthropic's native Messages API.
-    
+
     Supports Claude 3.x and Claude 3.7+ with extended thinking.
     """
 
@@ -1341,7 +1394,7 @@ class AnthropicClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -1349,39 +1402,78 @@ class AnthropicClient(LLMClient):
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
             "anthropic-version": self.API_VERSION,
+            "anthropic-beta": "prompt-caching-2024-07-31",
         }
+
+    def _normalize_base_url(self) -> str:
+        """Normalize base URL by stripping trailing API paths."""
+        url = self.base_url.rstrip("/")
+        if url.endswith("/v1/messages"):
+            url = url[: -len("/v1/messages")]
+        elif url.endswith("/v1/chat/completions"):
+            url = url[: -len("/v1/chat/completions")]
+        elif url.endswith("/v1"):
+            url = url[: -len("/v1")]
+        return url
 
     def _build_payload(
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
         stream: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build Anthropic request payload."""
-        system_content = None
+        system_blocks = []
         anthropic_messages = []
 
         for msg in messages:
             if msg.role == "system":
-                system_content = msg.content
+                if msg.content:
+                    system_blocks.append({
+                        "type": "text",
+                        "text": msg.content,
+                        "cache_control": {"type": "ephemeral"}
+                    })
+                if msg.dynamic_content:
+                    system_blocks.append({
+                        "type": "text",
+                        "text": f"\n{msg.dynamic_content}"
+                    })
             else:
                 formatted = msg.to_anthropic_format()
                 if formatted:
                     anthropic_messages.append(formatted)
 
+        # In Anthropic prompt caching, we also want to cache_control the last user message
+        # So we add cache_control to the very last message in the history if it's a user message
+        if anthropic_messages and anthropic_messages[-1]["role"] == "user":
+            user_msg = anthropic_messages[-1]
+            if isinstance(user_msg["content"], list) and user_msg["content"]:
+                # Ensure the last block of the user message has cache_control
+                user_msg["content"][-1]["cache_control"] = {"type": "ephemeral"}
+            elif isinstance(user_msg["content"], str):
+                user_msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": user_msg["content"],
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
+
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": anthropic_messages,
             "max_tokens": max_tokens or 4096,
-            "temperature": temperature,
             "stream": stream,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
 
-        if system_content:
-            payload["system"] = system_content
+        if system_blocks:
+            payload["system"] = system_blocks
 
         # Handle Extended Thinking
         thinking = kwargs.pop("thinking", None)
@@ -1402,6 +1494,8 @@ class AnthropicClient(LLMClient):
                         "description": func.get("description", ""),
                         "input_schema": func.get("parameters", {"type": "object"}),
                     })
+            if anthropic_tools:
+                anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
             payload["tools"] = anthropic_tools
 
         payload.update(kwargs)
@@ -1411,12 +1505,12 @@ class AnthropicClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Non-streaming completion."""
-        url = f"{self.base_url.rstrip('/')}/v1/messages"
+        url = f"{self._normalize_base_url()}/v1/messages"
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
@@ -1434,7 +1528,7 @@ class AnthropicClient(LLMClient):
         full_reasoning = ""
         full_signature = None
         tool_calls = []
-        
+
         for block in data.get("content", []):
             if block.get("type") == "text":
                 full_content += block.get("text", "")
@@ -1472,14 +1566,14 @@ class AnthropicClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Streaming completion."""
-        url = f"{self.base_url.rstrip('/')}/v1/messages"
+        url = f"{self._normalize_base_url()}/v1/messages"
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=True, **kwargs)
 
         full_content = ""
@@ -1492,7 +1586,7 @@ class AnthropicClient(LLMClient):
         final_model = self.model
 
         client = await self._get_client()
-        
+
         try:
             async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
                 if resp.status_code >= 400:
@@ -1502,22 +1596,22 @@ class AnthropicClient(LLMClient):
                     raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
                 current_event = None
-                
+
                 async for line in resp.aiter_lines():
                     if not line.strip():
                         continue
-                        
+
                     if line.startswith("event:"):
                         current_event = line[len("event:"):].strip()
                         continue
-                        
+
                     if not line.startswith("data:"):
                         continue
-                        
+
                     data_str = line[len("data:"):].strip()
                     if data_str == "[DONE]":
                         break
-                        
+
                     try:
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
@@ -1530,7 +1624,7 @@ class AnthropicClient(LLMClient):
                             final_model = msg["model"]
                         if msg.get("usage"):
                             final_usage = msg["usage"]
-                            
+
                     elif current_event == "content_block_start":
                         block = data.get("content_block", {})
                         idx = data.get("index", 0)
@@ -1541,32 +1635,32 @@ class AnthropicClient(LLMClient):
                                 "type": "function",
                                 "function": {"name": block.get("name"), "arguments": ""}
                             })
-                            
+
                     elif current_event == "content_block_delta":
                         idx = data.get("index", 0)
                         delta = data.get("delta", {})
                         delta_type = delta.get("type")
-                        
+
                         if delta_type == "text_delta":
                             text = delta.get("text", "")
                             full_content += text
                             if on_chunk:
                                 await on_chunk(text)
-                                
+
                         elif delta_type == "thinking_delta":
                             thought = delta.get("thinking", "")
                             full_reasoning += thought
                             if on_thinking:
                                 await on_thinking(thought)
-                        
+
                         elif delta_type == "signature_delta":
                             full_signature = delta.get("signature")
-                                
+
                         elif delta_type == "input_json_delta":
                             if idx in tool_call_index_map:
                                 tc_idx = tool_call_index_map[idx]
                                 tool_calls_data[tc_idx]["function"]["arguments"] += delta.get("partial_json", "")
-                                
+
                     elif current_event == "message_delta":
                         delta = data.get("delta", {})
                         if delta.get("stop_reason"):
@@ -1574,7 +1668,7 @@ class AnthropicClient(LLMClient):
                         if data.get("usage"):
                             # message_delta usage is cumulative
                             final_usage = data["usage"]
-                            
+
                     elif current_event == "error":
                         error_info = data.get("error", {})
                         raise LLMError(f"Anthropic stream error ({error_info.get('type')}): {error_info.get('message')}")
@@ -1605,7 +1699,6 @@ class AnthropicClient(LLMClient):
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:
             await self._client.aclose()
-
 
 # ============================================================================
 # Factory and Utilities
