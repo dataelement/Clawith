@@ -131,6 +131,7 @@ async def load_shared_channel_history(
     db: AsyncSession,
     *,
     current_agent_id: _uuid.UUID,
+    current_tenant_id: _uuid.UUID | None,
     external_conv_id: str,
     source_channel: str,
     limit: int = 100,
@@ -145,10 +146,17 @@ async def load_shared_channel_history(
     from app.models.audit import ChatMessage
     from app.models.user import User
 
+    if not current_tenant_id:
+        return []
+
     sessions_result = await db.execute(
-        select(ChatSession.id).where(
+        select(ChatSession.id)
+        .join(Agent, Agent.id == ChatSession.agent_id)
+        .where(
             ChatSession.external_conv_id == external_conv_id,
             ChatSession.source_channel == source_channel,
+            ChatSession.is_group == True,
+            Agent.tenant_id == current_tenant_id,
         )
     )
     session_ids = [str(row[0]) for row in sessions_result.fetchall()]

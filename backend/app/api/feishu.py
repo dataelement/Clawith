@@ -464,6 +464,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 history = await load_shared_channel_history(
                     db,
                     current_agent_id=agent_id,
+                    current_tenant_id=agent_obj.tenant_id if agent_obj else None,
                     external_conv_id=conv_id,
                     source_channel="feishu",
                     limit=ctx_size,

@@ -8,7 +8,7 @@ from alembic import op
 
 
 revision = "add_chat_msg_ext_id"
-down_revision = "add_microsoft_teams_support"
+down_revision = "20260313_column_modify"
 branch_labels = None
 depends_on = None
 

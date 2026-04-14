@@ -26,6 +26,10 @@ class _FakeQuery:
         self.items = items
         self.steps = []
 
+    def join(self, *args):
+        self.steps.append(("join", args))
+        return self
+
     def where(self, *conditions):
         self.steps.append(("where", conditions))
         return self
@@ -67,6 +71,8 @@ if "app.models.chat_session" not in sys.modules:
         id = _FakeColumn("id")
         external_conv_id = _FakeColumn("external_conv_id")
         source_channel = _FakeColumn("source_channel")
+        agent_id = _FakeColumn("agent_id")
+        is_group = _FakeColumn("is_group")
 
     fake_chat_session.ChatSession = _FakeChatSession
     sys.modules["app.models.chat_session"] = fake_chat_session
@@ -88,6 +94,7 @@ if "app.models.agent" not in sys.modules:
     class _FakeAgent:
         id = _FakeColumn("id")
         name = _FakeColumn("name")
+        tenant_id = _FakeColumn("tenant_id")
 
     fake_agent.Agent = _FakeAgent
     sys.modules["app.models.agent"] = fake_agent
@@ -436,6 +443,7 @@ class SharedChannelHistoryLoaderTests(unittest.IsolatedAsyncioTestCase):
         result = await load_shared_channel_history(
             db,
             current_agent_id=uuid.uuid4(),
+            current_tenant_id=uuid.uuid4(),
             external_conv_id="feishu_group_missing",
             source_channel="feishu",
             limit=20,
@@ -452,6 +460,7 @@ class SharedChannelHistoryLoaderTests(unittest.IsolatedAsyncioTestCase):
         result = await load_shared_channel_history(
             db,
             current_agent_id=uuid.uuid4(),
+            current_tenant_id=uuid.uuid4(),
             external_conv_id="feishu_group_empty",
             source_channel="feishu",
             limit=20,
@@ -516,6 +525,7 @@ class SharedChannelHistoryLoaderTests(unittest.IsolatedAsyncioTestCase):
         result = await load_shared_channel_history(
             db,
             current_agent_id=current_agent_id,
+            current_tenant_id=uuid.uuid4(),
             external_conv_id="feishu_group_demo",
             source_channel="feishu",
             limit=20,
@@ -528,6 +538,20 @@ class SharedChannelHistoryLoaderTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "user", "content": "[其他智能体 Meeseeks] 我先看 migration 风险。"},
             ],
         )
+
+    async def test_loader_returns_empty_when_tenant_scope_is_missing(self):
+        db = _FakeAsyncSession([])
+
+        result = await load_shared_channel_history(
+            db,
+            current_agent_id=uuid.uuid4(),
+            current_tenant_id=None,
+            external_conv_id="feishu_group_demo",
+            source_channel="feishu",
+            limit=20,
+        )
+
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":
