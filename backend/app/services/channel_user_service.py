@@ -77,7 +77,13 @@ class ChannelUserService:
                 logger.debug(
                     f"[{channel_type}] Found user via linked OrgMember: {user.id}"
                 )
-                await self._enrich_user_from_extra_info(db, user, extra_info)
+                try:
+                    await self._enrich_user_from_extra_info(db, user, extra_info)
+                except Exception:
+                    logger.exception(
+                        f"[{channel_type}] enrichment failed for user {user.id}; "
+                        f"continuing without enrichment"
+                    )
                 return user
 
         # Step 4: Try to find User by email/mobile from extra_info
@@ -100,7 +106,13 @@ class ChannelUserService:
 
         # If found User by email/mobile, enrich and link OrgMember
         if user:
-            await self._enrich_user_from_extra_info(db, user, extra_info)
+            try:
+                await self._enrich_user_from_extra_info(db, user, extra_info)
+            except Exception:
+                logger.exception(
+                    f"[{channel_type}] enrichment failed for user {user.id}; "
+                    f"continuing without enrichment"
+                )
             if channel_type in ("feishu", "dingtalk", "wecom"):
                 if org_member and not org_member.user_id:
                     # Existing shell OrgMember not yet linked → link it + backfill ids
@@ -316,8 +328,11 @@ class ChannelUserService:
     ) -> None:
         """Enrich existing user with mobile/email/name from channel extra_info.
 
-        Only fills in fields that are currently empty on the user, to avoid
-        overwriting data the user may have set themselves.
+        Only fills in fields that are currently empty on the user AND not
+        already claimed by another Identity (Identity.phone/email are globally
+        unique — writing a value that exists elsewhere would raise
+        IntegrityError and break the caller). On conflict, the field is
+        silently skipped (logged at warning level).
         """
         from app.models.user import Identity
 
@@ -334,19 +349,56 @@ class ChannelUserService:
             user.avatar_url = avatar
             updated = True
 
-        # Enrich Identity-level fields (phone, email) if available
+        # Enrich Identity-level fields (phone, email) if available.
+        # Pre-check for conflicts on globally unique fields to avoid
+        # IntegrityError from collision with another Identity.
         if user.identity_id and (mobile or email):
             identity = await db.get(Identity, user.identity_id)
             if identity:
                 if mobile and not identity.phone:
-                    identity.phone = mobile
-                    updated = True
+                    if await self._identity_field_in_use(
+                        db, Identity.phone, mobile, identity.id
+                    ):
+                        logger.warning(
+                            f"[enrich] phone={mobile} already claimed by another "
+                            f"identity; skipping phone backfill for identity {identity.id}"
+                        )
+                    else:
+                        identity.phone = mobile
+                        updated = True
                 if email and not identity.email:
-                    identity.email = email
-                    updated = True
+                    if await self._identity_field_in_use(
+                        db, Identity.email, email, identity.id
+                    ):
+                        logger.warning(
+                            f"[enrich] email={email} already claimed by another "
+                            f"identity; skipping email backfill for identity {identity.id}"
+                        )
+                    else:
+                        identity.email = email
+                        updated = True
 
         if updated:
             await db.flush()
+
+    async def _identity_field_in_use(
+        self,
+        db: AsyncSession,
+        column,
+        value: str,
+        exclude_identity_id: uuid.UUID,
+    ) -> bool:
+        """Check whether any OTHER Identity already holds the given value on column.
+
+        Used to pre-empt IntegrityError on Identity.phone/email (globally unique).
+        """
+        from app.models.user import Identity
+
+        stmt = select(Identity.id).where(
+            column == value, Identity.id != exclude_identity_id
+        ).limit(1)
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none() is not None
 
     async def _create_channel_user(
         self,

@@ -312,3 +312,149 @@ async def test_reuse_existing_org_member_triggers_backfill(
 
     assert existing_member.external_id == "staff-carol-777"
     assert existing_member.unionid == "UNION-CAROL"
+
+
+async def test_enrich_skips_phone_when_other_identity_uses_it(fake_session, monkeypatch):
+    """Pre-check: if another Identity already has the phone, skip instead of raising."""
+    from app.services.channel_user_service import channel_user_service as svc
+    from app.services import channel_user_service as cus_mod
+
+    current_identity = SimpleNamespace(
+        id=uuid.uuid4(), phone=None, email=None,
+    )
+    user = SimpleNamespace(
+        id=uuid.uuid4(), identity_id=current_identity.id,
+        display_name=None, avatar_url=None,
+    )
+
+    async def _fake_get(model, key):
+        assert key == current_identity.id
+        return current_identity
+    monkeypatch.setattr(fake_session, "get", _fake_get, raising=False)
+
+    # Simulate "another identity has this phone": execute returns a truthy row
+    other_identity_id = uuid.uuid4()
+
+    async def _fake_execute(stmt):
+        sql = str(stmt)
+
+        class _R:
+            def scalar_one_or_none(self_inner):
+                # Return the other identity's id if the query is looking up
+                # identities by phone; else None.
+                if "identities.phone" in sql or "phone =" in sql.lower():
+                    return other_identity_id
+                return None
+        return _R()
+
+    monkeypatch.setattr(fake_session, "execute", _fake_execute, raising=False)
+
+    await svc._enrich_user_from_extra_info(
+        fake_session, user, {"mobile": "15703300627", "email": None, "name": None}
+    )
+
+    # Phone was NOT written, no exception raised
+    assert current_identity.phone is None
+
+
+async def test_enrich_skips_email_when_other_identity_uses_it(fake_session, monkeypatch):
+    from app.services.channel_user_service import channel_user_service as svc
+
+    current_identity = SimpleNamespace(
+        id=uuid.uuid4(), phone=None, email=None,
+    )
+    user = SimpleNamespace(
+        id=uuid.uuid4(), identity_id=current_identity.id,
+        display_name=None, avatar_url=None,
+    )
+
+    async def _fake_get(model, key):
+        return current_identity
+    monkeypatch.setattr(fake_session, "get", _fake_get, raising=False)
+
+    async def _fake_execute(stmt):
+        sql = str(stmt)
+
+        class _R:
+            def scalar_one_or_none(self_inner):
+                if "identities.email" in sql or "email =" in sql.lower():
+                    return uuid.uuid4()
+                return None
+        return _R()
+    monkeypatch.setattr(fake_session, "execute", _fake_execute, raising=False)
+
+    await svc._enrich_user_from_extra_info(
+        fake_session, user,
+        {"mobile": None, "email": "dup@example.com", "name": None},
+    )
+
+    assert current_identity.email is None
+
+
+async def test_enrich_writes_phone_when_no_conflict(fake_session, monkeypatch):
+    """Happy path: no other identity uses the phone → write succeeds."""
+    from app.services.channel_user_service import channel_user_service as svc
+
+    current_identity = SimpleNamespace(
+        id=uuid.uuid4(), phone=None, email=None,
+    )
+    user = SimpleNamespace(
+        id=uuid.uuid4(), identity_id=current_identity.id,
+        display_name=None, avatar_url=None,
+    )
+
+    async def _fake_get(model, key):
+        return current_identity
+    monkeypatch.setattr(fake_session, "get", _fake_get, raising=False)
+
+    async def _fake_execute(stmt):
+        class _R:
+            def scalar_one_or_none(self_inner):
+                return None  # no conflict
+        return _R()
+    monkeypatch.setattr(fake_session, "execute", _fake_execute, raising=False)
+
+    await svc._enrich_user_from_extra_info(
+        fake_session, user, {"mobile": "13800000000", "email": None, "name": None}
+    )
+
+    assert current_identity.phone == "13800000000"
+
+
+async def test_resolve_continues_when_enrich_raises(
+    fake_session, agent, patch_provider, monkeypatch
+):
+    """Isolation: even if _enrich raises unexpectedly, resolve still returns the user."""
+    from app.services.channel_user_service import channel_user_service as svc
+    from app.services import channel_user_service as cus_mod
+
+    matched_user = SimpleNamespace(
+        id=uuid.uuid4(), identity_id=uuid.uuid4(),
+        display_name=None, avatar_url=None,
+    )
+
+    async def _find_linked(self, db, provider_id, channel_type, candidate_ids):
+        # Return a member already linked to matched_user → Case 1 branch
+        return SimpleNamespace(id=uuid.uuid4(), user_id=matched_user.id)
+
+    monkeypatch.setattr(cus_mod.ChannelUserService, "_find_org_member", _find_linked)
+
+    async def _db_get(model, key):
+        if key == matched_user.id:
+            return matched_user
+        return None
+    monkeypatch.setattr(fake_session, "get", _db_get, raising=False)
+
+    async def _boom(self, db, user, extra_info):
+        raise RuntimeError("simulated enrichment failure")
+    monkeypatch.setattr(
+        cus_mod.ChannelUserService, "_enrich_user_from_extra_info", _boom
+    )
+
+    # resolve_channel_user should catch the enrichment error and still return the user
+    result = await svc.resolve_channel_user(
+        db=fake_session, agent=agent, channel_type="dingtalk",
+        external_user_id="staff-xyz",
+        extra_info={"mobile": "13900000000", "email": "x@y.com"},
+    )
+    assert result.id == matched_user.id
