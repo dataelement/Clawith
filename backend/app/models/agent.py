@@ -9,6 +9,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+# Default context window size — used as the fallback when
+# agent.context_window_size is None or 0 across all channels.
+# Centralizing this constant prevents inconsistent fallback values
+# (see: https://github.com/dataelement/Clawith/issues/238).
+DEFAULT_CONTEXT_WINDOW_SIZE = 100
+
 
 class Agent(Base):
     """Digital employee (Agent) instance.

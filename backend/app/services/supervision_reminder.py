@@ -105,11 +105,13 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
     """
     from app.models.llm import LLMModel
     from app.services.agent_context import build_agent_context
-    from app.services.llm_utils import (
+    from app.services.llm import (
         get_provider_base_url,
         create_llm_client,
         LLMMessage,
-        LLMError,
+        get_model_api_key,
+    )
+
     )
 
     model_id = target_agent.primary_model_id or target_agent.fallback_model_id
@@ -126,21 +128,21 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
     if not base_url:
         return None
 
-    system_prompt = await build_agent_context(
+    static_prompt, dynamic_prompt = await build_agent_context(
         target_agent.id, target_agent.name, target_agent.role_description or ""
     )
 
     messages = [
-        LLMMessage(role="system", content=system_prompt),
+        LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),
         LLMMessage(role="user", content=message),
     ]
 
     client = create_llm_client(
         provider=model.provider,
-        api_key=model.api_key_encrypted,
+        api_key=get_model_api_key(model),
         model=model.model,
         base_url=base_url,
-        timeout=60.0,
+        timeout=float(getattr(model, 'request_timeout', None) or 60.0),
     )
     try:
         response = await client.complete(
@@ -336,7 +338,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
             logger.info(f"📋 Supervision reminder for '{task.title}' -> {target_name}, sent={sent}")
 
     except Exception as e:
-        logger.error(f"Supervision reminder error for task {task.id}: {e}", exc_info=True)
+        logger.exception(f"Supervision reminder error for task {task.id}: {e}")
 
 
 async def _supervision_tick():
@@ -386,7 +388,7 @@ async def _supervision_tick():
                     logger.error(f"Error checking supervision task {task.id}: {e}")
 
     except Exception as e:
-        logger.error(f"Supervision tick error: {e}", exc_info=True)
+        logger.exception(f"Supervision tick error: {e}")
         await write_audit_log("supervision_error", {"error": str(e)[:300]})
 
 

@@ -27,7 +27,7 @@ class ChannelConfig(Base):
 
     # Feishu specific config
     app_id: Mapped[str | None] = mapped_column(String(255))
-    app_secret: Mapped[str | None] = mapped_column(String(255))
+    app_secret: Mapped[str | None] = mapped_column(String(512))
     encrypt_key: Mapped[str | None] = mapped_column(String(255))
     verification_token: Mapped[str | None] = mapped_column(String(255))
 

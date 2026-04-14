@@ -11,7 +11,8 @@ from app.database import Base
 from app.config import get_settings
 
 # Import all models so they are registered with Base.metadata
-from app.models.user import User, Department  # noqa: F401
+from app.models.identity import IdentityProvider, SSOScanSession  # noqa: F401
+from app.models.user import User  # noqa: F401
 from app.models.agent import Agent, AgentPermission, AgentTemplate  # noqa: F401
 from app.models.task import Task, TaskLog  # noqa: F401
 from app.models.channel_config import ChannelConfig  # noqa: F401
@@ -29,6 +30,7 @@ from app.models.system_settings import SystemSetting  # noqa: F401
 from app.models.tenant import Tenant  # noqa: F401
 from app.models.tool import Tool  # noqa: F401
 from app.models.trigger import AgentTrigger  # noqa: F401
+from app.models.agent_credential import AgentCredential  # noqa: F401
 
 config = context.config
 settings = get_settings()

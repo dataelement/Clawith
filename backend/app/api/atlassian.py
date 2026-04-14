@@ -237,6 +237,7 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
                     mcp_tool_name=raw_name,
                     enabled=True,
                     is_default=False,
+                    source="admin",
                 )
                 db.add(tool)
                 await db.flush()

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Component, ErrorInfo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, Component, ErrorInfo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -10,8 +10,15 @@ import ChannelConfig from '../components/ChannelConfig';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
+import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
+import AgentCredentials from '../components/AgentCredentials';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
+import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
+import { copyToClipboard } from '../utils/clipboard';
+import { formatFileSize } from '../utils/formatFileSize';
+import { IconPaperclip, IconSend } from '@tabler/icons-react';
+import { useDropZone } from '../hooks/useDropZone';
 
 const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
@@ -47,15 +54,20 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const [configData, setConfigData] = useState<Record<string, any>>({});
     const [configJson, setConfigJson] = useState('');
     const [configSaving, setConfigSaving] = useState(false);
-    const [toolTab, setToolTab] = useState<'platform' | 'installed'>('platform');
+    const [toolTab, setToolTab] = useState<'company' | 'installed'>('company');
     const [deletingToolId, setDeletingToolId] = useState<string | null>(null);
     const [configCategory, setConfigCategory] = useState<string | null>(null);
+    const [focusedField, setFocusedField] = useState<string | null>(null);
+    // Global (company-level) config for the currently open modal — used to show
+    // lock hints and prevent agent from overriding company-set fields.
+    const [configGlobalData, setConfigGlobalData] = useState<Record<string, any>>({});
 
     const CATEGORY_CONFIG_SCHEMAS: Record<string, any> = {
         agentbay: {
             title: 'AgentBay Settings',
             fields: [
-                { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' }
+                { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' },
+                { key: 'os_type', label: 'Cloud Computer OS', type: 'select', default: 'windows', options: [{ value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' }] },
             ]
         },
         atlassian: {
@@ -97,17 +109,44 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         } catch (e) { console.error(e); }
     };
 
+    // Sensitive field keys that should not be pre-filled from masked global config.
+    // Hardcoded fallback set + dynamic extraction from config_schema password-type fields.
+    const SENSITIVE_KEYS_BASE = new Set(['api_key', 'private_key', 'auth_code', 'password', 'secret']);
+
+    const getSensitiveKeys = (schema: any): Set<string> => {
+        const keys = new Set(SENSITIVE_KEYS_BASE);
+        if (schema?.fields) {
+            for (const field of schema.fields) {
+                if (field.type === 'password') keys.add(field.key);
+            }
+        }
+        return keys;
+    };
+
     const openConfig = (tool: any) => {
         setConfigTool(tool);
-        const merged = { ...(tool.global_config || {}), ...(tool.agent_config || {}) };
+        // Build merged config: start with global defaults, overlay agent overrides.
+        // For sensitive fields, only use agent_config values (global ones are masked
+        // like "****xxxx" and should not pre-fill the input).
+        const sensitiveKeys = getSensitiveKeys(tool.config_schema);
+        const globalCfg = tool.global_config || {};
+        const agentCfg = tool.agent_config || {};
+        const merged: Record<string, any> = {};
+        for (const [k, v] of Object.entries(globalCfg)) {
+            if (!sensitiveKeys.has(k)) merged[k] = v;
+        }
+        Object.assign(merged, agentCfg);
         setConfigData(merged);
-        setConfigJson(JSON.stringify(tool.agent_config || {}, null, 2));
+        setConfigJson(JSON.stringify(agentCfg, null, 2));
+        setFocusedField(null);
     };
 
     const openCategoryConfig = async (category: string) => {
         setConfigCategory(category);
         setConfigData({});
+        setConfigGlobalData({});
         setConfigSaving(true);
+        setFocusedField(null);
         try {
             const token = localStorage.getItem('token');
             const res = await fetch(`/api/tools/agents/${agentId}/category-config/${category}`, {
@@ -115,7 +154,21 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
             });
             if (res.ok) {
                 const data = await res.json();
-                setConfigData(data.config || {});
+                // global_config: company-level (masked sensitive fields like ****xxxx)
+                // agent_config: agent-level overrides only
+                const globalCfg = data.global_config || {};
+                const agentCfg = data.agent_config || {};
+                setConfigGlobalData(globalCfg);
+                // Pre-fill only agent-level values; company fields show as hints
+                const catSchema = CATEGORY_CONFIG_SCHEMAS[category];
+                const sensitiveKeys = getSensitiveKeys(catSchema);
+                const merged: Record<string, any> = {};
+                for (const [k, v] of Object.entries(globalCfg)) {
+                    // Non-sensitive global fields (e.g. os_type) pre-fill; sensitive ones don't
+                    if (!sensitiveKeys.has(k)) merged[k] = v;
+                }
+                Object.assign(merged, agentCfg);
+                setConfigData(merged);
             }
         } catch (e) { console.error(e); }
         setConfigSaving(false);
@@ -126,16 +179,34 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         setConfigSaving(true);
         try {
             const token = localStorage.getItem('token');
+
             if (configCategory) {
-               await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}`, {
+                const raw = configData;
+                // Strip empty sensitive fields so untouched password inputs
+                // don't send empty values that would clear an inherited company key
+                const catSchema = CATEGORY_CONFIG_SCHEMAS[configCategory!];
+                const sensitiveKeys = getSensitiveKeys(catSchema);
+                const payload: Record<string, any> = {};
+                for (const [k, v] of Object.entries(raw)) {
+                    if (sensitiveKeys.has(k) && (v === '' || v === undefined || v === null)) continue;
+                    payload[k] = v;
+                }
+                await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                    body: JSON.stringify({ config: configData }),
-               });
-               setConfigCategory(null);
+                    body: JSON.stringify({ config: payload }),
+                });
+                setConfigCategory(null);
             } else {
                 const hasSchema = configTool.config_schema?.fields?.length > 0;
-                const payload = hasSchema ? configData : JSON.parse(configJson || '{}');
+                const raw = hasSchema ? configData : JSON.parse(configJson || '{}');
+                // Strip empty sensitive fields only — agent CAN override company values
+                const sensitiveKeys = getSensitiveKeys(configTool.config_schema);
+                const payload: Record<string, any> = {};
+                for (const [k, v] of Object.entries(raw)) {
+                    if (sensitiveKeys.has(k) && (v === '' || v === undefined || v === null)) continue;
+                    payload[k] = v;
+                }
                 await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -150,9 +221,9 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
 
     if (loading) return <div style={{ color: 'var(--text-tertiary)', padding: '20px' }}>{t('common.loading')}</div>;
 
-    // Split by source first, then group by category
-    const systemTools = tools.filter(t => t.source !== 'user_installed');
-    const agentInstalledTools = tools.filter(t => t.source === 'user_installed');
+    // Company tools = platform presets (builtin) + company admin-added tools (admin)
+    const companyTools = tools.filter(t => t.source === 'builtin' || t.source === 'admin');
+    const agentInstalledTools = tools.filter(t => t.source === 'agent');
 
     const groupByCategory = (toolList: any[]) =>
         toolList.reduce((acc: Record<string, any[]>, t) => {
@@ -164,17 +235,47 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const renderToolGroup = (groupedTools: Record<string, any[]>) =>
         Object.entries(groupedTools).map(([category, catTools]) => (
             <div key={category}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 14px', marginBottom: '8px' }}>
                     <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                         {getCategoryLabels(t)[category] || category}
                     </div>
-                    {CATEGORY_CONFIG_SCHEMAS[category] && canManage && (
-                        <button
-                            onClick={() => openCategoryConfig(category)}
-                            style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                            title={`Configure ${category}`}
-                        >⚙️ Config</button>
-                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {CATEGORY_CONFIG_SCHEMAS[category] && canManage && (
+                            <button
+                                onClick={() => openCategoryConfig(category)}
+                                style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                title={`Configure ${category}`}
+                            >⚙️ Config</button>
+                        )}
+                        {canManage && (
+                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${getCategoryLabels(t)[category] || category} tools`}>
+                                <input type="checkbox"
+                                    checked={(catTools as any[]).every(t => t.enabled)}
+                                    onChange={async (e) => {
+                                        const targetEnabled = e.target.checked;
+                                        // Optimistic fast update
+                                        const catToolIds = new Set((catTools as any[]).map(t => t.id));
+                                        setTools(prev => prev.map(t => catToolIds.has(t.id) ? { ...t, enabled: targetEnabled } : t));
+                                        try {
+                                            const token = localStorage.getItem('token');
+                                            const payload = Array.from(catToolIds).map(id => ({ tool_id: id, enabled: targetEnabled }));
+                                            await fetch(`/api/tools/agents/${agentId}`, {
+                                                method: 'PUT',
+                                                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                body: JSON.stringify(payload),
+                                            });
+                                        } catch (err: any) {
+                                            console.error('Bulk update failed', err);
+                                            loadTools();
+                                        }
+                                    }}
+                                    style={{ opacity: 0, width: 0, height: 0 }} />
+                                <span style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: '22px', background: (catTools as any[]).every(t => t.enabled) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', transition: '0.3s', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)' }}>
+                                    <span style={{ position: 'absolute', left: (catTools as any[]).every(t => t.enabled) ? '20px' : '2px', top: '2px', width: '18px', height: '18px', borderRadius: '50%', background: '#fff', transition: '0.3s', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }} />
+                                </span>
+                            </label>
+                        )}
+                    </div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {(catTools as any[]).map((tool: any) => {
@@ -195,7 +296,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                 <span style={{ fontSize: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>Built-in</span>
                                             )}
                                             {hasAgentOverride && (
-                                                <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>Configured</span>
+                                                <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>{t('enterprise.tools.configured', 'Configured')}</span>
                                             )}
                                         </div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -212,7 +313,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                             title="Configure per-agent settings"
                                         >⚙️ Config</button>
                                     )}
-                                    {canManage && tool.source === 'user_installed' && tool.agent_tool_id && (
+                                    {canManage && tool.source === 'agent' && tool.agent_tool_id && (
                                         <button
                                             onClick={async () => {
                                                 if (!confirm(t('agent.tools.confirmDelete', `Remove "${tool.display_name}" from this agent?`))) return;
@@ -243,7 +344,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                             />
                                             <span style={{
                                                 position: 'absolute', inset: 0,
-                                                background: tool.enabled ? '#22c55e' : 'var(--bg-tertiary)',
+                                                background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
                                                 borderRadius: '11px', transition: 'background 0.2s',
                                             }}>
                                                 <span style={{
@@ -254,7 +355,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                             </span>
                                         </label>
                                     ) : (
-                                        <span style={{ fontSize: '11px', color: tool.enabled ? '#22c55e' : 'var(--text-tertiary)', fontWeight: 500 }}>
+                                        <span style={{ fontSize: '11px', color: tool.enabled ? 'var(--accent-primary)' : 'var(--text-tertiary)', fontWeight: 500 }}>
                                             {tool.enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
                                         </span>
                                     )}
@@ -266,24 +367,23 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
             </div>
         ));
 
-    const activeTools = toolTab === 'platform' ? systemTools : agentInstalledTools;
+    const activeTools = toolTab === 'company' ? companyTools : agentInstalledTools;
 
     return (
         <>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {/* Tab Bar */}
-                <div style={{ display: 'flex', gap: '2px', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '3px' }}>
+                <div style={{ display: 'flex', gap: '4px', padding: '4px', background: 'var(--bg-secondary)', borderRadius: '8px', marginBottom: '12px' }}>
                     <button
-                        onClick={() => setToolTab('platform')}
+                        onClick={() => setToolTab('company')}
                         style={{
                             flex: 1, padding: '7px 12px', border: 'none', borderRadius: '6px', cursor: 'pointer',
                             fontSize: '12px', fontWeight: 600, transition: 'all 0.2s',
-                            background: toolTab === 'platform' ? 'var(--bg-primary)' : 'transparent',
-                            color: toolTab === 'platform' ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                            boxShadow: toolTab === 'platform' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                            background: toolTab === 'company' ? 'var(--bg-primary)' : 'transparent',
+                            color: toolTab === 'company' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                            boxShadow: toolTab === 'company' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
                         }}
                     >
-                        🔧 {t('agent.tools.platformTools', 'Platform Tools')} ({systemTools.length})
+                        {t('agent.tools.companyTools', 'Company Tools')} ({companyTools.length})
                     </button>
                     <button
                         onClick={() => setToolTab('installed')}
@@ -295,7 +395,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                             boxShadow: toolTab === 'installed' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
                         }}
                     >
-                        🤖 {t('agent.tools.agentInstalled', 'Agent-Installed Tools')} ({agentInstalledTools.length})
+                        {t('agent.tools.agentInstalled', 'Agent Self-Installed Tools')} ({agentInstalledTools.length})
                     </button>
                 </div>
 
@@ -304,7 +404,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                     renderToolGroup(groupByCategory(activeTools))
                 ) : (
                     <div className="card" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-tertiary)' }}>
-                        {toolTab === 'installed' ? t('agent.tools.noInstalled', 'No agent-installed tools yet') : t('common.noData')}
+                        {toolTab === 'installed' ? t('agent.tools.noInstalled', 'No agent-installed tools yet') : t('agent.tools.noCompany', 'No company-configured tools')}
                     </div>
                 )}
             </div>
@@ -321,42 +421,47 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                 const title = configTool ? configTool.display_name : target.title;
                 const isCat = !!configCategory;
                 return (
-                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                    onClick={() => { setConfigTool(null); setConfigCategory(null); }}>
-                    <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                            <div>
-                                <h3 style={{ margin: 0 }}>⚙️ {title}</h3>
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{isCat ? 'Shared category configuration (affects all tools in this category)' : 'Per-agent configuration (overrides global defaults)'}</div>
+                    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        onClick={() => { setConfigTool(null); setConfigCategory(null); }}>
+                        <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                <div>
+                                    <h3 style={{ margin: 0 }}>⚙️ {title}</h3>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{isCat ? 'Shared category configuration (affects all tools in this category)' : 'Per-agent configuration (overrides global defaults)'}</div>
+                                </div>
+                                <button onClick={() => { setConfigTool(null); setConfigCategory(null); }} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
                             </div>
-                            <button onClick={() => { setConfigTool(null); setConfigCategory(null); }} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
-                        </div>
 
-                        {fields.length > 0 ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                {fields
-                                    .filter((field: any) => {
-                                        // Handle depends_on: hide fields unless dependency is met
-                                        if (!field.depends_on) return true;
-                                        return Object.entries(field.depends_on).every(([depKey, depVals]: [string, any]) =>
-                                            (depVals as string[]).includes(configData[depKey] ?? '')
-                                        );
-                                    })
-                                    .map((field: any) => {
-                                        // Get user role from store directly in the map function
-                                        const userFromStore = useAuthStore.getState().user;
-                                        const currentUserRole = userFromStore?.role;
-                                        const isReadOnly = field.read_only_for_roles?.includes(currentUserRole);
-                                        return (
+                            {fields.length > 0 ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                    {fields
+                                        .filter((field: any) => {
+                                            // Handle depends_on: hide fields unless dependency is met
+                                            if (!field.depends_on) return true;
+                                            return Object.entries(field.depends_on).every(([depKey, depVals]: [string, any]) =>
+                                                (depVals as string[]).includes(configData[depKey] ?? '')
+                                            );
+                                        })
+                                        .map((field: any) => {
+                                            // Get user role from store directly in the map function
+                                            const userFromStore = useAuthStore.getState().user;
+                                            const currentUserRole = userFromStore?.role;
+                                            const isReadOnly = field.read_only_for_roles?.includes(currentUserRole);
+                                            return (
                                                 <div key={field.key}>
                                                     <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>
                                                         {field.label}
                                                         {isReadOnly && <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '4px' }}>(Admin only)</span>}
-                                                        {configTool?.global_config?.[field.key] && (
-                                                            <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '4px' }}>
-                                                                (global: {String(configTool.global_config[field.key]).slice(0, 20)}{String(configTool.global_config[field.key]).length > 20 ? '…' : ''})
-                                                            </span>
-                                                        )}
+                                                        {/* Show company-configured value as a hint in the label */}
+                                                        {(() => {
+                                                            const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
+                                                            if (!globalVal) return null;
+                                                            return (
+                                                                <span style={{ fontWeight: 400, color: 'var(--accent-primary)', marginLeft: '4px', fontSize: '11px' }}>
+                                                                    (company: {String(globalVal).slice(0, 20)}{String(globalVal).length > 20 ? '\u2026' : ''})
+                                                                </span>
+                                                            );
+                                                        })()}
                                                     </label>
                                                     {field.type === 'checkbox' ? (
                                                         <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: isReadOnly ? 'not-allowed' : 'pointer' }}>
@@ -369,7 +474,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                             />
                                                             <span style={{
                                                                 position: 'absolute', inset: 0,
-                                                                background: (configData[field.key] ?? field.default) ? '#22c55e' : 'var(--bg-tertiary)',
+                                                                background: (configData[field.key] ?? field.default) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
                                                                 borderRadius: '11px', transition: 'background 0.2s', opacity: isReadOnly ? 0.6 : 1,
                                                             }}>
                                                                 <span style={{
@@ -381,7 +486,34 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         </label>
                                                     ) : field.type === 'password' ? (
                                                         <>
-                                                        <input type="password" autoComplete="new-password" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                        {(() => {
+                                                            const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
+                                                            const isUsingGlobal = globalVal && !configData[field.key];
+                                                            
+                                                            if (isUsingGlobal && focusedField !== field.key) {
+                                                                return (
+                                                                    <div 
+                                                                        className="form-input" 
+                                                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'text', background: 'var(--bg-tertiary)', borderColor: 'var(--border)', overflow: 'hidden' }}
+                                                                        onClick={() => setFocusedField(field.key)}
+                                                                    >
+                                                                        <span style={{ flex: 1, color: 'var(--text-tertiary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('agent.tools.usingCompanyKey', 'Using company key ({{val}})', { val: globalVal })}</span>
+                                                                        <span style={{ fontSize: '12px', color: 'var(--accent-primary)', flexShrink: 0, cursor: 'pointer' }}>{t('common.edit', 'Edit')}</span>
+                                                                    </div>
+                                                                );
+                                                            }
+
+                                                            return (
+                                                                <input type="password" autoComplete="new-password" className="form-input"
+                                                                    autoFocus={focusedField === field.key}
+                                                                    value={configData[field.key] ?? ''}
+                                                                    placeholder={globalVal ? t('agent.tools.usingCompanyKey', 'Using company key ({{val}})', { val: globalVal }) : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'))}
+                                                                    onBlur={(e) => {
+                                                                        if (!e.target.value) setFocusedField(null);
+                                                                    }}
+                                                                    onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                            );
+                                                        })()}
                                                         {/* Per-provider help text for auth_code */}
                                                         {field.key === 'auth_code' && (() => {
                                                             const providerField = configTool?.config_schema?.fields?.find((f: any) => f.key === 'email_provider');
@@ -397,105 +529,137 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                                 </div>
                                                             );
                                                         })()}
+
                                                         </>
                                                     ) : field.type === 'select' ? (
-                                                        <select className="form-input" value={configData[field.key] ?? field.default ?? ''} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}>
+                                                        <select className="form-input" value={configData[field.key] ?? field.default ?? ''}
+                                                            onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}>
                                                             {(field.options || []).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
                                                         </select>
                                                     ) : field.type === 'number' ? (
                                                         <input type="number" className="form-input" value={configData[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''} min={field.min} max={field.max} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value ? Number(e.target.value) : '' }))} />
                                                     ) : (
-                                                        <input type="text" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                        <>
+                                                        {(() => {
+                                                            const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
+                                                            const isUsingGlobal = globalVal && !configData[field.key];
+                                                            
+                                                            if (isUsingGlobal && focusedField !== field.key) {
+                                                                return (
+                                                                    <div 
+                                                                        className="form-input" 
+                                                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'text', background: 'var(--bg-tertiary)', borderColor: 'var(--border)', overflow: 'hidden' }}
+                                                                        onClick={() => setFocusedField(field.key)}
+                                                                    >
+                                                                        <span style={{ flex: 1, color: 'var(--text-tertiary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('agent.tools.usingCompanyConfig', 'Using company config ({{val}})', { val: globalVal })}</span>
+                                                                        <span style={{ fontSize: '12px', color: 'var(--accent-primary)', flexShrink: 0, cursor: 'pointer' }}>{t('common.edit', 'Edit')}</span>
+                                                                    </div>
+                                                                );
+                                                            }
+
+                                                            return (
+                                                                <input type="text" className="form-input"
+                                                                    autoFocus={focusedField === field.key}
+                                                                    value={configData[field.key] ?? ''}
+                                                                    placeholder={globalVal ? t('agent.tools.usingCompanyConfig', 'Using company config ({{val}})', { val: globalVal }) : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'))}
+                                                                    onBlur={(e) => {
+                                                                        if (!e.target.value) setFocusedField(null);
+                                                                    }}
+                                                                    onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                            );
+                                                        })()}
+                                                        </>
                                                     )}
                                                 </div>
-                                            );})}
-                                        {/* Email tool: test connection button + help text */}
-                                        {configTool?.category === 'email' && (
-                                            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                                <button
-                                                    className="btn btn-secondary"
-                                                    style={{ alignSelf: 'flex-start' }}
-                                                    onClick={async () => {
-                                                        const btn = document.getElementById('email-test-btn');
-                                                        const status = document.getElementById('email-test-status');
-                                                        if (btn) btn.textContent = 'Testing...';
-                                                        if (btn) (btn as HTMLButtonElement).disabled = true;
-                                                        try {
-                                                            const token = localStorage.getItem('token');
-                                                            const res = await fetch('/api/tools/test-email', {
-                                                                method: 'POST',
-                                                                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                                body: JSON.stringify({ config: configData }),
-                                                            });
-                                                            const data = await res.json();
-                                                            if (status) {
-                                                                status.textContent = data.ok
-                                                                    ? `${data.imap}\n${data.smtp}`
-                                                                    : `${data.imap || ''}\n${data.smtp || ''}\n${data.error || ''}`;
-                                                                status.style.color = data.ok ? 'var(--success)' : 'var(--error)';
-                                                            }
-                                                        } catch (e: any) {
-                                                            if (status) { status.textContent = `Error: ${e.message}`; status.style.color = 'var(--error)'; }
-                                                        } finally {
-                                                            if (btn) { btn.textContent = 'Test Connection'; (btn as HTMLButtonElement).disabled = false; }
+                                            );
+                                        })}
+                                    {/* Email tool: test connection button + help text */}
+                                    {configTool?.category === 'email' && (
+                                        <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                            <button
+                                                className="btn btn-secondary"
+                                                style={{ alignSelf: 'flex-start' }}
+                                                onClick={async () => {
+                                                    const btn = document.getElementById('email-test-btn');
+                                                    const status = document.getElementById('email-test-status');
+                                                    if (btn) btn.textContent = 'Testing...';
+                                                    if (btn) (btn as HTMLButtonElement).disabled = true;
+                                                    try {
+                                                        const token = localStorage.getItem('token');
+                                                        const res = await fetch('/api/tools/test-email', {
+                                                            method: 'POST',
+                                                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                            body: JSON.stringify({ config: configData }),
+                                                        });
+                                                        const data = await res.json();
+                                                        if (status) {
+                                                            status.textContent = data.ok
+                                                                ? `${data.imap}\n${data.smtp}`
+                                                                : `${data.imap || ''}\n${data.smtp || ''}\n${data.error || ''}`;
+                                                            status.style.color = data.ok ? 'var(--success)' : 'var(--error)';
                                                         }
-                                                    }}
-                                                    id="email-test-btn"
-                                                >Test Connection</button>
-                                                <div id="email-test-status" style={{ fontSize: '11px', whiteSpace: 'pre-line', minHeight: '16px' }}></div>
-                                            </div>
-                                        )}
-                                    </div>
-                                ) : (
-                                    <div>
-                                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>Config JSON (Agent Override)</label>
-                                        <textarea
-                                            className="form-input"
-                                            value={configJson}
-                                            onChange={e => setConfigJson(e.target.value)}
-                                            style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', minHeight: '120px', resize: 'vertical' }}
-                                            placeholder='{}'
-                                        />
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                                            Global default: <code style={{ fontSize: '10px' }}>{JSON.stringify(configTool?.global_config || {}).slice(0, 80)}</code>
+                                                    } catch (e: any) {
+                                                        if (status) { status.textContent = `Error: ${e.message}`; status.style.color = 'var(--error)'; }
+                                                    } finally {
+                                                        if (btn) { btn.textContent = 'Test Connection'; (btn as HTMLButtonElement).disabled = false; }
+                                                    }
+                                                }}
+                                                id="email-test-btn"
+                                            >Test Connection</button>
+                                            <div id="email-test-status" style={{ fontSize: '11px', whiteSpace: 'pre-line', minHeight: '16px' }}></div>
                                         </div>
-                                    </div>
-                                )}
-
-                                <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
-                                    {configTool && configTool.agent_config && Object.keys(configTool.agent_config || {}).length > 0 && (
-                                        <button className="btn btn-ghost" style={{ color: 'var(--error)', marginRight: 'auto' }} onClick={async () => {
-                                            const token = localStorage.getItem('token');
-                                            await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ config: {} }) });
-                                            setConfigTool(null); loadTools();
-                                        }}>Reset to Global</button>
                                     )}
-                                    {isCat && (
-                                        <button
-                                            className="btn btn-secondary"
-                                            style={{ marginRight: 'auto' }}
-                                            onClick={async () => {
-                                                const btn = document.getElementById('cat-test-btn');
-                                                if (btn) btn.textContent = 'Testing...';
-                                                try {
-                                                    const token = localStorage.getItem('token');
-                                                    const res = await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}/test`, {
-                                                        method: 'POST',
-                                                        headers: { Authorization: `Bearer ${token}` }
-                                                    });
-                                                    const data = await res.json();
-                                                    alert(data.message || (data.ok ? '✅ Test successful' : '❌ Test failed: ' + data.error));
-                                                } catch (e: any) { alert('Test failed: ' + e.message); }
-                                                finally { if (btn) btn.textContent = 'Test Connection'; }
-                                            }}
-                                            id="cat-test-btn"
-                                        >Test Connection</button>
-                                    )}
-                                    <button className="btn btn-secondary" onClick={() => { setConfigTool(null); setConfigCategory(null); }}>Cancel</button>
-                                    <button className="btn btn-primary" onClick={saveConfig} disabled={configSaving}>{configSaving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}</button>
                                 </div>
+                            ) : (
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>Config JSON (Agent Override)</label>
+                                    <textarea
+                                        className="form-input"
+                                        value={configJson}
+                                        onChange={e => setConfigJson(e.target.value)}
+                                        style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', minHeight: '120px', resize: 'vertical' }}
+                                        placeholder='{}'
+                                    />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                        Global default: <code style={{ fontSize: '10px' }}>{JSON.stringify(configTool?.global_config || {}).slice(0, 80)}</code>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
+                                {configTool && configTool.agent_config && Object.keys(configTool.agent_config || {}).length > 0 && (
+                                    <button className="btn btn-ghost" style={{ color: 'var(--error)', marginRight: 'auto' }} onClick={async () => {
+                                        const token = localStorage.getItem('token');
+                                        await fetch(`/api/tools/agents/${agentId}/tool-config/${configTool.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ config: {} }) });
+                                        setConfigTool(null); loadTools();
+                                    }}>Reset to Global</button>
+                                )}
+                                {isCat && (
+                                    <button
+                                        className="btn btn-secondary"
+                                        style={{ marginRight: 'auto' }}
+                                        onClick={async () => {
+                                            const btn = document.getElementById('cat-test-btn');
+                                            if (btn) btn.textContent = 'Testing...';
+                                            try {
+                                                const token = localStorage.getItem('token');
+                                                const res = await fetch(`/api/tools/agents/${agentId}/category-config/${configCategory}/test`, {
+                                                    method: 'POST',
+                                                    headers: { Authorization: `Bearer ${token}` }
+                                                });
+                                                const data = await res.json();
+                                                alert(data.message || (data.ok ? '✅ Test successful' : '❌ Test failed: ' + data.error));
+                                            } catch (e: any) { alert('Test failed: ' + e.message); }
+                                            finally { if (btn) btn.textContent = 'Test Connection'; }
+                                        }}
+                                        id="cat-test-btn"
+                                    >Test Connection</button>
+                                )}
+                                <button className="btn btn-secondary" onClick={() => { setConfigTool(null); setConfigCategory(null); }}>Cancel</button>
+                                <button className="btn btn-primary" onClick={saveConfig} disabled={configSaving}>{configSaving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}</button>
                             </div>
                         </div>
+                    </div>
                 );
             })()}
         </>
@@ -531,10 +695,30 @@ function CopyMessageButton({ text }: { text: string }) {
     const [copied, setCopied] = React.useState(false);
     const handleCopy = (e: React.MouseEvent) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(text).then(() => {
+        const copySuccess = () => {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
-        });
+        };
+        
+        if (navigator.clipboard && window.isSecureContext) {
+            copyToClipboard(text).then(copySuccess).catch(err => console.error('Clipboard API failed', err));
+        } else {
+            // Fallback for non-HTTPS dev environments
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.position = "fixed";  // Avoid scrolling to bottom
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                if (document.execCommand('copy')) {
+                    copySuccess();
+                }
+            } catch (err) {
+                console.error('Fallback copy failed', err);
+            }
+            document.body.removeChild(textArea);
+        }
     };
     return (
         <button
@@ -567,6 +751,266 @@ function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     }).then(r => r.json());
 }
 
+// ── Pulse LED keyframe (shared with Chat.tsx, guarded by ID) ──────────────
+const _PULSE_STYLE_ID = 'cw-tool-pulse-style';
+if (typeof document !== 'undefined' && !document.getElementById(_PULSE_STYLE_ID)) {
+    const _s = document.createElement('style');
+    _s.id = _PULSE_STYLE_ID;
+    _s.textContent = `
+        @keyframes cw-pulse-led {
+            0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(99,102,241,0.6); }
+            50%       { opacity: 0.55; transform: scale(1.5); box-shadow: 0 0 0 4px rgba(99,102,241,0); }
+        }
+        .cw-running-led { animation: cw-pulse-led 1.4s ease-in-out infinite; }
+    `;
+    document.head.appendChild(_s);
+}
+
+
+/**
+ * AnalysisCard — unified controlled collapsible card for all agent-internal processing.
+ *
+ * Covers three scenarios:
+ *   - Thinking only (no tools): agent reasoned before answering directly
+ *   - Tools only: agent called tools without visible thinking
+ *   - Thinking + Tools: interleaved thinking and tool calls (most common)
+ *
+ * CONTROLLED component (expanded + onToggle from parent) to survive WS re-renders.
+ */
+type AnalysisItem =
+    | { type: 'thinking'; content: string }
+    | { type: 'tool'; name: string; args: any; status: 'running' | 'done'; result?: string };
+
+function AnalysisCard({
+    items, t, expanded, onToggle, isGroupRunning,
+}: {
+    items: AnalysisItem[];
+    t: (k: string) => string;
+    expanded: boolean;
+    onToggle: () => void;
+    /** True when parent isWaiting/isStreaming AND this is the last active group */
+    isGroupRunning: boolean;
+}) {
+    const toolItems = items.filter(i => i.type === 'tool') as Extract<AnalysisItem, { type: 'tool' }>[];
+    const thinkingItems = items.filter(i => i.type === 'thinking') as Extract<AnalysisItem, { type: 'thinking' }>[];
+    const hasTools = toolItems.length > 0;
+    const toolCount = toolItems.length;
+
+    // Check if any tool is still running
+    const hasRunningTool = toolItems.some(tc => tc.status === 'running');
+    const isRunning = hasRunningTool || isGroupRunning;
+
+    // Last running tool name (displayed in header while active)
+    const runningTool = [...toolItems].reverse().find(tc => tc.status === 'running') ?? null;
+
+    // For collapsed thinking-only state: show a one-line preview of thinking content
+    const allThinkingText = thinkingItems.map(it => it.content).join(' ').trim();
+    const thinkingSummary = allThinkingText.length > 55
+        ? allThinkingText.slice(0, 55) + '…'
+        : allThinkingText;
+
+    return (
+        <div style={{ paddingLeft: '36px', marginBottom: '6px' }}>
+            <div style={{
+                borderRadius: '8px',
+                background: 'rgba(99,102,241,0.06)',
+                border: `1px solid ${isRunning ? 'rgba(99,102,241,0.32)' : 'rgba(99,102,241,0.18)'}`,
+                fontSize: '12px',
+                overflow: 'hidden',
+                transition: 'border-color 0.3s ease',
+            }}>
+                {/* ── Header toggle ── */}
+                <button
+                    onClick={onToggle}
+                    style={{
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        width: '100%', display: 'flex', alignItems: 'center', gap: '6px',
+                        padding: '7px 10px',
+                        color: 'var(--accent-text, #818cf8)',
+                    }}
+                >
+                    {/* Status indicator: pulse when running, static green when done */}
+                    {isRunning ? (
+                        <span className="cw-running-led" style={{
+                            display: 'inline-block', width: '6px', height: '6px',
+                            borderRadius: '50%', background: '#818cf8', flexShrink: 0,
+                        }} />
+                    ) : (
+                        <span style={{
+                            display: 'inline-block', width: '6px', height: '6px',
+                            borderRadius: '50%', background: '#22c55e', flexShrink: 0, opacity: 0.85,
+                        }} />
+                    )}
+
+                    {/* Title + contextual subtitle */}
+                    <span style={{ flex: 1, textAlign: 'left', display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 }}>
+                        <span style={{ fontWeight: 500, flexShrink: 0 }}>{t('agent.chat.analysing')}</span>
+                        <span style={{ color: 'rgba(99,102,241,0.35)', flexShrink: 0 }}>·</span>
+                        {isRunning ? (
+                            // Running: show current tool name, or 'Thinking...' if no active tool
+                            <span style={{
+                                fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#a5b4fc',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>
+                                {runningTool ? runningTool.name : t('agent.chat.thinking')}
+                            </span>
+                        ) : !hasTools && thinkingSummary ? (
+                            // Done + thinking only: single-line preview
+                            <span style={{
+                                fontSize: '11px', color: 'var(--text-tertiary)',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>{thinkingSummary}</span>
+                        ) : null}
+                    </span>
+
+                    {/* Tool count badge (hidden when no tools) */}
+                    {toolCount > 0 && (
+                        <span style={{
+                            background: 'rgba(99,102,241,0.18)', color: '#818cf8',
+                            borderRadius: '10px', padding: '1px 7px',
+                            fontSize: '10px', fontWeight: 600, flexShrink: 0,
+                        }}>{toolCount}</span>
+                    )}
+
+                    {/* Expand chevron */}
+                    <span style={{
+                        fontSize: '10px', color: 'var(--text-tertiary)',
+                        transition: 'transform 0.2s', display: 'inline-block',
+                        transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                        flexShrink: 0,
+                    }}>▶</span>
+                </button>
+
+                {/* ── Collapsed: tool name pills (only when tools present) ── */}
+                {!expanded && hasTools && (
+                    <div style={{ padding: '0 10px 7px 10px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                        {toolItems.map((tc, i) => {
+                            const running = tc.status === 'running';
+                            return (
+                                <span key={i} style={{
+                                    background: running ? 'rgba(99,102,241,0.14)' : 'rgba(99,102,241,0.08)',
+                                    border: `1px solid ${running ? 'rgba(99,102,241,0.28)' : 'rgba(99,102,241,0.14)'}`,
+                                    borderRadius: '4px', padding: '1px 6px',
+                                    fontSize: '10px', color: running ? '#818cf8' : '#a5b4fc',
+                                    fontFamily: 'var(--font-mono)',
+                                    display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                }}>
+                                    {running && (
+                                        <span className="cw-running-led" style={{
+                                            display: 'inline-block', width: '4px', height: '4px',
+                                            borderRadius: '50%', background: '#818cf8', flexShrink: 0,
+                                        }} />
+                                    )}
+                                    {tc.name}
+                                </span>
+                            );
+                        })}
+                    </div>
+                )}
+
+                {/* ── Expanded: all items in chronological order ── */}
+                {expanded && (
+                    <div style={{ borderTop: '1px solid rgba(99,102,241,0.15)' }}>
+                        {items.map((item, idx) => {
+                            if (item.type === 'thinking') {
+                                // Thinking block: plain italic text, scrollable
+                                return (
+                                    <div key={idx} style={{
+                                        padding: '8px 12px',
+                                        borderBottom: idx < items.length - 1 ? '1px solid rgba(99,102,241,0.08)' : 'none',
+                                        fontSize: '11px', lineHeight: '1.7',
+                                        color: 'var(--text-tertiary)',
+                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                        maxHeight: '200px', overflowY: 'auto',
+                                        fontStyle: 'italic',
+                                        background: 'rgba(147,130,220,0.04)',
+                                    }}>
+                                        {item.content}
+                                    </div>
+                                );
+                            }
+
+                            // Tool row: native <details> for per-item collapse
+                            const tc = item;
+                            const running = tc.status === 'running';
+                            const argsStr = tc.args && Object.keys(tc.args).length > 0
+                                ? JSON.stringify(tc.args, null, 2) : '';
+                            const hasDetail = !!(argsStr || tc.result);
+                            return (
+                                <details
+                                    key={idx}
+                                    open={running}
+                                    style={{
+                                        borderBottom: idx < items.length - 1 ? '1px solid rgba(99,102,241,0.10)' : 'none',
+                                    }}
+                                >
+                                    <summary style={{
+                                        padding: '7px 10px',
+                                        display: 'flex', alignItems: 'center', gap: '5px',
+                                        cursor: hasDetail ? 'pointer' : 'default',
+                                        listStyle: 'none', userSelect: 'none',
+                                    }}>
+                                        <span
+                                            className={running ? 'cw-running-led' : undefined}
+                                            style={{
+                                                display: 'inline-block', width: '5px', height: '5px',
+                                                borderRadius: '50%',
+                                                background: running ? '#f59e0b' : '#22c55e',
+                                                flexShrink: 0,
+                                            }}
+                                        />
+                                        <span style={{
+                                            fontFamily: 'var(--font-mono)', fontSize: '11px',
+                                            color: '#818cf8', fontWeight: 600, flex: 1,
+                                        }}>{tc.name}</span>
+                                        {running && (
+                                            <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                                                {t('common.loading')}
+                                            </span>
+                                        )}
+                                        {hasDetail && <span style={{ fontSize: '9px', color: 'var(--text-tertiary)' }}>▶</span>}
+                                    </summary>
+                                    {hasDetail && (
+                                        <div style={{ padding: '0 10px 8px 20px' }}>
+                                            {argsStr && (
+                                                <div style={{
+                                                    fontFamily: 'var(--font-mono)', fontSize: '10px',
+                                                    color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap',
+                                                    wordBreak: 'break-all', maxHeight: '80px', overflowY: 'auto',
+                                                    background: 'rgba(0,0,0,0.12)', borderRadius: '4px',
+                                                    padding: '4px 6px', marginBottom: tc.result ? '4px' : 0,
+                                                }}>{argsStr}</div>
+                                            )}
+                                            {tc.result && (
+                                                <div style={{
+                                                    fontSize: '10px', color: 'var(--text-secondary)',
+                                                    whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                                    maxHeight: '120px', overflowY: 'auto',
+                                                    borderTop: argsStr ? '1px solid rgba(99,102,241,0.10)' : 'none',
+                                                    paddingTop: argsStr ? '4px' : 0,
+                                                }}>
+                                                    {tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </details>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+
+
+
+
+
+
+
 function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; readOnly?: boolean }) {
     const { t } = useTranslation();
     const qc = useQueryClient();
@@ -587,6 +1031,8 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
     const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
     const [editAgentRelation, setEditAgentRelation] = useState('');
     const [editAgentDescription, setEditAgentDescription] = useState('');
+    // Track which rows are being deleted (for optimistic UI)
+    const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
     const { data: relationships = [], refetch } = useQuery({
         queryKey: ['relationships', agentId],
@@ -619,8 +1065,18 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         refetch();
     };
     const removeRelationship = async (relId: string) => {
-        await fetchAuth(`/agents/${agentId}/relationships/${relId}`, { method: 'DELETE' });
-        refetch();
+        // Optimistic update: mark as deleting immediately so the row fades out
+        setDeletingIds(prev => new Set(prev).add(relId));
+        try {
+            await fetchAuth(`/agents/${agentId}/relationships/${relId}`, { method: 'DELETE' });
+            refetch();
+        } catch {
+            // Rollback on failure
+            setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
+            refetch();
+        } finally {
+            setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
+        }
     };
     const startEditRelationship = (r: any) => {
         setEditingId(r.id);
@@ -646,8 +1102,18 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         refetchAgentRels();
     };
     const removeAgentRelationship = async (relId: string) => {
-        await fetchAuth(`/agents/${agentId}/relationships/agents/${relId}`, { method: 'DELETE' });
-        refetchAgentRels();
+        // Optimistic update: mark as deleting immediately so the row fades out
+        setDeletingIds(prev => new Set(prev).add(relId));
+        try {
+            await fetchAuth(`/agents/${agentId}/relationships/agents/${relId}`, { method: 'DELETE' });
+            refetchAgentRels();
+        } catch {
+            // Rollback on failure
+            setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
+            refetchAgentRels();
+        } finally {
+            setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
+        }
     };
     const startEditAgentRelationship = (r: any) => {
         setEditingAgentId(r.id);
@@ -674,18 +1140,35 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                 {relationships.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {relationships.map((r: any) => (
-                            <div key={r.id} style={{ borderRadius: '8px', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
+                            <div key={r.id} style={{
+                                    borderRadius: '8px', border: '1px solid var(--border-subtle)',
+                                    overflow: 'hidden',
+                                    // Fade out row while delete is in-flight
+                                    opacity: deletingIds.has(r.id) ? 0.4 : 1,
+                                    transition: 'opacity 0.2s ease',
+                                    pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
+                                }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 600, flexShrink: 0 }}>{r.member?.name?.[0] || '?'}</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{ fontWeight: 600, fontSize: '13px' }}>{r.member?.name || '?'} <span className="badge" style={{ fontSize: '10px', marginLeft: '4px' }}>{r.relation_label}</span></div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{r.member?.title || ''} · {r.member?.department_path || ''}</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                            {r.member?.provider_name && <span style={{ color: 'var(--accent-color)', fontWeight: 500, marginRight: '6px' }}>[{r.member.provider_name}]</span>}
+                                            {r.member?.department_path || ''} · {r.member?.email || ''}
+                                        </div>
                                         {r.description && editingId !== r.id && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{r.description}</div>}
                                     </div>
                                     {!readOnly && editingId !== r.id && (
                                         <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
                                             <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => startEditRelationship(r)}>{t('common.edit', 'Edit')}</button>
-                                            <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={() => removeRelationship(r.id)}>{t('common.delete')}</button>
+                                            <button
+                                                className="btn btn-ghost"
+                                                style={{ color: deletingIds.has(r.id) ? 'var(--text-tertiary)' : 'var(--error)', fontSize: '12px' }}
+                                                disabled={deletingIds.has(r.id)}
+                                                onClick={() => removeRelationship(r.id)}
+                                            >
+                                                {deletingIds.has(r.id) ? t('common.deleting', 'Deleting...') : t('common.delete')}
+                                            </button>
                                         </div>
                                     )}
                                 </div>
@@ -718,7 +1201,10 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                                         onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-elevated)')}
                                         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                                         <div style={{ fontWeight: 500 }}>{m.name}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{m.title} · {m.department_path}</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                            {m.provider_name && <span style={{ color: 'var(--accent-color)', fontWeight: 500, marginRight: '6px' }}>[{m.provider_name}]</span>}
+                                            {m.department_path} · {m.email}
+                                        </div>
                                     </div>
                                 ))}
                             </div>
@@ -727,7 +1213,12 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                 )}
                 {!readOnly && adding && (
                     <div style={{ border: '1px solid var(--accent-primary)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}>
-                        <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '8px' }}>{t('agent.detail.addRelationship')}: {adding.name} <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--text-tertiary)' }}>({adding.title} · {adding.department_path})</span></div>
+                        <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '8px' }}>
+                            {t('agent.detail.addRelationship')}: {adding.name}
+                            <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '8px' }}>
+                                ({adding.provider_name ? `[${adding.provider_name}] ` : ''}{adding.department_path} · {adding.email})
+                            </span>
+                        </div>
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                             <select className="input" value={relation} onChange={e => setRelation(e.target.value)} style={{ width: '140px', fontSize: '12px' }}>
                                 {getRelationOptions(t).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -748,7 +1239,14 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                 {agentRelationships.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {agentRelationships.map((r: any) => (
-                            <div key={r.id} style={{ borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)', background: 'rgba(16,185,129,0.05)', overflow: 'hidden' }}>
+                            <div key={r.id} style={{
+                                    borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)',
+                                    background: 'rgba(16,185,129,0.05)', overflow: 'hidden',
+                                    // Fade out row while delete is in-flight
+                                    opacity: deletingIds.has(r.id) ? 0.4 : 1,
+                                    transition: 'opacity 0.2s ease',
+                                    pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
+                                }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: 0 }}>A</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -759,7 +1257,14 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                                     {!readOnly && editingAgentId !== r.id && (
                                         <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
                                             <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => startEditAgentRelationship(r)}>{t('common.edit', 'Edit')}</button>
-                                            <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={() => removeAgentRelationship(r.id)}>{t('common.delete')}</button>
+                                            <button
+                                                className="btn btn-ghost"
+                                                style={{ color: deletingIds.has(r.id) ? 'var(--text-tertiary)' : 'var(--error)', fontSize: '12px' }}
+                                                disabled={deletingIds.has(r.id)}
+                                                onClick={() => removeAgentRelationship(r.id)}
+                                            >
+                                                {deletingIds.has(r.id) ? t('common.deleting', 'Deleting...') : t('common.delete')}
+                                            </button>
                                         </div>
                                     )}
                                 </div>
@@ -930,6 +1435,11 @@ function AgentDetailInner() {
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
     const isAdmin = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin';
+    /** Chat sidebar: who may list all sessions & read others' threads (matches backend scope=all). */
+    const canViewAllAgentChatSessions =
+        currentUser?.role === 'platform_admin' ||
+        currentUser?.role === 'org_admin' ||
+        currentUser?.role === 'agent_admin';
     type SessionRuntimeKey = string;
     const wsMapRef = useRef<Record<SessionRuntimeKey, WebSocket>>({});
     const reconnectTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setTimeout> | null>>({});
@@ -964,14 +1474,103 @@ function AgentDetailInner() {
         sessionUiStateRef.current[key] = { ...prev, ...next };
     };
 
-    const isWritableSession = (sess: any) => {
+    /** Normalize IDs — API/JSON may use number vs string; loose equality was breaking "own session" detection. */
+    const sessionUserIdStr = (s: any) => (s?.user_id == null ? '' : String(s.user_id));
+    const viewerUserIdStr = () => (currentUser?.id == null ? '' : String(currentUser.id));
+
+    /** Ensure session shape from POST/list so P2P "mine" is never mistaken for read-only or agent thread. */
+    const normalizeChatSession = (sess: any) => {
+        if (!sess || typeof sess !== 'object') return sess;
+        const vu = viewerUserIdStr();
+        const rawUid =
+            sess.user_id != null && String(sess.user_id).trim() !== '' ? String(sess.user_id) : vu;
+        return {
+            ...sess,
+            id: String(sess.id),
+            agent_id: sess.agent_id != null ? String(sess.agent_id) : sess.agent_id,
+            user_id: rawUid,
+            source_channel:
+                typeof sess.source_channel === 'string' && sess.source_channel.trim()
+                    ? sess.source_channel
+                    : 'web',
+            participant_type:
+                typeof sess.participant_type === 'string' && sess.participant_type.trim()
+                    ? sess.participant_type
+                    : 'user',
+            is_group: Boolean(sess.is_group),
+        };
+    };
+
+    const isWritableSession = (sess: any, scopeOverride: 'mine' | 'all' = chatScope) => {
         if (!sess) return false;
-        const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
-        if (isAgentSession) return false;
-        if (sess.user_id && currentUser && sess.user_id !== String(currentUser.id)) return false;
+        const sc = String(sess.source_channel || 'web').toLowerCase();
+        const pt = String(sess.participant_type || 'user').toLowerCase();
+        if (sc === 'agent' || pt === 'agent') return false;
+        if (sess.is_group) return false;
+        if (canViewAllAgentChatSessions && scopeOverride === 'all') return false;
+        const su = sessionUserIdStr(sess);
+        const vu = viewerUserIdStr();
+        if (su && vu && su !== vu) return false;
         return true;
     };
 
+    const isViewingOtherUsersSessions = canViewAllAgentChatSessions && chatScope === 'all';
+
+    /** Sessions in scope=all that are not the current viewer's own P2P rows (for admin「其他用户」tab).
+     *  Agent-to-agent sessions (source_channel === 'agent') store the creator's user_id, so we must
+     *  exempt them from the user_id check — otherwise they'd always be hidden. */
+    const otherUsersSessions = useMemo(() => {
+        const vu = viewerUserIdStr();
+        return allSessions.filter((s: any) => {
+            // Always show agent-to-agent sessions in the "Other users" tab
+            if (String(s.source_channel || '').toLowerCase() === 'agent') return true;
+            const su = sessionUserIdStr(s);
+            if (vu && su === vu) return false;
+            return true;
+        });
+    }, [allSessions, currentUser?.id]);
+
+    const otherUserPickerOptions = useMemo(() => {
+        const m = new Map<string, string>();
+        for (const s of otherUsersSessions) {
+            const uid = sessionUserIdStr(s);
+            if (!uid) continue;
+            if (!m.has(uid)) m.set(uid, String(s.username || s.user_id || uid));
+        }
+        return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    }, [otherUsersSessions]);
+
+    const othersListForPicker = useMemo(() => {
+        if (!allUserFilter) return otherUsersSessions;
+        return otherUsersSessions.filter((s: any) => sessionUserIdStr(s) === allUserFilter);
+    }, [otherUsersSessions, allUserFilter]);
+
+    useEffect(() => {
+        if (!canViewAllAgentChatSessions && chatScope === 'all') setChatScope('mine');
+    }, [canViewAllAgentChatSessions, chatScope]);
+
+    const clearChatSelection = () => {
+        activeSessionIdRef.current = null;
+        setActiveSession(null);
+        setChatMessages([]);
+        setHistoryMsgs([]);
+        setWsConnected(false);
+        setIsStreaming(false);
+        setIsWaiting(false);
+    };
+
+    const onAdminTabMine = () => {
+        setChatScope('mine');
+        setAllUserFilter('');
+        if (activeSession && sessionUserIdStr(activeSession) !== viewerUserIdStr()) clearChatSelection();
+    };
+
+    const onAdminTabOthers = () => {
+        setChatScope('all');
+        setAllUserFilter('');
+        fetchAllSessions();
+        if (activeSession && sessionUserIdStr(activeSession) === viewerUserIdStr()) clearChatSelection();
+    };
     const syncActiveSocketState = (sess: any | null = activeSession, agentId: string | undefined = id) => {
         if (!sess || !agentId) {
             wsRef.current = null;
@@ -991,7 +1590,7 @@ function AgentDetailInner() {
             const tkn = localStorage.getItem('token');
             const res = await fetch(`/api/agents/${agentId}/sessions?scope=mine`, { headers: { Authorization: `Bearer ${tkn}` } });
             if (res.ok) {
-                const data = await res.json();
+                const data = (await res.json()).map((row: any) => normalizeChatSession(row));
                 if (currentAgentIdRef.current === agentId) setSessions(data);
                 if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
                 return data;
@@ -1002,22 +1601,32 @@ function AgentDetailInner() {
     };
 
     const fetchAllSessions = async () => {
-        if (!id) return;
+        if (!id || !canViewAllAgentChatSessions) return;
         setAllSessionsLoading(true);
         try {
             const tkn = localStorage.getItem('token');
             const res = await fetch(`/api/agents/${id}/sessions?scope=all`, { headers: { Authorization: `Bearer ${tkn}` } });
+            if (!currentAgentIdRef.current || currentAgentIdRef.current !== id) return;
             if (res.ok) {
-                const all = await res.json();
-                if (currentAgentIdRef.current === id) {
-                    setAllSessions(all.filter((s: any) => s.source_channel !== 'trigger'));
+                const all = (await res.json())
+                    .filter((s: any) => String(s.source_channel || 'direct').toLowerCase() !== 'trigger')
+                    .map((row: any) => normalizeChatSession(row));
+                setAllSessions(all);
+            } else {
+                setAllSessions([]);
+                if (res.status === 403) {
+                    console.warn('[chat] scope=all sessions forbidden (need org/platform/agent admin)');
                 }
             }
-        } catch { }
-        setAllSessionsLoading(false);
+        } catch {
+            if (currentAgentIdRef.current === id) setAllSessions([]);
+        } finally {
+            setAllSessionsLoading(false);
+        }
     };
 
-    const selectSession = async (sess: any) => {
+    const selectSession = async (rawSess: any, scopeOverride: 'mine' | 'all' = chatScope) => {
+        const sess = normalizeChatSession(rawSess);
         const targetAgentId = id;
         if (!targetAgentId) return;
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, String(sess.id));
@@ -1047,7 +1656,6 @@ function AgentDetailInner() {
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sess.id) return;
-            const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
             const preParsed = msgs.map((m: any) => parseChatMsg({
                 role: m.role, content: m.content || '',
                 ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult }),
@@ -1055,8 +1663,8 @@ function AgentDetailInner() {
                 ...(m.created_at && { timestamp: m.created_at }),
                 ...(m.id && { id: m.id }),
             }));
-            
-            if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
+
+            if (isWritableSession(sess, scopeOverride)) {
                 setChatMessages(preParsed);
             } else {
                 setHistoryMsgs(preParsed);
@@ -1076,11 +1684,12 @@ function AgentDetailInner() {
                 body: JSON.stringify({}),
             });
             if (res.ok) {
-                const newSess = await res.json();
-                setSessions(prev => [newSess, ...prev]);
+                const newSess = normalizeChatSession(await res.json());
+                setChatScope('mine');
+                setSessions((prev) => [newSess, ...prev]);
                 setIsStreaming(false);
                 setIsWaiting(false);
-                await selectSession(newSess);
+                await selectSession(newSess, 'mine');
             } else {
                 const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
                 console.error('Failed to create session:', err);
@@ -1109,7 +1718,7 @@ function AgentDetailInner() {
                 setIsWaiting(false);
             }
             await fetchMySessions(false, id);
-            await fetchAllSessions();
+            if (canViewAllAgentChatSessions) await fetchAllSessions();
         } catch (e: any) {
             alert(e.message || 'Delete failed');
         }
@@ -1150,18 +1759,31 @@ function AgentDetailInner() {
     };
     interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+    // Stable expanded-state map for tool groups — keyed by groupStartIndex.
+    // Stored in a ref so it survives parent re-renders without causing extra renders.
+    const toolGroupExpandedRef = useRef<Map<number, boolean>>(new Map());
+    const [toolGroupExpandedVersion, setToolGroupExpandedVersion] = useState(0);
+    const toggleToolGroup = (key: number) => {
+        const m = toolGroupExpandedRef.current;
+        m.set(key, !m.get(key));
+        setToolGroupExpandedVersion(v => v + 1); // trigger re-render
+    };
+    const [liveState, setLiveState] = useState<LivePreviewState>({});
+    const [livePanelVisible, setLivePanelVisible] = useState(false);
+    const [wsSessionId, setWsSessionId] = useState<string>('');
+    const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
-    const [uploading, setUploading] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
-    const [uploadProgress, setUploadProgress] = useState(-1);
-    const uploadAbortRef = useRef<(() => void) | null>(null);
+    const [chatUploadDrafts, setChatUploadDrafts] = useState<{ id: string; name: string; percent: number; previewUrl?: string; sizeBytes: number }[]>([]);
+    const chatUploadAbortRef = useRef<Map<string, () => void>>(new Map());
     const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string }[]>([]);
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
-    const chatInputRef = useRef<HTMLInputElement>(null);
+    const chatInputRef = useRef<HTMLTextAreaElement>(null);
+    const chatInputAreaRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Settings form local state
@@ -1270,18 +1892,48 @@ function AgentDetailInner() {
         setWsConnected(false);
         wsRef.current = null;
         setChatScope('mine');
+        setAllUserFilter('');
+        setSessions([]);
+        setAllSessions([]);
         setAgentExpired(false);
         settingsInitRef.current = false;
     }, [id]);
+
+    // Switching login account or token must not leave another user's sessions/messages in memory.
+    useEffect(() => {
+        setSessions([]);
+        setAllSessions([]);
+        setAllUserFilter('');
+        setChatScope('mine');
+        sessionMsgAbortRef.current?.abort();
+        activeSessionIdRef.current = null;
+        setActiveSession(null);
+        setChatMessages([]);
+        setHistoryMsgs([]);
+        setWsConnected(false);
+        setIsStreaming(false);
+        setIsWaiting(false);
+        setSessionsLoading(false);
+        setAllSessionsLoading(false);
+        Object.keys(reconnectDisabledRef.current).forEach((k) => {
+            reconnectDisabledRef.current[k] = true;
+        });
+        Object.keys(wsMapRef.current).forEach((k) => {
+            const ws = wsMapRef.current[k];
+            if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+        });
+        wsMapRef.current = {};
+        wsRef.current = null;
+    }, [currentUser?.id, token]);
 
     useEffect(() => {
         if (!id || !token || activeTab !== 'chat') return;
         fetchMySessions(false, id).then((data: any) => {
             if (currentAgentIdRef.current !== id) return;
             setSessionsLoading(false);
-            if (data && data.length > 0) selectSession(data[0]);
+            if (data && data.length > 0) selectSession(data[0], 'mine');
         });
-    }, [id, token, activeTab]);
+    }, [id, token, activeTab, currentUser?.id]);
 
     const ensureSessionSocket = (sess: any, agentId: string, authToken: string) => {
         const sessionId = String(sess.id);
@@ -1364,6 +2016,12 @@ function AgentDetailInner() {
                 if (['done', 'error', 'quota_exceeded'].includes(d.type)) setIsStreaming(false);
             }
 
+            // Capture session_id from the 'connected' message for Take Control
+            if (d.type === 'connected' && d.session_id) {
+                if (isActiveRuntime) setWsSessionId(d.session_id);
+                return;
+            }
+
             if (d.type === 'thinking') {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
@@ -1373,6 +2031,23 @@ function AgentDetailInner() {
                     return [...prev, { role: 'assistant', content: '', thinking: d.content, _streaming: true } as any];
                 });
             } else if (d.type === 'tool_call') {
+                if (d.live_preview) {
+                    const lp = d.live_preview;
+                    setLiveState(prev => {
+                        const next = { ...prev };
+                        if ((lp.env === 'desktop' || lp.env === 'browser') && lp.screenshot_url) {
+                            if (lp.env === 'desktop') next.desktop = { screenshotUrl: lp.screenshot_url };
+                            else next.browser = { screenshotUrl: lp.screenshot_url };
+                        } else if (lp.env === 'code' && lp.output) {
+                            const existing = prev.code?.output || '';
+                            next.code = { output: existing + (existing ? '\n---\n' : '') + lp.output };
+                        }
+                        return next;
+                    });
+                    setLivePanelVisible(true);
+                    setSessionListCollapsed(true);
+                    useAppStore.setState({ sidebarCollapsed: true });
+                }
                 setChatMessages(prev => {
                     const toolMsg: ChatMsg = { role: 'tool_call', content: '', toolName: d.name, toolArgs: d.args, toolStatus: d.status, toolResult: d.result };
                     if (d.status === 'done') {
@@ -1429,7 +2104,7 @@ function AgentDetailInner() {
         }
         ensureSessionSocket(activeSession, id, token);
         syncActiveSocketState(activeSession, id);
-    }, [id, token, activeTab, activeSession?.id]);
+    }, [id, token, activeTab, activeSession?.id, chatScope, canViewAllAgentChatSessions]);
 
     useEffect(() => {
         return () => {
@@ -1448,6 +2123,7 @@ function AgentDetailInner() {
     const isNearBottom = useRef(true);
     const isFirstLoad = useRef(true);
     const [showScrollBtn, setShowScrollBtn] = useState(false);
+    const [chatScrollBtnBottom, setChatScrollBtnBottom] = useState(96);
     // Read-only history scroll-to-bottom
     const historyContainerRef = useRef<HTMLDivElement>(null);
     const [showHistoryScrollBtn, setShowHistoryScrollBtn] = useState(false);
@@ -1474,11 +2150,42 @@ function AgentDetailInner() {
         return () => clearTimeout(timer);
     }, [historyMsgs, activeSession?.id]);
     // Memoized component for each chat message to avoid re-renders while typing
-    const ChatMessageItem = React.useMemo(() => React.memo(({ msg, i, isLeft, t }: { msg: any, i: number, isLeft: boolean, t: any }) => {
+    const ChatMessageItem = React.useMemo(() => React.memo(({
+        msg, i, isLeft, t, senderLabel, avatarText, forceSenderLabel = false,
+    }: {
+        msg: any;
+        i: number;
+        isLeft: boolean;
+        t: any;
+        senderLabel?: string;
+        avatarText?: string;
+        forceSenderLabel?: boolean;
+    }) => {
         const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
         const fi = fe === 'pdf' ? '📄' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '📊' : (fe === 'docx' || fe === 'doc') ? '📝' : '📎';
         const isImage = msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
-        
+        const resolvedSenderLabel = msg.sender_name || senderLabel;
+        const resolvedAvatarText = avatarText || (resolvedSenderLabel ? resolvedSenderLabel[0] : (isLeft ? 'A' : 'U'));
+        const showSenderLabel = !!resolvedSenderLabel && (forceSenderLabel || !!msg.sender_name);
+
+        // Parse [image_data:data:image/...;base64,...] markers from user message content.
+        // The backend persists these markers in the DB to preserve multimodal context
+        // across turns. They must ALWAYS be stripped from displayContent so users never
+        // see raw base64 strings in the chat bubble.
+        // Guard: only collect extracted images for thumbnail rendering when msg.imageUrl
+        // is NOT already set — otherwise the image is already shown via the isImage path
+        // and rendering again from the marker would display it twice.
+        const IMAGE_DATA_RE = /\[image_data:(data:image\/[^;]+;base64,[^\]]+)\]/g;
+        const inlineImages: string[] = [];
+        let displayContent = msg.content || '';
+        if (displayContent.includes('[image_data:')) {
+            displayContent = displayContent.replace(IMAGE_DATA_RE, (_: string, dataUrl: string) => {
+                // Only collect for thumbnail rendering if not already shown via imageUrl
+                if (!msg.imageUrl) inlineImages.push(dataUrl);
+                return ''; // always strip the marker from displayed text
+            }).trim();
+        }
+
         const timestampHtml = msg.timestamp ? (() => {
             const d = new Date(msg.timestamp);
             const now = new Date();
@@ -1498,9 +2205,9 @@ function AgentDetailInner() {
 
         return (
             <div key={i} style={{ display: 'flex', flexDirection: isLeft ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
-                <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{isLeft ? (msg.sender_name ? msg.sender_name[0] : 'A') : 'U'}</div>
+                <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>{resolvedAvatarText}</div>
                 <div style={{ maxWidth: '75%', padding: '8px 12px', borderRadius: '12px', background: isLeft ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.1)', fontSize: '13px', lineHeight: '1.5', wordBreak: 'break-word' }}>
-                    {isLeft && msg.sender_name && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600 }}>🤖 {msg.sender_name}</div>}
+                    {showSenderLabel && <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600 }}>{resolvedSenderLabel}</div>}
                     {isImage ? (
                         <div style={{ marginBottom: '4px' }}>
                             <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} loading="lazy" />
@@ -1511,9 +2218,23 @@ function AgentDetailInner() {
                             <span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span>
                         </div>
                     ))}
+                    {/* Render images extracted from [image_data:] markers (multimodal context) */}
+                    {inlineImages.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: displayContent ? '6px' : '0' }}>
+                            {inlineImages.map((url, idx) => (
+                                <img
+                                    key={idx}
+                                    src={url}
+                                    alt="attached image"
+                                    style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)', objectFit: 'cover' }}
+                                    loading="lazy"
+                                />
+                            ))}
+                        </div>
+                    )}
                     {msg.thinking && (
                         <details style={{ marginBottom: '8px', fontSize: '12px', background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px', border: '1px solid rgba(147, 130, 220, 0.15)' }}>
-                            <summary style={{ padding: '6px 10px', cursor: 'pointer', color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500, userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px' }}>💭 Thinking</summary>
+                            <summary style={{ padding: '6px 10px', cursor: 'pointer', color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500, userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px' }}>Thinking</summary>
                             <div style={{ padding: '4px 10px 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '300px', overflow: 'auto' }}>{msg.thinking}</div>
                         </details>
                     )}
@@ -1523,8 +2244,8 @@ function AgentDetailInner() {
                                 <div className="thinking-dots"><span /><span /><span /></div>
                                 <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
                             </div>
-                        ) : <MarkdownRenderer content={msg.content} />
-                    ) : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
+                        ) : <MarkdownRenderer content={displayContent} />
+                    ) : <div style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</div>}
                     {timestampHtml}
                 </div>
             </div>
@@ -1548,8 +2269,6 @@ function AgentDetailInner() {
             // First load: instant jump to bottom, no animation
             chatEndRef.current.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
             isFirstLoad.current = false;
-            // Auto-focus the input
-            setTimeout(() => chatInputRef.current?.focus(), 100);
             return;
         }
         if (isNearBottom.current) {
@@ -1557,12 +2276,20 @@ function AgentDetailInner() {
         }
     }, [chatMessages]);
 
-    // Auto-focus input when switching sessions
     useEffect(() => {
-        if (activeSession && activeTab === 'chat') {
-            setTimeout(() => chatInputRef.current?.focus(), 150);
-        }
-    }, [activeSession?.id, activeTab]);
+        const gapAboveComposer = 14;
+        const updateScrollButtonOffset = () => {
+            const composerAreaHeight = chatInputAreaRef.current?.offsetHeight ?? 82;
+            setChatScrollBtnBottom(composerAreaHeight + gapAboveComposer);
+        };
+
+        updateScrollButtonOffset();
+        if (typeof ResizeObserver === 'undefined' || !chatInputAreaRef.current) return;
+
+        const observer = new ResizeObserver(() => updateScrollButtonOffset());
+        observer.observe(chatInputAreaRef.current);
+        return () => observer.disconnect();
+    }, [activeSession?.id, activeTab, chatUploadDrafts.length, attachedFiles.length]);
 
     const sendChatMsg = () => {
         if (!id || !activeSession?.id) return;
@@ -1570,7 +2297,7 @@ function AgentDetailInner() {
         const activeSocket = wsMapRef.current[activeRuntimeKey];
         if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
-        
+
         let userMsg = chatInput.trim();
         let contentForLLM = userMsg;
         let displayFiles = '';
@@ -1578,7 +2305,7 @@ function AgentDetailInner() {
         if (attachedFiles.length > 0) {
             let filesPrompt = '';
             let filesDisplay = '';
-            
+
             attachedFiles.forEach(file => {
                 filesDisplay += `[📎 ${file.name}] `;
                 if (file.imageUrl && supportsVision) {
@@ -1598,7 +2325,7 @@ function AgentDetailInner() {
             } else {
                 contentForLLM = userMsg ? `${filesPrompt}\nQuestion: ${userMsg}` : `Please analyze these files:\n\n${filesPrompt}`;
             }
-            
+
             displayFiles = filesDisplay.trim();
             userMsg = userMsg ? `${displayFiles}\n${userMsg}` : displayFiles;
         }
@@ -1606,20 +2333,24 @@ function AgentDetailInner() {
         setIsWaiting(true);
         setIsStreaming(false);
         setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
-        setChatMessages(prev => [...prev, parseChatMsg({ 
-            role: 'user', 
-            content: userMsg, 
-            fileName: attachedFiles.map(f => f.name).join(', '), 
-            imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined, 
-            timestamp: new Date().toISOString() 
+        setChatMessages(prev => [...prev, parseChatMsg({
+            role: 'user',
+            content: userMsg,
+            fileName: attachedFiles.map(f => f.name).join(', '),
+            imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
+            timestamp: new Date().toISOString()
         })]);
         activeSocket.send(JSON.stringify({
-            content: contentForLLM, 
-            display_content: userMsg, 
-            file_name: attachedFiles.map(f => f.name).join(', ') 
+            content: contentForLLM,
+            display_content: userMsg,
+            file_name: attachedFiles.map(f => f.name).join(', ')
         }));
-        
-        setChatInput(''); 
+
+        setChatInput('');
+        // Reset textarea height after clearing content
+        if (chatInputRef.current) {
+            chatInputRef.current.style.height = 'auto';
+        }
         setAttachedFiles([]);
     };
 
@@ -1631,36 +2362,59 @@ function AgentDetailInner() {
             alert('Limit of 10 attached files reached.');
             return;
         }
-        
-        setUploading(true); setUploadProgress(0);
-        try {
-            const uploadPromises = allowedFiles.map(file => {
-                const { promise } = uploadFileWithProgress(
-                    `/chat/upload`,
-                    file,
-                    () => {}, // Avoid updating progress per file to prevent flickering, could implement total progress
-                    id ? { agent_id: id } : undefined,
+
+        const baseTime = Date.now();
+        const newDrafts = allowedFiles.map((file, i) => ({
+            id: `up-${baseTime}-${i}-${file.name}`,
+            name: file.name,
+            percent: 0,
+            previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+            sizeBytes: file.size,
+        }));
+        setChatUploadDrafts((prev) => [...prev, ...newDrafts]);
+
+        const runOne = async (file: File, draft: (typeof newDrafts)[0]) => {
+            const { promise, abort } = uploadFileWithProgress(
+                `/chat/upload`,
+                file,
+                (pct) => {
+                    setChatUploadDrafts((prev) =>
+                        prev.map((d) => (d.id === draft.id ? { ...d, percent: pct >= 101 ? 100 : pct } : d)),
+                    );
+                },
+                id ? { agent_id: id } : undefined,
+            );
+            chatUploadAbortRef.current.set(draft.id, abort);
+            try {
+                const data = await promise;
+                if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+                setChatUploadDrafts((prev) => prev.filter((d) => d.id !== draft.id));
+                chatUploadAbortRef.current.delete(draft.id);
+                setAttachedFiles((prev) =>
+                    [...prev, {
+                        name: data.filename,
+                        text: data.extracted_text,
+                        path: data.workspace_path,
+                        imageUrl: data.image_data_url || undefined,
+                    }].slice(0, 10),
                 );
-                return promise;
-            });
-            const results = await Promise.all(uploadPromises);
-            const newAttached = results.map(data => ({
-                name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
-            }));
-            setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
-        } catch (err: any) {
-            if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
-        } finally { 
-            setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; 
-            if (fileInputRef.current) fileInputRef.current.value = ''; 
-        }
+            } catch (err: any) {
+                if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+                setChatUploadDrafts((prev) => prev.filter((d) => d.id !== draft.id));
+                chatUploadAbortRef.current.delete(draft.id);
+                if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
+            }
+        };
+
+        await Promise.all(allowedFiles.map((file, i) => runOne(file, newDrafts[i])));
+        if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
     // Clipboard paste handler — auto-upload pasted images
     const handlePaste = async (e: React.ClipboardEvent) => {
         const items = e.clipboardData?.items;
         if (!items) return;
-        
+
         const filesToUpload: File[] = [];
         for (let i = 0; i < items.length; i++) {
             if (items[i].type.startsWith('image/')) {
@@ -1672,7 +2426,7 @@ function AgentDetailInner() {
                 }
             }
         }
-        
+
         if (!filesToUpload.length) return;
         e.preventDefault();
         const allowedFiles = filesToUpload.slice(0, 10 - attachedFiles.length);
@@ -1681,26 +2435,89 @@ function AgentDetailInner() {
             return;
         }
 
-        setUploading(true); setUploadProgress(0);
-        try {
-            const uploadPromises = allowedFiles.map(file => {
+        const baseTime = Date.now();
+        const newDrafts = allowedFiles.map((file, i) => ({
+            id: `paste-${baseTime}-${i}-${file.name}`,
+            name: file.name,
+            percent: 0,
+            previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+            sizeBytes: file.size,
+        }));
+        setChatUploadDrafts((prev) => [...prev, ...newDrafts]);
+
+        const runOne = async (file: File, draft: (typeof newDrafts)[0]) => {
+            const { promise, abort } = uploadFileWithProgress(
+                `/chat/upload`,
+                file,
+                (pct) => {
+                    setChatUploadDrafts((prev) =>
+                        prev.map((d) => (d.id === draft.id ? { ...d, percent: pct >= 101 ? 100 : pct } : d)),
+                    );
+                },
+                id ? { agent_id: id } : undefined,
+            );
+            chatUploadAbortRef.current.set(draft.id, abort);
+            try {
+                const data = await promise;
+                if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+                setChatUploadDrafts((prev) => prev.filter((d) => d.id !== draft.id));
+                chatUploadAbortRef.current.delete(draft.id);
+                setAttachedFiles((prev) =>
+                    [...prev, {
+                        name: data.filename,
+                        text: data.extracted_text,
+                        path: data.workspace_path,
+                        imageUrl: data.image_data_url || undefined,
+                    }].slice(0, 10),
+                );
+            } catch (err: any) {
+                if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+                setChatUploadDrafts((prev) => prev.filter((d) => d.id !== draft.id));
+                chatUploadAbortRef.current.delete(draft.id);
+                if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
+            }
+        };
+
+        await Promise.all(allowedFiles.map((file, i) => runOne(file, newDrafts[i])));
+    };
+
+    // ── Drag-and-drop chat file upload ──
+    const handleDroppedChatFiles = useCallback(async (files: File[]) => {
+        if (!wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10) return;
+        const availableSlots = Math.max(0, 10 - attachedFiles.length);
+        const filesToProcess = files.slice(0, availableSlots);
+
+        for (const file of filesToProcess) {
+            const draftId = Math.random().toString(36).slice(2, 9);
+            const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined;
+            setChatUploadDrafts(prev => [...prev, { id: draftId, name: file.name, percent: 0, previewUrl, sizeBytes: file.size }]);
+
+            try {
                 const { promise } = uploadFileWithProgress(
-                    `/chat/upload`,
+                    '/chat/upload',
                     file,
-                    () => {},
+                    (pct) => {
+                        setChatUploadDrafts(prev => prev.map(d => d.id === draftId ? { ...d, percent: pct >= 101 ? 100 : pct } : d));
+                    },
                     id ? { agent_id: id } : undefined,
                 );
-                return promise;
-            });
-            const results = await Promise.all(uploadPromises);
-            const newAttached = results.map(data => ({
-                name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
-            }));
-            setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
-        } catch (err: any) {
-            if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
-        } finally { setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; }
-    };
+                const data = await promise;
+                setAttachedFiles(prev => [...prev, { name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined }]);
+            } catch (err: any) {
+                if (err?.message !== 'Upload cancelled') {
+                    alert(err?.message || t('agent.upload.failed'));
+                }
+            } finally {
+                if (previewUrl) URL.revokeObjectURL(previewUrl);
+                setChatUploadDrafts(prev => prev.filter(d => d.id !== draftId));
+            }
+        }
+    }, [id, wsConnected, chatUploadDrafts.length, isWaiting, isStreaming, attachedFiles.length, isWritableSession, t]);
+
+    const { isDragging: isChatDragging, dropZoneProps: chatDropProps } = useDropZone({
+        onDrop: handleDroppedChatFiles,
+        disabled: !wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10 || !activeSession || !isWritableSession(activeSession),
+    });
 
     // Expandable activity log
     const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
@@ -1829,7 +2646,7 @@ function AgentDetailInner() {
 
     const CopyBtn = ({ url }: { url: string }) => (
         <button title="Copy" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
-            onClick={() => navigator.clipboard.writeText(url).then(() => { })}>
+            onClick={() => copyToClipboard(url).then(() => { })}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="4" y="4" width="9" height="11" rx="1.5" /><path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" />
             </svg>
@@ -2084,36 +2901,36 @@ function AgentDetailInner() {
                                 </div>
                                 {/* Native agent metrics */}
                                 {(agent as any)?.agent_type !== 'openclaw' && (<>
-                                <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.llmCallsToday')}</div>
-                                    <div style={{ fontSize: '22px', fontWeight: 600 }}>{((agent as any).llm_calls_today || 0).toLocaleString()}</div>
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.status.max')}: {((agent as any).max_llm_calls_per_day || 100).toLocaleString()}</div>
-                                </div>
-                                <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.totalToken')}</div>
-                                    <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens((agent as any).tokens_used_total || 0)}</div>
-                                </div>
-                                {metrics && (
-                                    <>
-                                        <div className="card">
-                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>✅ {t('agent.tasks.done')}</div>
-                                            <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.tasks?.done || 0}/{metrics.tasks?.total || 0}</div>
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> {metrics.tasks?.completion_rate || 0}%</div>
-                                        </div>
-                                        <div className="card">
-                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.pending')}</div>
-                                            <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>{metrics.approvals?.pending || 0}</div>
-                                        </div>
-                                        <div className="card" style={{ position: 'relative' }}>
-                                            <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                                {t('agent.status.24hActions')}
-                                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
-                                                <span className="metric-tooltip">{t('agent.status.24hActionsTooltip')}</span>
+                                    <div className="card">
+                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.llmCallsToday')}</div>
+                                        <div style={{ fontSize: '22px', fontWeight: 600 }}>{((agent as any).llm_calls_today || 0).toLocaleString()}</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.status.max')}: {((agent as any).max_llm_calls_per_day || 100).toLocaleString()}</div>
+                                    </div>
+                                    <div className="card">
+                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.totalToken')}</div>
+                                        <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens((agent as any).tokens_used_total || 0)}</div>
+                                    </div>
+                                    {metrics && (
+                                        <>
+                                            <div className="card">
+                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>✅ {t('agent.tasks.done')}</div>
+                                                <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.tasks?.done || 0}/{metrics.tasks?.total || 0}</div>
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> {metrics.tasks?.completion_rate || 0}%</div>
                                             </div>
-                                            <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
-                                        </div>
-                                    </>
-                                )}
+                                            <div className="card">
+                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.pending')}</div>
+                                                <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>{metrics.approvals?.pending || 0}</div>
+                                            </div>
+                                            <div className="card" style={{ position: 'relative' }}>
+                                                <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                    {t('agent.status.24hActions')}
+                                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
+                                                    <span className="metric-tooltip">{t('agent.status.24hActionsTooltip')}</span>
+                                                </div>
+                                                <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
+                                            </div>
+                                        </>
+                                    )}
                                 </>)}
                                 {/* OpenClaw-specific metrics */}
                                 {(agent as any)?.agent_type === 'openclaw' && (
@@ -2160,52 +2977,52 @@ function AgentDetailInner() {
                                     </div>
                                 </div>
                                 {(agent as any)?.agent_type !== 'openclaw' ? (
-                                <div className="card">
-                                    <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.model')}</span>
-                                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{modelLabel}</span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.provider')}</span>
-                                            <span style={{ textTransform: 'capitalize' }}>{modelProvider}</span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.contextRounds')}</span>
-                                            <span>{(agent as any).context_window_size || 100}</span>
+                                    <div className="card">
+                                        <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.model')}</span>
+                                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{modelLabel}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.provider')}</span>
+                                                <span style={{ textTransform: 'capitalize' }}>{modelProvider}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.contextRounds')}</span>
+                                                <span>{(agent as any).context_window_size || 100}</span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
                                 ) : (
-                                <div className="card">
-                                    <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>
-                                        {t('agent.openclaw.connection')}
-                                    </h3>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.type')}</span>
-                                            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                <span style={{
-                                                    fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
-                                                }}>OpenClaw</span>
-                                                Lab
-                                            </span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.lastSeen')}</span>
-                                            <span>{(agent as any).openclaw_last_seen
-                                                ? new Date((agent as any).openclaw_last_seen).toLocaleString()
-                                                : t('agent.openclaw.never')}
-                                            </span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.model')}</span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>{t('agent.openclaw.managedBy')}</span>
+                                    <div className="card">
+                                        <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>
+                                            {t('agent.openclaw.connection')}
+                                        </h3>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.type')}</span>
+                                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    <span style={{
+                                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
+                                                    }}>OpenClaw</span>
+                                                    Lab
+                                                </span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.lastSeen')}</span>
+                                                <span>{(agent as any).openclaw_last_seen
+                                                    ? new Date((agent as any).openclaw_last_seen).toLocaleString()
+                                                    : t('agent.openclaw.never')}
+                                                </span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.model')}</span>
+                                                <span style={{ color: 'var(--text-secondary)' }}>{t('agent.openclaw.managedBy')}</span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
                                 )}
                             </div>
 
@@ -3145,7 +3962,7 @@ function AgentDetailInner() {
                                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillModal(false)}>
                                         <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                                <h3>📦 {t('agent.skills.importPreset', 'Import from Presets')}</h3>
+                                                <h3>{t('agent.skills.importPreset', 'Import from Presets')}</h3>
                                                 <button onClick={() => setShowImportSkillModal(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
                                             </div>
                                             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px' }}>
@@ -3238,243 +4055,376 @@ function AgentDetailInner() {
 
                 {
                     activeTab === 'chat' && (
-                        <div style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)' }}>
+                        <div
+                            style={{
+                                display: 'flex',
+                                gap: 0,
+                                flex: 1,
+                                minHeight: 0,
+                                height: 'calc(100vh - 206px)',
+                                border: '1px solid color-mix(in srgb, var(--border-subtle) 55%, var(--bg-primary))',
+                                borderRadius: '12px',
+                                overflow: 'hidden',
+                            }}
+                        >
                             {/* ── Left: session sidebar ── */}
-                            <div style={{ width: '220px', flexShrink: 0, borderRight: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                                {/* Tab row */}
-                                <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px 0', gap: '4px', borderBottom: '1px solid var(--border-subtle)' }}>
-                                    <button onClick={() => setChatScope('mine')}
-                                        style={{ flex: 1, padding: '5px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: chatScope === 'mine' ? 600 : 400, color: chatScope === 'mine' ? 'var(--text-primary)' : 'var(--text-tertiary)', borderBottom: chatScope === 'mine' ? '2px solid var(--accent-primary)' : '2px solid transparent', paddingBottom: '8px' }}>
-                                        {t('agent.chat.mySessions')}
-                                    </button>
-                                    {isAdmin && (
-                                        <button onClick={() => { setChatScope('all'); fetchAllSessions(); }}
-                                            style={{ flex: 1, padding: '5px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: chatScope === 'all' ? 600 : 400, color: chatScope === 'all' ? 'var(--text-primary)' : 'var(--text-tertiary)', borderBottom: chatScope === 'all' ? '2px solid var(--accent-primary)' : '2px solid transparent', paddingBottom: '8px' }}>
-                                            {t('agent.chat.allUsers')}
-                                        </button>
+                            <div className={`session-sidebar ${sessionListCollapsed ? 'collapsed' : ''}`} style={{ width: sessionListCollapsed ? '0px' : '220px', transition: 'width 0.2s ease', flexShrink: 0, minHeight: 0, borderRight: sessionListCollapsed ? 'none' : '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                {/* ── Header: title + collapse, then new session ── */}
+                                <div style={{ flexShrink: 0 }}>
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'space-between',
+                                            gap: '8px',
+                                            padding: '10px 12px 8px',
+                                            minHeight: '40px',
+                                            boxSizing: 'border-box',
+                                        }}
+                                    >
+                                        <span
+                                            style={{
+                                                fontSize: '14px',
+                                                fontWeight: 600,
+                                                color: 'var(--text-primary)',
+                                                lineHeight: '1.25',
+                                                flex: 1,
+                                                minWidth: 0,
+                                            }}
+                                        >
+                                            {t('agent.chat.sessionListTitle')}
+                                        </span>
+                                        {!sessionListCollapsed && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setSessionListCollapsed(true)}
+                                                className="session-sidebar-collapseBtn"
+                                                style={{
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    background: 'none',
+                                                    border: 'none',
+                                                    color: 'var(--text-tertiary)',
+                                                    cursor: 'pointer',
+                                                    padding: '4px',
+                                                    borderRadius: '4px',
+                                                    flexShrink: 0,
+                                                    lineHeight: 0,
+                                                }}
+                                                title={t('agent.chat.collapseSidebar')}
+                                                onMouseEnter={(e) => {
+                                                    e.currentTarget.style.background = 'var(--bg-secondary)';
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    e.currentTarget.style.background = 'none';
+                                                }}
+                                            >
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                                    <path d="M15 18l-6-6 6-6" />
+                                                </svg>
+                                            </button>
+                                        )}
+                                    </div>
+                                    {!canViewAllAgentChatSessions && (
+                                        <div style={{ padding: '0 12px 8px' }}>
+                                            <button
+                                                type="button"
+                                                onClick={createNewSession}
+                                                className="new-session-btn"
+                                            >
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ display: 'block', flexShrink: 0 }}>
+                                                    <line x1="12" y1="5" x2="12" y2="19" />
+                                                    <line x1="5" y1="12" x2="19" y2="12" />
+                                                </svg>
+                                                <span>{t('agent.chat.newSession')}</span>
+                                            </button>
+                                        </div>
                                     )}
                                 </div>
 
-                                {/* Actions row */}
-                                {chatScope === 'mine' && (
-                                    <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
-                                        <button onClick={createNewSession}
-                                            style={{ width: '100%', padding: '5px 8px', background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '6px' }}
-                                            onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-secondary)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-                                            onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-secondary)'; }}>
-                                            + {t('agent.chat.newSession')}
-                                        </button>
+                                {canViewAllAgentChatSessions && (
+                                    <div className="session-sidebar-segment-control" role="tablist">
+                                        <div
+                                            role="tab"
+                                            tabIndex={0}
+                                            aria-selected={chatScope === 'mine'}
+                                            className={`segment-item ${chatScope === 'mine' ? 'active' : ''}`}
+                                            onClick={onAdminTabMine}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    onAdminTabMine();
+                                                }
+                                            }}
+                                        >
+                                            {t('agent.chat.mySessions')}
+                                        </div>
+                                        <div
+                                            role="tab"
+                                            tabIndex={0}
+                                            aria-selected={chatScope === 'all'}
+                                            className={`segment-item ${chatScope === 'all' ? 'active' : ''}`}
+                                            onClick={onAdminTabOthers}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    onAdminTabOthers();
+                                                }
+                                            }}
+                                        >
+                                            {t('agent.chat.otherUsersTab')}
+                                        </div>
                                     </div>
                                 )}
 
-                                {/* Session list */}
-                                <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
-                                    {chatScope === 'mine' ? (
-                                        sessionsLoading ? (
-                                            <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>
-                                        ) : sessions.length === 0 ? (
-                                            <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.chat.noSessionsYet')}<br />{t('agent.chat.clickToStart')}</div>
-                                        ) : sessions.map((s: any) => {
-                                            const isActive = activeSession?.id === s.id;
-                                            const isOwn = s.user_id === String(currentUser?.id);
-                                            const channelLabel: Record<string, string> = {
-                                                feishu: t('common.channels.feishu'),
-                                                discord: t('common.channels.discord'),
-                                                slack: t('common.channels.slack'),
-                                                dingtalk: t('common.channels.dingtalk'),
-                                                wecom: t('common.channels.wecom'),
-                                            };
-                                            const chLabel = channelLabel[s.source_channel];
-                                            return (
-                                                <div key={s.id} onClick={() => selectSession(s)}
-                                                    className="session-item"
-                                                    style={{ padding: '8px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', marginBottom: '1px', position: 'relative' }}
-                                                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0.5'; }}
-                                                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0'; }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
-                                                        <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.title}</div>
-                                                        {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
-                                                    </div>
-                                                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                        {isOwn && isActive && wsConnected && <span className="status-dot running" style={{ width: '5px', height: '5px', flexShrink: 0 }} />}
-                                                        {s.last_message_at
-                                                            ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                                                            : new Date(s.created_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
-                                                        {s.message_count > 0 && <span style={{ marginLeft: 'auto' }}>{s.message_count}</span>}
-                                                    </div>
-                                                    <button className="del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
-                                                        style={{ position: 'absolute', top: '4px', right: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', opacity: 0, fontSize: '14px', color: 'var(--text-tertiary)', lineHeight: 1, transition: 'opacity 0.15s' }}
-                                                        onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--status-error)'; }}
-                                                        onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
-                                                        title={t('chat.deleteSession', 'Delete session')}>×</button>
-                                                </div>
-                                            );
-                                        })
-                                    ) : (
-                                        /* All Users tab — user filter dropdown + flat list */
+                                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                    {(!canViewAllAgentChatSessions || chatScope === 'mine') ? (
                                         <>
-                                            {/* User filter dropdown */}
-                                            <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
-                                                <select
-                                                    value={allUserFilter}
-                                                    onChange={e => setAllUserFilter(e.target.value)}
-                                                    style={{ width: '100%', padding: '4px 6px', fontSize: '11px', background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '5px', color: 'var(--text-primary)', cursor: 'pointer' }}
-                                                >
-                                                    <option value="">All Users</option>
-                                                    {Array.from(new Set(allSessions.map((s: any) => s.username || s.user_id))).filter(Boolean).map((u: any) => (
-                                                        <option key={u} value={u}>{u}</option>
-                                                    ))}
-                                                </select>
-                                            </div>
-                                            {/* Loading skeleton */}
-                                            {allSessionsLoading ? (
-                                                <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                                    {[...Array(6)].map((_, i) => (
-                                                        <div key={i} style={{ padding: '6px 0', animation: 'pulse 1.5s ease-in-out infinite', animationDelay: `${i * 0.1}s` }}>
-                                                            <div style={{ height: '12px', width: `${70 + (i % 3) * 10}%`, background: 'var(--bg-tertiary)', borderRadius: '4px', marginBottom: '6px' }} />
-                                                            <div style={{ height: '10px', width: `${40 + (i % 4) * 8}%`, background: 'var(--bg-tertiary)', borderRadius: '3px', opacity: 0.6 }} />
-                                                        </div>
-                                                    ))}
+                                            {canViewAllAgentChatSessions && (
+                                                <div style={{ padding: '0 12px 8px', flexShrink: 0 }}>
+                                                    <button
+                                                        type="button"
+                                                        onClick={createNewSession}
+                                                        className="new-session-btn"
+                                                    >
+                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ display: 'block', flexShrink: 0 }}>
+                                                            <line x1="12" y1="5" x2="12" y2="19" />
+                                                            <line x1="5" y1="12" x2="19" y2="12" />
+                                                        </svg>
+                                                        <span>{t('agent.chat.newSession')}</span>
+                                                    </button>
                                                 </div>
-                                            ) : allSessions.length === 0 ? (
-                                                <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('agent.chat.noSessionsYet')}</div>
-                                            ) : null}
-                                            {/* Filtered session list */}
-                                            {!allSessionsLoading && allSessions
-                                                .filter((s: any) => !allUserFilter || (s.username || s.user_id) === allUserFilter)
-                                                .map((s: any) => {
-                                                    const isActive = activeSession?.id === s.id;
+                                            )}
+                                            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 0' }}>
+                                                {sessionsLoading ? (
+                                                    <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>
+                                                ) : sessions.length === 0 ? (
+                                                    <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.chat.noSessionsYet')}<br />{t('agent.chat.clickToStart')}</div>
+                                                ) : sessions.map((s: any) => {
+                                                    const isActive = activeSession?.id === s.id && (chatScope === 'mine' || !canViewAllAgentChatSessions);
+                                                    const channelLabel: Record<string, string> = {
+                                                        feishu: t('common.channels.feishu'),
+                                                        discord: t('common.channels.discord'),
+                                                        slack: t('common.channels.slack'),
+                                                        dingtalk: t('common.channels.dingtalk'),
+                                                        wecom: t('common.channels.wecom'),
+                                                    };
+                                                    const chLabel = channelLabel[s.source_channel];
                                                     return (
-                                                        <div key={s.id} onClick={() => selectSession(s)}
+                                                        <div key={s.id} onClick={() => { setChatScope('mine'); selectSession(s, 'mine'); }}
                                                             className="session-item"
-                                                            style={{ padding: '6px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', position: 'relative' }}
-                                                            onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0.5'; }}
-                                                            onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0'; }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '1px' }}>
-                                                                <div style={{ fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1 }}>{s.title}</div>
-                                                                {({
-                                                                    feishu: t('common.channels.feishu'),
-                                                                    discord: t('common.channels.discord'),
-                                                                    slack: t('common.channels.slack'),
-                                                                    dingtalk: t('common.channels.dingtalk'),
-                                                                    wecom: t('common.channels.wecom'),
-                                                                } as Record<string, string>)[s.source_channel] && (
-                                                                        <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>
-                                                                            {({
-                                                                                feishu: t('common.channels.feishu'),
-                                                                                discord: t('common.channels.discord'),
-                                                                                slack: t('common.channels.slack'),
-                                                                                dingtalk: t('common.channels.dingtalk'),
-                                                                                wecom: t('common.channels.wecom'),
-                                                                            } as Record<string, string>)[s.source_channel]}
-                                                                        </span>
-                                                                    )}
+                                                            style={{ padding: '8px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', marginBottom: '1px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                                            onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; }}
+                                                            onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
+                                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
+                                                                    <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{s.title}</div>
+                                                                    {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
+                                                                </div>
+                                                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                                    {s.last_message_at
+                                                                        ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                                                        : new Date(s.created_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
+                                                                    {s.message_count > 0 && <span className="session-msg-count" style={{ marginLeft: 'auto' }}>{s.message_count}</span>}
+                                                                </div>
                                                             </div>
-                                                            <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', gap: '4px' }}>
-                                                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.username || ''}</span>
-                                                                <span style={{ flexShrink: 0 }}>{s.last_message_at ? new Date(s.last_message_at).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}{s.message_count > 0 ? ` · ${s.message_count}` : ''}</span>
-                                                            </div>
-                                                            <button className="del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
-                                                                style={{ position: 'absolute', top: '4px', right: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', opacity: 0, fontSize: '14px', color: 'var(--text-tertiary)', lineHeight: 1, transition: 'opacity 0.15s' }}
-                                                                onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--status-error)'; }}
-                                                                onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
-                                                                title={t('chat.deleteSession', 'Delete session')}>×</button>
+                                                            <button className="session-del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                                                                title={t('chat.deleteSession', 'Delete session')}>
+                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+                                                            </button>
                                                         </div>
                                                     );
                                                 })}
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div style={{ padding: '0 12px 8px', flexShrink: 0 }}>
+                                                <select
+                                                    value={allUserFilter}
+                                                    onChange={(e) => setAllUserFilter(e.target.value)}
+                                                    style={{ width: '100%', height: '28px', fontSize: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', color: 'var(--text-primary)' }}
+                                                >
+                                                    <option value="">{t('agent.chat.allUsers')}</option>
+                                                    {otherUserPickerOptions.map(([uid, label]) => (
+                                                        <option key={uid} value={uid}>{label}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 0' }}>
+                                                {allSessionsLoading ? (
+                                                    <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                        {[...Array(3)].map((_, i) => (
+                                                            <div key={i} style={{ padding: '6px 0', animation: 'pulse 1.5s ease-in-out infinite', animationDelay: `${i * 0.1}s` }}>
+                                                                <div style={{ height: '12px', width: `${70 + (i % 3) * 10}%`, background: 'var(--bg-tertiary)', borderRadius: '4px', marginBottom: '6px' }} />
+                                                                <div style={{ height: '10px', width: `${40 + (i % 4) * 8}%`, background: 'var(--bg-tertiary)', borderRadius: '3px', opacity: 0.6 }} />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : othersListForPicker.length === 0 ? (
+                                                    <div style={{ padding: '16px 12px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('agent.chat.noSessionsYet')}</div>
+                                                ) : (
+                                                    othersListForPicker.map((s: any) => {
+                                                        const isActive = activeSession?.id === s.id && chatScope === 'all';
+                                                        const channelLabel: Record<string, string> = {
+                                                            feishu: t('common.channels.feishu'),
+                                                            discord: t('common.channels.discord'),
+                                                            slack: t('common.channels.slack'),
+                                                            dingtalk: t('common.channels.dingtalk'),
+                                                            wecom: t('common.channels.wecom'),
+                                                        };
+                                                        const chLabel = channelLabel[s.source_channel];
+                                                        return (
+                                                            <div key={s.id} onClick={() => selectSession(s, 'all')}
+                                                                className="session-item"
+                                                                style={{ padding: '6px 12px', cursor: 'pointer', borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent', background: isActive ? 'var(--bg-secondary)' : 'transparent', position: 'relative' }}
+                                                                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; }}
+                                                                onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '1px' }}>
+                                                                    <div style={{ fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1 }}>{s.title}</div>
+                                                                    {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
+                                                                </div>
+                                                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', gap: '4px' }}>
+                                                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.username || ''}</span>
+                                                                    <span style={{ flexShrink: 0 }}>{s.last_message_at ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}{s.message_count > 0 ? ` · ${s.message_count}` : ''}</span>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
                                         </>
                                     )}
                                 </div>
                             </div>
 
                             {/* ── Right: chat/message area ── */}
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+                            <div className={`agent-chat-area ${ !!(liveState.desktop || liveState.browser || liveState.code) ? 'has-live-panel' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'row', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+                                    {sessionListCollapsed && (
+                                        <button onClick={() => setSessionListCollapsed(false)} style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, width: '28px', height: '28px', borderRadius: '6px', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', cursor: 'pointer' }} title="Show chat sessions" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='var(--bg-elevated)'}>
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+                                        </button>
+                                    )}
                                 {!activeSession ? (
                                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
                                         <div>{t('agent.chat.noSessionSelected')}</div>
-                                        <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
+                                        {!isViewingOtherUsersSessions && (
+                                            <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
+                                        )}
                                     </div>
-                                ) : (activeSession.user_id && currentUser && activeSession.user_id !== String(currentUser.id)) || activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent' ? (
+                                ) : !isWritableSession(activeSession) ? (
                                     /* ── Read-only history view (other user's session or agent-to-agent) ── */
                                     <>
-                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px', padding: '4px 8px', background: 'var(--bg-secondary)', borderRadius: '4px', display: 'inline-block' }}>
-                                                {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
-                                            </div>
+                                        <div
+                                            style={{
+                                                position: 'absolute',
+                                                top: '12px',
+                                                left: sessionListCollapsed ? '52px' : '16px',
+                                                zIndex: 10,
+                                                fontSize: '11px',
+                                                color: 'var(--text-tertiary)',
+                                                padding: '4px 8px',
+                                                background: 'var(--bg-secondary)',
+                                                borderRadius: '4px',
+                                                pointerEvents: 'none',
+                                            }}
+                                        >
+                                            {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                                        </div>
+                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
                                             {(() => {
                                                 // For A2A sessions, determine which participant is "this agent" (left side)
                                                 // Use agent.name matching against sender_name from messages
                                                 const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
+                                                const isHumanReadonly = !isA2A && !activeSession.is_group;
                                                 const thisAgentName = (agent as any)?.name;
                                                 // Find this agent's participant_id from loaded messages
                                                 const thisAgentPid = isA2A && thisAgentName
                                                     ? historyMsgs.find((m: any) => m.sender_name === thisAgentName)?.participant_id
                                                     : null;
                                                 return historyMsgs.map((m: any, i: number) => {
-                                                // Determine if this message is from "this agent" (left) or peer (right)
-                                                // Actually, "this agent" should be on the RIGHT (like 'me'), and peer on the LEFT
-                                                const isLeft = isA2A && thisAgentPid
-                                                    ? m.participant_id !== thisAgentPid
-                                                    : m.role === 'assistant';
-                                            if (m.role === 'tool_call') {
-                                                    const tName = m.toolName || (() => { try { return JSON.parse(m.content || '{}').name; } catch { return 'tool'; } })();
-                                                    const tArgs = m.toolArgs || (() => { try { return JSON.parse(m.content || '{}').args; } catch { return {}; } })();
-                                                    const tResult = m.toolResult ?? (() => { try { return JSON.parse(m.content || '{}').result; } catch { return ''; } })();
-                                                    return (
-                                                        <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
-                                                            <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
-                                                                <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
-                                                                    <span style={{ fontSize: '13px' }}>⚡</span>
-                                                                    <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
-                                                                    {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
-                                                                </summary>
-                                                                {tResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{tResult}</div></div>}
-                                                            </details>
-                                                        </div>
-                                                    );
-                                                }
-
-                                                {/* Assistant message with no content: show inline thinking or skip */}
-                                                if (m.role === 'assistant' && !m.content?.trim()) {
-                                                    if (m.thinking) {
+                                                    // Determine if this message is from "this agent" (left) or peer (right)
+                                                    // Actually, "this agent" should be on the RIGHT (like 'me'), and peer on the LEFT
+                                                    const isLeft = isA2A && thisAgentPid
+                                                        ? m.participant_id !== thisAgentPid
+                                                        : m.role === 'assistant';
+                                                    if (m.role === 'tool_call') {
+                                                        const tName = m.toolName || (() => { try { return JSON.parse(m.content || '{}').name; } catch { return 'tool'; } })();
+                                                        const tArgs = m.toolArgs || (() => { try { return JSON.parse(m.content || '{}').args; } catch { return {}; } })();
+                                                        const tResult = m.toolResult ?? (() => { try { return JSON.parse(m.content || '{}').result; } catch { return ''; } })();
                                                         return (
-                                                            <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-                                                                <details style={{
-                                                                    fontSize: '12px',
-                                                                    background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
-                                                                    border: '1px solid rgba(147, 130, 220, 0.15)',
-                                                                }}>
-                                                                    <summary style={{
-                                                                        padding: '6px 10px', cursor: 'pointer',
-                                                                        color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
-                                                                        userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
-                                                                    }}>Thinking</summary>
-                                                                    <div style={{
-                                                                        padding: '4px 10px 8px',
-                                                                        fontSize: '12px', lineHeight: '1.6',
-                                                                        color: 'var(--text-secondary)',
-                                                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                                                        maxHeight: '300px', overflow: 'auto',
-                                                                    }}>{m.thinking}</div>
+                                                            <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
+                                                                <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
+                                                                    <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
+                                                                        <span style={{ fontSize: '13px' }}>⚡</span>
+                                                                        <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
+                                                                        {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
+                                                                    </summary>
+                                                                    {tResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{tResult}</div></div>}
                                                                 </details>
                                                             </div>
                                                         );
                                                     }
-                                                    return null;
-                                                }
-                                                return (
-                                                    <ChatMessageItem key={i} msg={m} i={i} isLeft={isLeft} t={t} />
-                                                );
-                                            });
+
+                                                    {/* Assistant message with no content: show inline thinking or skip */ }
+                                                    if (m.role === 'assistant' && !m.content?.trim()) {
+                                                        if (m.thinking) {
+                                                            return (
+                                                                <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
+                                                                    <details style={{
+                                                                        fontSize: '12px',
+                                                                        background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
+                                                                        border: '1px solid rgba(147, 130, 220, 0.15)',
+                                                                    }}>
+                                                                        <summary style={{
+                                                                            padding: '6px 10px', cursor: 'pointer',
+                                                                            color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
+                                                                            userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
+                                                                        }}>Thinking</summary>
+                                                                        <div style={{
+                                                                            padding: '4px 10px 8px',
+                                                                            fontSize: '12px', lineHeight: '1.6',
+                                                                            color: 'var(--text-secondary)',
+                                                                            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                                                            maxHeight: '300px', overflow: 'auto',
+                                                                        }}>{m.thinking}</div>
+                                                                    </details>
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    }
+                                                    return (
+                                                        <ChatMessageItem
+                                                            key={i}
+                                                            msg={m}
+                                                            i={i}
+                                                            isLeft={isLeft}
+                                                            t={t}
+                                                            senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
+                                                            avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
+                                                            forceSenderLabel={isHumanReadonly}
+                                                        />
+                                                    );
+                                                });
                                             })()}
                                         </div>
                                         {showHistoryScrollBtn && (
-                                            <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                            <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
                                         )}
                                     </>
                                 ) : (
                                     /* ── Live WebSocket chat (own session) ── */
-                                    <>
+                                    <div {...chatDropProps} style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0, overflow: 'hidden' }}>
+                                        {/* Drop overlay */}
+                                        {isChatDragging && (
+                                            <div className="drop-zone-overlay">
+                                                <div className="drop-zone-overlay__icon">📎</div>
+                                                <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop files to attach (max 10)')}</div>
+                                            </div>
+                                        )}
                                         <div ref={chatContainerRef} onScroll={handleChatScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
                                             {chatMessages.length === 0 && (
                                                 <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
@@ -3483,54 +4433,139 @@ function AgentDetailInner() {
                                                     <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                                                 </div>
                                             )}
-                                            {chatMessages.map((msg, i) => {
-                                                if (msg.role === 'tool_call') {
-                                                    return (
-                                                        <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
-                                                            <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
-                                                                <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
-                                                                    <span style={{ fontSize: '13px' }}>{msg.toolStatus === 'running' ? '⏳' : '⚡'}</span>
-                                                                    <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{msg.toolName}</span>
-                                                                    {msg.toolArgs && Object.keys(msg.toolArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(msg.toolArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
-                                                                    {msg.toolStatus === 'running' && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', marginLeft: 'auto' }}>{t('common.loading')}</span>}
-                                                                </summary>
-                                                                {msg.toolResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{msg.toolResult}</div></div>}
-                                                            </details>
-                                                        </div>
-                                                    );
+                                            {(() => {
+                                                // ── Grouping Algorithm (lookahead-based) ──
+                                                //
+                                                // Goal: merge all "analysis" steps (thinking + tool calls +
+                                                // mid-flow assistant text) into a single AnalysisCard, and
+                                                // only emit a real assistant bubble for the *final* answer.
+                                                //
+                                                // Problem with naive flushing:
+                                                //   Claude and minimax sometimes emit an assistant message with
+                                                //   real content (e.g. "Let me search…") BETWEEN reasoning and
+                                                //   tool calls. The old approach flushed the group on any
+                                                //   assistant content, producing multiple fragmented cards.
+                                                //
+                                                // Solution — two-pass lookahead:
+                                                //   Pass 1: pre-classify every message as either
+                                                //     "analysis"  — part of the internal reasoning/tool loop
+                                                //     "final"     — the actual answer to show the user
+                                                //   Classification rule: an assistant message (even with content)
+                                                //   is "analysis" if there is *at least one more tool_call
+                                                //   somewhere after it in the same sequence*.
+                                                //   Pass 2: build GroupedEntry[] based on classifications.
+
+                                                // Pass 1: mark each index as 'analysis' or 'final'
+                                                const msgClass: ('analysis' | 'final')[] = new Array(chatMessages.length).fill('final');
+
+                                                // Walk backwards: once we see a tool_call, all preceding
+                                                // assistant messages (until the previous user turn or start)
+                                                // are reclassified as 'analysis'.
+                                                let hasFutureTool = false;
+                                                for (let i = chatMessages.length - 1; i >= 0; i--) {
+                                                    const msg = chatMessages[i];
+                                                    if (msg.role === 'tool_call') {
+                                                        msgClass[i] = 'analysis';
+                                                        hasFutureTool = true;
+                                                    } else if (msg.role === 'user') {
+                                                        // User turn resets the lookahead boundary
+                                                        hasFutureTool = false;
+                                                    } else if (msg.role === 'assistant') {
+                                                        if (hasFutureTool) {
+                                                            // This assistant message (thinking-only or with content)
+                                                            // precedes more tool calls → it's part of the analysis
+                                                            msgClass[i] = 'analysis';
+                                                        }
+                                                        // else: it's a final answer, keep 'final'
+                                                    }
                                                 }
-                                                {/* Assistant message with no text content: show inline thinking or skip */}
-                                                if (msg.role === 'assistant' && !msg.content?.trim()) {
-                                                    if (msg.thinking) {
+
+                                                // Pass 2: build grouped entries
+                                                type GroupedEntry =
+                                                    | { type: 'analysis_group'; items: AnalysisItem[]; key: number }
+                                                    | { type: 'msg'; msg: any; i: number };
+                                                const grouped: GroupedEntry[] = [];
+                                                let currentGroup: AnalysisItem[] | null = null;
+                                                let groupStartKey = 0;
+                                                const flushGroup = () => {
+                                                    if (currentGroup && currentGroup.length > 0) {
+                                                        grouped.push({ type: 'analysis_group', items: currentGroup, key: groupStartKey });
+                                                        currentGroup = null;
+                                                    }
+                                                };
+                                                for (let i = 0; i < chatMessages.length; i++) {
+
+                                                    const msg = chatMessages[i];
+                                                    if (msgClass[i] === 'analysis') {
+                                                        // Open a new group if needed
+                                                        if (!currentGroup) { currentGroup = []; groupStartKey = i; }
+                                                        if (msg.role === 'tool_call') {
+                                                            currentGroup.push({
+                                                                type: 'tool',
+                                                                name: msg.toolName || 'tool',
+                                                                args: msg.toolArgs || {},
+                                                                status: msg.toolStatus === 'running' ? 'running' : 'done',
+                                                                result: msg.toolResult || undefined,
+                                                            });
+                                                        } else if (msg.role === 'assistant') {
+                                                            // Could be thinking-only OR has content (mid-flow text)
+                                                            const thinkingText = msg.thinking || '';
+                                                            const contentText = msg.content?.trim() || '';
+                                                            // Add thinking block first (if present)
+                                                            if (thinkingText) {
+                                                                currentGroup.push({ type: 'thinking', content: thinkingText });
+                                                            }
+                                                            // Add mid-flow content as a thinking block too
+                                                            // (displayed with slightly different style to distinguish)
+                                                            if (contentText) {
+                                                                currentGroup.push({ type: 'thinking', content: contentText });
+                                                            }
+                                                        }
+                                                    } else {
+                                                        // 'final': flush any open group first, then emit as chat bubble
+                                                        flushGroup();
+                                                        grouped.push({ type: 'msg', msg, i });
+                                                    }
+                                                }
+                                                flushGroup(); // flush any trailing group
+
+
+                                                return grouped.map((entry, entryIdx) => {
+                                                    if (entry.type === 'analysis_group') {
+                                                        // Group is considered running if it has a running tool,
+                                                        // or if it's the very last entry and the agent is still active
+                                                        const isLastEntry = entryIdx === grouped.length - 1;
+                                                        const hasRunningTool = entry.items.some(
+                                                            it => it.type === 'tool' && it.status === 'running'
+                                                        );
+                                                        const groupIsRunning = hasRunningTool || (isLastEntry && (isWaiting || isStreaming));
                                                         return (
-                                                            <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-                                                                <details style={{
-                                                                    fontSize: '12px',
-                                                                    background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
-                                                                    border: '1px solid rgba(147, 130, 220, 0.15)',
-                                                                }}>
-                                                                    <summary style={{
-                                                                        padding: '6px 10px', cursor: 'pointer',
-                                                                        color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
-                                                                        userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
-                                                                    }}>Thinking</summary>
-                                                                    <div style={{
-                                                                        padding: '4px 10px 8px',
-                                                                        fontSize: '12px', lineHeight: '1.6',
-                                                                        color: 'var(--text-secondary)',
-                                                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                                                        maxHeight: '300px', overflow: 'auto',
-                                                                    }}>{msg.thinking}</div>
-                                                                </details>
-                                                            </div>
+                                                            <AnalysisCard
+                                                                key={`ag-${entry.key}`}
+                                                                items={entry.items}
+                                                                t={t}
+                                                                expanded={!!toolGroupExpandedRef.current.get(entry.key)}
+                                                                onToggle={() => toggleToolGroup(entry.key)}
+                                                                isGroupRunning={groupIsRunning}
+                                                            />
                                                         );
                                                     }
-                                                    return null;
-                                                }
-                                                return (
-                                                    <ChatMessageItem key={i} msg={msg} i={i} isLeft={msg.role === 'assistant'} t={t} />
-                                                );
-                                            })}
+                                                    const { msg, i } = entry;
+                                                    // All remaining messages have real content; render as chat bubbles
+                                                    return (
+                                                        <ChatMessageItem
+                                                            key={i}
+                                                            msg={msg}
+                                                            i={i}
+                                                            isLeft={msg.role === 'assistant'}
+                                                            t={t}
+                                                            senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
+                                                            avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
+                                                        />
+                                                    );
+                                                });
+                                            })()
+                                            }
                                             {isWaiting && (
                                                 <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
                                                     <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
@@ -3547,81 +4582,167 @@ function AgentDetailInner() {
                                             <div ref={chatEndRef} />
                                         </div>
                                         {showScrollBtn && (
-                                            <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: '70px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                            <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: `${chatScrollBtnBottom}px`, right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
                                         )}
                                         {agentExpired ? (
                                             <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
                                                 <span>u23f8</span>
                                                 <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
                                             </div>
-                                        ) : !wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? (
+                                        ) : !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
                                             <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                                 <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
                                                 Connecting...
                                             </div>
                                         ) : null}
-                                        {attachedFiles.length > 0 && (
-                                            <div style={{ padding: '6px 16px', background: 'var(--bg-elevated)', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                                                {attachedFiles.map((file, idx) => (
-                                                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', background: 'var(--bg-secondary)', padding: '4px 6px', borderRadius: '4px', border: '1px solid var(--border-subtle)', maxWidth: '200px' }}>
-                                                        {file.imageUrl ? (
-                                                            <img src={file.imageUrl} alt={file.name} style={{ width: '20px', height: '20px', borderRadius: '4px', objectFit: 'cover' }} />
-                                                        ) : (
-                                                            <span>📎</span>
-                                                        )}
-                                                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-                                                        <button onClick={() => setAttachedFiles(prev => prev.filter((_, i) => i !== idx))} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '14px', padding: '0 2px' }} title="Remove file">✕</button>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                        <div style={{ display: 'flex', gap: '8px', padding: '6px 12px', borderTop: '1px solid var(--border-subtle)' }}>
-                                            <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
-                                            <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={!wsConnected || uploading || isWaiting || isStreaming || attachedFiles.length >= 10} style={{ padding: '6px 10px', fontSize: '14px', minWidth: 'auto', ...( (!wsConnected || uploading || isWaiting || isStreaming) ? { cursor: 'not-allowed', opacity: 0.4 } : {}) }}>{uploading ? '⏳' : '⦹'}</button>
-                                            {uploading && uploadProgress >= 0 && (
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '0 0 140px' }}>
-                                                    {uploadProgress <= 100 ? (
-                                                        /* Upload phase: show progress bar */
-                                                        <>
-                                                            <div style={{ flex: 1, height: '4px', borderRadius: '2px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
-                                                                <div style={{ height: '100%', borderRadius: '2px', background: 'var(--accent-primary)', width: `${uploadProgress}%`, transition: 'width 0.15s ease' }} />
+                                        <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
+                                            <div className="chat-composer">
+                                            {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
+                                                <div className="chat-composer-attachments">
+                                                    {chatUploadDrafts.map((draft) => (
+                                                        <div key={draft.id} className="chat-file-pill">
+                                                            <div
+                                                                className="chat-file-pill__fill"
+                                                                style={{ width: `${draft.percent}%` }}
+                                                            />
+                                                            <div className="chat-file-pill__row">
+                                                                {draft.previewUrl ? (
+                                                                    <img className="chat-file-pill__thumb" src={draft.previewUrl} alt="" />
+                                                                ) : (
+                                                                    <span className="chat-file-pill__icon">
+                                                                        <IconPaperclip size={14} stroke={1.75} />
+                                                                    </span>
+                                                                )}
+                                                                <span className="chat-file-pill__name">{draft.name}</span>
+                                                                <span className="chat-file-pill__size">{formatFileSize(draft.sizeBytes)}</span>
+                                                                <span className="chat-file-pill__pct">{draft.percent}%</span>
+                                                                <button
+                                                                    type="button"
+                                                                    className="chat-file-pill__remove"
+                                                                    onClick={() => {
+                                                                        chatUploadAbortRef.current.get(draft.id)?.();
+                                                                    }}
+                                                                    title="Cancel upload"
+                                                                >
+                                                                    ×
+                                                                </button>
                                                             </div>
-                                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{uploadProgress}%</span>
-                                                        </>
-                                                    ) : (
-                                                        /* Processing phase (progress = 101): server is parsing the file */
-                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                            <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', animation: 'pulse 1.2s ease-in-out infinite' }} />
-                                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>Processing...</span>
                                                         </div>
-                                                    )}
-                                                    <button onClick={() => { uploadAbortRef.current?.(); }} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '0 2px', lineHeight: 1 }} title="Cancel upload">✕</button>
+                                                    ))}
+                                                    {attachedFiles.map((file, idx) => (
+                                                        <div key={`a-${idx}-${file.name}`} className="chat-file-pill">
+                                                            <div className="chat-file-pill__row">
+                                                                {file.imageUrl ? (
+                                                                    <img className="chat-file-pill__thumb" src={file.imageUrl} alt="" />
+                                                                ) : (
+                                                                    <span className="chat-file-pill__icon">
+                                                                        <IconPaperclip size={14} stroke={1.75} />
+                                                                    </span>
+                                                                )}
+                                                                <span className="chat-file-pill__name">{file.name}</span>
+                                                                <button
+                                                                    type="button"
+                                                                    className="chat-file-pill__remove"
+                                                                    onClick={() => setAttachedFiles((prev) => prev.filter((_, i) => i !== idx))}
+                                                                    title="Remove file"
+                                                                >
+                                                                    ×
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ))}
                                                 </div>
                                             )}
-                                            <input ref={chatInputRef} className="chat-input" value={chatInput} onChange={e => setChatInput(e.target.value)}
-                                                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) { e.preventDefault(); sendChatMsg(); } }}
-                                                onPaste={handlePaste}
-                                                placeholder={!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? 'Connecting...' : attachedFiles.length > 0 ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` }) : t('chat.placeholder')}
-                                                disabled={!wsConnected} style={{ flex: 1 }} autoFocus />
-                                            {(isStreaming || isWaiting) ? (
-                                                <button className="btn btn-stop-generation" onClick={() => {
-                                                    if (!id || !activeSession?.id) return;
-                                                    const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-                                                    const activeSocket = wsMapRef.current[activeRuntimeKey];
-                                                    if (activeSocket?.readyState === WebSocket.OPEN) {
-                                                        activeSocket.send(JSON.stringify({ type: 'abort' }));
-                                                        setIsStreaming(false);
-                                                        setIsWaiting(false);
-                                                        setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
-                                                    }
-                                                }} style={{ padding: '6px 16px' }} title={t('chat.stop', 'Stop')}>
-                                                    <span className="stop-icon" />
+                                            <div className="chat-composer-input-block">
+                                                <textarea
+                                                    ref={chatInputRef}
+                                                    className="chat-input"
+                                                    value={chatInput}
+                                                    onChange={e => {
+                                                        setChatInput(e.target.value);
+                                                        // Auto-grow: reset height then expand to scrollHeight
+                                                        const el = e.target;
+                                                        el.style.height = 'auto';
+                                                        el.style.height = el.scrollHeight + 'px';
+                                                    }}
+                                                    onKeyDown={e => {
+                                                        // Enter sends the message; Shift+Enter inserts a newline
+                                                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                                                            e.preventDefault();
+                                                            sendChatMsg();
+                                                        }
+                                                    }}
+                                                    onPaste={handlePaste}
+                                                    placeholder={!wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? 'Connecting...' : t('chat.placeholder')}
+                                                    disabled={!wsConnected}
+                                                    rows={1}
+                                                />
+                                            </div>
+                                            <div className="chat-composer-toolbar">
+                                                <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
+                                                <button
+                                                    type="button"
+                                                    className="chat-composer-btn"
+                                                    onClick={() => fileInputRef.current?.click()}
+                                                    disabled={!wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10}
+                                                    title={t('agent.workspace.uploadFile')}
+                                                >
+                                                    <IconPaperclip size={16} stroke={1.75} />
                                                 </button>
-                                            ) : (
-                                                <button className="btn btn-primary" onClick={sendChatMsg} disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)} style={{ padding: '6px 16px' }}>{t('chat.send')}</button>
-                                            )}
+                                                {(isStreaming || isWaiting) ? (
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-stop-generation"
+                                                        onClick={() => {
+                                                            if (!id || !activeSession?.id) return;
+                                                            const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
+                                                            const activeSocket = wsMapRef.current[activeRuntimeKey];
+                                                            if (activeSocket?.readyState === WebSocket.OPEN) {
+                                                                activeSocket.send(JSON.stringify({ type: 'abort' }));
+                                                                setIsStreaming(false);
+                                                                setIsWaiting(false);
+                                                                setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                                                            }
+                                                        }}
+                                                        title={t('chat.stop', 'Stop')}
+                                                    >
+                                                        <span className="stop-icon" />
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-primary chat-composer-send"
+                                                        onClick={sendChatMsg}
+                                                        disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
+                                                        title={t('chat.send')}
+                                                    >
+                                                        <IconSend size={16} stroke={1.75} />
+                                                    </button>
+                                                )}
+                                            </div>
                                         </div>
-                                    </>
+                                        </div>
+                                    </div>
+                                )}
+                                </div>
+                                {/* Live Panel */}
+                                {!!(liveState.desktop || liveState.browser || liveState.code) && (
+                                    <AgentBayLivePanel
+                                        liveState={liveState}
+                                        visible={livePanelVisible}
+                                        onToggle={() => setLivePanelVisible(v => !v)}
+                                        agentId={id}
+                                        sessionId={wsSessionId}
+                                        onLiveUpdate={(env, screenshotDataUri) => {
+                                            // Refresh the live preview with the final screenshot
+                                            // captured by TakeControlPanel on close, so the panel
+                                            // reflects the state the user left the browser in.
+                                            setLiveState(prev => ({
+                                                ...prev,
+                                                [env]: { screenshotUrl: screenshotDataUri },
+                                            }));
+                                        }}
+                                    />
                                 )}
                             </div>
                         </div>
@@ -3678,15 +4799,15 @@ function AgentDetailInner() {
                                 <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
                                     {filterBtn('user', '👤 ' + t('agent.activityLog.userActions', 'User Actions'))}
                                     {(agent as any)?.agent_type !== 'openclaw' && (<>
-                                    {filterBtn('backend', '⚙️ ' + t('agent.activityLog.backendServices', 'Backend Services'))}
-                                    {(logFilter === 'backend' || logFilter === 'heartbeat' || logFilter === 'schedule' || logFilter === 'messages') && (
-                                        <>
-                                            <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>│</span>
-                                            {filterBtn('heartbeat', '💓 ' + t('agent.mind.heartbeatTitle'))}
-                                            {filterBtn('schedule', '⏰ ' + t('agent.activityLog.scheduleCron'), true)}
-                                            {filterBtn('messages', '📨 ' + t('agent.activityLog.messages'), true)}
-                                        </>
-                                    )}
+                                        {filterBtn('backend', '⚙️ ' + t('agent.activityLog.backendServices', 'Backend Services'))}
+                                        {(logFilter === 'backend' || logFilter === 'heartbeat' || logFilter === 'schedule' || logFilter === 'messages') && (
+                                            <>
+                                                <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>│</span>
+                                                {filterBtn('heartbeat', '💓 ' + t('agent.mind.heartbeatTitle'))}
+                                                {filterBtn('schedule', '⏰ ' + t('agent.activityLog.scheduleCron'), true)}
+                                                {filterBtn('messages', '📨 ' + t('agent.activityLog.messages'), true)}
+                                            </>
+                                        )}
                                     </>)}
                                 </div>
 
@@ -3930,8 +5051,7 @@ function AgentDetailInner() {
 
                         return (
                             <div>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)', paddingTop: '4px', paddingBottom: '12px', borderBottom: '1px solid var(--border-subtle)' }}>
-                                    <h3 style={{ margin: 0 }}>{t('agent.settings.title')}</h3>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: '8px', position: 'sticky', top: '41px', zIndex: 6, background: 'var(--bg-primary)', paddingTop: '4px', paddingBottom: '8px' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                         {settingsSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>{t('agent.settings.saved', 'Saved')}</span>}
                                         {settingsError && <span style={{ fontSize: '12px', color: settingsError.includes('adjusted') ? 'var(--warning)' : 'var(--error)', whiteSpace: 'pre-line' }}>{settingsError}</span>}
@@ -3953,93 +5073,93 @@ function AgentDetailInner() {
 
                                 {/* Model Selection — native agents only */}
                                 {(agent as any)?.agent_type !== 'openclaw' && (
-                                <div className="card" style={{ marginBottom: '12px' }}>
-                                    <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.modelConfig')}</h4>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                        <div>
-                                            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.primaryModel')}</label>
-                                            <select
-                                                className="input"
-                                                value={settingsForm.primary_model_id}
-                                                onChange={(e) => setSettingsForm(f => ({ ...f, primary_model_id: e.target.value }))}
-                                            >
-                                                <option value="">--</option>
-                                                {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.primary_model_id).map((m: any) => (
-                                                    <option key={m.id} value={m.id}>
-                                                        {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            {/* Warning if selected model is disabled */}
-                                            {settingsForm.primary_model_id && llmModels.some((m: any) => m.id === settingsForm.primary_model_id && !m.enabled) && (
-                                                <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
-                                                    {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
-                                                </div>
-                                            )}
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.primaryModel')}</div>
-                                        </div>
-                                        <div>
-                                            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.fallbackModel')}</label>
-                                            <select
-                                                className="input"
-                                                value={settingsForm.fallback_model_id}
-                                                onChange={(e) => setSettingsForm(f => ({ ...f, fallback_model_id: e.target.value }))}
-                                            >
-                                                <option value="">--</option>
-                                                {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.fallback_model_id).map((m: any) => (
-                                                    <option key={m.id} value={m.id}>
-                                                        {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            {/* Warning if selected fallback model is disabled */}
-                                            {settingsForm.fallback_model_id && llmModels.some((m: any) => m.id === settingsForm.fallback_model_id && !m.enabled) && (
-                                                <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
-                                                    {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
-                                                </div>
-                                            )}
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.fallbackModel')}</div>
+                                    <div className="card" style={{ marginBottom: '12px' }}>
+                                        <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.modelConfig')}</h4>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                            <div>
+                                                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.primaryModel')}</label>
+                                                <select
+                                                    className="input"
+                                                    value={settingsForm.primary_model_id}
+                                                    onChange={(e) => setSettingsForm(f => ({ ...f, primary_model_id: e.target.value }))}
+                                                >
+                                                    <option value="">--</option>
+                                                    {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.primary_model_id).map((m: any) => (
+                                                        <option key={m.id} value={m.id}>
+                                                            {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                {/* Warning if selected model is disabled */}
+                                                {settingsForm.primary_model_id && llmModels.some((m: any) => m.id === settingsForm.primary_model_id && !m.enabled) && (
+                                                    <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                                                        {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
+                                                    </div>
+                                                )}
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.primaryModel')}</div>
+                                            </div>
+                                            <div>
+                                                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.fallbackModel')}</label>
+                                                <select
+                                                    className="input"
+                                                    value={settingsForm.fallback_model_id}
+                                                    onChange={(e) => setSettingsForm(f => ({ ...f, fallback_model_id: e.target.value }))}
+                                                >
+                                                    <option value="">--</option>
+                                                    {llmModels.filter((m: any) => m.enabled || m.id === settingsForm.fallback_model_id).map((m: any) => (
+                                                        <option key={m.id} value={m.id}>
+                                                            {m.label} ({m.provider}/{m.model}){!m.enabled ? ` [${t('enterprise.llm.disabled', 'Disabled')}]` : ''}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                {/* Warning if selected fallback model is disabled */}
+                                                {settingsForm.fallback_model_id && llmModels.some((m: any) => m.id === settingsForm.fallback_model_id && !m.enabled) && (
+                                                    <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                                                        {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
+                                                    </div>
+                                                )}
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.fallbackModel')}</div>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
                                 )}
 
                                 {/* Context Window — native agents only */}
                                 {(agent as any)?.agent_type !== 'openclaw' && (<>
-                                <div className="card" style={{ marginBottom: '12px' }}>
-                                    <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.conversationContext')}</h4>
-                                    <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxRounds')}</label>
-                                        <input
-                                            className="input"
-                                            type="number"
-                                            min={10}
-                                            max={500}
-                                            value={settingsForm.context_window_size}
-                                            onChange={(e) => setSettingsForm(f => ({ ...f, context_window_size: Math.max(10, Math.min(500, parseInt(e.target.value) || 100)) }))}
-                                            style={{ width: '120px' }}
-                                        />
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.roundsDesc')}</div>
+                                    <div className="card" style={{ marginBottom: '12px' }}>
+                                        <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.conversationContext')}</h4>
+                                        <div>
+                                            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxRounds')}</label>
+                                            <input
+                                                className="input"
+                                                type="number"
+                                                min={10}
+                                                max={500}
+                                                value={settingsForm.context_window_size}
+                                                onChange={(e) => setSettingsForm(f => ({ ...f, context_window_size: Math.max(10, Math.min(500, parseInt(e.target.value) || 100)) }))}
+                                                style={{ width: '120px' }}
+                                            />
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.roundsDesc')}</div>
+                                        </div>
                                     </div>
-                                </div>
 
-                                {/* Max Tool Call Rounds */}
-                                <div className="card" style={{ marginBottom: '12px' }}>
-                                    <h4 style={{ marginBottom: '12px' }}>🔧 {t('agent.settings.maxToolRounds', 'Max Tool Call Rounds')}</h4>
-                                    <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxToolRoundsLabel', 'Maximum rounds per message')}</label>
-                                        <input
-                                            className="input"
-                                            type="number"
-                                            min={5}
-                                            max={200}
-                                            value={settingsForm.max_tool_rounds}
-                                            onChange={(e) => setSettingsForm(f => ({ ...f, max_tool_rounds: Math.max(5, Math.min(200, parseInt(e.target.value) || 50)) }))}
-                                            style={{ width: '120px' }}
-                                        />
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.maxToolRoundsDesc', 'How many tool-calling rounds the agent can perform per message (search, write, etc). Default: 50')}</div>
+                                    {/* Max Tool Call Rounds */}
+                                    <div className="card" style={{ marginBottom: '12px' }}>
+                                        <h4 style={{ marginBottom: '12px' }}>🔧 {t('agent.settings.maxToolRounds', 'Max Tool Call Rounds')}</h4>
+                                        <div>
+                                            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxToolRoundsLabel', 'Maximum rounds per message')}</label>
+                                            <input
+                                                className="input"
+                                                type="number"
+                                                min={5}
+                                                max={200}
+                                                value={settingsForm.max_tool_rounds}
+                                                onChange={(e) => setSettingsForm(f => ({ ...f, max_tool_rounds: Math.max(5, Math.min(200, parseInt(e.target.value) || 50)) }))}
+                                                style={{ width: '120px' }}
+                                            />
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.maxToolRoundsDesc', 'How many tool-calling rounds the agent can perform per message (search, write, etc). Default: 50')}</div>
+                                        </div>
                                     </div>
-                                </div>
                                 </>)}
 
                                 {/* Token Limits */}
@@ -4142,6 +5262,11 @@ function AgentDetailInner() {
                                         </div>
                                     );
                                 })()}
+
+                                {/* Credentials Management — for AgentBay cookie injection */}
+                                <div style={{ marginBottom: '12px' }}>
+                                    <AgentCredentials agentId={id!} />
+                                </div>
 
                                 {/* Welcome Message */}
                                 {(() => {

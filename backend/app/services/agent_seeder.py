@@ -1,5 +1,6 @@
 """Seed default agents (Morty & Meeseeks) on first platform startup."""
 
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,15 +93,19 @@ MEESEEKS_SKILLS = [
 
 
 async def seed_default_agents():
-    """Create Morty & Meeseeks if they don't already exist."""
+    """Create Morty & Meeseeks if they don't already exist.
+
+    Idempotency is guarded by a '.seeded' marker file in AGENT_DATA_DIR rather
+    than by agent name, so the seeder does NOT re-run if the user renames or
+    deletes the default agents.  Delete the marker manually to re-seed.
+    """
+    # --- Idempotency guard: file-based marker (survives agent renames/deletes) ---
+    seed_marker = Path(settings.AGENT_DATA_DIR) / ".seeded"
+    if seed_marker.exists():
+        logger.info("[AgentSeeder] Seed marker found, skipping default agent creation")
+        return
+
     async with async_session() as db:
-        # Check if already seeded (presence of either agent by name)
-        existing = await db.execute(
-            select(Agent).where(Agent.name.in_(["Morty", "Meeseeks"]))
-        )
-        if existing.scalars().first():
-            logger.info("[AgentSeeder] Default agents already exist, skipping")
-            return
 
         # Get platform admin as creator
         admin_result = await db.execute(
@@ -146,35 +151,46 @@ async def seed_default_agents():
         db.add(AgentPermission(agent_id=meeseeks.id, scope_type="company", access_level="manage"))
 
         # ── Initialize workspace files ──
+        template_dir = Path(settings.AGENT_TEMPLATE_DIR)
+
         for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
             agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent.id)
-            agent_dir.mkdir(parents=True, exist_ok=True)
-            (agent_dir / "skills").mkdir(exist_ok=True)
-            (agent_dir / "workspace").mkdir(exist_ok=True)
-            (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
-            (agent_dir / "memory").mkdir(exist_ok=True)
 
-            # Soul
+            if template_dir.exists():
+                # Copy the full agent template so Morty/Meeseeks get EVERY file
+                # defined in the template: MEMORY_INDEX.md, curiosity_journal.md,
+                # state.json, todo.json, daily_reports/, enterprise_info/, etc.
+                shutil.copytree(str(template_dir), str(agent_dir))
+            else:
+                # Fallback for local dev (no Docker template mount)
+                agent_dir.mkdir(parents=True, exist_ok=True)
+                (agent_dir / "skills").mkdir(exist_ok=True)
+                (agent_dir / "workspace").mkdir(exist_ok=True)
+                (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
+                (agent_dir / "memory").mkdir(exist_ok=True)
+
+            # Overlay custom soul (rich Morty/Meeseeks persona over the generic template)
             (agent_dir / "soul.md").write_text(soul_content.strip() + "\n", encoding="utf-8")
 
-            # Memory
-            (agent_dir / "memory" / "memory.md").write_text(
-                "# Memory\n\n_Record important information and knowledge here._\n",
-                encoding="utf-8",
-            )
+            # Ensure memory.md exists (template does not include it; holds runtime context)
+            mem_path = agent_dir / "memory" / "memory.md"
+            if not mem_path.exists():
+                mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
 
-            # Reflections journal — copy from central template
-            refl_template = Path(__file__).parent.parent / "templates" / "reflections.md"
-            refl_content = refl_template.read_text(encoding="utf-8") if refl_template.exists() else "# Reflections Journal\n"
-            (agent_dir / "memory" / "reflections.md").write_text(refl_content, encoding="utf-8")
+            # Ensure reflections.md exists (not in agent_template; lives in app/templates)
+            refl_path = agent_dir / "memory" / "reflections.md"
+            if not refl_path.exists():
+                refl_src = Path(__file__).parent.parent / "templates" / "reflections.md"
+                refl_path.write_text(refl_src.read_text(encoding="utf-8") if refl_src.exists() else "# Reflections Journal\n", encoding="utf-8")
 
-            # Heartbeat — copy from central template
-            hb_template = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
-            hb_content = hb_template.read_text(encoding="utf-8") if hb_template.exists() else "# Heartbeat Instructions\n"
-            (agent_dir / "HEARTBEAT.md").write_text(hb_content, encoding="utf-8")
-
-            # Tasks (empty)
-            (agent_dir / "tasks.json").write_text("[]", encoding="utf-8")
+            # Stamp agent identity into state.json if present
+            state_path = agent_dir / "state.json"
+            if state_path.exists():
+                import json as _json
+                state = _json.loads(state_path.read_text())
+                state["agent_id"] = str(agent.id)
+                state["name"] = agent.name
+                state_path.write_text(_json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # ── Assign skills ──
         all_skills_result = await db.execute(
@@ -246,3 +262,11 @@ async def seed_default_agents():
 
         await db.commit()
         logger.info(f"[AgentSeeder] Created default agents: Morty ({morty.id}), Meeseeks ({meeseeks.id})")
+
+    # Write seed marker AFTER a successful commit so a failed seed can be retried
+    seed_marker.parent.mkdir(parents=True, exist_ok=True)
+    seed_marker.write_text(
+        f"seeded\nmorty={morty.id}\nmeeseeks={meeseeks.id}\n",
+        encoding="utf-8",
+    )
+    logger.info(f"[AgentSeeder] Wrote seed marker to {seed_marker}")
