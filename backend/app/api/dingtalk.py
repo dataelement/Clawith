@@ -265,13 +265,19 @@ async def process_dingtalk_message(
         except Exception as e:
             logger.warning(f"[DingTalk] Failed to fetch user detail for {sender_staff_id}: {e}")
 
-        # Resolve channel user via unified service (uses OrgMember + SSO patterns)
+        # 真实 unionid 可能与 sender_staff_id 不同; 一并作为候选参与 OrgMember 匹配
+        real_unionid = extra_info.get("unionid")
+        candidate_extra_ids: list[str] = []
+        if real_unionid and real_unionid != sender_staff_id:
+            candidate_extra_ids.append(real_unionid)
+
         platform_user = await channel_user_service.resolve_channel_user(
             db=db,
             agent=agent_obj,
             channel_type="dingtalk",
             external_user_id=sender_staff_id,
             extra_info=extra_info,
+            extra_ids=candidate_extra_ids,
         )
         platform_user_id = platform_user.id
 
