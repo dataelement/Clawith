@@ -336,7 +336,7 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
         // Find @ before cursor
         const textBeforeCursor = val.substring(0, cursorPos);
         const atIdx = textBeforeCursor.lastIndexOf('@');
-        
+
         // Trigger @ if it's at the beginning, or after a space, newline, or non-word character (e.g. CJK chars)
         const prevChar = atIdx > 0 ? textBeforeCursor[atIdx - 1] : '';
         if (atIdx >= 0 && (atIdx === 0 || !/[a-zA-Z0-9_]/.test(prevChar))) {

@@ -1,11 +1,10 @@
-"""User management API — admin-only user listing and quota management."""
-
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.security import get_current_user
 from app.database import get_db
@@ -24,9 +23,12 @@ class UserQuotaUpdate(BaseModel):
 
 class UserOut(BaseModel):
     id: uuid.UUID
-    username: str
-    email: str
-    display_name: str
+    # username/email/display_name can be None for SSO-created users whose Identity
+    # was created without explicit values (e.g., DingTalk/Feishu OAuth flow).
+    # The frontend should handle None gracefully.
+    username: str | None = None
+    email: str | None = None
+    display_name: str | None = None
     role: str
     is_active: bool
     # Quota fields
@@ -38,9 +40,8 @@ class UserOut(BaseModel):
     # Computed
     agents_count: int = 0
     # Source info
-    feishu_open_id: str | None = None
     created_at: str | None = None
-    source: str = 'registered'  # 'registered' | 'feishu'
+    source: str = 'registered'  # 'registered' | 'feishu' | 'dingtalk' | 'wecom' | etc.
 
     model_config = {"from_attributes": True}
 
@@ -60,7 +61,7 @@ async def list_users(
 
     # Filter users by tenant — platform_admins only shown in their own tenant
     result = await db.execute(
-        select(User).where(
+        select(User).options(selectinload(User.identity)).where(
             User.tenant_id == tid
         ).order_by(User.created_at.asc())
     )
@@ -79,9 +80,11 @@ async def list_users(
 
         user_dict = {
             "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "display_name": u.display_name,
+            # Fallback to empty string if username/email/display_name is None to prevent
+            # serialization errors for SSO-created users with incomplete Identity records.
+            "username": u.username or u.email or f"{u.registration_source or 'user'}_{str(u.id)[:8]}",
+            "email": u.email or "",
+            "display_name": u.display_name or u.username or "",
             "role": u.role,
             "is_active": u.is_active,
             "quota_message_limit": u.quota_message_limit,
@@ -90,9 +93,8 @@ async def list_users(
             "quota_max_agents": u.quota_max_agents,
             "quota_agent_ttl_hours": u.quota_agent_ttl_hours,
             "agents_count": agents_count,
-            "feishu_open_id": getattr(u, 'feishu_open_id', None),
             "created_at": u.created_at.isoformat() if u.created_at else None,
-            "source": 'feishu' if getattr(u, 'feishu_open_id', None) else 'registered',
+            "source": (u.registration_source or 'registered'),
         }
         out.append(UserOut(**user_dict))
     return out
@@ -109,7 +111,9 @@ async def update_user_quota(
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).options(selectinload(User.identity)).where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -150,3 +154,73 @@ async def update_user_quota(
         quota_agent_ttl_hours=user.quota_agent_ttl_hours,
         agents_count=agents_count,
     )
+
+
+# ─── Role Management ───────────────────────────────────
+
+class RoleUpdate(BaseModel):
+    role: str
+
+
+@router.patch("/{user_id}/role")
+async def update_user_role(
+    user_id: uuid.UUID,
+    data: RoleUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change a user's role within the same company.
+
+    Permissions:
+    - org_admin: can set roles to org_admin / member within own tenant.
+      Cannot assign platform_admin.
+    - platform_admin: can set any valid role.
+
+    Safety:
+    - If the target is the ONLY remaining org_admin in the company,
+      demoting them is blocked to prevent orphaned companies.
+    """
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Validate target role value
+    allowed_roles = ("org_admin", "member")
+    if current_user.role == "platform_admin":
+        allowed_roles = ("platform_admin", "org_admin", "member")
+    if data.role not in allowed_roles:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Allowed: {', '.join(allowed_roles)}")
+
+    # Find target user
+    result = await db.execute(
+        select(User).options(selectinload(User.identity)).where(User.id == user_id)
+    )
+    target_user = result.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # org_admin can only modify users in the same tenant
+    if current_user.role == "org_admin" and target_user.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot modify users outside your organization")
+
+    # No-op shortcut
+    if target_user.role == data.role:
+        return {"status": "ok", "user_id": str(user_id), "role": data.role}
+
+    # Last-admin protection: if demoting an org_admin, check they are not the only one
+    if target_user.role in ("org_admin", "platform_admin") and data.role not in ("org_admin", "platform_admin"):
+        admin_count_result = await db.execute(
+            select(func.count()).select_from(User).where(
+                User.tenant_id == target_user.tenant_id,
+                User.role.in_(["org_admin", "platform_admin"]),
+            )
+        )
+        admin_count = admin_count_result.scalar() or 0
+        if admin_count <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot demote the only administrator. Promote another user first."
+            )
+
+    target_user.role = data.role
+    await db.commit()
+    return {"status": "ok", "user_id": str(user_id), "role": data.role}

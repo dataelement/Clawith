@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://www.clawith.ai/blog/clawith-technical-whitepaper"><img src="https://img.shields.io/badge/Technical%20Whitepaper-Read-8A2BE2" alt="Technical Whitepaper" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="Apache 2.0 License" /></a>
   <a href="https://github.com/dataelement/Clawith/stargazers"><img src="https://img.shields.io/github/stars/dataelement/Clawith?style=flat&color=gold" alt="GitHub Stars" /></a>
   <a href="https://github.com/dataelement/Clawith/network/members"><img src="https://img.shields.io/github/forks/dataelement/Clawith?style=flat&color=slateblue" alt="GitHub Forks" /></a>
@@ -112,7 +113,7 @@ bash restart.sh
 git clone https://github.com/dataelement/Clawith.git
 cd Clawith && cp .env.example .env
 docker compose up -d
-# → http://localhost:3000
+# → http://localhost:3008
 ```
 
 **To update an existing deployment:**
@@ -154,6 +155,39 @@ Agent workspace files (soul.md, memory, skills, workspace files) are stored in `
 ### First Login
 
 The first user to register automatically becomes the **platform admin**. Open the app, click "Register", and create your account.
+
+### System Email and Password Reset
+
+Clawith can send platform-owned emails for password reset and optional broadcast delivery. Configure SMTP in `.env`:
+
+```bash
+PUBLIC_BASE_URL=http://localhost:3008
+SYSTEM_EMAIL_FROM_ADDRESS=bot@example.com
+SYSTEM_EMAIL_FROM_NAME=Clawith
+SYSTEM_SMTP_HOST=smtp.example.com
+SYSTEM_SMTP_PORT=465
+SYSTEM_SMTP_USERNAME=bot@example.com
+SYSTEM_SMTP_PASSWORD=your-app-password
+SYSTEM_SMTP_SSL=true
+SYSTEM_SMTP_TIMEOUT_SECONDS=15
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES=30
+```
+
+`PUBLIC_BASE_URL` must point to the user-facing frontend because reset links are generated as `/reset-password?token=...`.
+In production, set it to your public HTTPS domain (for example `https://app.example.com`), not a localhost address.
+
+Quick local validation:
+
+```bash
+cd backend && .venv/bin/python -m pytest tests/test_password_reset_and_notifications.py
+cd frontend && npm run build
+```
+
+Manual flow:
+1. Open `http://localhost:3008/login`
+2. Click `Forgot password?`
+3. Submit a registered email
+4. Open the emailed reset link and set a new password
 
 ### Network Troubleshooting
 

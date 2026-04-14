@@ -1,8 +1,10 @@
 /**
- * User Management — admin page to view and manage user quotas.
+ * User Management — admin page to view and manage user quotas and roles.
  */
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAuthStore } from '../stores';
+import LinearCopyButton from '../components/LinearCopyButton';
 
 interface UserInfo {
     id: string;
@@ -46,6 +48,7 @@ const PAGE_SIZE = 15;
 export default function UserManagement() {
     const { t, i18n } = useTranslation();
     const isChinese = i18n.language?.startsWith('zh');
+    const { user: currentUser, setUser } = useAuthStore();
 
     const [users, setUsers] = useState<UserInfo[]>([]);
     const [loading, setLoading] = useState(true);
@@ -58,6 +61,14 @@ export default function UserManagement() {
     });
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState('');
+    const [changingRoleUserId, setChangingRoleUserId] = useState<string | null>(null);
+
+    // Invite modal state
+    const [showInviteModal, setShowInviteModal] = useState(false);
+    const [inviteEmails, setInviteEmails] = useState('');
+    const [inviting, setInviting] = useState(false);
+    const [inviteResult, setInviteResult] = useState<{ invited: number; message: string } | null>(null);
+
 
     // Search, sort & pagination
     const [searchQuery, setSearchQuery] = useState('');
@@ -107,12 +118,73 @@ export default function UserManagement() {
         setSaving(false);
     };
 
+    // ── Role change handler ──
+    const handleRoleChange = async (userId: string, newRole: string) => {
+        setChangingRoleUserId(userId);
+        try {
+            await fetchJson(`/users/${userId}/role`, {
+                method: 'PATCH',
+                body: JSON.stringify({ role: newRole }),
+            });
+            setToast(isChinese ? 'Role updated' : 'Role updated');
+            setTimeout(() => setToast(''), 2000);
+            // If changed own role, update auth store
+            if (userId === currentUser?.id) {
+                setUser({ ...currentUser, role: newRole as any });
+            }
+            loadUsers();
+        } catch (e: any) {
+            const detail = (() => { try { return JSON.parse(e.message)?.detail; } catch { return e.message; } })();
+            setToast(`Error: ${detail || e.message}`);
+            setTimeout(() => setToast(''), 4000);
+        }
+        setChangingRoleUserId(null);
+    };
+
+    // ── Handlers ──
+
+    const handleSendInvites = async () => {
+        const emails = inviteEmails.split(/[\n,]+/).map(e => e.trim()).filter(Boolean);
+        if (emails.length === 0) return;
+        setInviting(true);
+        setInviteResult(null);
+        try {
+            const res = await fetchJson<any>('/enterprise/invite-users', {
+                method: 'POST',
+                body: JSON.stringify({ emails }),
+            });
+            setInviteResult({ invited: res.invited, message: res.message });
+            setInviteEmails('');
+            // Refresh user list after invite
+            loadUsers();
+        } catch (e: any) {
+            setToast(`Error: ${e.message}`);
+            setTimeout(() => setToast(''), 3000);
+        }
+        setInviting(false);
+    };
+
     const periodLabel = (period: string) => {
         if (isChinese) {
             const map: Record<string, string> = { permanent: '永久', daily: '每天', weekly: '每周', monthly: '每月' };
             return map[period] || period;
         }
         return PERIOD_OPTIONS.find(p => p.value === period)?.label || period;
+    };
+
+    // Role label & styling helpers
+    const roleBadge = (role: string) => {
+        const styles: Record<string, { bg: string; color: string; label: string; labelZh: string }> = {
+            platform_admin: { bg: 'rgba(239,68,68,0.12)', color: '#ef4444', label: 'Platform Admin', labelZh: 'Platform Admin' },
+            org_admin:      { bg: 'rgba(168,85,247,0.12)', color: '#a855f7', label: 'Admin', labelZh: 'Admin' },
+        };
+        const s = styles[role];
+        if (!s) return null;
+        return (
+            <span style={{ marginLeft: '6px', fontSize: '10px', background: s.bg, color: s.color, borderRadius: '4px', padding: '1px 6px', fontWeight: 500 }}>
+                {isChinese ? s.labelZh : s.label}
+            </span>
+        );
     };
 
     const formatDate = (iso?: string) => {
@@ -165,31 +237,40 @@ export default function UserManagement() {
                 </div>
             ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {/* Search bar */}
-                    <div style={{ position: 'relative', marginBottom: '4px' }}>
-                        <input
-                            className="form-input"
-                            type="text"
-                            placeholder={isChinese ? '搜索用户名、显示名或邮箱…' : 'Search username, name or email…'}
-                            value={searchQuery}
-                            onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
-                            style={{
-                                width: '100%', maxWidth: '360px', fontSize: '13px',
-                                padding: '8px 12px 8px 12px',
-                                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-                                borderRadius: '8px',
-                            }}
-                        />
-                        {searchQuery && (
-                            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: '12px' }}>
-                                {isChinese ? `${filtered.length} / ${users.length} 位用户` : `${filtered.length} / ${users.length} users`}
-                            </span>
-                        )}
+                    {/* Search bar + Invite button */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <input
+                                className="form-input"
+                                type="text"
+                                placeholder={isChinese ? '搜索用户名、显示名或邮箱…' : 'Search username, name or email…'}
+                                value={searchQuery}
+                                onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
+                                style={{
+                                    width: '360px', fontSize: '13px',
+                                    padding: '8px 12px 8px 12px',
+                                    background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                                    borderRadius: '8px',
+                                }}
+                            />
+                            {searchQuery && (
+                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                    {isChinese ? `${filtered.length} / ${users.length} 位用户` : `${filtered.length} / ${users.length} users`}
+                                </span>
+                            )}
+                        </div>
+                        <button
+                            className="btn btn-primary"
+                            style={{ fontSize: '13px', padding: '6px 16px' }}
+                            onClick={() => { setShowInviteModal(true); setInviteEmails(''); setInviteResult(null); }}
+                        >
+                            {isChinese ? '邀请新用户' : 'Invite Users'}
+                        </button>
                     </div>
 
                     {/* Header */}
                     <div style={{
-                        display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.9fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
+                        display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
                         gap: '10px', padding: '10px 16px', fontSize: '11px', fontWeight: 600,
                         color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em',
                     }}>
@@ -203,6 +284,7 @@ export default function UserManagement() {
                         >
                             {isChinese ? '注册时间' : 'Joined'} {sortOrder === 'asc' ? '↑' : '↓'}
                         </div>
+                        <div>{isChinese ? '角色' : 'Role'}</div>
                         <div>{isChinese ? '来源' : 'Source'}</div>
                         <div>{t('enterprise.users.msgQuota', isChinese ? '消息配额' : 'Msg Quota')}</div>
                         <div>{t('enterprise.users.period', isChinese ? '周期' : 'Period')}</div>
@@ -214,20 +296,44 @@ export default function UserManagement() {
                     {paged.map(user => (
                         <div key={user.id}>
                             <div className="card" style={{
-                                display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.9fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
+                                display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
                                 gap: '10px', alignItems: 'center', padding: '12px 16px',
                             }}>
                                 <div>
                                     <div style={{ fontWeight: 500, fontSize: '14px' }}>
                                         {user.display_name || user.username}
-                                        {user.role === 'platform_admin' && (
-                                            <span style={{ marginLeft: '6px', fontSize: '10px', background: 'var(--accent-color)', color: '#fff', borderRadius: '4px', padding: '1px 6px' }}>Admin</span>
-                                        )}
+                                        {roleBadge(user.role)}
                                     </div>
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>@{user.username}</div>
                                 </div>
                                 <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{user.email}</div>
                                 <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{formatDate(user.created_at)}</div>
+                                {/* Role selector — only for admin users, not for platform_admin targets */}
+                                <div>
+                                    {currentUser?.role && ['platform_admin', 'org_admin'].includes(currentUser.role) && user.role !== 'platform_admin' ? (
+                                        <select
+                                            className="form-input"
+                                            value={user.role}
+                                            disabled={changingRoleUserId === user.id}
+                                            onChange={e => {
+                                                const newRole = e.target.value;
+                                                const confirmMsg = isChinese
+                                                    ? `确认将 ${user.display_name || user.username} 的角色更改为 ${newRole === 'org_admin' ? 'Admin' : 'Member'}？`
+                                                    : `Change ${user.display_name || user.username}'s role to ${newRole === 'org_admin' ? 'Admin' : 'Member'}?`;
+                                                if (confirm(confirmMsg)) handleRoleChange(user.id, newRole);
+                                            }}
+                                            style={{ fontSize: '11px', padding: '2px 4px', width: '100%', minWidth: 0 }}
+                                        >
+                                            <option value="member">{isChinese ? 'Member' : 'Member'}</option>
+                                            <option value="org_admin">{isChinese ? 'Admin' : 'Admin'}</option>
+                                        </select>
+                                    ) : (
+                                        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                                            {user.role === 'platform_admin' ? 'Platform Admin'
+                                                : user.role === 'org_admin' ? 'Admin' : 'Member'}
+                                        </span>
+                                    )}
+                                </div>
                                 <div>
                                     {user.source === 'feishu' ? (
                                         <span style={{ fontSize: '10px', background: 'rgba(58,132,255,0.12)', color: '#3a84ff', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
@@ -368,6 +474,46 @@ export default function UserManagement() {
                             </button>
                         </div>
                     )}
+                </div>
+            )}
+
+            {/* Invite Users Modal */}
+            {showInviteModal && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)' }} onClick={() => setShowInviteModal(false)}>
+                    <div style={{ background: 'var(--bg-primary)', borderRadius: '12px', border: '1px solid var(--border-subtle)', width: '500px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }} onClick={e => e.stopPropagation()}>
+                        {/* Header */}
+                        <div style={{ padding: '20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>{isChinese ? '邀请新用户' : 'Invite Users'}</h3>
+                            <button onClick={() => setShowInviteModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', fontSize: '18px', cursor: 'pointer', padding: '4px 8px' }}>x</button>
+                        </div>
+                        {/* Body */}
+                        <div style={{ padding: '20px' }}>
+                            <label className="form-label" style={{ fontSize: '13px', marginBottom: '6px' }}>{isChinese ? '邮箱地址' : 'Email Addresses'}</label>
+                            <textarea
+                                className="form-input"
+                                rows={5}
+                                placeholder={isChinese ? '输入邮箱地址，用逗号或换行分隔...' : 'Enter email addresses, separated by commas or newlines...'}
+                                value={inviteEmails}
+                                onChange={e => setInviteEmails(e.target.value)}
+                                style={{ resize: 'vertical', fontSize: '13px', marginBottom: '16px', width: '100%' }}
+                            />
+                            {/* public link generated here previously */}
+                            {inviteResult && (
+                                <div style={{ marginTop: '12px', padding: '10px 14px', background: 'rgba(0,200,100,0.1)', color: 'var(--success)', borderRadius: '6px', fontSize: '13px' }}>
+                                    {inviteResult.message} ({inviteResult.invited} {isChinese ? '位用户' : 'users'})
+                                </div>
+                            )}
+                        </div>
+                        {/* Footer */}
+                        <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'flex-end', gap: '12px', background: 'var(--bg-secondary)', borderRadius: '0 0 12px 12px' }}>
+                            <button className="btn btn-secondary" onClick={() => setShowInviteModal(false)}>
+                                {isChinese ? '取消' : 'Cancel'}
+                            </button>
+                            <button className="btn btn-primary" onClick={handleSendInvites} disabled={inviting || !inviteEmails.trim()}>
+                                {inviting ? (isChinese ? '发送中...' : 'Sending...') : (isChinese ? '发送邀请' : 'Send Invitations')}
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

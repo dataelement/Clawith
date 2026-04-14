@@ -9,48 +9,195 @@ from pydantic import BaseModel, EmailStr, Field
 # ─── Auth ───────────────────────────────────────────────
 
 class UserRegister(BaseModel):
-    username: str = Field(min_length=3, max_length=100)
+    """Legacy combined registration - kept for backward compatibility."""
+    username: str = Field(min_length=1, max_length=100)
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
     display_name: str | None = None
     invitation_code: str | None = None
+    # SSO registration fields
+    provider: str | None = Field(None, description="Provider type for SSO registration (feishu, dingtalk, etc.)")
+    provider_code: str | None = Field(None, description="OAuth code for SSO registration")
 
 
-class UserLogin(BaseModel):
-    username: str
-    password: str
+class RegisterInitRequest(BaseModel):
+    """Step 1: Initialize registration with account credentials."""
+    username: str = Field(min_length=1, max_length=100)
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+    display_name: str | None = None
+    target_tenant_id: uuid.UUID | None = None
 
 
-class TokenResponse(BaseModel):
+class RegisterInitResponse(BaseModel):
+    """Response after step 1 - user created, needs email verification."""
+    user_id: uuid.UUID
+    email: str
+    access_token: str
+    message: str = "Registration initiated. Please verify your email."
+    user: "UserOut" # Include full user info
+    needs_company_setup: bool = True
+    target_tenant_id: uuid.UUID | None = None
+
+
+class RegisterCompleteRequest(BaseModel):
+    """Step 3: Complete registration after email verification."""
+    token: str = Field(min_length=6, max_length=512, description="Email verification code")
+
+
+class RegisterCompleteResponse(BaseModel):
+    """Response after successful registration completion."""
     access_token: str
     token_type: str = "bearer"
     user: "UserOut"
     needs_company_setup: bool = False
 
 
+class SSORegisterRequest(BaseModel):
+    """SSO registration - completely separate from normal registration."""
+    provider: str = Field(description="Provider type (feishu, dingtalk, etc.)")
+    code: str = Field(description="OAuth authorization code from provider")
+    invitation_code: str | None = None
+
+
+class UserLogin(BaseModel):
+    login_identifier: str = Field(description="Email address for login")
+    password: str
+    tenant_id: uuid.UUID | None = None  # Optional: when set, restrict login to users of this tenant
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(min_length=6, max_length=512)
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class NeedsVerificationResponse(BaseModel):
+    """Response when user needs to verify email before continuing."""
+    needs_verification: bool = True
+    email: str
+    message: str = "Email already registered but not verified. Please enter the verification code."
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: "UserOut"
+    identity: "IdentityOut | None" = None
+    needs_company_setup: bool = False
+    tenant_name: str | None = None
+
+
+class TenantChoice(BaseModel):
+    """Multi-tenant login: tenant selection info."""
+    tenant_id: uuid.UUID | None
+    tenant_name: str
+    tenant_slug: str
+
+
+class MultiTenantResponse(BaseModel):
+    """Response when multiple tenants match the same login identifier."""
+    requires_tenant_selection: bool = True
+    login_identifier: str
+    tenants: list[TenantChoice]
+
+
+class TenantSwitchRequest(BaseModel):
+    tenant_id: uuid.UUID
+
+
+class TenantSwitchResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    redirect_url: str | None = None
+    message: str | None = None
+
+
+class IdentityOut(BaseModel):
+    """Global identity information."""
+    id: uuid.UUID
+    email: str | None = None
+    phone: str | None = None
+    username: str | None = None
+    is_active: bool
+    is_platform_admin: bool
+    email_verified: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class UserOut(BaseModel):
     id: uuid.UUID
-    username: str
-    email: str
+    identity_id: uuid.UUID | None = None
+    username: str | None = None
+    email: str | None = None
     display_name: str
     avatar_url: str | None = None
     role: str
     tenant_id: uuid.UUID | None = None
-    department_id: uuid.UUID | None = None
     title: str | None = None
-    feishu_open_id: str | None = None
+    primary_mobile: str | None = None
+    registration_source: str | None = None
     is_active: bool
+    email_verified: bool = True
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
+class IdentityProviderOut(BaseModel):
+    id: uuid.UUID
+    provider_type: str
+    name: str
+    is_active: bool
+    sso_login_enabled: bool = False
+    config: dict | None = None
+    tenant_id: uuid.UUID | None = None
+    updated_at: datetime | None = None
+    created_at: datetime
+    sso_domain: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class OAuthAuthorizeResponse(BaseModel):
+    authorization_url: str
+
+
+class OAuthCallbackRequest(BaseModel):
+    code: str
+    state: str
+
+
+class IdentityBindRequest(BaseModel):
+    provider_type: str
+    code: str  # OAuth code for binding
+
+
+class IdentityUnbindRequest(BaseModel):
+    provider_type: str
+
+
 class UserUpdate(BaseModel):
     username: str | None = None
+    email: EmailStr | None = None
     display_name: str | None = None
     avatar_url: str | None = None
     title: str | None = None
-    department_id: uuid.UUID | None = None
+    primary_mobile: str | None = None
 
 
 # ─── Agent ──────────────────────────────────────────────
@@ -103,6 +250,7 @@ class AgentOut(BaseModel):
     tokens_used_total: int = 0
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None
+    context_window_size: int = 100
     max_tool_rounds: int = 50
     max_triggers: int = 20
     min_poll_interval_min: int = 5
@@ -135,6 +283,7 @@ class AgentUpdate(BaseModel):
     autonomy_policy: dict | None = None
     primary_model_id: uuid.UUID | None = None
     fallback_model_id: uuid.UUID | None = None
+    context_window_size: int | None = Field(default=None, ge=1, le=500)
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None
     max_tool_rounds: int | None = None
@@ -218,30 +367,6 @@ class TaskLogOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# ─── Department ─────────────────────────────────────────
-
-class DepartmentCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    parent_id: uuid.UUID | None = None
-    manager_id: uuid.UUID | None = None
-
-
-class DepartmentOut(BaseModel):
-    id: uuid.UUID
-    name: str
-    parent_id: uuid.UUID | None = None
-    manager_id: uuid.UUID | None = None
-    sort_order: int
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
-class DepartmentTree(DepartmentOut):
-    children: list["DepartmentTree"] = []
-    member_count: int = 0
-
-
 # ─── LLM ────────────────────────────────────────────────
 
 class LLMModelCreate(BaseModel):
@@ -255,6 +380,7 @@ class LLMModelCreate(BaseModel):
     enabled: bool = True
     supports_vision: bool = False
     max_output_tokens: int | None = None
+    request_timeout: int | None = None
 
 class LLMModelUpdate(BaseModel):
     provider: str | None = None
@@ -267,6 +393,7 @@ class LLMModelUpdate(BaseModel):
     enabled: bool | None = None
     supports_vision: bool | None = None
     max_output_tokens: int | None = None
+    request_timeout: int | None = None
 
 
 class LLMModelOut(BaseModel):
@@ -281,6 +408,7 @@ class LLMModelOut(BaseModel):
     enabled: bool
     supports_vision: bool = False
     max_output_tokens: int | None = None
+    request_timeout: int | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -334,6 +462,9 @@ class ApprovalAction(BaseModel):
 
 
 # ─── Enterprise Info ────────────────────────────────────
+
+class UserInviteRequest(BaseModel):
+    emails: list[EmailStr] = Field(..., description="List of emails to invite")
 
 class EnterpriseInfoUpdate(BaseModel):
     content: dict
@@ -440,4 +571,3 @@ class GatewaySendMessageRequest(BaseModel):
     target: str  # Name of target person or agent
     content: str = Field(min_length=1)
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
-

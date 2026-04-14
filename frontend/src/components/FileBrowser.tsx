@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from './MarkdownRenderer';
+import { useDropZone } from '../hooks/useDropZone';
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -56,6 +57,13 @@ function isTextFile(name: string): boolean {
     return !base.includes('.') || base.startsWith('.');
 }
 
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico'];
+
+function isImage(name: string): boolean {
+    const n = name.toLowerCase();
+    return IMAGE_EXTS.some(ext => n.endsWith(ext));
+}
+
 // ─── Component ─────────────────────────────────────────
 
 export default function FileBrowser({
@@ -64,7 +72,7 @@ export default function FileBrowser({
     features = {},
     fileFilter,
     singleFile,
-    uploadAccept = '.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.xml,.yaml,.yml,.js,.ts,.py,.html,.css,.sh,.log',
+    uploadAccept = '.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.xml,.yaml,.yml,.js,.ts,.py,.html,.css,.sh,.log,.png,.jpg,.jpeg,.gif,.svg,.webp',
     title,
     readOnly = false,
     onRefresh,
@@ -96,6 +104,8 @@ export default function FileBrowser({
     const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percent: number } | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+ 
+
     // Auto-resize textarea to match content height
     useEffect(() => {
         const el = textareaRef.current;
@@ -112,7 +122,7 @@ export default function FileBrowser({
         setTimeout(() => setToast(null), 3000);
     }, []);
 
-    // ─── Load files ───────────────────────────────────
+ 
 
     const reload = useCallback(async () => {
         if (singleFile) {
@@ -138,6 +148,32 @@ export default function FileBrowser({
         }
         setLoading(false);
     }, [api, currentPath, singleFile, fileFilter]);
+
+    // ─── Drag-and-drop upload ─────────────────────
+    const handleDroppedFiles = useCallback(async (files: File[]) => {
+        if (!api.upload || files.length === 0) return;
+        try {
+            for (const file of files) {
+                setUploadProgress({ fileName: file.name, percent: 0 });
+                await api.upload(file, currentPath, (pct) => {
+                    setUploadProgress({ fileName: file.name, percent: pct });
+                });
+            }
+            setUploadProgress(null);
+            reload();
+            onRefresh?.();
+            showToast(t('agent.upload.success', 'Upload successful'));
+        } catch (err: any) {
+            setUploadProgress(null);
+            showToast(t('agent.upload.failed', 'Upload failed') + ': ' + (err.message || ''), 'error');
+        }
+    }, [api, currentPath, reload, onRefresh, showToast, t]);
+
+    const { isDragging, dropZoneProps } = useDropZone({
+        onDrop: handleDroppedFiles,
+        disabled: !upload || !api.upload || !!singleFile || !!viewing || readOnly,
+        accept: uploadAccept,
+    });
 
     useEffect(() => { reload(); }, [reload]);
 
@@ -426,6 +462,18 @@ export default function FileBrowser({
                                 {content || t('common.noData', 'No content yet')}
                             </pre>
                         )
+                    ) : isImage(viewing) ? (
+                        <div style={{ textAlign: 'center', padding: '20px', background: 'var(--bg-tertiary)', borderRadius: '8px' }}>
+                            {api.downloadUrl ? (
+                                <img 
+                                    src={api.downloadUrl(viewing)} 
+                                    alt={viewing.split('/').pop()} 
+                                    style={{ maxWidth: '100%', maxHeight: '600px', objectFit: 'contain', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
+                                />
+                            ) : (
+                                <div style={{ padding: '20px', color: 'var(--text-tertiary)' }}>Cannot preview image without download URL</div>
+                            )}
+                        </div>
                     ) : (
                         <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
                             <div style={{ fontSize: '48px', marginBottom: '12px' }}>⌇</div>
@@ -449,7 +497,15 @@ export default function FileBrowser({
     // FILE LIST / BROWSER MODE
     // ═══════════════════════════════════════════════════
     return (
-        <div>
+        <div className="drop-zone-wrapper" {...dropZoneProps}>
+            {/* Drop overlay */}
+            {isDragging && (
+                <div className="drop-zone-overlay">
+                    <div className="drop-zone-overlay__icon">⬆</div>
+                    <div className="drop-zone-overlay__text">{t('agent.workspace.dragOrClick', 'Drop files to upload')}</div>
+                </div>
+            )}
+
             {/* Toolbar */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
                 {title && <h3 style={{ margin: 0 }}>{title}</h3>}
@@ -495,7 +551,9 @@ export default function FileBrowser({
                 </div>
             ) : files.length === 0 ? (
                 <div className="card" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
-                    {t('common.noData')}
+                    {upload && api.upload
+                        ? t('agent.workspace.dragOrClick', 'Drop files here or click Upload')
+                        : t('common.noData')}
                 </div>
             ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -539,7 +597,7 @@ export default function FileBrowser({
                                         ⬇
                                     </a>
                                 )}
-                                {canDelete && !f.is_dir && (
+                                {canDelete && (
                                     <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                                         onClick={(e) => { e.stopPropagation(); setDeleteTarget({ path: f.path || `${currentPath}/${f.name}`, name: f.name }); }}>
                                         ×

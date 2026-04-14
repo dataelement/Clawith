@@ -3,7 +3,7 @@
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,11 +116,13 @@ async def mark_all_read(
 class BroadcastRequest(BaseModel):
     title: str = Field(..., max_length=200)
     body: str = Field("", max_length=1000)
+    send_email: bool = False
 
 
 @router.post("/notifications/broadcast")
 async def broadcast_notification(
     req: BroadcastRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -138,12 +140,22 @@ async def broadcast_notification(
     sender_name = current_user.display_name or current_user.username or "Admin"
     count_users = 0
     count_agents = 0
+    count_emails = 0
+    email_recipients = []
+
+    if req.send_email:
+        from app.services.system_email_service import resolve_email_config_async
+
+        email_config = await resolve_email_config_async(db)
+        if not email_config:
+            raise HTTPException(400, "System email is not configured. Please configure it in Platform Settings.")
 
     # Notify all users in tenant
     users_result = await db.execute(
         select(User).where(User.tenant_id == tenant_id, User.id != current_user.id)
     )
-    for user in users_result.scalars().all():
+    users = users_result.scalars().all()
+    for user in users:
         await send_notification(
             db, user_id=user.id,
             type="broadcast",
@@ -167,6 +179,36 @@ async def broadcast_notification(
         )
         count_agents += 1
 
-    await db.commit()
-    return {"ok": True, "users_notified": count_users, "agents_notified": count_agents}
+    if req.send_email:
+        from app.services.system_email_service import (
+            BroadcastEmailRecipient,
+            deliver_broadcast_emails,
+            run_background_email_job,
+        )
 
+        for user in users:
+            if not user.email:
+                continue
+            email_recipients.append(
+                BroadcastEmailRecipient(
+                    email=user.email,
+                    subject=req.title,
+                    body=(
+                        f"{req.body}\n\n"
+                        f"Sent by: {sender_name}"
+                        if req.body.strip()
+                        else f"Sent by: {sender_name}"
+                    ),
+                ),
+            )
+            count_emails += 1
+
+    await db.commit()
+    if email_recipients:
+        background_tasks.add_task(run_background_email_job, deliver_broadcast_emails, email_recipients)
+    return {
+        "ok": True,
+        "users_notified": count_users,
+        "agents_notified": count_agents,
+        "emails_sent": count_emails,
+    }

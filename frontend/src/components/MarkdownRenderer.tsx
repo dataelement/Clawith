@@ -3,7 +3,7 @@
  * Renders: headings, bold, italic, inline code, code blocks,
  * unordered/ordered lists, blockquotes, horizontal rules, links, tables.
  */
-import { useMemo } from 'react';
+import React, { useMemo } from 'react';
 
 function escapeHtml(str: string): string {
     return str
@@ -25,8 +25,30 @@ function renderInline(text: string): string {
         .replace(/_(.*?)_/g, '<em>$1</em>')
         // Inline code
         .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
+        // Images
+        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+            let finalUrl = url;
+            if (finalUrl.startsWith('/api/agents/')) {
+                const token = localStorage.getItem('token');
+                if (token && !finalUrl.includes('token=')) {
+                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
+                }
+            }
+            return `<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${alt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`;
+        })
         // Links
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">$1</a>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+            // Avoid matching images that snuck through or weird nested stuff
+            if (match.startsWith('!')) return match;
+            let finalUrl = url;
+            if (finalUrl.startsWith('/api/agents/')) {
+                const token = localStorage.getItem('token');
+                if (token && !finalUrl.includes('token=')) {
+                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
+                }
+            }
+            return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">${text}</a>`;
+        })
         // Strikethrough
         .replace(/~~(.*?)~~/g, '<del>$1</del>');
 }
@@ -173,13 +195,15 @@ interface MarkdownRendererProps {
     className?: string;
 }
 
-export default function MarkdownRenderer({ content, style, className }: MarkdownRendererProps) {
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, style, className }: MarkdownRendererProps) {
     const html = useMemo(() => markdownToHtml(content), [content]);
     return (
         <div
             className={className}
-            style={{ lineHeight: 1.6, fontSize: 'inherit', ...style }}
+            style={{ lineHeight: 1.6, fontSize: 'inherit', ...style, wordBreak: 'break-word' }}
             dangerouslySetInnerHTML={{ __html: html }}
         />
     );
-}
+});
+
+export default MarkdownRenderer;

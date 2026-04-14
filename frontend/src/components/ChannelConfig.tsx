@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { channelApi } from '../services/api';
-
+import LinearCopyButton from './LinearCopyButton';
 // ─── Shared fetchAuth (same as AgentDetail) ─────────────
 function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -79,6 +79,8 @@ const WeComIcon = <img src="/wecom.png" alt="WeCom" width="20" height="20" style
 const DingTalkIcon = <img src="/dingtalk.png" alt="DingTalk" width="20" height="20" style={{ borderRadius: '4px' }} />;
 
 const AtlassianIcon = <img src="/atlassian.png" alt="Atlassian" width="20" height="20" style={{ borderRadius: '4px' }} />;
+
+const AgentBayIcon = <span style={{ fontSize: '16px' }}>🌩️</span>;
 
 // Eye icons for password toggle
 const EyeOpen = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
@@ -183,11 +185,14 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         nameFallback: 'DingTalk',
         desc: 'Stream Mode',
         apiSlug: 'dingtalk-channel',
+        connectionMode: true,
         fields: [
             { key: 'app_key', label: 'AppKey', type: 'password', required: true },
             { key: 'app_secret', label: 'AppSecret', type: 'password', required: true },
+            { key: 'agent_id', label: 'AgentId', type: 'text', placeholder: 'DingTalk应用AgentId(可选)', required: false },
         ],
         guide: { prefix: 'channelGuide.dingtalk', steps: 6 },
+        webhookLabel: 'Webhook URL',
     },
     {
         id: 'atlassian',
@@ -203,16 +208,32 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         ],
         guide: { prefix: 'channelGuide.atlassian', steps: 5 },
     },
+    {
+        id: 'agentbay',
+        icon: AgentBayIcon,
+        nameKey: 'common.channels.agentbay',
+        nameFallback: 'AgentBay',
+        desc: 'Browser & Code Execution (阿里云)',
+        apiSlug: 'agentbay-channel',
+        hasTestConnection: true,
+        editOnly: true,
+        fields: [
+            { key: 'api_key', label: 'API Key', type: 'password', required: true },
+            { key: 'base_url', label: 'Base URL', placeholder: 'https://agentbay.aliyuncs.com/api/v1' },
+        ],
+        guide: { prefix: 'channelGuide.agentbay', steps: 3 },
+    },
 ];
 
 // ─── Feishu Permission JSON ─────────────────────────────
-const FEISHU_PERM_JSON = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource"],"user":[]}}';
+const FEISHU_PERM_BASIC_JSON = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource"],"user":[]}}';
 
-const FEISHU_PERM_DISPLAY = `{
+const FEISHU_PERM_BASIC_DISPLAY = `{
   "scopes": {
     "tenant": [
       "contact:contact.base:readonly",
       "contact:user.base:readonly",
+      "contact:user.employee_id:readonly",
       "contact:user.id:readonly",
       "im:chat",
       "im:message",
@@ -225,22 +246,56 @@ const FEISHU_PERM_DISPLAY = `{
   }
 }`;
 
-// ─── Copy Button helper ─────────────────────────────────
-function CopyBtn({ url }: { url: string }) {
-    return (
-        <button title="Copy" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
-            onClick={() => navigator.clipboard.writeText(url)}>
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="4" y="4" width="9" height="11" rx="1.5" /><path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" />
-            </svg>
-        </button>
-    );
-}
+const FEISHU_PERM_FULL_JSON = '{"scopes":{"tenant":["approval:approval","base:app:create","base:dashboard:create","base:field_group:create","bitable:app","bitable:app:readonly","board:whiteboard:node:create","calendar:calendar.event:create","calendar:calendar.event:delete","calendar:calendar.event:read","calendar:calendar.event:update","calendar:calendar.freebusy:readonly","calendar:calendar:readonly","contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","docx:document","docx:document:create","drive:drive","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource","sheets:spreadsheet:create","slides:presentation:create","slides:presentation:write_only","wiki:wiki","wiki:wiki:readonly"],"user":[]}}';
+
+const FEISHU_PERM_FULL_DISPLAY = `{
+  "scopes": {
+    "tenant": [
+      "approval:approval",
+      "base:app:create",
+      "base:dashboard:create",
+      "base:field_group:create",
+      "bitable:app",
+      "bitable:app:readonly",
+      "board:whiteboard:node:create",
+      "calendar:calendar.event:create",
+      "calendar:calendar.event:delete",
+      "calendar:calendar.event:read",
+      "calendar:calendar.event:update",
+      "calendar:calendar.freebusy:readonly",
+      "calendar:calendar:readonly",
+      "contact:contact.base:readonly",
+      "contact:user.base:readonly",
+      "contact:user.employee_id:readonly",
+      "contact:user.id:readonly",
+      "docx:document",
+      "docx:document:create",
+      "drive:drive",
+      "im:chat",
+      "im:message",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly",
+      "im:message:send_as_bot",
+      "im:resource",
+      "sheets:spreadsheet:create",
+      "slides:presentation:create",
+      "slides:presentation:write_only",
+      "wiki:wiki",
+      "wiki:wiki:readonly"
+    ],
+    "user": []
+  }
+}`;
+
+// CopyBtn is removed, using LinearCopyButton directly
 
 // ─── Main Component ─────────────────────────────────────
 export default function ChannelConfig({ mode, agentId, canManage = true, values, onChange }: ChannelConfigProps) {
     const { t } = useTranslation();
     const queryClient = useQueryClient();
+
+    // Feishu Permission Mode
+    const [feishuPermMode, setFeishuPermMode] = useState<'basic' | 'full'>('basic');
 
     // Collapsible state per channel
     const [openChannels, setOpenChannels] = useState<Record<string, boolean>>({});
@@ -260,6 +315,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [connectionModes, setConnectionModes] = useState<Record<string, string>>({
         feishu: 'websocket',
         wecom: 'websocket',
+        dingtalk: 'websocket',
         discord: 'gateway',
     });
 
@@ -270,6 +326,10 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     // Atlassian test connection state
     const [atlassianTesting, setAtlassianTesting] = useState(false);
     const [atlassianTestResult, setAtlassianTestResult] = useState<{ ok: boolean; message?: string; tool_count?: number; error?: string } | null>(null);
+
+    // AgentBay test connection state
+    const [agentbayTesting, setAgentbayTesting] = useState(false);
+    const [agentbayTestResult, setAgentbayTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null);
 
     // ─── Edit mode: queries for each channel ────────────
     const enabled = mode === 'edit' && !!agentId;
@@ -334,6 +394,11 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         queryFn: () => fetchAuth<any>(`/agents/${agentId}/atlassian-channel`).catch(() => null),
         enabled: enabled,
     });
+    const { data: agentbayConfig } = useQuery({
+        queryKey: ['agentbay-channel', agentId],
+        queryFn: () => fetchAuth<any>(`/agents/${agentId}/agentbay-channel`).catch(() => null),
+        enabled: enabled,
+    });
 
     // Helper: get config data for a channel
     const getConfig = (id: string): any => {
@@ -345,6 +410,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             case 'dingtalk': return dingtalkConfig;
             case 'wecom': return wecomConfig;
             case 'atlassian': return atlassianConfig;
+            case 'agentbay': return agentbayConfig;
             default: return null;
         }
     };
@@ -393,6 +459,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 : [[`${ch.apiSlug}`, agentId]];
             keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
             if (ch.id === 'atlassian') setAtlassianTestResult(null);
+            if (ch.id === 'agentbay') setAgentbayTestResult(null);
         },
     });
 
@@ -406,6 +473,18 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             setAtlassianTestResult({ ok: false, error: String(e) });
         }
         setAtlassianTesting(false);
+    };
+
+    const testAgentBay = async () => {
+        setAgentbayTesting(true);
+        setAgentbayTestResult(null);
+        try {
+            const res = await fetchAuth<any>(`/agents/${agentId}/agentbay-channel/test`, { method: 'POST' });
+            setAgentbayTestResult(res);
+        } catch (e: any) {
+            setAgentbayTestResult({ ok: false, error: String(e) });
+        }
+        setAgentbayTesting(false);
     };
 
     // ─── Build save payload for a channel ───────────────
@@ -433,6 +512,15 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             }
             return { ...form, connection_mode: 'webhook' };
         }
+        if (ch.id === 'dingtalk') {
+            return {
+                ...form,
+                extra_config: {
+                    connection_mode: connectionModes.dingtalk || 'websocket',
+                    agent_id: form.agent_id || '',
+                },
+            };
+        }
         // Generic channels
         return form;
     };
@@ -455,20 +543,39 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 </ol>
                 {ch.showPermJson && (
                     <div style={{ margin: '8px 0', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
-                            <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t('channelGuide.feishuPermJson')}</span>
-                            <button type="button" style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
-                                onClick={(e) => {
-                                    const btn = e.currentTarget;
-                                    navigator.clipboard.writeText(FEISHU_PERM_JSON).then(() => {
-                                        const o = btn.textContent;
-                                        btn.textContent = t('channelGuide.feishuPermCopied');
-                                        btn.style.color = 'rgb(16,185,129)';
-                                        setTimeout(() => { btn.textContent = o; btn.style.color = ''; }, 1500);
-                                    });
-                                }}>{t('channelGuide.feishuPermCopy')}</button>
+                        {/* Segmented control header */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '2px', background: 'var(--bg-primary)', borderRadius: '5px', padding: '2px', border: '1px solid var(--border-color)' }}>
+                                {(['basic', 'full'] as const).map(mode => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        onClick={(e) => { e.preventDefault(); setFeishuPermMode(mode); }}
+                                        style={{
+                                            padding: '3px 10px', fontSize: '10px', borderRadius: '4px', cursor: 'pointer',
+                                            border: 'none', transition: 'all 0.15s ease',
+                                            background: feishuPermMode === mode ? 'var(--accent-primary, #5e6ad2)' : 'transparent',
+                                            color: feishuPermMode === mode ? '#fff' : 'var(--text-tertiary)',
+                                            fontWeight: 500,
+                                        }}>
+                                        {t(`channelGuide.feishuPerm${mode === 'basic' ? 'Basic' : 'Full'}`)}
+                                    </button>
+                                ))}
+                            </div>
+                            <LinearCopyButton
+                                textToCopy={feishuPermMode === 'basic' ? FEISHU_PERM_BASIC_JSON : FEISHU_PERM_FULL_JSON}
+                                label={t('channelGuide.feishuPermCopy')}
+                                copiedLabel={t('channelGuide.feishuPermCopied')}
+                                className=""
+                                style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
+                            />
                         </div>
-                        <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all' }}>{FEISHU_PERM_DISPLAY}</pre>
+                        {/* Description */}
+                        <div style={{ padding: '4px 10px', fontSize: '10px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
+                            {feishuPermMode === 'basic' ? t('channelGuide.feishuPermBasicDesc') : t('channelGuide.feishuPermFullDesc')}
+                        </div>
+                        {/* JSON code block */}
+                        <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all', maxHeight: '200px', overflowY: 'auto' }}>{feishuPermMode === 'basic' ? FEISHU_PERM_BASIC_DISPLAY : FEISHU_PERM_FULL_DISPLAY}</pre>
                     </div>
                 )}
                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>
@@ -694,7 +801,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                         <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>{ch.webhookLabel}</div>
                                         <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
                                             <span style={{ color: 'var(--accent-primary)' }}>{webhookUrl}</span>
-                                            <CopyBtn url={webhookUrl} />
+                                            <LinearCopyButton
+                                                textToCopy={webhookUrl}
+                                                label="Copy"
+                                                iconOnly={true}
+                                                className=""
+                                                style={{ marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle' }}
+                                            />
                                         </div>
                                     </div>
                                 )}
@@ -713,10 +826,20 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     </div>
                                 )}
 
-                                {/* DingTalk stream mode hint */}
-                                {ch.id === 'dingtalk' && (
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px', padding: '8px 10px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                                        Stream mode active. No webhook URL needed.
+                                {/* DingTalk stream mode status */}
+                                {ch.id === 'dingtalk' && configConnMode === 'websocket' && (
+                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#007FFF', display: 'inline-block' }}></span>
+                                            <span style={{ color: 'var(--text-secondary)' }}>Connected via Stream (No callback URL needed)</span>
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>App Key: <code>{config.app_id}</code></div>
+                                    </div>
+                                )}
+                                {ch.id === 'dingtalk' && configConnMode !== 'websocket' && (
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                        <div style={{ marginBottom: '4px' }}>Mode: <strong>Webhook</strong></div>
+                                        <div>App Key: <code>{config.app_id}</code></div>
                                     </div>
                                 )}
 
@@ -736,14 +859,35 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     </div>
                                 )}
 
+                                {/* AgentBay status */}
+                                {ch.id === 'agentbay' && (
+                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
+                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>Status</div>
+                                        <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>API Key configured — Browser & Code tools available</div>
+                                        {config.base_url && <div style={{ color: 'var(--text-tertiary)', marginTop: '4px', fontSize: '11px' }}>Base URL: <code>{config.base_url}</code></div>}
+                                    </div>
+                                )}
+                                {ch.id === 'agentbay' && agentbayTestResult && (
+                                    <div style={{ padding: '8px 12px', borderRadius: '6px', fontSize: '12px', marginBottom: '10px', background: agentbayTestResult.ok ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${agentbayTestResult.ok ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`, color: agentbayTestResult.ok ? 'rgb(5,150,105)' : 'rgb(220,38,38)' }}>
+                                        {agentbayTestResult.ok
+                                            ? `${agentbayTestResult.message || 'Connected to AgentBay'}`
+                                            : `${agentbayTestResult.error}`}
+                                    </div>
+                                )}
+
                                 {/* Setup guide in configured view */}
                                 {renderGuide(ch.guide, !!(ch.connectionMode && configConnMode === 'websocket'), ch)}
 
                                 {/* Action buttons */}
                                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                                    {ch.hasTestConnection && (
+                                    {ch.hasTestConnection && ch.id === 'atlassian' && (
                                         <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAtlassian} disabled={atlassianTesting}>
                                             {atlassianTesting ? 'Testing...' : 'Test Connection'}
+                                        </button>
+                                    )}
+                                    {ch.hasTestConnection && ch.id === 'agentbay' && (
+                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAgentBay} disabled={agentbayTesting}>
+                                            {agentbayTesting ? 'Testing...' : 'Test Connection'}
                                         </button>
                                     )}
                                     <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }}
@@ -788,9 +932,14 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             } else if (ch.id === 'dingtalk') {
                                                 prefill.app_key = config.app_id || '';
                                                 prefill.app_secret = config.app_secret || '';
+                                                prefill.agent_id = config.extra_config?.agent_id || '';
+                                                setConnectionModes(prev => ({ ...prev, dingtalk: config.extra_config?.connection_mode || 'websocket' }));
                                             } else if (ch.id === 'atlassian') {
                                                 prefill.api_key = '';
                                                 prefill.cloud_id = config.cloud_id || '';
+                                            } else if (ch.id === 'agentbay') {
+                                                prefill.api_key = '';
+                                                prefill.base_url = config.base_url || '';
                                             }
                                             setForms(prev => ({ ...prev, [ch.id]: prefill }));
                                             setEditing(ch.id, true);
@@ -835,6 +984,16 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             Service account key starts with <code>ATSTT</code>. Personal API token: base64-encode <code>email:token</code> and prefix with <code>Basic </code>
                                         </div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Required for multi-site setups. Find it at <code>your-site.atlassian.net/_edge/tenant_info</code></div>
+                                    </>
+                                )}
+
+                                {/* AgentBay extra hints */}
+                                {ch.id === 'agentbay' && (
+                                    <>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '-4px' }}>
+                                            Get your API key from <a href="https://www.aliyun.com/product/agentbay" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary-color)' }}>Aliyun AgentBay Console</a>
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Leave Base URL empty to use the default endpoint</div>
                                     </>
                                 )}
 

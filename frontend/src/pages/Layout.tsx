@@ -1,73 +1,63 @@
-import { useState, useEffect } from 'react';
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { Outlet, NavLink, useNavigate, useMatch } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
-import { agentApi } from '../services/api';
+import { agentApi, tenantApi, authApi } from '../services/api';
 
-/* ────── SVG Icons ────── */
+import {
+    IconHome,
+    IconPlus,
+    IconSettings,
+    IconUser,
+    IconSun,
+    IconMoon,
+    IconLogout,
+    IconWorld,
+    IconChevronsLeft,
+    IconChevronsRight,
+    IconBell,
+    IconBuildingMonument,
+    IconSearch,
+    IconX,
+    IconPin,
+    IconPinnedOff,
+    IconArrowUpRight,
+    IconBuilding,
+    IconChevronUp,
+    IconSwitchHorizontal,
+    IconChevronRight,
+    IconCheck,
+} from '@tabler/icons-react';
+import { useAppStore } from '../stores';
+
+/* ────── Tabler Icons ────── */
 const SidebarIcons = {
-    home: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2.5 6.5L8 2l5.5 4.5V13a1 1 0 01-1 1h-3V10H6.5v4h-3a1 1 0 01-1-1V6.5z" />
-        </svg>
-    ),
-    plus: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <path d="M8 3v10M3 8h10" />
-        </svg>
-    ),
-    settings: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="8" r="2" />
-            <path d="M13.5 8a5.5 5.5 0 00-.3-1.8l1.3-1-1.2-2-1.5.6a5.5 5.5 0 00-1.6-.9L9.8 1.5H7.6l-.4 1.4a5.5 5.5 0 00-1.6.9L4 3.2 2.8 5.2l1.3 1A5.5 5.5 0 003.8 8c0 .6.1 1.2.3 1.8l-1.3 1 1.2 2 1.5-.6c.5.4 1 .7 1.6.9l.4 1.4h2.2l.4-1.4c.6-.2 1.1-.5 1.6-.9l1.5.6 1.2-2-1.3-1c.2-.6.3-1.2.3-1.8z" />
-        </svg>
-    ),
-    user: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="5.5" r="2.5" />
-            <path d="M3 14v-1a4 4 0 018 0v1" />
-        </svg>
-    ),
-    sun: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <circle cx="8" cy="8" r="3" />
-            <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" />
-        </svg>
-    ),
-    moon: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M13.5 8.5a5.5 5.5 0 01-8-4.5 5.5 5.5 0 003 10c2 0 3.8-1 4.8-2.7a4 4 0 01.2-2.8z" />
-        </svg>
-    ),
-    logout: (
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M6 14H3a1 1 0 01-1-1V3a1 1 0 011-1h3M11 11l3-3-3-3M14 8H6" />
-        </svg>
-    ),
-    globe: (
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="8" r="6" />
-            <path d="M2 8h12M8 2a10 10 0 013 6 10 10 0 01-3 6 10 10 0 01-3-6 10 10 0 013-6z" />
-        </svg>
-    ),
-    collapse: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M15 18l-6-6 6-6" />
-        </svg>
-    ),
-    expand: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 18l6-6-6-6" />
-        </svg>
-    ),
-    bell: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 6a4 4 0 018 0c0 2 1 3.5 1.5 4.5H2.5C3 9.5 4 8 4 6z" />
-            <path d="M6.5 12.5a1.5 1.5 0 003 0" />
-        </svg>
-    ),
+    home: <IconHome size={16} stroke={1.5} />,
+    plus: <IconPlus size={16} stroke={1.5} />,
+    settings: <IconSettings size={16} stroke={1.5} />,
+    user: <IconUser size={16} stroke={1.5} />,
+    sun: <IconSun size={16} stroke={1.5} />,
+    moon: <IconMoon size={16} stroke={1.5} />,
+    logout: <IconLogout size={16} stroke={1.5} />,
+    globe: <IconWorld size={16} stroke={1.5} />,
+    collapse: <IconChevronsLeft size={16} stroke={1.5} />,
+    expand: <IconChevronsRight size={16} stroke={1.5} />,
+    bell: <IconBell size={16} stroke={1.5} />,
 };
+
+/** UI locales: native endonym per row. */
+const APP_UI_LANGUAGES: { code: string; nativeLabel: string }[] = [
+    { code: 'zh', nativeLabel: '中文' },
+    { code: 'en', nativeLabel: 'English' },
+];
+
+function resolveUiLangCode(lang: string | undefined): string {
+    if (!lang) return 'en';
+    if (lang.startsWith('zh')) return 'zh';
+    return 'en';
+}
 
 const fetchJson = async <T,>(url: string): Promise<T> => {
     const token = localStorage.getItem('token');
@@ -93,11 +83,13 @@ const getAgentBadgeStatus = (agent: any): string | null => {
 function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose: () => void; isChinese: boolean }) {
     const { setUser } = useAuthStore();
     const [username, setUsername] = useState(user?.username || '');
+    const [email, setEmail] = useState(user?.email || '');
     const [displayName, setDisplayName] = useState(user?.display_name || '');
     const [oldPassword, setOldPassword] = useState('');
     const [newPassword, setNewPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [saving, setSaving] = useState(false);
+    const [resendingEmail, setResendingEmail] = useState(false);
     const [msg, setMsg] = useState('');
     const [msgType, setMsgType] = useState<'success' | 'error'>('success');
 
@@ -111,6 +103,7 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
             const token = localStorage.getItem('token');
             const body: any = {};
             if (username !== user?.username) body.username = username;
+            if (email !== user?.email) body.email = email;
             if (displayName !== user?.display_name) body.display_name = displayName;
             if (Object.keys(body).length === 0) { showMsg(isChinese ? '没有变更' : 'No changes', 'error'); setSaving(false); return; }
             const res = await fetch('/api/auth/me', {
@@ -124,6 +117,21 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
             showMsg(isChinese ? '个人信息已更新' : 'Profile updated');
         } catch (e: any) { showMsg(e.message || 'Failed', 'error'); }
         setSaving(false);
+    };
+
+    const handleResendVerification = async () => {
+        setResendingEmail(true);
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch('/api/auth/resend-verification', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ email: user?.email }),
+            });
+            if (!res.ok) { const err = await res.json().catch(() => ({ detail: 'Failed' })); throw new Error(err.detail); }
+            showMsg(isChinese ? '验证邮件已发送，请查收' : 'Verification email sent. Please check your inbox.');
+        } catch (e: any) { showMsg(e.message || 'Failed', 'error'); }
+        setResendingEmail(false);
     };
 
     const handleChangePassword = async () => {
@@ -160,6 +168,37 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
                 <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>{isChinese ? '个人信息' : 'Profile'}</h4>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
                     <div><label style={labelStyle}>{isChinese ? '用户名' : 'Username'}</label><input className="form-input" value={username} onChange={e => setUsername(e.target.value)} style={inputStyle} /></div>
+                    <div>
+                        <label style={labelStyle}>{isChinese ? '邮箱' : 'Email'}</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <input className="form-input" type="email" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} disabled />
+                            {user?.email_verified ? (
+                                <span style={{ color: '#16a34a', fontSize: '12px', whiteSpace: 'nowrap' }}>✓ {isChinese ? '已验证' : 'Verified'}</span>
+                            ) : (
+                                <button
+                                    onClick={handleResendVerification}
+                                    disabled={resendingEmail}
+                                    style={{
+                                        fontSize: '11px',
+                                        padding: '4px 8px',
+                                        borderRadius: '4px',
+                                        border: '1px solid var(--border-subtle)',
+                                        background: 'var(--bg-secondary)',
+                                        color: 'var(--text-secondary)',
+                                        cursor: resendingEmail ? 'not-allowed' : 'pointer',
+                                        whiteSpace: 'nowrap',
+                                    }}
+                                >
+                                    {resendingEmail ? '...' : (isChinese ? '发送验证' : 'Verify')}
+                                </button>
+                            )}
+                        </div>
+                        {!user?.email_verified && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                {isChinese ? '邮箱未验证，请点击按钮发送验证邮件' : 'Email not verified. Click button to send verification email.'}
+                            </div>
+                        )}
+                    </div>
                     <div><label style={labelStyle}>{isChinese ? '显示名称' : 'Display Name'}</label><input className="form-input" value={displayName} onChange={e => setDisplayName(e.target.value)} style={inputStyle} /></div>
                     <div style={{ display: 'flex', justifyContent: 'flex-end' }}><button className="btn btn-primary" onClick={handleSaveProfile} disabled={saving} style={{ padding: '6px 16px', fontSize: '12px' }}>{saving ? '...' : (isChinese ? '保存' : 'Save')}</button></div>
                 </div>
@@ -195,13 +234,30 @@ function VersionDisplay() {
 export default function Layout() {
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
-    const { user, logout } = useAuthStore();
+    const { user, logout, setAuth } = useAuthStore();
     const queryClient = useQueryClient();
     const isChinese = i18n.language?.startsWith('zh');
+    // Detect chat page: needs fixed-height main-content for inner scroll to work
+    const isChatPage = !!useMatch('/agents/:id/chat');
+
     const [showAccountSettings, setShowAccountSettings] = useState(false);
+    const [showAccountMenu, setShowAccountMenu] = useState(false);
+    const [showLanguageSubmenu, setShowLanguageSubmenu] = useState(false);
+    const [langSubmenuPos, setLangSubmenuPos] = useState({ top: 0, left: 0 });
+    const accountMenuRef = useRef<HTMLDivElement>(null);
+    const accountDropdownRef = useRef<HTMLDivElement>(null);
+    const langSubmenuPortalRef = useRef<HTMLDivElement>(null);
+    const langHoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [showNotifications, setShowNotifications] = useState(false);
     const [notifCategory, setNotifCategory] = useState<string>('all');
     const [selectedNotification, setSelectedNotification] = useState<any | null>(null);
+    const [showTenantMenu, setShowTenantMenu] = useState(false);
+    const [showJoinCreateForm, setShowJoinCreateForm] = useState(false);
+    const [joinInviteCode, setJoinInviteCode] = useState('');
+    const [createCompanyName, setCreateCompanyName] = useState('');
+    const [tenantFormLoading, setTenantFormLoading] = useState(false);
+    const [tenantFormError, setTenantFormError] = useState('');
+    const [allowSelfCreate, setAllowSelfCreate] = useState(true);
 
     // Notification polling
     const { data: unreadCount = 0 } = useQuery({
@@ -231,6 +287,103 @@ export default function Layout() {
         queryClient.invalidateQueries({ queryKey: ['notifications'] });
     };
 
+    // Tenant switching
+    const { data: myTenants = [] } = useQuery({
+        queryKey: ['my-tenants'],
+        queryFn: async () => {
+            const token = localStorage.getItem('token');
+            const res = await fetch('/api/auth/my-tenants', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+            if (!res.ok) return [];
+            return res.json();
+        },
+        enabled: !!user,
+    });
+
+    const handleSwitchTenant = async (tenantId: string) => {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/auth/switch-tenant', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ tenant_id: tenantId }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: 'Failed to switch tenant' }));
+            alert(err.detail || 'Failed to switch tenant');
+            return;
+        }
+        const data = await res.json();
+        if (data.redirect_url) {
+            localStorage.setItem('token', data.access_token);
+            window.location.href = data.redirect_url;
+        } else if (data.access_token) {
+            localStorage.setItem('token', data.access_token);
+            window.location.reload();
+        }
+    };
+
+    // Open the tenant switcher modal — also fetch self-create config
+    const openTenantModal = () => {
+        setShowTenantMenu(true);
+        setShowJoinCreateForm(false);
+        setJoinInviteCode('');
+        setCreateCompanyName('');
+        setTenantFormError('');
+        // Fetch self-create config
+        tenantApi.registrationConfig().then((d: any) => {
+            setAllowSelfCreate(d.allow_self_create_company);
+        }).catch(() => {});
+    };
+
+    // Join company via invite code (inside modal)
+    const handleModalJoin = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setTenantFormError('');
+        setTenantFormLoading(true);
+        try {
+            const result = await tenantApi.join(joinInviteCode);
+            if (result.access_token) {
+                // Multi-tenant: backend created a new User record, switch context
+                localStorage.setItem('token', result.access_token);
+            } else {
+                // Registration flow: same user updated, refresh store
+                const me = await authApi.me();
+                const token = localStorage.getItem('token');
+                if (token) setAuth(me, token);
+            }
+            setShowTenantMenu(false);
+            window.location.reload();
+        } catch (err: any) {
+            setTenantFormError(err.message || 'Failed to join company');
+        } finally {
+            setTenantFormLoading(false);
+        }
+    };
+
+    // Create company (inside modal)
+    const handleModalCreate = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setTenantFormError('');
+        setTenantFormLoading(true);
+        try {
+            const result = await tenantApi.selfCreate({ name: createCompanyName });
+            if (result.access_token) {
+                // Multi-tenant: backend created a new User record, switch context
+                localStorage.setItem('token', result.access_token);
+            } else {
+                // Registration flow: same user updated, refresh store
+                const me = await authApi.me();
+                const token = localStorage.getItem('token');
+                if (token) setAuth(me, token);
+            }
+            setShowTenantMenu(false);
+            window.location.reload();
+        } catch (err: any) {
+            setTenantFormError(err.message || 'Failed to create company');
+        } finally {
+            setTenantFormLoading(false);
+        }
+    };
+
     // Theme
     const [theme, setTheme] = useState<'dark' | 'light'>(() => {
         return (localStorage.getItem('theme') as 'dark' | 'light') || 'dark';
@@ -244,17 +397,8 @@ export default function Layout() {
     const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
     // Sidebar collapse state
-    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
-        return localStorage.getItem('sidebar_collapsed') === 'true';
-    });
-
-    const toggleSidebar = () => {
-        setIsSidebarCollapsed(prev => {
-            const newState = !prev;
-            localStorage.setItem('sidebar_collapsed', String(newState));
-            return newState;
-        });
-    };
+    const isSidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
+    const toggleSidebar = useAppStore(s => s.toggleSidebar);
 
     // Sidebar agent search & pin
     const [sidebarSearch, setSidebarSearch] = useState('');
@@ -295,24 +439,120 @@ export default function Layout() {
         navigate('/login');
     };
 
-    const toggleLang = () => {
-        i18n.changeLanguage(i18n.language === 'zh' ? 'en' : 'zh');
+    const selectUiLanguage = (code: string) => {
+        i18n.changeLanguage(code);
+        setShowLanguageSubmenu(false);
+        setShowAccountMenu(false);
     };
 
+    const openLangSubmenu = useCallback(() => {
+        if (langHoverCloseTimerRef.current) {
+            clearTimeout(langHoverCloseTimerRef.current);
+            langHoverCloseTimerRef.current = null;
+        }
+        setShowLanguageSubmenu(true);
+    }, []);
+
+    const scheduleCloseLangSubmenu = useCallback(() => {
+        if (langHoverCloseTimerRef.current) clearTimeout(langHoverCloseTimerRef.current);
+        langHoverCloseTimerRef.current = setTimeout(() => {
+            setShowLanguageSubmenu(false);
+            langHoverCloseTimerRef.current = null;
+        }, 200);
+    }, []);
+
+    useEffect(() => {
+        if (!showAccountMenu) {
+            if (langHoverCloseTimerRef.current) {
+                clearTimeout(langHoverCloseTimerRef.current);
+                langHoverCloseTimerRef.current = null;
+            }
+            setShowLanguageSubmenu(false);
+        }
+    }, [showAccountMenu]);
+
+    useEffect(() => () => {
+        if (langHoverCloseTimerRef.current) clearTimeout(langHoverCloseTimerRef.current);
+    }, []);
+
+    const updateLangSubmenuPosition = useCallback(() => {
+        const el = accountDropdownRef.current;
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        setLangSubmenuPos({ top: r.top, left: r.right + 2 });
+    }, []);
+
+    useLayoutEffect(() => {
+        if (!showLanguageSubmenu) return;
+        updateLangSubmenuPosition();
+        window.addEventListener('resize', updateLangSubmenuPosition);
+        window.addEventListener('scroll', updateLangSubmenuPosition, true);
+        return () => {
+            window.removeEventListener('resize', updateLangSubmenuPosition);
+            window.removeEventListener('scroll', updateLangSubmenuPosition, true);
+        };
+    }, [showLanguageSubmenu, updateLangSubmenuPosition]);
+
+    useEffect(() => {
+        const handleClickOutside = (e: MouseEvent) => {
+            const t = e.target as Node;
+            if (accountMenuRef.current?.contains(t)) return;
+            if (langSubmenuPortalRef.current?.contains(t)) return;
+            setShowAccountMenu(false);
+        };
+        if (showAccountMenu || showTenantMenu) document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showAccountMenu, showTenantMenu]);
+
+    const langSubmenuContent = showAccountMenu && showLanguageSubmenu && (
+        <div
+            ref={langSubmenuPortalRef}
+            className="account-lang-submenu account-lang-submenu-portal"
+            role="menu"
+            style={{ top: langSubmenuPos.top, left: langSubmenuPos.left }}
+            onMouseEnter={openLangSubmenu}
+            onMouseLeave={scheduleCloseLangSubmenu}
+        >
+            {APP_UI_LANGUAGES.map(({ code, nativeLabel }) => {
+                const active = resolveUiLangCode(i18n.language) === code;
+                return (
+                    <button
+                        key={code}
+                        type="button"
+                        role="menuitem"
+                        className={`account-lang-submenu-item${active ? ' is-active' : ''}`}
+                        onClick={() => selectUiLanguage(code)}
+                    >
+                        <span>{nativeLabel}</span>
+                        {active && <IconCheck size={14} stroke={2} />}
+                    </button>
+                );
+            })}
+        </div>
+    );
+
     return (
-        <div className="app-layout">
+        <div className={`app-layout ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
             <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
                 <div className="sidebar-top">
                     <div className="sidebar-logo">
                         <img src={theme === 'dark' ? '/logo-white.png' : '/logo-black.png'} alt="" style={{ width: 22, height: 22 }} />
                         <span className="sidebar-logo-text">Clawith</span>
+                        <button className="btn btn-ghost sidebar-collapse-btn" onClick={toggleSidebar} style={{
+                            padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            marginLeft: 'auto', color: 'var(--text-tertiary)',
+                        }} title={isSidebarCollapsed ? t('common.expandSidebar') : t('common.collapseSidebar')}>
+                            {isSidebarCollapsed ? SidebarIcons.expand : SidebarIcons.collapse}
+                        </button>
                     </div>
 
 
 
                     <div className="sidebar-section">
                         <NavLink to="/plaza" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
-                            <span className="sidebar-item-icon" style={{ display: 'flex', fontSize: '14px' }}>🏛️</span>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                <IconBuildingMonument size={14} stroke={1.5} />
+                            </span>
                             <span className="sidebar-item-text">{t('nav.plaza', 'Plaza')}</span>
                         </NavLink>
                         <NavLink to="/dashboard" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
@@ -321,14 +561,16 @@ export default function Layout() {
                         </NavLink>
                     </div>
                 </div>
+                
+                <div className="sidebar-divider" />
 
                 <div className="sidebar-scrollable">
                     {/* Sidebar search */}
                     {!isSidebarCollapsed && agents.length >= 5 && (
                         <div style={{ padding: '4px 12px 4px', position: 'relative' }}>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2" strokeLinecap="round" style={{ position: 'absolute', left: '20px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
-                                <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
-                            </svg>
+                            <div style={{ position: 'absolute', left: '20px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-tertiary)', display: 'flex' }}>
+                                <IconSearch size={14} stroke={2} />
+                            </div>
                             <input
                                 type="text"
                                 value={sidebarSearch}
@@ -343,7 +585,9 @@ export default function Layout() {
                                 onBlur={e => e.target.style.borderColor = 'var(--border-subtle)'}
                             />
                             {sidebarSearch && (
-                                <button onClick={() => setSidebarSearch('')} style={{ position: 'absolute', right: '18px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '2px', lineHeight: 1 }}>&#x2715;</button>
+                                <button onClick={() => setSidebarSearch('')} style={{ position: 'absolute', right: '18px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex', padding: 0 }}>
+                                    <IconX size={14} stroke={2} />
+                                </button>
                             )}
                         </div>
                     )}
@@ -369,16 +613,12 @@ export default function Layout() {
                                     to={`/agents/${agent.id}`}
                                     className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
                                     title={agent.name}
-                                    style={{ paddingRight: '28px' }}
                                 >
                                     <span className="sidebar-item-icon" style={{ position: 'relative' }}>
                                         <span className={`agent-avatar${agent.agent_type === 'openclaw' ? ' openclaw' : ''}`}>{avatarChar}</span>
                                         {agent.agent_type === 'openclaw' && (
-                                            <span className="agent-avatar-link">
-                                                <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                                                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                                                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                                                </svg>
+                                            <span className="agent-avatar-link" style={{ display: 'flex' }}>
+                                                <IconArrowUpRight size={10} stroke={2.5} />
                                             </span>
                                         )}
                                         {badge && <span className={`agent-avatar-badge ${badge}`} />}
@@ -391,9 +631,14 @@ export default function Layout() {
                                         className={`sidebar-pin-btn ${pinnedAgents.has(agent.id) ? 'pinned' : ''}`}
                                         title={pinnedAgents.has(agent.id) ? (isChinese ? '取消置顶' : 'Unpin') : (isChinese ? '置顶' : 'Pin to top')}
                                     >
-                                        <svg width="10" height="10" viewBox="0 0 24 24" fill={pinnedAgents.has(agent.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                            <path d="M12 17v5" /><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V5a1 1 0 0 1 1-1h1V2H7v2h1a1 1 0 0 1 1 1z" />
-                                        </svg>
+                                        {pinnedAgents.has(agent.id) ? (
+                                            <>
+                                                <IconPin size={14} stroke={1.5} className="pin-default" />
+                                                <IconPinnedOff size={14} stroke={1.5} className="pin-hover" />
+                                            </>
+                                        ) : (
+                                            <IconPin size={14} stroke={1.5} className="pin-on" />
+                                        )}
                                     </button>
                                 )}
                             </div>
@@ -426,16 +671,14 @@ export default function Layout() {
                         )}
                         {user && ['platform_admin', 'org_admin'].includes(user.role) && (
                             <NavLink to="/enterprise" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.enterprise')}>
-                                <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.settings}</span>
+                                <span className="sidebar-item-icon" style={{ display: 'flex' }}><IconBuilding size={16} stroke={1.5} /></span>
                                 <span className="sidebar-item-text">{t('nav.enterprise')}</span>
                             </NavLink>
                         )}
                         {user && user.role === 'platform_admin' && (
                             <NavLink to="/admin/platform-settings" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.platformSettings', 'Platform Settings')}>
                                 <span className="sidebar-item-icon" style={{ display: 'flex' }}>
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                                        <circle cx="8" cy="8" r="2.5" /><path d="M13.5 8a5.5 5.5 0 01-.3 1.8l1.3.8-.8 1.4-1.3-.8a5.5 5.5 0 01-1.5 1l.1 1.5H9.2l.1-1.5a5.5 5.5 0 01-1.5-1l-1.3.8-.8-1.4 1.3-.8A5.5 5.5 0 016.7 8a5.5 5.5 0 01.3-1.8l-1.3-.8.8-1.4 1.3.8a5.5 5.5 0 011.5-1L9.2 2.3h1.6l-.1 1.5a5.5 5.5 0 011.5 1l1.3-.8.8 1.4-1.3.8a5.5 5.5 0 01.5 1.8z" />
-                                    </svg>
+                                    <IconSettings size={16} stroke={1.5} />
                                 </span>
                                 <span className="sidebar-item-text">{t('nav.platformSettings', 'Platform Settings')}</span>
                             </NavLink>
@@ -444,15 +687,13 @@ export default function Layout() {
 
                     <div className="sidebar-footer">
                         <div className="sidebar-footer-controls" style={{
-                            display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '12px',
+                            display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px',
                         }}>
-                            <button className="btn btn-ghost" onClick={toggleSidebar} style={{
-                                padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center'
-                            }} title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}>
-                                {isSidebarCollapsed ? SidebarIcons.expand : SidebarIcons.collapse}
+                            <button className="btn btn-ghost" onClick={toggleTheme} style={{
+                                padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            }} title={theme === 'dark' ? t('common.lightMode') : t('common.darkMode')}>
+                                {theme === 'dark' ? SidebarIcons.sun : SidebarIcons.moon}
                             </button>
-                            <div style={{ flex: 1 }} />
-                            {/* Notification bell */}
                             <button className="btn btn-ghost" onClick={() => { setShowNotifications(v => !v); if (!showNotifications) refetchNotifications(); }} style={{
                                 padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative',
                             }} title={isChinese ? '通知' : 'Notifications'}>
@@ -469,31 +710,56 @@ export default function Layout() {
                                     }}>{(unreadCount as number) > 99 ? '99+' : unreadCount}</span>
                                 )}
                             </button>
-                            <button className="btn btn-ghost" onClick={toggleTheme} style={{
-                                fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px',
-                                padding: '4px 8px',
-                            }}>
-                                {theme === 'dark' ? SidebarIcons.sun : SidebarIcons.moon}
-                            </button>
-                            <button className="btn btn-ghost" onClick={toggleLang} style={{
-                                fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px',
-                                padding: '4px 8px',
-                            }} title={i18n.language === 'zh' ? 'English' : '中文'}>
-                                {SidebarIcons.globe}
+                            <button className="btn btn-ghost" onClick={openTenantModal} style={{
+                                padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                marginLeft: 'auto',
+                            }} title={isChinese ? '切换企业' : 'Switch Organization'}>
+                                <IconSwitchHorizontal size={16} stroke={1.5} />
                             </button>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div ref={accountMenuRef} style={{ position: 'relative' }}>
+                            {showAccountMenu && (
+                                <div className="account-menus-container">
+                                <div className="account-dropdown" ref={accountDropdownRef}>
+                                    <div
+                                        className="account-dropdown-language-hover-wrap"
+                                        onMouseEnter={openLangSubmenu}
+                                        onMouseLeave={scheduleCloseLangSubmenu}
+                                    >
+                                        <button
+                                            type="button"
+                                            className="account-dropdown-item language-menu-trigger"
+                                            aria-haspopup="menu"
+                                            aria-expanded={showLanguageSubmenu}
+                                        >
+                                            <IconWorld size={15} stroke={1.5} />
+                                            <span className="language-menu-label">
+                                                {t('layout.language', {
+                                                    lng: resolveUiLangCode(i18n.language),
+                                                    defaultValue: 'Language',
+                                                })}
+                                            </span>
+                                            <span className="language-menu-chevron" aria-hidden>
+                                                <IconChevronRight size={16} stroke={1.75} />
+                                            </span>
+                                        </button>
+                                    </div>
+                                    <button className="account-dropdown-item" onClick={() => { setShowAccountSettings(true); setShowAccountMenu(false); }}>
+                                        <IconUser size={15} stroke={1.5} />
+                                        <span>{isChinese ? '账户设置' : 'Account Settings'}</span>
+                                    </button>
+                                    <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '4px 0' }} />
+                                    <button className="account-dropdown-item account-dropdown-danger" onClick={() => { handleLogout(); setShowAccountMenu(false); }}>
+                                        <IconLogout size={15} stroke={1.5} />
+                                        <span>{t('layout.logout', 'Logout')}</span>
+                                    </button>
+                                </div>
+                                </div>
+                            )}
+                            {typeof document !== 'undefined' && langSubmenuContent && createPortal(langSubmenuContent, document.body)}
                             <div
-                                style={{
-                                    display: 'flex', alignItems: 'center', gap: '8px',
-                                    flex: 1, minWidth: 0, cursor: 'pointer',
-                                    padding: '4px 6px', borderRadius: '6px',
-                                    transition: 'background 0.15s',
-                                }}
-                                onClick={() => setShowAccountSettings(true)}
-                                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
-                                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                                title={isChinese ? '账户设置' : 'Account Settings'}
+                                className="sidebar-account-row"
+                                onClick={() => setShowAccountMenu(v => !v)}
                             >
                                 <div style={{
                                     width: '28px', height: '28px', borderRadius: 'var(--radius-md)',
@@ -513,103 +779,230 @@ export default function Layout() {
                                                 user?.role === 'agent_admin' ? t('roles.agentAdmin') : t('roles.member')}
                                     </div>
                                 </div>
+                                <IconChevronUp size={14} stroke={1.5} style={{
+                                    color: 'var(--text-tertiary)', flexShrink: 0,
+                                    transform: showAccountMenu ? 'rotate(0deg)' : 'rotate(180deg)',
+                                    transition: 'transform 0.2s ease',
+                                }} />
                             </div>
-                            <button className="btn btn-ghost" onClick={handleLogout} style={{
-                                padding: '4px 6px', color: 'var(--text-tertiary)',
-                                display: 'flex', alignItems: 'center', flexShrink: 0,
-                            }} title={t('layout.logout', 'Logout')}>
-                                {SidebarIcons.logout}
-                            </button>
                         </div>
-                        {/* Version */}
                         <VersionDisplay />
                     </div>
                 </div>
             </nav>
 
-            {/* Notification Panel */}
-            {showNotifications && (
-                <div style={{
-                    position: 'fixed', top: 0, bottom: 0, left: isSidebarCollapsed ? '60px' : '220px',
-                    width: '360px', background: 'var(--bg-primary)', borderRight: '1px solid var(--border-subtle)',
-                    zIndex: 9999, display: 'flex', flexDirection: 'column',
-                    boxShadow: '4px 0 24px rgba(0,0,0,0.15)', transition: 'left 0.2s',
-                }}>
-                    <div style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                        <div style={{ padding: '16px 20px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 600, flex: 1 }}>{isChinese ? '通知' : 'Notifications'}</h3>
-                            {(unreadCount as number) > 0 && (
-                                <button className="btn btn-ghost" onClick={markAllRead} style={{ fontSize: '11px', padding: '4px 8px' }}>
-                                    {isChinese ? '全部已读' : 'Mark all read'}
-                                </button>
-                            )}
-                            <button className="btn btn-ghost" onClick={() => setShowNotifications(false)} style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>×</button>
+            {/* Tenant Switcher Modal */}
+            {showTenantMenu && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)' }} onClick={() => setShowTenantMenu(false)}>
+                    <div style={{ background: 'var(--bg-primary)', borderRadius: '12px', border: '1px solid var(--border-subtle)', width: '420px', maxHeight: '80vh', overflow: 'auto', padding: '24px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }} onClick={e => e.stopPropagation()}>
+                        {/* Header */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>{isChinese ? '切换企业' : 'Switch Organization'}</h3>
+                            <button onClick={() => setShowTenantMenu(false)} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', fontSize: '18px', cursor: 'pointer', padding: '4px 8px' }}>×</button>
                         </div>
-                        <div style={{ display: 'flex', gap: '0', padding: '0 20px', marginTop: '12px' }}>
-                            {[
-                                { key: 'all', zh: '全部', en: 'All' },
-                                { key: 'tool', zh: '工具执行', en: 'Tool' },
-                                { key: 'approval', zh: '审批', en: 'Approval' },
-                                { key: 'social', zh: '社交', en: 'Social' },
-                            ].map(tab => (
+
+                        {/* Tenant List */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' }}>
+                            {myTenants.map((tenant: any) => (
                                 <button
-                                    key={tab.key}
-                                    onClick={() => { setNotifCategory(tab.key); }}
-                                    style={{
-                                        background: 'none', border: 'none', cursor: 'pointer',
-                                        padding: '6px 12px', fontSize: '12px', fontWeight: 500,
-                                        color: notifCategory === tab.key ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                                        borderBottom: notifCategory === tab.key ? '2px solid var(--accent-primary)' : '2px solid transparent',
-                                        marginBottom: '-1px', transition: 'all 0.15s',
+                                    key={tenant.tenant_id}
+                                    onClick={() => {
+                                        handleSwitchTenant(tenant.tenant_id);
+                                        setShowTenantMenu(false);
                                     }}
+                                    style={{
+                                        width: '100%', display: 'flex', alignItems: 'center', gap: '10px',
+                                        padding: '10px 12px', borderRadius: '8px',
+                                        background: tenant.tenant_id === currentTenant ? 'var(--bg-tertiary)' : 'transparent',
+                                        border: tenant.tenant_id === currentTenant ? '1px solid var(--border-subtle)' : '1px solid transparent',
+                                        color: 'var(--text-primary)', cursor: 'pointer', fontSize: '13px',
+                                        textAlign: 'left', transition: 'background 0.15s',
+                                    }}
+                                    onMouseEnter={e => { if (tenant.tenant_id !== currentTenant) (e.target as HTMLElement).style.background = 'var(--bg-secondary)'; }}
+                                    onMouseLeave={e => { if (tenant.tenant_id !== currentTenant) (e.target as HTMLElement).style.background = 'transparent'; }}
                                 >
-                                    {isChinese ? tab.zh : tab.en}
+                                    <IconBuilding size={16} stroke={1.5} style={{ flexShrink: 0 }} />
+                                    <span style={{ flex: 1, fontWeight: tenant.tenant_id === currentTenant ? 500 : 400 }}>{tenant.tenant_name}</span>
+                                    {tenant.tenant_id === currentTenant && (
+                                        <IconCheck size={16} stroke={2} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+                                    )}
                                 </button>
                             ))}
                         </div>
-                    </div>
-                    <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-                        {(notifications as any[]).length === 0 && (
-                            <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                                {isChinese ? '暂无通知' : 'No notifications'}
+
+                        {/* Divider */}
+                        <div style={{ height: '1px', background: 'var(--border-subtle)', marginBottom: '16px' }} />
+
+                        {/* Join/Create Toggle */}
+                        {!showJoinCreateForm ? (
+                            <button
+                                onClick={() => setShowJoinCreateForm(true)}
+                                style={{
+                                    width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
+                                    padding: '10px 12px', borderRadius: '8px', background: 'transparent',
+                                    border: '1px dashed var(--border-subtle)', color: 'var(--accent-primary)',
+                                    cursor: 'pointer', fontSize: '13px', textAlign: 'left',
+                                    transition: 'background 0.15s, border-color 0.15s',
+                                }}
+                                onMouseEnter={e => { (e.target as HTMLElement).style.background = 'var(--bg-secondary)'; }}
+                                onMouseLeave={e => { (e.target as HTMLElement).style.background = 'transparent'; }}
+                            >
+                                <IconPlus size={16} stroke={1.5} />
+                                <span>{isChinese ? '创建或加入新公司' : 'Create or Join Company'}</span>
+                            </button>
+                        ) : (
+                            <div>
+                                {/* Error message */}
+                                {tenantFormError && (
+                                    <div style={{ padding: '8px 12px', borderRadius: '6px', fontSize: '12px', marginBottom: '12px', background: 'rgba(255,80,80,0.12)', color: 'var(--error)' }}>{tenantFormError}</div>
+                                )}
+
+                                {/* Join Company */}
+                                <form onSubmit={handleModalJoin} style={{ marginBottom: '16px' }}>
+                                    <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                                        {isChinese ? '通过邀请码加入' : 'Join via Invitation Code'}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                        <input
+                                            className="form-input"
+                                            value={joinInviteCode}
+                                            onChange={e => setJoinInviteCode(e.target.value)}
+                                            placeholder={isChinese ? '输入邀请码' : 'Enter invitation code'}
+                                            style={{ flex: 1, fontSize: '13px', textTransform: 'uppercase', letterSpacing: '1px', fontFamily: 'monospace' }}
+                                        />
+                                        <button className="btn btn-primary" type="submit" disabled={tenantFormLoading || !joinInviteCode.trim()} style={{ padding: '6px 14px', fontSize: '12px', whiteSpace: 'nowrap' }}>
+                                            {tenantFormLoading ? '...' : (isChinese ? '加入' : 'Join')}
+                                        </button>
+                                    </div>
+                                </form>
+
+                                {/* Create Company */}
+                                {allowSelfCreate && (
+                                    <>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                                            <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
+                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '1px' }}>{isChinese ? '或者' : 'OR'}</span>
+                                            <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
+                                        </div>
+                                        <form onSubmit={handleModalCreate}>
+                                            <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                                                {isChinese ? '创建新公司' : 'Create a New Company'}
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                <input
+                                                    className="form-input"
+                                                    value={createCompanyName}
+                                                    onChange={e => setCreateCompanyName(e.target.value)}
+                                                    placeholder={isChinese ? '公司名称' : 'Company name'}
+                                                    style={{ flex: 1, fontSize: '13px' }}
+                                                />
+                                                <button className="btn btn-primary" type="submit" disabled={tenantFormLoading || !createCompanyName.trim()} style={{ padding: '6px 14px', fontSize: '12px', whiteSpace: 'nowrap' }}>
+                                                    {tenantFormLoading ? '...' : (isChinese ? '创建' : 'Create')}
+                                                </button>
+                                            </div>
+                                        </form>
+                                    </>
+                                )}
+
+                                {/* Back link */}
+                                <div style={{ marginTop: '12px', textAlign: 'center' }}>
+                                    <button onClick={() => { setShowJoinCreateForm(false); setTenantFormError(''); }} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '4px 8px' }}>
+                                        {isChinese ? '返回' : 'Back'}
+                                    </button>
+                                </div>
                             </div>
                         )}
-                        {(notifications as any[]).map((n: any) => (
-                            <div
-                                key={n.id}
-                                onClick={() => {
-                                    if (!n.is_read) markOneRead(n.id);
-                                    if (n.type === 'broadcast' || !n.link) {
-                                        setSelectedNotification(n);
-                                    } else if (n.link) {
-                                        navigate(n.link); setShowNotifications(false);
-                                    }
-                                }}
-                                style={{
-                                    padding: '12px 20px', cursor: 'pointer',
-                                    borderBottom: '1px solid var(--border-subtle)',
-                                    background: n.is_read ? 'transparent' : 'var(--bg-secondary)',
-                                    transition: 'background 0.15s',
-                                }}
-                                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
-                                onMouseLeave={e => (e.currentTarget.style.background = n.is_read ? 'transparent' : 'var(--bg-secondary)')}
-                            >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                                    {!n.is_read && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-primary)', flexShrink: 0 }} />}
-                                    <span style={{ fontSize: '12px', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {n.title}
-                                    </span>
-                                </div>
-                                {n.body && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: '1.4', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.body}</div>}
-                                <div style={{ fontSize: '10px', color: 'var(--text-quaternary)', marginTop: '4px' }}>
-                                    {n.created_at ? new Date(n.created_at).toLocaleString() : ''}
-                                </div>
-                            </div>
-                        ))}
                     </div>
                 </div>
             )}
-            {showNotifications && <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setShowNotifications(false)} />}
+
+            {/* Notification Modal */}
+            {showNotifications && (
+                <>
+                    <div style={{ position: 'fixed', inset: 0, zIndex: 9998, background: 'rgba(0,0,0,0.5)' }} onClick={() => setShowNotifications(false)} />
+                    <div style={{
+                        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+                        width: 'calc(100vw - 80px)', maxWidth: '800px',
+                        height: '80vh', maxHeight: '800px',
+                        background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
+                        borderRadius: '12px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+                        zIndex: 9999, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                    }}>
+                        <div style={{ borderBottom: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+                            <div style={{ padding: '16px 24px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, flex: 1 }}>{isChinese ? '通知' : 'Notifications'}</h3>
+                                {(unreadCount as number) > 0 && (
+                                    <button className="btn btn-ghost" onClick={markAllRead} style={{ fontSize: '12px', padding: '4px 10px' }}>
+                                        {isChinese ? '全部已读' : 'Mark all read'}
+                                    </button>
+                                )}
+                                <button className="btn btn-ghost" onClick={() => setShowNotifications(false)} style={{ padding: '4px 8px', fontSize: '18px', lineHeight: 1 }}>×</button>
+                            </div>
+                            <div style={{ display: 'flex', gap: '0', padding: '0 24px', marginTop: '12px' }}>
+                                {[
+                                    { key: 'all', zh: '全部', en: 'All' },
+                                    { key: 'tool', zh: '工具执行', en: 'Tool' },
+                                    { key: 'approval', zh: '审批', en: 'Approval' },
+                                    { key: 'social', zh: '社交', en: 'Social' },
+                                ].map(tab => (
+                                    <button
+                                        key={tab.key}
+                                        onClick={() => { setNotifCategory(tab.key); }}
+                                        style={{
+                                            background: 'none', border: 'none', cursor: 'pointer',
+                                            padding: '8px 14px', fontSize: '13px', fontWeight: 500,
+                                            color: notifCategory === tab.key ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                                            borderBottom: notifCategory === tab.key ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                                            marginBottom: '-1px', transition: 'all 0.15s',
+                                        }}
+                                    >
+                                        {isChinese ? tab.zh : tab.en}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+                            {(notifications as any[]).length === 0 && (
+                                <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                    {isChinese ? '暂无通知' : 'No notifications'}
+                                </div>
+                            )}
+                            {(notifications as any[]).map((n: any) => (
+                                <div
+                                    key={n.id}
+                                    onClick={() => {
+                                        if (!n.is_read) markOneRead(n.id);
+                                        if (n.type === 'broadcast' || !n.link) {
+                                            setSelectedNotification(n);
+                                        } else if (n.link) {
+                                            navigate(n.link); setShowNotifications(false);
+                                        }
+                                    }}
+                                    style={{
+                                        padding: '14px 24px', cursor: 'pointer',
+                                        borderBottom: '1px solid var(--border-subtle)',
+                                        background: n.is_read ? 'transparent' : 'var(--bg-secondary)',
+                                        transition: 'background 0.15s',
+                                    }}
+                                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
+                                    onMouseLeave={e => (e.currentTarget.style.background = n.is_read ? 'transparent' : 'var(--bg-secondary)')}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                                        {!n.is_read && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-primary)', flexShrink: 0 }} />}
+                                        <span style={{ fontSize: '13px', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {n.title}
+                                        </span>
+                                    </div>
+                                    {n.body && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: '1.4', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.body}</div>}
+                                    <div style={{ fontSize: '11px', color: 'var(--text-quaternary)', marginTop: '4px' }}>
+                                        {n.created_at ? new Date(n.created_at).toLocaleString() : ''}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </>
+            )}
             
             {/* Notification Detail Modal */}
             {selectedNotification && (
@@ -630,7 +1023,7 @@ export default function Layout() {
                 </div>
             )}
 
-            <main className="main-content">
+            <main className={`main-content${isChatPage ? ' chat-page' : ''}`}>
                 <Outlet />
             </main>
 

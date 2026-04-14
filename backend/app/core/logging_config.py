@@ -58,8 +58,18 @@ def intercept_standard_logging():
                 frame = frame.f_back
                 depth += 1
 
+            # Capture the message safely
+            try:
+                message = record.getMessage()
+            except (TypeError, ValueError):
+                # Fallback if formatting fails (e.g. third party lib bug)
+                if record.args:
+                    message = f"{record.msg} [args={record.args}]"
+                else:
+                    message = record.msg
+
             logger.opt(depth=depth, exception=record.exc_info).log(
-                level, record.getMessage()
+                level, message
             )
 
     # Replace all standard logger handlers

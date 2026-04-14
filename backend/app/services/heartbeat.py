@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 # Default heartbeat instruction used when HEARTBEAT.md doesn't exist
 DEFAULT_HEARTBEAT_INSTRUCTION = """[Heartbeat Check]
@@ -117,11 +117,30 @@ def _is_in_active_hours(active_hours: str, tz_name: str = "UTC") -> bool:
 
 
 async def _execute_heartbeat(agent_id: uuid.UUID):
-    """Execute a single heartbeat for an agent."""
+    """Execute a single heartbeat for an agent.
+
+    Uses three short DB transactions to avoid holding connections
+    during long-running LLM calls:
+      Phase 1: Read agent, model, context, notifications → commit
+      Phase 2: LLM tool loop (no DB connection held)
+      Phase 3: Write token usage + last_heartbeat_at → commit
+    """
     try:
         from app.database import async_session
         from app.models.agent import Agent
         from app.models.llm import LLMModel
+
+        # ── Phase 1: Read all context from DB (short transaction) ──
+        agent_name = ""
+        agent_role = ""
+        agent_creator_id = None
+        model_provider = ""
+        model_api_key = ""
+        model_model = ""
+        model_base_url = None
+        model_temperature = None
+        model_max_output_tokens = None
+        heartbeat_instruction = DEFAULT_HEARTBEAT_INSTRUCTION
 
         async with async_session() as db:
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
@@ -138,23 +157,31 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             if not model:
                 return
 
+            # Cache values we need for Phase 2 (after DB session closes)
+            agent_name = agent.name
+            agent_role = agent.role_description or ""
+            agent_creator_id = agent.creator_id
+            model_provider = model.provider
+            model_api_key = get_model_api_key(model)
+            model_model = model.model
+            model_base_url = model.base_url
+            model_temperature = model.temperature
+            model_max_output_tokens = getattr(model, 'max_output_tokens', None)
+            model_request_timeout = getattr(model, 'request_timeout', None)
+
             # Read HEARTBEAT.md if it exists, otherwise use default
             from pathlib import Path
             from app.config import get_settings
             settings = get_settings()
 
-            heartbeat_instruction = DEFAULT_HEARTBEAT_INSTRUCTION
-            for ws_root in [
-                Path("/tmp/clawith_workspaces") / str(agent_id),
-                Path(settings.AGENT_DATA_DIR) / str(agent_id),
-            ]:
-                hb_file = ws_root / "HEARTBEAT.md"
-                if hb_file.exists():
-                    try:
-                        custom = hb_file.read_text(encoding="utf-8", errors="replace").strip()
-                        if custom:
-                            # Prepend privacy rules to custom heartbeat
-                            heartbeat_instruction = custom + """
+            ws_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
+            hb_file = ws_root / "HEARTBEAT.md"
+            if hb_file.exists():
+                try:
+                    custom = hb_file.read_text(encoding="utf-8", errors="replace").strip()
+                    if custom:
+                        # Prepend privacy rules to custom heartbeat
+                        heartbeat_instruction = custom + """
 
 ⚠️ PRIVACY RULES — STRICTLY FOLLOW:
 - NEVER share information from private user conversations
@@ -168,13 +195,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 - Maximum 2 comments on existing posts
 - Do NOT post trivial or repetitive content
 """
-                    except Exception:
-                        pass
-                    break
+                except Exception:
+                    pass
 
             # Build context
             from app.services.agent_context import build_agent_context
-            system_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "")
+            static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent_role)
 
             # Fetch recent activity to give heartbeat context for curiosity exploration
             from app.models.activity_log import AgentActivityLog
@@ -189,16 +215,17 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 )
                 recent_activities = recent_result.scalars().all()
                 if recent_activities:
-                    items = []
+                    itms = []
                     for act in reversed(recent_activities):  # chronological order
                         ts = act.created_at.strftime("%m-%d %H:%M") if act.created_at else ""
-                        items.append(f"- [{ts}] {act.action_type}: {act.summary[:120]}")
-                    recent_context = "\n\n---\n## Recent Activity Context\nHere are your recent interactions and work to help you identify relevant topics:\n\n" + "\n".join(items)
+                        itms.append(f"- [{ts}] {act.action_type}: {act.summary[:120]}")
+                    recent_context = "\\n\\n---\\n## Recent Activity Context\\nHere are your recent interactions and work to help you identify relevant topics:\\n\\n" + "\\n".join(itms)
             except Exception as e:
                 logger.warning(f"Failed to fetch recent activity for heartbeat context: {e}")
 
             # Fetch unread notifications for this agent (plaza replies, mentions, broadcasts)
             inbox_context = ""
+            notif_lines = []
             try:
                 from app.models.notification import Notification
                 notif_result = await db.execute(
@@ -209,173 +236,179 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 )
                 unread = notif_result.scalars().all()
                 if unread:
-                    lines = ["\n\n---\n## Inbox (new messages for you — please review and respond if appropriate)"]
+                    notif_lines = ["\\n\\n---\\n## Inbox (new messages for you — please review and respond if appropriate)"]
                     for n in unread:
                         sender = f"from {n.sender_name}" if n.sender_name else ""
-                        lines.append(f"- [{n.type}] {n.title} {sender}: {(n.body or '')[:150]}")
+                        notif_lines.append(f"- [{n.type}] {n.title} {sender}: {(n.body or '')[:150]}")
                         n.is_read = True
-                    await db.flush()
-                    inbox_context = "\n".join(lines)
             except Exception as e:
                 logger.warning(f"Failed to drain agent notifications: {e}")
+            
+            inbox_context = "\\n".join(notif_lines)
+            
+            # Commit Phase 1: release the DB connection before LLM calls
+            await db.commit()
+        # DB session is now closed — connection returned to pool
 
-            full_instruction = heartbeat_instruction + recent_context + inbox_context
+        # ── Phase 2: LLM calls (no DB connection held) ──
+        full_instruction = heartbeat_instruction + recent_context + inbox_context
 
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": full_instruction},
-            ]
+        # Call LLM with tools using unified client
+        from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
+        from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
 
-            # Call LLM with tools using unified client
-            from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
-            from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
+        try:
+            client = create_llm_client(
+                provider=model_provider,
+                api_key=model_api_key,
+                model=model_model,
+                base_url=model_base_url,
+                timeout=float(model_request_timeout or 120.0),
+            )
+        except Exception as e:
+            logger.error(f"Failed to create LLM client: {e}")
+            return
 
+        tools_for_llm = await get_agent_tools_for_llm(agent_id)
+
+        reply = ""
+        plaza_posts_made = 0       # hard limit: 1 new post per heartbeat
+        plaza_comments_made = 0    # hard limit: 2 comments per heartbeat
+        _hb_accumulated_tokens = 0
+
+        # Token tracking helpers
+        from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
+
+        # Convert messages to LLMMessage format
+        llm_messages = [
+            LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),
+            LLMMessage(role="user", content=full_instruction)
+        ]
+
+        for round_i in range(20):  # More rounds for search + write + plaza
             try:
-                client = create_llm_client(
-                    provider=model.provider,
-                    api_key=model.api_key_encrypted,
-                    model=model.model,
-                    base_url=model.base_url,
-                    timeout=120.0,
+                response = await client.complete(
+                    messages=llm_messages,
+                    tools=tools_for_llm,
+                    temperature=model_temperature,
+                    max_tokens=get_max_tokens(model_provider, model_model, model_max_output_tokens),
                 )
+            except LLMError as e:
+                logger.error(f"LLM error in heartbeat: {e}")
+                reply = ""
+                break
             except Exception as e:
-                logger.error(f"Failed to create LLM client: {e}")
-                return
+                logger.error(f"LLM call error in heartbeat: {e}")
+                reply = ""
+                break
 
-            tools_for_llm = await get_agent_tools_for_llm(agent_id)
+            # Track tokens for this round
+            real_tokens = extract_usage_tokens(response.usage)
+            if real_tokens:
+                _hb_accumulated_tokens += real_tokens
+            else:
+                round_chars = sum(len(m.content or '') for m in llm_messages) + len(response.content or '')
+                _hb_accumulated_tokens += estimate_tokens_from_chars(round_chars)
 
-            reply = ""
-            plaza_posts_made = 0       # hard limit: 1 new post per heartbeat
-            plaza_comments_made = 0    # hard limit: 2 comments per heartbeat
-            _hb_accumulated_tokens = 0
+            if response.tool_calls:
+                # Add assistant message with tool calls
+                llm_messages.append(LLMMessage(
+                    role="assistant",
+                    content=response.content or None,
+                    tool_calls=[{
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": tc["function"],
+                    } for tc in response.tool_calls],
+                    reasoning_content=response.reasoning_content,
+                ))
 
-            # Token tracking helpers
-            from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
+                # Tools that require arguments — if LLM sends empty args, skip and ask to retry
+                # (aligned with call_llm in websocket.py)
+                _TOOLS_REQUIRING_ARGS = {
+                    "write_file", "read_file", "delete_file", "read_document",
+                    "send_message_to_agent", "send_feishu_message", "send_email",
+                    "web_search", "jina_search", "jina_read",
+                }
 
-            # Convert messages to LLMMessage format
-            llm_messages = [
-                LLMMessage(role=m["role"], content=m["content"]) for m in messages
-            ]
+                for tc in response.tool_calls:
+                    fn = tc["function"]
+                    tool_name = fn["name"]
+                    raw_args = fn.get("arguments", "{}")
+                    logger.info(f"[Heartbeat] Raw arguments for {tool_name} (len={len(raw_args) if raw_args else 0}): {repr(raw_args[:300]) if raw_args else 'None'}")
+                    try:
+                        args = json.loads(raw_args) if raw_args else {}
+                    except json.JSONDecodeError as je:
+                        logger.warning(f"[Heartbeat] JSON parse failed for {tool_name}: {je}. Raw: {repr(raw_args[:200])}")
+                        args = {}
 
-            for round_i in range(20):  # More rounds for search + write + plaza
-                try:
-                    response = await client.complete(
-                        messages=llm_messages,
-                        tools=tools_for_llm,
-                        temperature=model.temperature,
-                        max_tokens=get_max_tokens(model.provider, model.model, getattr(model, 'max_output_tokens', None)),
-                    )
-                except LLMError as e:
-                    logger.error(f"LLM error in heartbeat: {e}")
-                    reply = ""
-                    break
-                except Exception as e:
-                    logger.error(f"LLM call error in heartbeat: {e}")
-                    reply = ""
-                    break
-
-                # Track tokens for this round
-                real_tokens = extract_usage_tokens(response.usage)
-                if real_tokens:
-                    _hb_accumulated_tokens += real_tokens
-                else:
-                    round_chars = sum(len(m.content or '') for m in llm_messages) + len(response.content or '')
-                    _hb_accumulated_tokens += estimate_tokens_from_chars(round_chars)
-
-                if response.tool_calls:
-                    # Add assistant message with tool calls
-                    llm_messages.append(LLMMessage(
-                        role="assistant",
-                        content=response.content or None,
-                        tool_calls=[{
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": tc["function"],
-                        } for tc in response.tool_calls],
-                        reasoning_content=response.reasoning_content,
-                    ))
-
-                    # Tools that require arguments — if LLM sends empty args, skip and ask to retry
-                    # (aligned with call_llm in websocket.py)
-                    _TOOLS_REQUIRING_ARGS = {
-                        "write_file", "read_file", "delete_file", "read_document",
-                        "send_message_to_agent", "send_feishu_message", "send_email",
-                        "web_search", "jina_search", "jina_read",
-                    }
-
-                    for tc in response.tool_calls:
-                        fn = tc["function"]
-                        tool_name = fn["name"]
-                        raw_args = fn.get("arguments", "{}")
-                        logger.info(f"[Heartbeat] Raw arguments for {tool_name} (len={len(raw_args) if raw_args else 0}): {repr(raw_args[:300]) if raw_args else 'None'}")
-                        try:
-                            args = json.loads(raw_args) if raw_args else {}
-                        except json.JSONDecodeError as je:
-                            logger.warning(f"[Heartbeat] JSON parse failed for {tool_name}: {je}. Raw: {repr(raw_args[:200])}")
-                            args = {}
-
-                        # Guard: if a tool that requires arguments received empty args,
-                        # return an error to LLM instead of executing
-                        if not args and tool_name in _TOOLS_REQUIRING_ARGS:
-                            logger.warning(f"[Heartbeat] Empty arguments for {tool_name}, asking LLM to retry")
-                            llm_messages.append(LLMMessage(
-                                role="tool",
-                                tool_call_id=tc["id"],
-                                content=f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments.",
-                            ))
-                            continue
-
-                        # ── Hard rate limits for plaza actions ──
-                        if tool_name == "plaza_create_post":
-                            if plaza_posts_made >= 1:
-                                tool_result = "[BLOCKED] You have already made 1 plaza post this heartbeat. Do not post again."
-                            else:
-                                tool_result = await execute_tool(tool_name, args, agent_id, agent.creator_id)
-                                plaza_posts_made += 1
-                        elif tool_name == "plaza_add_comment":
-                            if plaza_comments_made >= 2:
-                                tool_result = "[BLOCKED] You have already made 2 comments this heartbeat. Do not comment again."
-                            else:
-                                tool_result = await execute_tool(tool_name, args, agent_id, agent.creator_id)
-                                plaza_comments_made += 1
-                        else:
-                            tool_result = await execute_tool(tool_name, args, agent_id, agent.creator_id)
-
+                    # Guard: if a tool that requires arguments received empty args,
+                    # return an error to LLM instead of executing
+                    if not args and tool_name in _TOOLS_REQUIRING_ARGS:
+                        logger.warning(f"[Heartbeat] Empty arguments for {tool_name}, asking LLM to retry")
                         llm_messages.append(LLMMessage(
                             role="tool",
                             tool_call_id=tc["id"],
-                            content=str(tool_result),
+                            content=f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments.",
                         ))
-                else:
-                    reply = response.content or ""
-                    break
+                        continue
+
+                    # ── Hard rate limits for plaza actions ──
+                    if tool_name == "plaza_create_post":
+                        if plaza_posts_made >= 1:
+                            tool_result = "[BLOCKED] You have already made 1 plaza post this heartbeat. Do not post again."
+                        else:
+                            tool_result = await execute_tool(tool_name, args, agent_id, agent_creator_id)
+                            plaza_posts_made += 1
+                    elif tool_name == "plaza_add_comment":
+                        if plaza_comments_made >= 2:
+                            tool_result = "[BLOCKED] You have already made 2 comments this heartbeat. Do not comment again."
+                        else:
+                            tool_result = await execute_tool(tool_name, args, agent_id, agent_creator_id)
+                            plaza_comments_made += 1
+                    else:
+                        tool_result = await execute_tool(tool_name, args, agent_id, agent_creator_id)
+
+                    llm_messages.append(LLMMessage(
+                        role="tool",
+                        tool_call_id=tc["id"],
+                        content=str(tool_result),
+                    ))
             else:
-                reply = ""
+                reply = response.content or ""
+                break
 
-            await client.close()
+        await client.close()
 
+        # ── Phase 3: Write results back to DB (short transaction) ──
+        async with async_session() as db:
             # Record accumulated heartbeat token usage
             if _hb_accumulated_tokens > 0:
                 await record_token_usage(agent_id, _hb_accumulated_tokens)
 
-            # Suppress HEARTBEAT_OK
-            is_ok = "HEARTBEAT_OK" in reply.upper().replace(" ", "_") if reply else False
-            if not is_ok and reply:
-                from app.services.activity_logger import log_activity
-                await log_activity(
-                    agent_id, "heartbeat",
-                    f"Heartbeat: {reply[:80]}",
-                    detail={"reply": reply[:500]},
-                )
-
             # Update last_heartbeat_at
-            agent.last_heartbeat_at = datetime.now(timezone.utc)
+            # Using an update statement is safer to avoid state drift if the object was updated elsewhere
+            await db.execute(
+                update(Agent)
+                .where(Agent.id == agent_id)
+                .values(last_heartbeat_at=datetime.now(timezone.utc))
+            )
             await db.commit()
 
-            logger.info(f"💓 Heartbeat for {agent.name}: {'OK' if is_ok else reply[:60]}")
+        # Log activity if not empty
+        is_ok = "HEARTBEAT_OK" in reply.upper().replace(" ", "_") if reply else False
+        if not is_ok and reply:
+            from app.services.activity_logger import log_activity
+            await log_activity(
+                agent_id, "heartbeat",
+                f"Heartbeat: {reply[:80]}",
+                detail={"reply": reply[:500]},
+            )
+
+        logger.info(f"💓 Heartbeat for {agent_name}: {'OK' if is_ok else reply[:60]}")
 
     except Exception as e:
-        logger.error(f"Heartbeat error for agent {agent_id}: {e}", exc_info=True)
+        logger.exception(f"Heartbeat error for agent {agent_id}: {e}")
 
 
 async def _heartbeat_tick():
@@ -439,7 +472,7 @@ async def _heartbeat_tick():
                 await write_audit_log("heartbeat_tick", {"eligible_agents": len(agents), "triggered": triggered})
 
     except Exception as e:
-        logger.error(f"Heartbeat tick error: {e}", exc_info=True)
+        logger.exception(f"Heartbeat tick error: {e}")
         await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
 
 

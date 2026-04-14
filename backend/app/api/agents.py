@@ -1,20 +1,84 @@
 """Agent (Digital Employee) API routes."""
 
+import hashlib
+import json
+import secrets
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.permissions import check_agent_access, is_agent_creator
-from app.core.security import get_current_user, require_role
+from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission
 from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _serialize_dt(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+async def _archive_agent_task_history(db: AsyncSession, agent_id: uuid.UUID, archive_dir: Path) -> Path | None:
+    """Persist task and task-log history into the agent archive directory before DB cleanup."""
+    from app.models.task import Task, TaskLog
+
+    task_result = await db.execute(select(Task).where(Task.agent_id == agent_id).order_by(Task.created_at.asc()))
+    tasks = task_result.scalars().all()
+    if not tasks:
+        return None
+
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "agent_id": str(agent_id),
+        "archived_at": datetime.now(timezone.utc).isoformat(),
+        "tasks": [],
+    }
+
+    for task in tasks:
+        log_result = await db.execute(select(TaskLog).where(TaskLog.task_id == task.id).order_by(TaskLog.created_at.asc()))
+        logs = log_result.scalars().all()
+        payload["tasks"].append(
+            {
+                "id": str(task.id),
+                "title": task.title,
+                "description": task.description,
+                "type": task.type,
+                "status": task.status,
+                "priority": task.priority,
+                "assignee": task.assignee,
+                "created_by": str(task.created_by),
+                "due_date": _serialize_dt(task.due_date),
+                "supervision_target_user_id": (
+                    str(task.supervision_target_user_id) if task.supervision_target_user_id else None
+                ),
+                "supervision_target_name": task.supervision_target_name,
+                "supervision_channel": task.supervision_channel,
+                "remind_schedule": task.remind_schedule,
+                "created_at": _serialize_dt(task.created_at),
+                "updated_at": _serialize_dt(task.updated_at),
+                "completed_at": _serialize_dt(task.completed_at),
+                "logs": [
+                    {
+                        "id": str(log.id),
+                        "content": log.content,
+                        "created_at": _serialize_dt(log.created_at),
+                    }
+                    for log in logs
+                ],
+            }
+        )
+
+    archive_path = archive_dir / "task_history.json"
+    archive_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return archive_path
 
 
 async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
@@ -105,10 +169,6 @@ async def list_agents(
         .where(
             (AgentPermission.scope_type == "company")
             | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
-            | (
-                (AgentPermission.scope_type == "department")
-                & (AgentPermission.scope_id == current_user.department_id)
-            )
         )
     )
     permitted = select(Agent).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
@@ -210,6 +270,8 @@ async def create_agent(
 
     # Set permissions
     access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
+    if data.permission_scope_type not in ("company", "user"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported permission_scope_type")
     if data.permission_scope_type == "company":
         db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level=access_level))
     elif data.permission_scope_type == "user":
@@ -224,7 +286,6 @@ async def create_agent(
 
     # For OpenClaw agents: skip file system and container setup, generate API key
     if agent.agent_type == "openclaw":
-        import secrets, hashlib
         raw_key = f"oc-{secrets.token_urlsafe(32)}"
         agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         agent.status = "idle"
@@ -242,13 +303,12 @@ async def create_agent(
     )
 
     # Copy selected skills + mandatory default skills into agent workspace
-    from app.models.skill import Skill, SkillFile
+    from app.models.skill import Skill
     from sqlalchemy.orm import selectinload
-    from pathlib import Path
 
     # Always include default skills
     default_result = await db.execute(
-        select(Skill).where(Skill.is_default == True)
+        select(Skill).where(Skill.is_default)
     )
     default_ids = {s.id for s in default_result.scalars().all()}
 
@@ -274,7 +334,7 @@ async def create_agent(
             for sf in skill.files:
                 file_path = skill_folder / sf.path
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(sf.content)
+                file_path.write_text(sf.content, encoding="utf-8")
 
     # Start container
     await agent_manager.start_container(db, agent)
@@ -297,9 +357,18 @@ async def get_agent(
     out = AgentOut.model_validate(agent).model_dump()
     out["access_level"] = access_level
 
-    # Resolve creator username (one extra query, only on detail page)
+    # Resolve creator username (one extra query, only on detail page).
+    # IMPORTANT: User.username is an association_proxy to User.identity.username.
+    # We must eagerly load the identity relationship (selectinload) to avoid
+    # async lazy-loading errors (SQLAlchemy raises MissingGreenlet in async context).
     if agent.creator_id:
-        creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
+        from sqlalchemy.orm import selectinload
+        from app.models.user import Identity  # noqa: F401
+        creator_result = await db.execute(
+            select(User)
+            .where(User.id == agent.creator_id)
+            .options(selectinload(User.identity))
+        )
         creator = creator_result.scalar_one_or_none()
         out["creator_username"] = creator.username if creator else None
 
@@ -369,6 +438,8 @@ async def update_agent_permissions(
     access_level = data.get("access_level", "use")
     if access_level not in ("use", "manage"):
         access_level = "use"
+    if scope_type not in ("company", "user"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported scope_type")
 
     # Delete existing permissions
     from sqlalchemy import delete as sql_delete
@@ -497,14 +568,20 @@ async def delete_agent(
 
     # Stop container and archive files (best effort)
     from app.services.agent_manager import agent_manager
+    archive_dir: Path | None = None
     try:
         await agent_manager.remove_container(agent)
     except Exception:
         pass
     try:
-        await agent_manager.archive_agent_files(agent.id)
+        archive_dir = await agent_manager.archive_agent_files(agent.id)
     except Exception:
         pass
+    if archive_dir is not None:
+        try:
+            await _archive_agent_task_history(db, agent.id, archive_dir)
+        except Exception:
+            pass
 
     # Delete related records that reference this agent
     # Use savepoints so a failure in one table doesn't poison the whole transaction
@@ -516,7 +593,6 @@ async def delete_agent(
         "approval_requests",
         "chat_messages",
         "chat_sessions",
-        "tasks",
         "agent_schedules",
         "agent_triggers",
         "channel_configs",
@@ -524,6 +600,9 @@ async def delete_agent(
         "agent_tools",
         "agent_relationships",
         "gateway_messages",
+        "published_pages",
+        "notifications",
+        "daily_token_usage",
     ]
 
     for table in cleanup_tables:
@@ -535,6 +614,8 @@ async def delete_agent(
 
     # Clean up secondary FK columns that also reference agents table
     secondary_fk_cleanups = [
+        "DELETE FROM task_logs WHERE task_id IN (SELECT id FROM tasks WHERE agent_id = :aid)",
+        "DELETE FROM tasks WHERE agent_id = :aid",
         "DELETE FROM chat_sessions WHERE peer_agent_id = :aid",
         "DELETE FROM gateway_messages WHERE sender_agent_id = :aid",
         "UPDATE chat_messages SET sender_agent_id = NULL WHERE sender_agent_id = :aid",
@@ -691,10 +772,8 @@ async def generate_or_reset_api_key(
     if getattr(agent, "agent_type", "native") != "openclaw":
         raise HTTPException(status_code=400, detail="API keys are only available for OpenClaw agents")
 
-    import secrets, hashlib
     raw_key = f"oc-{secrets.token_urlsafe(32)}"
-    # Store in plaintext so frontend can retrieve it anytime to display and copy
-    agent.api_key_hash = raw_key
+    agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     await db.commit()
 
     return {"api_key": raw_key, "message": "Key configured successfully."}

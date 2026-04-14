@@ -26,14 +26,16 @@ BUILTIN_TOOLS = [
     {
         "name": "read_file",
         "display_name": "Read File",
-        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/.",
+        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks.",
         "category": "file",
         "icon": "📄",
         "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"}
+                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"},
+                "offset": {"type": "integer", "description": "Starting line number (0-indexed, default 0). Use with limit for pagination."},
+                "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000). Use with offset for pagination."},
             },
             "required": ["path"],
         },
@@ -75,6 +77,65 @@ BUILTIN_TOOLS = [
                 "path": {"type": "string", "description": "File path to delete"}
             },
             "required": ["path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # --- Enhanced file management tools ---
+    {
+        "name": "edit_file",
+        "display_name": "Edit File",
+        "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections.",
+        "category": "file",
+        "icon": "✂️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to edit, e.g.: memory/memory.md, skills/my-skill/SKILL.md"},
+                "old_string": {"type": "string", "description": "Exact text to find and replace. Must match exactly including whitespace and newlines."},
+                "new_string": {"type": "string", "description": "Replacement text"},
+                "replace_all": {"type": "boolean", "description": "Replace all occurrences if true (default: false)"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "search_files",
+        "display_name": "Search Files",
+        "description": "Search for content patterns across files using regex. Returns matching lines with file paths and line numbers. Results capped at 50 per query.",
+        "category": "file",
+        "icon": "🔍",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for, e.g.: 'API_KEY', 'def\\\\s+\\\\w+'"},
+                "path": {"type": "string", "description": "Directory to search in (default: root)"},
+                "file_pattern": {"type": "string", "description": "File pattern to match (default: all files). e.g.: '*.md', '*.py'"},
+                "ignore_case": {"type": "boolean", "description": "Case-insensitive search (default: false)"},
+            },
+            "required": ["pattern"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "find_files",
+        "display_name": "Find Files",
+        "description": "Find files matching glob patterns. Returns file paths with sizes and modification info. Results capped at 100 per query.",
+        "category": "file",
+        "icon": "📁",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to match files, e.g.: '**/*.md', 'skills/*.md'"},
+                "path": {"type": "string", "description": "Base directory for search (default: root)"},
+            },
+            "required": ["pattern"],
         },
         "config": {},
         "config_schema": {},
@@ -187,24 +248,9 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
-    {
-        "name": "send_feishu_message",
-        "display_name": "Feishu Message",
-        "description": "Send a message to a human colleague via Feishu. Can only message people in your relationships.",
-        "category": "communication",
-        "icon": "💬",
-        "is_default": True,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {
-                "member_name": {"type": "string", "description": "Recipient name"},
-                "message": {"type": "string", "description": "Message content"},
-            },
-            "required": ["member_name", "message"],
-        },
-        "config": {},
-        "config_schema": {},
-    },
+    # NOTE: send_feishu_message is defined in the 'feishu' category section below.
+    # It was previously duplicated here under 'communication', which could cause
+    # 'Tool names must be unique' errors when the DB lacked a UNIQUE constraint.
     {
         "name": "send_web_message",
         "display_name": "Web Message",
@@ -226,7 +272,7 @@ BUILTIN_TOOLS = [
     {
         "name": "send_message_to_agent",
         "display_name": "Agent Message",
-        "description": "Send a message to a digital employee colleague and receive a reply. Suitable for questions, delegation, or collaboration.",
+        "description": "Send a message to a digital employee colleague. Decision guide: target needs to DO WORK and return results? → task_delegate. Just FYI? → notify. Quick factual question? → consult. When unsure, prefer task_delegate.",
         "category": "communication",
         "icon": "🤖",
         "is_default": True,
@@ -235,9 +281,9 @@ BUILTIN_TOOLS = [
             "properties": {
                 "agent_name": {"type": "string", "description": "Target agent name"},
                 "message": {"type": "string", "description": "Message content"},
-                "msg_type": {"type": "string", "enum": ["chat", "task_request", "info_share"], "description": "Message type"},
+                "msg_type": {"type": "string", "enum": ["notify", "consult", "task_delegate"], "description": "(1) Target needs to DO WORK and return results? → task_delegate. (2) Just FYI? → notify. (3) Quick factual question? → consult. When unsure, prefer task_delegate."},
             },
-            "required": ["agent_name", "message"],
+            "required": ["agent_name", "message", "msg_type"],
         },
         "config": {},
         "config_schema": {},
@@ -263,11 +309,11 @@ BUILTIN_TOOLS = [
     },
     {
         "name": "web_search",
-        "display_name": "DuckDuckGo Search",
-        "description": "Search the internet via DuckDuckGo. May be unavailable on some networks. Use Bing Search as an alternative.",
+        "display_name": "Web Search",
+        "description": "[Deprecated] Unified search tool with engine selector. Use the dedicated tools (DuckDuckGo Search, Tavily Search, Google Search, Bing Search, Exa Search) instead for better control per engine.",
         "category": "search",
-        "icon": "🦆",
-        "is_default": True,
+        "icon": "🔍",
+        "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
@@ -293,6 +339,7 @@ BUILTIN_TOOLS = [
                         {"value": "tavily", "label": "Tavily (AI search, needs API key)"},
                         {"value": "google", "label": "Google Custom Search (needs API key)"},
                         {"value": "bing", "label": "Bing Search API (needs API key)"},
+                        {"value": "exa", "label": "Exa (AI-powered search, needs API key)"},
                     ],
                     "default": "duckduckgo",
                 },
@@ -302,7 +349,7 @@ BUILTIN_TOOLS = [
                     "type": "password",
                     "default": "",
                     "placeholder": "Required for engines that need an API key",
-                    "depends_on": {"search_engine": ["tavily", "google", "bing"]},
+                    "depends_on": {"search_engine": ["tavily", "google", "bing", "exa"]},
                 },
                 {
                     "key": "max_results",
@@ -383,6 +430,186 @@ BUILTIN_TOOLS = [
         },
     },
     {
+        "name": "exa_search",
+        "display_name": "Exa Search",
+        "description": "AI-powered web search using Exa (exa.ai). Supports semantic search, category filtering, domain filtering, and multiple content modes (text, highlights, summary). Requires an Exa API key.",
+        "category": "search",
+        "icon": "🔎",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "max_results": {"type": "integer", "description": "Number of results (default 5, max 10)"},
+                "search_type": {
+                    "type": "string",
+                    "description": "Search type: auto (default), neural, or fast",
+                    "enum": ["auto", "neural", "fast"],
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category: company, research paper, news, personal site, financial report, or people",
+                },
+                "include_domains": {
+                    "type": "string",
+                    "description": "Comma-separated domains to restrict results to (e.g. 'arxiv.org, github.com')",
+                },
+                "exclude_domains": {
+                    "type": "string",
+                    "description": "Comma-separated domains to exclude from results",
+                },
+                "content_mode": {
+                    "type": "string",
+                    "description": "Content retrieval mode: text (default), highlights, or summary",
+                    "enum": ["text", "highlights", "summary"],
+                },
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "Exa API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get your API key at exa.ai",
+                },
+            ]
+        },
+    },
+    # ── Standalone search engines (each engine as its own tool) ──────────────
+    # These complement web_search (which remains for backward compatibility).
+    # Each tool wraps a single engine so agents can pick the right one for the
+    # task without going through the unified engine-selector flow.
+    {
+        "name": "duckduckgo_search",
+        "display_name": "DuckDuckGo Search",
+        "description": "Search the internet using DuckDuckGo. Free, no API key required. Returns titles, URLs, and snippets.",
+        "category": "search",
+        "icon": "🦆",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords"},
+                "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {"fields": []},
+    },
+    {
+        "name": "tavily_search",
+        "display_name": "Tavily Search",
+        "description": "AI-optimized web search using Tavily. Returns high-quality results with summaries. Requires a Tavily API key.",
+        "category": "search",
+        "icon": "🔍",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords"},
+                "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "Tavily API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "tvly-xxxxxxxxxxxxxxxx (get one at tavily.com)",
+                },
+            ]
+        },
+    },
+    {
+        "name": "google_search",
+        "display_name": "Google Search",
+        "description": "Search using Google Custom Search JSON API. Returns titles, URLs, and snippets. Requires a Google API key and Custom Search Engine ID (format: API_KEY:CX_ID).",
+        "category": "search",
+        "icon": "🔍",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords"},
+                "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+                "language": {"type": "string", "description": "Search language code (e.g. 'en', 'zh')"},
+            },
+            "required": ["query"],
+        },
+        "config": {"language": "en"},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "API Key & Search Engine ID",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "API_KEY:SEARCH_ENGINE_ID (get at console.cloud.google.com)",
+                },
+                {
+                    "key": "language",
+                    "label": "Search language",
+                    "type": "select",
+                    "options": [
+                        {"value": "en", "label": "English"},
+                        {"value": "zh-CN", "label": "Chinese"},
+                        {"value": "ja", "label": "Japanese"},
+                    ],
+                    "default": "en",
+                },
+            ]
+        },
+    },
+    {
+        "name": "bing_search",
+        "display_name": "Bing Search",
+        "description": "Search using Bing Web Search API. Returns titles, URLs, and snippets. Requires a Bing Search API key from Microsoft Azure.",
+        "category": "search",
+        "icon": "🔍",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords"},
+                "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+                "language": {"type": "string", "description": "Market language code (e.g. 'en-US', 'zh-CN')"},
+            },
+            "required": ["query"],
+        },
+        "config": {"language": "en-US"},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "Bing Search API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get from Azure Cognitive Services (Bing Search v7)",
+                },
+                {
+                    "key": "language",
+                    "label": "Market language",
+                    "type": "select",
+                    "options": [
+                        {"value": "en-US", "label": "English (US)"},
+                        {"value": "zh-CN", "label": "Chinese (Simplified)"},
+                        {"value": "ja-JP", "label": "Japanese"},
+                    ],
+                    "default": "en-US",
+                },
+            ]
+        },
+    },
+    {
         "name": "plaza_get_new_posts",
         "display_name": "Plaza: Browse",
         "description": "Get recent posts from the Agent Plaza (shared social feed). Returns posts and comments since a given timestamp.",
@@ -436,7 +663,7 @@ BUILTIN_TOOLS = [
     {
         "name": "execute_code",
         "display_name": "Code Executor",
-        "description": "Execute code (Python, Bash, Node.js) in a sandboxed environment within the agent's workspace. Useful for data processing, calculations, file transformations, and automation.",
+        "description": "Execute code (Python, Bash, Node.js) in a local sandboxed subprocess within the agent's workspace. Useful for data processing, calculations, file transformations, and automation.",
         "category": "code",
         "icon": "💻",
         "is_default": True,
@@ -449,14 +676,108 @@ BUILTIN_TOOLS = [
             },
             "required": ["language", "code"],
         },
-        "config": {"default_timeout": 30, "max_timeout": 60},
+        "config": {
+            "sandbox_type": "subprocess",
+            "cpu_limit": "0.5",
+            "memory_limit": "256m",
+            "allow_network": True,
+            "default_timeout": 30,
+            "max_timeout": 60,
+        },
         "config_schema": {
             "fields": [
-                {"key": "default_timeout", "label": "Default Timeout (seconds)", "type": "number", "default": 30, "min": 5, "max": 120},
-                {"key": "max_timeout", "label": "Max Timeout (seconds)", "type": "number", "default": 60, "min": 10, "max": 120},
+                {
+                    "key": "cpu_limit",
+                    "label": "CPU Limit",
+                    "type": "text",
+                    "default": "0.5",
+                    "placeholder": "e.g., 0.5, 1.0, 2.0",
+                },
+                {
+                    "key": "memory_limit",
+                    "label": "Memory Limit",
+                    "type": "text",
+                    "default": "256m",
+                    "placeholder": "e.g., 256m, 512m, 1g",
+                },
+                {
+                    "key": "allow_network",
+                    "label": "Allow Network Access",
+                    "type": "checkbox",
+                    "default": True,
+                    "read_only_for_roles": ["agent_admin", "member"],
+                },
+                {
+                    "key": "default_timeout",
+                    "label": "Default Timeout (seconds)",
+                    "type": "number",
+                    "default": 30,
+                    "min": 5,
+                    "max": 300,
+                },
+                {
+                    "key": "max_timeout",
+                    "label": "Max Timeout (seconds)",
+                    "type": "number",
+                    "default": 60,
+                    "min": 10,
+                    "max": 300,
+                },
             ]
         },
     },
+    {
+        "name": "execute_code_e2b",
+        "display_name": "Code Executor (E2B Cloud)",
+        "description": "Execute code (Python, Bash, Node.js) in a secure E2B cloud sandbox. Provides full network access and an isolated environment without consuming local resources. Requires an E2B API key.",
+        "category": "code",
+        "icon": "☁️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
+                "code": {"type": "string", "description": "Code to execute"},
+                "timeout": {"type": "integer", "description": "Max execution time in seconds (default 30, max 60)"},
+            },
+            "required": ["language", "code"],
+        },
+        "config": {
+            "sandbox_type": "e2b",
+            "api_key": "",
+            "default_timeout": 30,
+            "max_timeout": 60,
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "E2B API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Get your API key at https://e2b.dev",
+                    "required": True,
+                },
+                {
+                    "key": "default_timeout",
+                    "label": "Default Timeout (seconds)",
+                    "type": "number",
+                    "default": 30,
+                    "min": 5,
+                    "max": 300,
+                },
+                {
+                    "key": "max_timeout",
+                    "label": "Max Timeout (seconds)",
+                    "type": "number",
+                    "default": 60,
+                    "min": 10,
+                    "max": 300,
+                },
+            ]
+        },
+    },
+
     {
         "name": "upload_image",
         "display_name": "Upload Image",
@@ -489,6 +810,147 @@ BUILTIN_TOOLS = [
                     "type": "text",
                     "default": "",
                     "placeholder": "https://ik.imagekit.io/your_imagekit_id",
+                },
+            ]
+        },
+    },
+    {
+        "name": "generate_image_siliconflow",
+        "display_name": "Generate Image (SiliconFlow)",
+        "description": "Generate an image via SiliconFlow FLUX models. China-friendly and fast.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024, 1024x768). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "black-forest-labs/FLUX.1-schnell",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "black-forest-labs/FLUX.1-schnell",
+                    "placeholder": "e.g. black-forest-labs/FLUX.1-schnell",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "SiliconFlow API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL (optional)",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "Default: https://api.siliconflow.cn/v1",
+                },
+            ]
+        },
+    },
+    {
+        "name": "generate_image_openai",
+        "display_name": "Generate Image (OpenAI)",
+        "description": "Generate an image via OpenAI DALL-E models.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "dall-e-3",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "dall-e-3",
+                    "placeholder": "e.g. dall-e-3 or dall-e-2",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "OpenAI API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL (optional)",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "Default: https://api.openai.com/v1",
+                },
+            ]
+        },
+    },
+    {
+        "name": "generate_image_google",
+        "display_name": "Generate Image (Google/Vertex)",
+        "description": "Generate an image via Google Gemini Image (Nano Banana) or Vertex AI.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "gemini-2.5-flash-image",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "gemini-2.5-flash-image",
+                    "placeholder": "e.g. gemini-2.5-flash-image",
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "Google AI Studio or Vertex API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL (optional)",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "Can be Vertex API URL: https://aiplatform.googleapis.com/...",
                 },
             ]
         },
@@ -722,6 +1184,137 @@ BUILTIN_TOOLS = [
         "config_schema": {},
     },
     {
+        "name": "bitable_create_app",
+        "display_name": "Bitable Create",
+        "description": "在飞书云盘中新建一个多维表格（Bitable）应用。创建后返回可直接访问的链接和 App Token，下一步可以通过 bitable_list_tables 查看初始数据表。",
+        "category": "feishu",
+        "icon": "📊",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "新多维表格的名称，例如「项目追踪表」"},
+                "folder_token": {"type": "string", "description": "可选：父文件夹的 folder_token。不填则创建到「我的空间」根目录。"},
+            },
+            "required": ["name"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_list_tables",
+        "display_name": "Bitable List Tables",
+        "description": "列出飞书多维表格内的所有数据表 (Tables)。url 支持表格链接或 Wiki 链接。使用此工具了解请求的多维表格中有哪些表。",
+        "category": "feishu",
+        "icon": "📊",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_list_fields",
+        "display_name": "Bitable List Fields",
+        "description": "列出飞书多维表格指定数据表中的所有字段 (Fields)。url 支持表格链接或 Wiki 链接。在查询或修改数据前，必须先调用此工具了解字段名称和类型。",
+        "category": "feishu",
+        "icon": "⌨️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_query_records",
+        "display_name": "Bitable Query Records",
+        "description": "查询飞书多维表格中的数据行。可以提供过滤条件 (filter)。",
+        "category": "feishu",
+        "icon": "🔍",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                "filter_info": {"type": "string", "description": "可选，FQL 语法的过滤条件，例如 'CurrentValue.[Status]=\"Done\"'。如不确定过滤语法，可以不填，由你臺己在本地过滤返回的所有数据。"},
+                "max_results": {"type": "integer", "description": "最大返回条数 (默认 100)"},
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_create_record",
+        "display_name": "Bitable Create Record",
+        "description": "在飞书多维表格中新增一行数据。fields 参数是一个字典，key 是字段名 (需要先通过 bitable_list_fields 获取)，value 是对应的值。",
+        "category": "feishu",
+        "icon": "➕",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                "fields": {"type": "string", "description": "一个 JSON 字符串，代表要插入的 fields。例如：'{\"Name\": \"张三\", \"Age\": 30}'"},
+            },
+            "required": ["url", "fields"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_update_record",
+        "display_name": "Bitable Update Record",
+        "description": "更新飞书多维表格中的指定行数据。",
+        "category": "feishu",
+        "icon": "✏️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                "record_id": {"type": "string", "description": "要更新的 record_id，通过 bitable_query_records 获取。"},
+                "fields": {"type": "string", "description": "一个 JSON 字符串，代表要更新的 fields。例如：'{\"Status\": \"Done\"}'"},
+            },
+            "required": ["url", "record_id", "fields"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "bitable_delete_record",
+        "display_name": "Bitable Delete Record",
+        "description": "删除飞书多维表格中的指定行数据。",
+        "category": "feishu",
+        "icon": "🗑️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                "record_id": {"type": "string", "description": "要删除的 record_id，通过 bitable_query_records 获取。"},
+            },
+            "required": ["url", "record_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
         "name": "feishu_doc_read",
         "display_name": "Feishu Doc Read",
         "description": "Read the text content of a Feishu document (Docx). Provide the document token from its URL.",
@@ -771,6 +1364,46 @@ BUILTIN_TOOLS = [
                 "content": {"type": "string", "description": "Text content to append"},
             },
             "required": ["document_token", "content"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_drive_share",
+        "display_name": "Feishu Drive Share",
+        "description": "Manage collaborators for any Feishu Drive file (docx, bitable, sheet, etc.). Add, remove, or list collaborators with view/edit/full_access permissions.",
+        "category": "feishu",
+        "icon": "🔗",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "document_token": {"type": "string", "description": "File token (from URL or previous tool output)"},
+                "doc_type": {"type": "string", "enum": ["docx", "bitable", "sheet", "doc", "folder", "mindnote", "slides"], "description": "File type. Default: 'docx'"},
+                "action": {"type": "string", "enum": ["add", "remove", "list"], "description": "'add' to grant, 'remove' to revoke, 'list' to view"},
+                "member_names": {"type": "array", "items": {"type": "string"}, "description": "Colleague names to add/remove (auto-searched)"},
+                "member_open_ids": {"type": "array", "items": {"type": "string"}, "description": "Feishu open_ids directly"},
+                "permission": {"type": "string", "enum": ["view", "edit", "full_access"], "description": "Permission level. Default: 'edit'"},
+            },
+            "required": ["document_token", "action"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_drive_delete",
+        "display_name": "Feishu Drive Delete",
+        "description": "Delete a file or folder from Feishu Drive. The file is moved to the recycle bin. Supports all file types: docx, bitable, sheet, folder, etc.",
+        "category": "feishu",
+        "icon": "🗑️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "file_token": {"type": "string", "description": "Token of the file to delete"},
+                "file_type": {"type": "string", "enum": ["file", "docx", "bitable", "folder", "doc", "sheet", "mindnote", "shortcut", "slides"], "description": "Type of the file to delete"},
+            },
+            "required": ["file_token", "file_type"],
         },
         "config": {},
         "config_schema": {},
@@ -854,6 +1487,60 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    {
+        "name": "feishu_approval_create",
+        "display_name": "Feishu Approval Create",
+        "description": "发起一个飞书审批流实例。你需要知道审批定义的 approval_code 和表单对应字段的内容。",
+        "category": "feishu",
+        "icon": "📝",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "approval_code": {"type": "string", "description": "审批定义的唯一代码 (approval_code)"},
+                "user_id": {"type": "string", "description": "发起人的 open_id。可以通过 feishu_user_search 获取。"},
+                "form_data": {"type": "string", "description": "表单内容的 JSON 字符串，例如 '[{\"id\":\"widget1\",\"type\":\"input\",\"value\":\"这是内容\"}]'"},
+            },
+            "required": ["approval_code", "user_id", "form_data"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_approval_query",
+        "display_name": "Feishu Approval Query",
+        "description": "查询指定的飞书审批实例列表。可以支持按状态查询（PENDING, APPROVED, REJECTED, CANCELED, DELETED）。",
+        "category": "feishu",
+        "icon": "📋",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "approval_code": {"type": "string", "description": "审批定义的唯一代码 (approval_code)"},
+                "status": {"type": "string", "description": "可选过滤状态：PENDING, APPROVED, REJECTED, CANCELED, DELETED"},
+            },
+            "required": ["approval_code"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_approval_get",
+        "display_name": "Feishu Approval Get",
+        "description": "获取指定飞书审批实例的详细信息与当前审批状态。",
+        "category": "feishu",
+        "icon": "📊",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "instance_id": {"type": "string", "description": "审批实例的 instance_id"},
+            },
+            "required": ["instance_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
     # --- Pages: public HTML hosting ---
     {
         "name": "publish_page",
@@ -886,8 +1573,495 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    # --- Skill Management ---
+    {
+        "name": "search_clawhub",
+        "display_name": "Search ClawHub",
+        "description": "Search the ClawHub skill registry for skills matching a query. Returns a list of available skills with name, description, and last updated date.",
+        "category": "discovery",
+        "icon": "🔎",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query, e.g. 'research', 'code review', 'market analysis'"},
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "install_skill",
+        "display_name": "Install Skill",
+        "description": "Install a skill into this agent's workspace. Accepts a ClawHub slug (e.g. 'market-research') or a GitHub URL.",
+        "category": "discovery",
+        "icon": "📥",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "ClawHub skill slug (e.g. 'market-research') or GitHub URL"},
+            },
+            "required": ["source"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
 ]
 
+# ── AgentBay Tools ──────────────────────────────────────────────────────────
+
+AGENTBAY_TOOLS = [
+    {
+        "name": "agentbay_browser_navigate",
+        "display_name": "AgentBay: 浏览器访问",
+        "description": "[ENV: Browser] Navigate to a URL in the AgentBay HEADLESS BROWSER environment. IMPORTANT: This browser runs in an ISOLATED environment — it does NOT share filesystem, processes, or downloads with the Cloud Desktop (computer_* tools) or Code Sandbox (code_execute/command_exec). Files downloaded here are NOT accessible from other environments. Tip: after navigating, use browser_observe to identify interactive elements, then use browser_type/browser_click to interact.",
+        "category": "agentbay",
+        "icon": "🌐",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "要访问的网址"},
+                "wait_for": {"type": "string", "description": "等待元素选择器（可选）"},
+                "save_to_workspace": {
+                    "type": "boolean",
+                    # Set to True ONLY when the user explicitly asks to SEE or SAVE
+                    # a screenshot (e.g. "截图给我看", "保存截图"). Default False means
+                    # the screenshot is held in memory for LLM vision only (invisible to user).
+                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
+                    "default": False,
+                },
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "从阿里云 AgentBay 控制台获取",
+                },
+                {
+                    "key": "os_type",
+                    "label": "Cloud Computer OS",
+                    "type": "select",
+                    "default": "windows",
+                    "options": [
+                        {"value": "linux", "label": "Linux"},
+                        {"value": "windows", "label": "Windows"},
+                    ],
+                    "description": "Operating system for AgentBay cloud desktop (computer tools only)",
+                },
+            ],
+        },
+    },
+    {
+        "name": "agentbay_browser_screenshot",
+        "display_name": "AgentBay: 浏览器截图",
+        "description": "[ENV: Browser] Take a screenshot of the current page in the headless browser. This browser is ISOLATED from the Cloud Desktop and Code Sandbox. Use this after clicking, typing, or submitting a form to verify the result — it preserves the current page state. Never call browser_navigate just to take a screenshot.",
+        "category": "agentbay",
+        "icon": "📸",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "save_to_workspace": {
+                    "type": "boolean",
+                    # Set to True ONLY when the user explicitly asks to SEE or SAVE
+                    # a screenshot. Default False = in-memory for LLM vision only.
+                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
+                    "default": False,
+                },
+            },
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_browser_click",
+        "display_name": "AgentBay: 浏览器点击",
+        "description": "[ENV: Browser] Click an element in the headless browser (ISOLATED from Desktop and Code Sandbox). selector can be a CSS selector (e.g. #btn) or natural language description (e.g. 'the Send button').",
+        "category": "agentbay",
+        "icon": "🖱️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector (e.g. #button) or natural language description of the element (e.g. 'the blue Submit button')"},
+            },
+            "required": ["selector"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_browser_type",
+        "display_name": "AgentBay: 浏览器输入",
+        "description": "[ENV: Browser] Type text into an element in the headless browser (ISOLATED from Desktop and Code Sandbox). selector can be a CSS selector or natural language description (e.g. 'phone number input').",
+        "category": "agentbay",
+        "icon": "⌨️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector or natural language description of the input field (e.g. 'the phone number input' or 'input[type=tel]')"},
+                "text": {"type": "string", "description": "要输入的文本"},
+            },
+            "required": ["selector", "text"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_code_execute",
+        "display_name": "AgentBay: 代码执行",
+        "description": "[ENV: Code Sandbox] Execute code (Python, Bash, Node.js) in the AgentBay Code Sandbox. IMPORTANT: This sandbox is an ISOLATED environment — it does NOT share filesystem, processes, or network with the Headless Browser (browser_* tools) or Cloud Desktop (computer_* tools). Files created here are NOT accessible from other environments.",
+        "category": "agentbay",
+        "icon": "💻",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "编程语言"},
+                "code": {"type": "string", "description": "要执行的代码"},
+                "timeout": {"type": "integer", "description": "超时时间（秒）", "default": 30},
+            },
+            "required": ["language", "code"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # ── Browser: Extract & Observe ────────────────────────────────────────
+    {
+        "name": "agentbay_browser_extract",
+        "display_name": "AgentBay: Browser Extract",
+        "description": "[ENV: Browser] Extract structured data from the current browser page using a natural language instruction. This browser is ISOLATED from the Cloud Desktop and Code Sandbox. More efficient than taking a screenshot and parsing with vision.",
+        "category": "agentbay",
+        "icon": "📊",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "Natural language description of what data to extract, e.g. 'extract all product names and prices'"},
+                "selector": {"type": "string", "description": "Optional CSS selector to scope the extraction to a specific element"},
+            },
+            "required": ["instruction"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_browser_observe",
+        "display_name": "AgentBay: Browser Observe",
+        "description": "[ENV: Browser] Observe the current browser page state and return a list of interactive elements. This browser is ISOLATED from the Cloud Desktop and Code Sandbox. Helps the agent understand what can be clicked/interacted with on the page.",
+        "category": "agentbay",
+        "icon": "👁️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "Natural language description of what to observe, e.g. 'find the login button' or 'list all navigation links'"},
+                "selector": {"type": "string", "description": "Optional CSS selector to scope observation"},
+            },
+            "required": ["instruction"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_browser_login",
+        "display_name": "AgentBay: Browser Login",
+        "description": "[ENV: Browser] Use AgentBay's AI-driven login skill to automate complex login flows (CAPTCHAs, OTP, multi-step auth) in the headless browser. This browser is ISOLATED from the Cloud Desktop and Code Sandbox.",
+        "category": "agentbay",
+        "icon": "🔐",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The login page URL to navigate to"},
+                "login_config": {"type": "string", "description": "JSON string with login config"},
+            },
+            "required": ["url", "login_config"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # ── Command (Shell) ───────────────────────────────────────────────────
+    {
+        "name": "agentbay_command_exec",
+        "display_name": "AgentBay: Shell Command",
+        "description": "[ENV: Code Sandbox] Execute a shell command in the AgentBay Code Sandbox. IMPORTANT: This sandbox is ISOLATED from the Headless Browser (browser_* tools) and Cloud Desktop (computer_* tools). Files and processes are NOT shared between environments. Returns stdout, stderr, and exit code.",
+        "category": "agentbay",
+        "icon": "🖥️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to execute, e.g. 'ls -la' or 'pip install pandas'"},
+                "timeout_ms": {"type": "integer", "description": "Timeout in milliseconds (default 50000)", "default": 50000},
+                "cwd": {"type": "string", "description": "Working directory for the command (optional)"},
+            },
+            "required": ["command"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    # ── Computer Use ──────────────────────────────────────────────────────
+    {
+        "name": "agentbay_computer_screenshot",
+        "display_name": "AgentBay: Desktop Screenshot",
+        "description": "[ENV: Cloud Desktop] Take a screenshot of the full Cloud Desktop (Windows/Linux). IMPORTANT: This desktop is an ISOLATED environment — it does NOT share filesystem, processes, or browser sessions with the Headless Browser (browser_* tools) or Code Sandbox (code_execute/command_exec). To browse the web on this desktop, use computer_start_app to open a browser app. Essential for understanding the current desktop state before performing GUI operations.",
+        "category": "agentbay",
+        "icon": "📸",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_click",
+        "display_name": "AgentBay: Mouse Click",
+        "description": "[ENV: Cloud Desktop] Click the mouse at specific screen coordinates on the Cloud Desktop (ISOLATED from Browser and Code Sandbox). Take a screenshot first to identify the target position.",
+        "category": "agentbay",
+        "icon": "🖱️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate to click"},
+                "y": {"type": "integer", "description": "Y coordinate to click"},
+                "button": {"type": "string", "enum": ["left", "right", "middle", "double_left"], "description": "Mouse button (default: left)", "default": "left"},
+            },
+            "required": ["x", "y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_input_text",
+        "display_name": "AgentBay: Keyboard Input",
+        "description": "[ENV: Cloud Desktop] Type text at the current cursor position on the Cloud Desktop (ISOLATED from Browser and Code Sandbox). Click on the target input field first.",
+        "category": "agentbay",
+        "icon": "⌨️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to type"},
+            },
+            "required": ["text"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_press_keys",
+        "display_name": "AgentBay: Keyboard Shortcut",
+        "description": "[ENV: Cloud Desktop] Press keyboard keys or shortcuts on the Cloud Desktop (ISOLATED from Browser and Code Sandbox). For example ['ctrl', 'c'] for copy, ['alt', 'tab'] for window switch, ['enter'] to confirm.",
+        "category": "agentbay",
+        "icon": "⌨️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "keys": {"type": "array", "items": {"type": "string"}, "description": "List of keys to press simultaneously, e.g. ['ctrl', 'c']"},
+                "hold": {"type": "boolean", "description": "If true, hold keys down", "default": False},
+            },
+            "required": ["keys"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_scroll",
+        "display_name": "AgentBay: Scroll",
+        "description": "[ENV: Cloud Desktop] Scroll the screen at a specific position on the Cloud Desktop (ISOLATED from Browser and Code Sandbox).",
+        "category": "agentbay",
+        "icon": "🔃",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate of scroll position"},
+                "y": {"type": "integer", "description": "Y coordinate of scroll position"},
+                "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction (default: down)", "default": "down"},
+                "amount": {"type": "integer", "description": "Scroll amount in steps (default: 1)", "default": 1},
+            },
+            "required": ["x", "y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_move_mouse",
+        "display_name": "AgentBay: Mouse Move",
+        "description": "[ENV: Cloud Desktop] Move the mouse to coordinates on the Cloud Desktop without clicking. Useful for triggering hover effects, tooltips, or dropdown menus.",
+        "category": "agentbay",
+        "icon": "🖱️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Target X coordinate"},
+                "y": {"type": "integer", "description": "Target Y coordinate"},
+            },
+            "required": ["x", "y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_drag_mouse",
+        "display_name": "AgentBay: Mouse Drag",
+        "description": "[ENV: Cloud Desktop] Drag the mouse from one position to another on the Cloud Desktop. Useful for selecting text, moving files, resizing windows.",
+        "category": "agentbay",
+        "icon": "🖱️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "from_x": {"type": "integer", "description": "Start X coordinate"},
+                "from_y": {"type": "integer", "description": "Start Y coordinate"},
+                "to_x": {"type": "integer", "description": "End X coordinate"},
+                "to_y": {"type": "integer", "description": "End Y coordinate"},
+                "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button (default: left)", "default": "left"},
+            },
+            "required": ["from_x", "from_y", "to_x", "to_y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_get_screen_size",
+        "display_name": "AgentBay: Get Screen Size",
+        "description": "[ENV: Cloud Desktop] Get the screen resolution of the Cloud Desktop. Useful for calculating click coordinates.",
+        "category": "agentbay",
+        "icon": "📐",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_start_app",
+        "display_name": "AgentBay: Start Application",
+        "description": "[ENV: Cloud Desktop] Start an application on the Cloud Desktop by its launch command (e.g. 'firefox', 'libreoffice --calc'). The desktop is ISOLATED from the Headless Browser and Code Sandbox environments.",
+        "category": "agentbay",
+        "icon": "🚀",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "cmd": {"type": "string", "description": "Application launch command, e.g. 'firefox' or 'libreoffice --calc'"},
+                "work_dir": {"type": "string", "description": "Working directory for the application (optional)"},
+            },
+            "required": ["cmd"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_get_cursor_position",
+        "display_name": "AgentBay: Get Cursor Position",
+        "description": "[ENV: Cloud Desktop] Get the current mouse cursor position on the Cloud Desktop.",
+        "category": "agentbay",
+        "icon": "📍",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_get_active_window",
+        "display_name": "AgentBay: Get Active Window",
+        "description": "[ENV: Cloud Desktop] Get information about the currently focused window on the Cloud Desktop, including window ID, title, and position.",
+        "category": "agentbay",
+        "icon": "🪟",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_activate_window",
+        "display_name": "AgentBay: Activate Window",
+        "description": "[ENV: Cloud Desktop] Bring a specific window to the foreground on the Cloud Desktop by its window ID. Use get_active_window or list_visible_apps to find window IDs.",
+        "category": "agentbay",
+        "icon": "🪟",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "window_id": {"type": "integer", "description": "Window ID to activate"},
+            },
+            "required": ["window_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_list_visible_apps",
+        "display_name": "AgentBay: List Running Apps",
+        "description": "[ENV: Cloud Desktop] List all currently visible/running applications on the Cloud Desktop with their process info and window IDs.",
+        "category": "agentbay",
+        "icon": "📋",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_file_transfer",
+        "display_name": "AgentBay: File Transfer",
+        "description": (
+            "Transfer a file between any two endpoints: the agent workspace, "
+            "the AgentBay browser environment, the cloud desktop, or the code sandbox. "
+            "Workspace -> env: upload a workspace file into a cloud environment. "
+            "Env -> workspace: download a file from a cloud environment into the workspace. "
+            "Env -> env: transfer between environments transparently (no workspace involvement)."
+        ),
+        "category": "agentbay",
+        "icon": "🔄",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "from_type": {
+                    "type": "string",
+                    "enum": ["workspace", "browser", "computer", "code"],
+                    "description": "Source endpoint: 'workspace' for agent workspace, or the AgentBay environment name.",
+                },
+                "from_path": {
+                    "type": "string",
+                    "description": "Source path. Relative if workspace (e.g. 'workspace/data.csv'), absolute if env (e.g. '/root/data.csv').",
+                },
+                "to_type": {
+                    "type": "string",
+                    "enum": ["workspace", "browser", "computer", "code"],
+                    "description": "Destination endpoint: 'workspace' for agent workspace, or the AgentBay environment name.",
+                },
+                "to_path": {
+                    "type": "string",
+                    "description": "Destination path. Relative if workspace (e.g. 'workspace/output.csv'), absolute if env (e.g. '/root/output.csv').",
+                },
+            },
+            "required": ["from_type", "from_path", "to_type", "to_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+]
+
+BUILTIN_TOOLS = [
+    *BUILTIN_TOOLS,
+    # ── AgentBay Tools ──  
+    *AGENTBAY_TOOLS,
+]
 
 async def seed_builtin_tools():
     """Insert or update builtin tools in the database."""
@@ -908,9 +2082,10 @@ async def seed_builtin_tools():
                     category=t["category"],
                     icon=t["icon"],
                     is_default=t["is_default"],
-                    parameters_schema=t["parameters_schema"],
+                    parameters_schema=t.get("parameters_schema", {"type": "object", "properties": {}}),
                     config=t.get("config", {}),
                     config_schema=t.get("config_schema", {}),
+                    source="builtin",
                 )
                 db.add(tool)
                 await db.flush()  # get tool.id
@@ -935,6 +2110,10 @@ async def seed_builtin_tools():
                 if t.get("config_schema") and existing.config_schema != t["config_schema"]:
                     existing.config_schema = t["config_schema"]
                     updated_fields.append("config_schema")
+                    # Merge new config defaults when config_schema changes
+                    if t.get("config"):
+                        existing.config = {**t["config"], **(existing.config or {})}
+                        updated_fields.append("config")
                 if not existing.config and t.get("config"):
                     existing.config = t["config"]
                     updated_fields.append("config")
@@ -961,7 +2140,6 @@ async def seed_builtin_tools():
                         db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True))
             logger.info(f"[ToolSeeder] Auto-assigned {len(new_tool_ids)} new tools to {len(agent_ids)} agents")
 
-        # Remove obsolete tools that have been replaced
         OBSOLETE_TOOLS = ["bing_search", "read_webpage", "manage_tasks"]
         for obsolete_name in OBSOLETE_TOOLS:
             result = await db.execute(select(Tool).where(Tool.name == obsolete_name))
@@ -973,6 +2151,37 @@ async def seed_builtin_tools():
         await db.commit()
         logger.info("[ToolSeeder] Builtin tools seeded")
 
+
+async def clean_orphaned_mcp_tools():
+    """Clean up orphan MCP tools that lost all their AgentTool assignments.
+    
+    This happens when an Agent is deleted (cascade deletes AgentTool) but the
+    shared Tool record remains. We run this periodically/on-startup to prevent
+    the database from filling up with abandoned tool records.
+    """
+    from app.models.tool import AgentTool
+    from sqlalchemy import and_, delete
+    
+    async with async_session() as db:
+        # 1. Get all currently assigned tool IDs
+        all_assigned_r = await db.execute(select(AgentTool.tool_id).distinct())
+        assigned_ids = [row[0] for row in all_assigned_r.fetchall()]
+        
+        # 2. Delete MCP tools that have NO tenant_id AND are NOT in the assigned list
+        # tenant_id == None ensures we don't delete Global Tools manually added by company admins
+        stmt = delete(Tool).where(
+            and_(
+                Tool.type == "mcp",
+                Tool.tenant_id == None,
+                ~Tool.id.in_(assigned_ids) if assigned_ids else True
+            )
+        )
+        result = await db.execute(stmt)
+        deleted_count = result.rowcount
+        await db.commit()
+        
+        if deleted_count > 0:
+            logger.info(f"[ToolSeeder] Cleaned up {deleted_count} orphaned MCP tools")
 
 # ── Atlassian Rovo MCP Server Integration ──────────────────────────────────
 
@@ -1039,6 +2248,7 @@ async def seed_atlassian_rovo_config():
                 config_schema=t["config_schema"],
                 mcp_server_url=ATLASSIAN_ROVO_MCP_URL,
                 mcp_server_name="Atlassian Rovo",
+                source="admin",
             )
             db.add(tool)
             await db.commit()

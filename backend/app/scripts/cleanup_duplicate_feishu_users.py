@@ -11,11 +11,7 @@ Usage:
 """
 
 import asyncio
-import logging
-import sys
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 async def main():
@@ -29,7 +25,7 @@ async def main():
     from app.database import async_session
     from app.models.user import User
     from app.models.org import OrgMember
-    from app.models.system_settings import SystemSetting
+    from app.services.auth_registry import auth_provider_registry
     from app.models.chat_session import ChatSession
     from app.models.audit import ChatMessage
     from sqlalchemy import select, update, func
@@ -37,15 +33,18 @@ async def main():
 
     async with async_session() as db:
         # ── Step 0: Load org sync app credentials ──
-        r = await db.execute(select(SystemSetting).where(SystemSetting.key == "feishu_org_sync"))
-        setting = r.scalar_one_or_none()
-        if not setting or not setting.value.get("app_id"):
-            logger.warning("No feishu_org_sync setting found. Cannot resolve user_ids. Skipping backfill.")
-            logger.info("You can still run Sync Now from the UI after configuring org sync.")
+        provider = await auth_provider_registry.get_provider(db, "feishu")
+        if not provider:
+            logger.warning("No feishu identity provider configured. Cannot resolve user_ids. Skipping backfill.")
+            logger.info("You can still run Sync Now from the UI after configuring feishu identity provider.")
             return
 
-        app_id = setting.value["app_id"]
-        app_secret = setting.value["app_secret"]
+        conf = provider.config or {}
+        app_id = conf.get("app_id") or conf.get("client_id")
+        app_secret = conf.get("app_secret") or conf.get("client_secret")
+        if not app_id or not app_secret:
+            logger.warning("Feishu identity provider missing app_id/app_secret. Skipping backfill.")
+            return
 
         # Get app token
         async with httpx.AsyncClient() as client:
@@ -61,66 +60,14 @@ async def main():
 
         # ── Step 1: Backfill user_id for Users ──
         logger.info("=== Step 1: Backfill feishu_user_id for Users ===")
-        r = await db.execute(
-            select(User).where(
-                User.feishu_open_id.isnot(None),
-                (User.feishu_user_id.is_(None)) | (User.feishu_user_id == ""),
-            )
-        )
-        users_to_fill = r.scalars().all()
-        logger.info(f"Found {len(users_to_fill)} users needing user_id backfill")
-
-        filled_count = 0
-        for user in users_to_fill:
-            try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(
-                        f"https://open.feishu.cn/open-apis/contact/v3/users/{user.feishu_open_id}",
-                        params={"user_id_type": "open_id"},
-                        headers={"Authorization": f"Bearer {app_token}"},
-                    )
-                    data = resp.json()
-                    if data.get("code") == 0:
-                        user_id = data.get("data", {}).get("user", {}).get("user_id", "")
-                        if user_id:
-                            user.feishu_user_id = user_id
-                            filled_count += 1
-                            logger.info(f"  Filled user_id for {user.display_name or user.username}: {user_id}")
-                        else:
-                            logger.warning(f"  No user_id returned for {user.display_name or user.username} — App may lack permission")
-                    else:
-                        # open_id might be from a different app, try email
-                        if user.email and "@" in user.email and not user.email.endswith("@feishu.local"):
-                            resp2 = await client.post(
-                                "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id",
-                                json={"emails": [user.email]},
-                                headers={"Authorization": f"Bearer {app_token}"},
-                                params={"user_id_type": "user_id"},
-                            )
-                            data2 = resp2.json()
-                            if data2.get("code") == 0:
-                                user_list = data2.get("data", {}).get("user_list", [])
-                                for u in user_list:
-                                    uid = u.get("user_id")
-                                    if uid:
-                                        user.feishu_user_id = uid
-                                        filled_count += 1
-                                        logger.info(f"  Filled user_id via email for {user.display_name}: {uid}")
-                                        break
-                        else:
-                            logger.warning(f"  Cannot resolve {user.display_name} (code={data.get('code')}, msg={data.get('msg')})")
-            except Exception as e:
-                logger.error(f"  Error resolving {user.display_name}: {e}")
-
-        await db.commit()
-        logger.info(f"Backfilled user_id for {filled_count}/{len(users_to_fill)} users")
+        logger.info("Skipped: User.open_id/union_id removed; use OrgMember backfill instead.")
 
         # ── Step 2: Backfill user_id for OrgMembers ──
         logger.info("=== Step 2: Backfill feishu_user_id for OrgMembers ===")
         r = await db.execute(
             select(OrgMember).where(
-                OrgMember.feishu_open_id.isnot(None),
-                (OrgMember.feishu_user_id.is_(None)) | (OrgMember.feishu_user_id == ""),
+                OrgMember.open_id.isnot(None),
+                (OrgMember.external_id.is_(None)) | (OrgMember.external_id == ""),
             )
         )
         members_to_fill = r.scalars().all()
@@ -131,7 +78,7 @@ async def main():
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(
-                        f"https://open.feishu.cn/open-apis/contact/v3/users/{member.feishu_open_id}",
+                        f"https://open.feishu.cn/open-apis/contact/v3/users/{member.open_id}",
                         params={"user_id_type": "open_id"},
                         headers={"Authorization": f"Bearer {app_token}"},
                     )
@@ -139,7 +86,7 @@ async def main():
                     if data.get("code") == 0:
                         user_id = data.get("data", {}).get("user", {}).get("user_id", "")
                         if user_id:
-                            member.feishu_user_id = user_id
+                            member.external_id = user_id
                             member_filled += 1
                     else:
                         logger.warning(f"  Cannot resolve OrgMember {member.name} (code={data.get('code')})")
@@ -178,9 +125,9 @@ async def main():
             # Pick best: prefer has user_id > has open_id > most recent
             def om_score(m):
                 s = 0
-                if m.feishu_user_id:
+                if m.external_id:
                     s += 10
-                if m.feishu_open_id:
+                if m.open_id:
                     s += 1
                 return s
 
@@ -198,13 +145,13 @@ async def main():
                     .values(member_id=primary.id)
                 )
                 # Transfer missing identity fields
-                if dup.feishu_user_id and not primary.feishu_user_id:
-                    primary.feishu_user_id = dup.feishu_user_id
+                if dup.external_id and not primary.external_id:
+                    primary.external_id = dup.external_id
                 if dup.email and primary.email != dup.email and dup.email:
                     if not primary.email:
                         primary.email = dup.email
                 # Clear unique field before delete
-                dup.feishu_open_id = None
+                dup.open_id = None
                 await db.flush()
                 await db.delete(dup)
                 om_merge_count += 1
@@ -247,15 +194,13 @@ async def main():
                 continue
 
             # Pick the best record as primary:
-            # Priority: has real email > has feishu_user_id > has feishu_open_id > oldest
+            # Priority: has real email > has feishu_user_id > oldest
             def score(u):
                 s = 0
                 if u.email and "@" in u.email and not u.email.endswith("@feishu.local"):
                     s += 100  # Real email = likely registered user
                 if u.feishu_user_id:
                     s += 10
-                if u.feishu_open_id:
-                    s += 1
                 return s
 
             dups_sorted = sorted(dups, key=lambda u: (-score(u), u.created_at))
@@ -283,12 +228,7 @@ async def main():
                         primary.email = dup.email
                 if dup.feishu_user_id and not primary.feishu_user_id:
                     primary.feishu_user_id = dup.feishu_user_id
-                if dup.feishu_open_id and not primary.feishu_open_id:
-                    primary.feishu_open_id = dup.feishu_open_id
-                if dup.feishu_union_id and not primary.feishu_union_id:
-                    primary.feishu_union_id = dup.feishu_union_id
-                # Clear unique fields on duplicate before delete to avoid constraint violations
-                dup.feishu_open_id = None
+                # Clear identity fields on duplicate before delete to avoid constraint violations
                 dup.email = f"deleted_{dup.id}@deleted.local"
                 dup.username = f"deleted_{dup.id}"
                 await db.flush()
@@ -324,12 +264,12 @@ async def main():
             # Check if the old_id looks like an open_id (starts with "ou_")
             if old_id.startswith("ou_"):
                 # Look up the user to find their user_id
-                u_r = await db.execute(
-                    select(User).where(User.feishu_open_id == old_id)
+                om_r = await db.execute(
+                    select(OrgMember).where(OrgMember.open_id == old_id)
                 )
-                u = u_r.scalar_one_or_none()
-                if u and u.feishu_user_id:
-                    new_conv = f"feishu_p2p_{u.feishu_user_id}"
+                om = om_r.scalar_one_or_none()
+                if om and om.external_id:
+                    new_conv = f"feishu_p2p_{om.external_id}"
                     sess.external_conv_id = new_conv
                     updated_sessions += 1
                     logger.info(f"  Updated session conv_id: {old_conv} -> {new_conv}")

@@ -28,6 +28,7 @@ class FileInfo(BaseModel):
     is_dir: bool
     size: int = 0
     modified_at: str = ""
+    url: str | None = None
 
 
 class FileContent(BaseModel):
@@ -81,6 +82,7 @@ async def list_files(
             is_dir=entry.is_dir(),
             size=stat.st_size if entry.is_file() else 0,
             modified_at=str(stat.st_mtime),
+            url=f"/api/agents/{agent_id}/files/download?path={rel}" if not entry.is_dir() else None
         ))
     return items
 
@@ -99,9 +101,12 @@ async def read_file(
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
-    async with aiofiles.open(target, "r", encoding="utf-8") as f:
-        content = await f.read()
-    return FileContent(path=path, content=content)
+    try:
+        async with aiofiles.open(target, "r", encoding="utf-8") as f:
+            content = await f.read()
+        return FileContent(path=path, content=content)
+    except UnicodeDecodeError:
+        return FileContent(path=path, content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]")
 
 
 @router.get("/download")
@@ -291,6 +296,7 @@ async def upload_file_to_workspace(
     return {
         "status": "ok",
         "path": f"{path}/{filename}",
+        "url": f"/api/agents/{agent_id}/files/download?path={path}/{filename}",
         "filename": filename,
         "size": len(content),
         "extracted_text_path": extracted_path,
@@ -342,6 +348,7 @@ async def list_enterprise_kb_files(
             "path": rel,
             "is_dir": entry.is_dir(),
             "size": stat.st_size if entry.is_file() else 0,
+            "url": f"/api/enterprise/knowledge-base/download?path={rel}" if not entry.is_dir() else None
         })
     return items
 
@@ -381,9 +388,11 @@ async def upload_enterprise_kb_file(
         if txt_file:
             extracted_path = str(txt_file.resolve().relative_to(info_dir.resolve()))
 
+    rel_path = f"{sub_path}/{filename}" if sub_path else filename
     return {
         "status": "ok",
-        "path": f"{sub_path}/{filename}" if sub_path else filename,
+        "path": rel_path,
+        "url": f"/api/enterprise/knowledge-base/download?path={rel_path}",
         "filename": filename,
         "size": len(content),
         "extracted_text_path": extracted_path,

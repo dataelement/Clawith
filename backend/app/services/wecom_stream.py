@@ -83,10 +83,15 @@ class WeComStreamManager:
                     sender = body.get("from", {})
                     sender_id = sender.get("user_id", "") or sender.get("userid", "")
                     chat_id = body.get("chatid", "")
-                    chat_type = body.get("chat_type", "single")
+                    # WeCom SDK's 'chattype' is unreliable (always 'single').
+                    # The real group indicator is the PRESENCE of 'chatid' field.
+                    is_group_msg = bool(chat_id)
 
+                    # Debug: log full body to understand the data structure
                     logger.info(
-                        f"[WeCom Stream] Text from {sender_id}: {user_text[:80]}"
+                        f"[WeCom Stream] Text from {sender_id}, "
+                        f"is_group={is_group_msg}, chat_id={chat_id or 'N/A'}, "
+                        f"body_keys={list(body.keys())}: {user_text[:80]}"
                     )
 
                     # Process message and get reply
@@ -95,7 +100,7 @@ class WeComStreamManager:
                         sender_id=sender_id,
                         user_text=user_text,
                         chat_id=chat_id,
-                        chat_type=chat_type,
+                        is_group=is_group_msg,
                     )
 
                     # Reply via streaming
@@ -172,15 +177,27 @@ class WeComStreamManager:
             client.on("message.file", on_file)
             client.on("event.enter_chat", on_enter_chat)
 
-            # Connect and run
-            logger.info(f"[WeCom Stream] Connecting for agent {agent_id}...")
-            await client.connect_async()
+            # Connect and run (with retry on failure)
+            retry_delay = 5  # Start with 5 seconds
+            max_retry_delay = 120  # Cap at 2 minutes
+            while True:
+                try:
+                    logger.info(f"[WeCom Stream] Connecting for agent {agent_id}...")
+                    await client.connect_async()
 
-            # Keep alive
-            while client.is_connected:
-                await asyncio.sleep(1)
+                    # Keep alive
+                    retry_delay = 5  # Reset on successful connect
+                    while client.is_connected:
+                        await asyncio.sleep(1)
 
-            logger.info(f"[WeCom Stream] Client disconnected for agent {agent_id}")
+                    logger.info(f"[WeCom Stream] Client disconnected for agent {agent_id}, reconnecting in {retry_delay}s...")
+                except asyncio.CancelledError:
+                    raise  # Propagate cancellation
+                except Exception as e:
+                    logger.error(f"[WeCom Stream] Connection error for {agent_id}: {e}, retrying in {retry_delay}s...")
+
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
 
         except asyncio.CancelledError:
             logger.info(f"[WeCom Stream] Client task cancelled for agent {agent_id}")
@@ -190,7 +207,7 @@ class WeComStreamManager:
                 except Exception:
                     pass
         except Exception as e:
-            logger.error(f"[WeCom Stream] Client error for {agent_id}: {e}")
+            logger.error(f"[WeCom Stream] Fatal client error for {agent_id}: {e}")
             import traceback
             traceback.print_exc()
         finally:
@@ -251,7 +268,7 @@ async def _process_wecom_stream_message(
     sender_id: str,
     user_text: str,
     chat_id: str = "",
-    chat_type: str = "single",
+    is_group: bool = False,
 ) -> str:
     """Process a WeCom message through the LLM pipeline and return the reply text."""
     from datetime import datetime, timezone
@@ -259,11 +276,9 @@ async def _process_wecom_stream_message(
     from app.database import async_session
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
-    from app.models.user import User as UserModel
-    from app.core.security import hash_password
     from app.services.channel_session import find_or_create_channel_session
+    from app.services.channel_user_service import channel_user_service
     from app.api.feishu import _call_agent_llm
-    import uuid as _uuid
 
     async with async_session() as db:
         # Load agent
@@ -272,40 +287,40 @@ async def _process_wecom_stream_message(
         if not agent_obj:
             logger.warning(f"[WeCom Stream] Agent {agent_id} not found")
             return "Agent not found"
-        ctx_size = agent_obj.context_window_size or 20
+        from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+        ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
 
         # Conversation ID: differentiate single chat vs group chat
-        if chat_type == "group" and chat_id:
+        # Group detection is based on chatid presence, not chattype (SDK bug)
+        if is_group and chat_id:
             conv_id = f"wecom_group_{chat_id}"
         else:
             conv_id = f"wecom_p2p_{sender_id}"
 
-        # Find or create platform user
-        wc_username = f"wecom_{sender_id}"
-        u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
-        platform_user = u_r.scalar_one_or_none()
-
-        if not platform_user:
-            platform_user = UserModel(
-                username=wc_username,
-                email=f"{wc_username}@wecom.local",
-                password_hash=hash_password(_uuid.uuid4().hex),
-                display_name=f"WeCom {sender_id[:8]}",
-                role="member",
-                tenant_id=agent_obj.tenant_id if agent_obj else None,
-            )
-            db.add(platform_user)
-            await db.flush()
+        # Resolve or create platform user via unified channel user service.
+        # This correctly handles the User/Identity model relationship
+        # (email/username/password_hash are AssociationProxy fields — cannot be
+        # set directly in UserModel constructor).
+        platform_user = await channel_user_service.resolve_channel_user(
+            db=db,
+            agent=agent_obj,
+            channel_type="wecom",
+            external_user_id=sender_id,
+            extra_info={"display_name": f"WeCom {sender_id[:8]}"},
+        )
         platform_user_id = platform_user.id
 
         # Find or create session
+        _is_group = (is_group and bool(chat_id))
         sess = await find_or_create_channel_session(
             db=db,
             agent_id=agent_id,
-            user_id=platform_user_id,
+            user_id=agent_obj.creator_id if _is_group else platform_user_id,
             external_conv_id=conv_id,
             source_channel="wecom",
             first_message_title=user_text,
+            is_group=_is_group,
+            group_name=f"WeCom Group {chat_id[:8]}" if _is_group else None,
         )
         session_conv_id = str(sess.id)
 
