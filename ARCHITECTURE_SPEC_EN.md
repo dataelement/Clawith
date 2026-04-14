@@ -62,8 +62,8 @@ To prevent any two Agents in the system from arbitrarily communicating and spamm
 - **`AgentAgentRelationship`** (`org.py`): **The A2A (Agent-to-Agent) bidirectional relationship table**. Underlying cross-boundary file transfers (`send_file_to_agent` in `agent_tools.py`) are strictly prohibited unless a correlative record pointing from `agent_A` to `agent_B` (or vice versa) exists in this table.
 - **`Plaza`** (`plaza.py`): Marketplace records. Once a public Digital Employee goes through the "hire" button flow, the system automatically establishes an `AgentRelationship` association between the operator and the Agent in the background, unlocking collaboration rights.
 
-### 2.4 Pulse Engine & Edge Computing (Pulse & Gateway API)
-- **`AgentTrigger`** (`trigger.py`): This table constitutes the heart of the **Aware Engine**. It records configurations such as `cron` routine wake-ups and `poll` API monitoring. Background daemon processes periodically sweep this table; once conditions are met, they bypass human input to inject system pulses directly into `websocket.py`, awakening the Agent.
+### 2.4 Aware Engine & Edge Computing (Aware & Gateway API)
+- **`AgentTrigger`** (`trigger.py`): This table constitutes the heart of the **Aware Engine**. It records configurations such as `cron` routine wake-ups, `interval` checks, `once` schedules, `poll` API monitoring, `on_message` watches, and webhook events. The Trigger Daemon periodically evaluates these conditions; once one or more triggers fire, it wakes the Agent through the standard native execution path with a structured system context, without requiring direct human input.
 - **`GatewayMessage`** (`gateway_message.py`): A pending queue exclusively allocated for `openclaw` types. Because remote machines are not in the Clawith server room, when the system has communications targeting that machine, it writes to this table. The remote Mac computer retrieves the information via the `poll` interface; after finishing its local LLM computations, it writes the result back through `report`, eventually triggering a WebSocket reverse notification to the frontend.
 
 ---
@@ -125,21 +125,22 @@ An OpenClaw Node is essentially a local daemon process executing an infinite loo
 
 ---
 
-## Module 5: Aware & Pulse Engine
+## Module 5: Aware Engine
 
-Defined within `backend/app/models/trigger.py` and `backend/app/api/triggers.py` lies the core that liberates Agents from "passive dialogue boxes" into "autonomous workers": the **Pulse Engine**.
+Defined within `backend/app/models/trigger.py`, `backend/app/api/triggers.py`, and `backend/app/services/trigger_daemon.py` lies the core that liberates Agents from "passive dialogue boxes" into "autonomous workers": the **Aware Engine**.
 
 ### 5.1 Trigger Core Structure (`AgentTrigger`)
 Each Agent can set up a series of triggers targeting itself (rendered identically in the frontend Aware page panel):
-- `type`: `cron` (Cron scheduling), `interval` (fixed interval scanning), `poll` (pulling and comparing against external APIs), `on_message` (letters from specific individuals).
+- `type`: `cron` (Cron scheduling), `once` (single scheduled wake-up), `interval` (fixed interval scanning), `poll` (pulling and comparing against external APIs), `on_message` (messages from specific humans or agents), `webhook` (external event callbacks).
 - `config`: Houses JSON expressions customized by Type (e.g., croniter's `'0 9 * * 1-5'`).
 - `cooldown_seconds`: Anti-bounce cooldown periods avoiding polling storms.
 
 ### 5.2 How Does the Trigger Chain Flow?
-1. The backend runs a periodically ticking Scheduler Task (Pulse Emitter).
-2. The system sweeps tables locating `AgentTrigger`s hitting execution time.
-3. The system fabricates a `SystemMessage` masquerading as human-triggered input. Example: `[System Trigger]: Your set time trigger "Daily Data Report" has expired. Please execute the initially designated goal immediately.`
-4. It forcefully pushes this request into the corresponding `agent_id` WebSocket flow / or generates a new `ChatSession`, prompting the native core execution engine (`call_llm`) to spin up and invoke tools to generate the report.
+1. The backend runs `trigger_daemon.py`, a periodically ticking Trigger Daemon.
+2. The daemon loads enabled `AgentTrigger` records and evaluates whether each trigger should fire.
+3. Fired triggers are grouped by `agent_id`, deduplicated within a short window, and persisted by updating `last_fired_at`, `fire_count`, and any single-shot disablement state before the Agent is invoked.
+4. The daemon creates a Reflection Session with a structured wake context, including trigger names, reasons, matched messages, or webhook payloads when available.
+5. The native core execution engine (`call_llm`) processes that wake context through the normal tool-calling loop and may push a trigger notification back to active WebSocket clients.
 
 ---
 
