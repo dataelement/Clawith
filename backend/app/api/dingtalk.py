@@ -287,6 +287,9 @@ async def process_dingtalk_message(
             session_webhook=session_webhook,
         )
     except Exception:
+        logger.exception(
+            f"[DingTalk] Processing failed for message_id={message_id}; releasing dedup lock"
+        )
         await release_dedup_lock(message_id)
         raise
     else:
