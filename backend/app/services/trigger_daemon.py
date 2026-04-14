@@ -519,6 +519,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             role_description=agent.role_description or "",
             agent_id=agent_id,
             user_id=agent.creator_id,
+            session_id=str(session_id),
             on_chunk=on_chunk,
             on_tool_call=on_tool_call,
             # A2A wake uses the agent's own max_tool_rounds setting (no override)

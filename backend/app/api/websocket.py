@@ -465,6 +465,7 @@ async def websocket_chat(
                             role_description=role_description,
                             agent_id=agent_id,
                             user_id=user_id,
+                            session_id=conv_id,
                             on_chunk=stream_to_ws,
                             on_tool_call=tool_call_to_ws,
                             on_thinking=thinking_to_ws,

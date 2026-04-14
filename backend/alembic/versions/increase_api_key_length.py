@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'increase_api_key_length'
-down_revision: Union[str, None] = 'add_notification_agent_id'
+down_revision: Union[str, None] = 'f1a2b3c4d5e6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

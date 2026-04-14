@@ -265,9 +265,9 @@ async def test_consult_calls_llm_synchronously():
 
     with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
          patch("app.services.agent_context.build_agent_context", new_callable=AsyncMock, return_value=("static", "dynamic")), \
-         patch("app.services.llm_utils.create_llm_client", return_value=mock_llm_client), \
+         patch("app.services.llm.create_llm_client", return_value=mock_llm_client), \
          patch("app.services.agent_tools.get_agent_tools_for_llm", new_callable=AsyncMock, return_value=[]), \
-         patch("app.services.llm_utils.get_provider_base_url", return_value="https://api.openai.com/v1"), \
+         patch("app.services.llm.get_provider_base_url", return_value="https://api.openai.com/v1"), \
          patch("app.services.token_tracker.record_token_usage", new_callable=AsyncMock), \
          patch("app.services.activity_logger.log_activity", new_callable=AsyncMock):
 
@@ -572,9 +572,9 @@ async def test_feature_flag_off_falls_back_to_consult():
 
     with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
          patch("app.services.agent_context.build_agent_context", new_callable=AsyncMock, return_value=("s", "d")), \
-         patch("app.services.llm_utils.create_llm_client", return_value=mock_llm_client), \
+         patch("app.services.llm.create_llm_client", return_value=mock_llm_client), \
          patch("app.services.agent_tools.get_agent_tools_for_llm", new_callable=AsyncMock, return_value=[]), \
-         patch("app.services.llm_utils.get_provider_base_url", return_value="https://api.openai.com/v1"), \
+         patch("app.services.llm.get_provider_base_url", return_value="https://api.openai.com/v1"), \
          patch("app.services.token_tracker.record_token_usage", new_callable=AsyncMock), \
          patch("app.services.activity_logger.log_activity", new_callable=AsyncMock):
 

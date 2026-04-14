@@ -5128,13 +5128,13 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             import random
             import httpx
-            from app.services.llm_utils import (
+            from app.services.llm import (
                 get_provider_base_url,
                 create_llm_client,
                 LLMMessage,
                 get_model_api_key,
+                LLMError,
             )
-            from app.services.llm_client import LLMError
             from app.services.agent_tools import get_agent_tools_for_llm, execute_tool
             base_url = get_provider_base_url(target_model.provider, target_model.base_url)
             if not base_url:

@@ -2,8 +2,7 @@ FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --registry https://registry.npmmirror.com
-COPY frontend/. .
-COPY VERSION ./VERSION
+COPY . .
 RUN npm run build
 
 FROM nginx:alpine
