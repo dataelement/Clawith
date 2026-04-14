@@ -538,15 +538,10 @@ async def list_objectives(
         for kr in all_krs:
             krs_by_obj.setdefault(kr.objective_id, []).append(kr)
 
-        # Batch-resolve owner names: collect distinct user/agent IDs
-        user_owner_ids = [
-            o.owner_id for o in objectives
-            if o.owner_type == "user" and o.owner_id
-        ]
-        agent_owner_ids = [
-            o.owner_id for o in objectives
-            if o.owner_type == "agent" and o.owner_id
-        ]
+        # Batch-resolve owner names: collect distinct owner IDs across all types
+        all_owner_ids = [str(o.owner_id) for o in objectives if o.owner_id]
+        user_owner_ids = [o.owner_id for o in objectives if o.owner_type == "user" and o.owner_id]
+        agent_owner_ids = [o.owner_id for o in objectives if o.owner_type == "agent" and o.owner_id]
 
         # Normalize UUID keys to str to avoid type mismatch between uuid.UUID
         # (from ORM) and str (from asyncpg raw row access).
@@ -570,15 +565,32 @@ async def list_objectives(
                 for row in a_result.fetchall()
             }
 
+        # OrgMember fallback: Feishu/channel users whose owner_id is OrgMember.id
+        # rather than User.id (unlinked channel-only members).
+        from app.models.org import OrgMember
+        org_member_names: dict[str, str | None] = {}
+        if all_owner_ids:
+            om_result = await db.execute(
+                select(OrgMember.id, OrgMember.name)
+                .where(OrgMember.id.in_([uuid.UUID(k) for k in all_owner_ids]))
+            )
+            org_member_names = {
+                str(row[0]): (row[1] if row[1] else None)
+                for row in om_result.fetchall()
+            }
+
         def _resolve_name(obj: OKRObjective) -> str | None:
             if not obj.owner_id:
                 return None
             key = str(obj.owner_id)
             if obj.owner_type == "user":
-                return user_names.get(key)
+                # Try User table first; fall back to OrgMember (Feishu-only member)
+                return user_names.get(key) or org_member_names.get(key)
             if obj.owner_type == "agent":
-                return agent_names.get(key)
-            return None
+                # Try Agent table; defensive fallback to user/org member in case
+                # owner_type was miscategorised at creation time
+                return agent_names.get(key) or user_names.get(key) or org_member_names.get(key)
+            return user_names.get(key) or agent_names.get(key) or org_member_names.get(key)
 
         return [
             _obj_to_out(o, krs_by_obj.get(o.id, []), owner_name=_resolve_name(o))
@@ -1256,11 +1268,20 @@ async def trigger_member_outreach(user=Depends(get_current_user)):
     for agent_member in tracked_agents:
         if agent_member.id in covered_ids:
             continue
+        # Embed the actual create_objective call template with the real UUID so the LLM
+        # cannot accidentally substitute a placeholder or nil UUID.
         member_block = (
             f"--- Member {index}: {agent_member.name} [Agent] ---\n"
-            f"  Agent UUID (owner_id for create_objective): {agent_member.id}\n"
-            f"  How to contact: send_message_to_agent(agent_name=\"{agent_member.name}\", message=...)\n"
-            f"  After receiving their reply: call create_objective then create_key_result(s) as below"
+            f"  STEP 1 → send_message_to_agent(agent_name=\"{agent_member.name}\", "
+            f"message=\"[OKR Agent] 请描述您在本周期的主要目标（Objective）和关键结果（Key Results）。\")\n"
+            f"  STEP 2 → Read the reply carefully from the tool result.\n"
+            f"  STEP 3 → Call this EXACTLY (use the UUID below verbatim):\n"
+            f"    create_objective(title=\"<their objective>\", owner_type=\"agent\", "
+            f"owner_id=\"{agent_member.id}\", "
+            f"period_start=\"{ps.isoformat()}\", period_end=\"{pe.isoformat()}\")\n"
+            f"  STEP 4 → For each KR they mentioned:\n"
+            f"    create_key_result(objective_id=\"<id from STEP 3 result>\", "
+            f"title=\"<KR title>\", target_value=<number>, unit=\"<unit if stated>\")"
         )
         members_to_contact.append(member_block)
         index += 1
