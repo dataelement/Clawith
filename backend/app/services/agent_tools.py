@@ -2444,12 +2444,6 @@ async def _web_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str
             return await _search_google(query, api_key, max_results, language)
         elif engine == "bing" and api_key:
             return await _search_bing(query, api_key, max_results, language)
-        elif engine == "tencentcloud":
-            secret_id = config.get("tencent_secret_id", "")
-            secret_key = config.get("tencent_secret_key", "")
-            if secret_id and secret_key:
-                return await _search_tencentcloud(query, secret_id, secret_key, max_results)
-            return "❌ Tencent Cloud WSA requires SecretId and SecretKey configuration"
         elif engine == "exa" and api_key:
             return await _search_exa(query, api_key, max_results)
         else:
