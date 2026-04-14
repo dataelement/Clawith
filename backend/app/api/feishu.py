@@ -510,7 +510,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                                 "email": sender_email,
                                 "mobile": _user_info.get("mobile"),
                                 "avatar_url": _avatar_url,
-                                "unionid": _user_info.get("user_id"),  # tenant-level user_id
+                                "external_id": _user_info.get("user_id"),
+                                "unionid": _user_info.get("union_id"),
                                 "open_id": sender_open_id,
                             }
                             logger.info(f"[Feishu] Resolved sender: {sender_name} (user_id={sender_user_id_feishu})")
@@ -1185,7 +1186,8 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
                             "avatar_url": _avatar_url,
                             "email": _user_info.get("email"),
                             "mobile": _user_info.get("mobile"),
-                            "unionid": _user_info.get("user_id"),
+                            "external_id": _user_info.get("user_id"),
+                            "unionid": _user_info.get("union_id"),
                             "open_id": sender_open_id,
                         }
         except Exception:

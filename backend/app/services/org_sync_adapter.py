@@ -386,6 +386,7 @@ class BaseOrgSyncAdapter(ABC):
     ) -> dict[str, Any]:
         """Insert or update a member, platform user, and identity."""
         stats = {"user_created": False, "profile_synced": False}
+        self._validate_member_identifiers(provider, user)
 
         # Find department using user's actual department list.
         # DingTalk's dept_id_list last item is the most specific (leaf) department.
@@ -413,23 +414,7 @@ class BaseOrgSyncAdapter(ABC):
             )
             department = dept_result.scalars().first()
 
-        # Check if exists by unionid or external_id or open_id (any matches), and provider
-        conditions = []
-        if user.unionid:
-            conditions.append(OrgMember.unionid == user.unionid)
-        if user.external_id:
-            conditions.append(OrgMember.external_id == user.external_id)
-        if user.open_id:
-            conditions.append(OrgMember.open_id == user.open_id)
-
-        if conditions:
-            result = await db.execute(
-                select(OrgMember).where(
-                    OrgMember.provider_id == provider.id,
-                    or_(*conditions)
-                )
-            )
-        existing_member = result.scalars().first()
+        existing_member = await self._find_existing_member(db, provider, user)
 
         now = datetime.now()
 
@@ -534,6 +519,70 @@ class BaseOrgSyncAdapter(ABC):
 
         await db.flush()
         return stats
+
+    def _provider_requires_unionid(self, provider: IdentityProvider) -> bool:
+        provider_type = (provider.provider_type or self.provider_type or "").lower()
+        return provider_type in {"feishu", "dingtalk"}
+
+    def _validate_member_identifiers(self, provider: IdentityProvider, user: ExternalUser) -> None:
+        user.unionid = (user.unionid or "").strip()
+        user.external_id = (user.external_id or "").strip()
+        user.open_id = (user.open_id or "").strip()
+
+        if self._provider_requires_unionid(provider) and not user.unionid:
+            raise ValueError(
+                f"unionid is required for {provider.provider_type} org sync user {user.external_id or user.name}"
+            )
+
+        if user.unionid and user.external_id and user.unionid == user.external_id:
+            raise ValueError(
+                f"invalid unionid for org sync user {user.external_id or user.name}: unionid must not equal external_id"
+            )
+
+    async def _find_existing_member(
+        self,
+        db: AsyncSession,
+        provider: IdentityProvider,
+        user: ExternalUser,
+    ) -> OrgMember | None:
+        if user.unionid:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.provider_id == provider.id,
+                    OrgMember.unionid == user.unionid,
+                )
+            )
+            existing_member = result.scalars().first()
+            if existing_member:
+                return existing_member
+
+        fallback_conditions = []
+        if user.external_id:
+            fallback_conditions.append(OrgMember.external_id == user.external_id)
+        if user.open_id:
+            fallback_conditions.append(OrgMember.open_id == user.open_id)
+
+        if not fallback_conditions:
+            return None
+
+        fallback_query = select(OrgMember).where(
+            OrgMember.provider_id == provider.id,
+            or_(*fallback_conditions),
+        )
+
+        # When unionid is required, only allow external/open id fallback to attach
+        # shell records that do not have a conflicting unionid yet.
+        if self._provider_requires_unionid(provider) and user.unionid:
+            fallback_query = fallback_query.where(
+                or_(
+                    OrgMember.unionid.is_(None),
+                    OrgMember.unionid == "",
+                    OrgMember.unionid == user.unionid,
+                )
+            )
+
+        result = await db.execute(fallback_query)
+        return result.scalars().first()
 
     async def _resolve_platform_user(self, db: AsyncSession, user: ExternalUser) -> User | None:
         """Resolve platform user from external user info."""

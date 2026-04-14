@@ -197,6 +197,49 @@ class SSOService:
         )
         return user_result.scalar_one_or_none()
 
+    def _get_identity_payload(self, identity_data: dict[str, Any] | None) -> dict[str, Any]:
+        if not identity_data:
+            return {}
+        raw_data = identity_data.get("raw_data")
+        if isinstance(raw_data, dict):
+            return raw_data
+        return identity_data
+
+    def _extract_identity_ids(
+        self,
+        provider_type: str,
+        provider_user_id: str,
+        identity_data: dict[str, Any] | None,
+    ) -> tuple[str | None, str | None, str | None]:
+        payload = self._get_identity_payload(identity_data)
+        identity_data = identity_data or {}
+
+        raw_open_id = (
+            payload.get("open_id")
+            or payload.get("openId")
+            or identity_data.get("open_id")
+            or identity_data.get("openId")
+        )
+        raw_union_id = (
+            payload.get("union_id")
+            or payload.get("unionId")
+            or identity_data.get("union_id")
+            or identity_data.get("unionId")
+        )
+
+        external_id = None
+        if provider_type == "feishu":
+            external_id = payload.get("user_id")
+        elif provider_type == "dingtalk":
+            external_id = payload.get("userid") or payload.get("staffId")
+        elif provider_type == "wecom":
+            external_id = provider_user_id
+
+        open_id = (raw_open_id or "").strip() or None
+        union_id = (raw_union_id or "").strip() or None
+        external_id = (external_id or "").strip() or None
+        return union_id, open_id, external_id
+
     async def link_identity(
         self,
         db: AsyncSession,
@@ -240,32 +283,33 @@ class SSOService:
 
         uid = uuid.UUID(user_id) if isinstance(user_id, str) else user_id
 
-        # Extract the raw open_id from identity_data (raw provider response).
-        # For Feishu: raw_data has 'open_id' and 'union_id' as separate fields.
-        # For DingTalk: raw_data has 'openId' and 'unionId'.
-        # Storing open_id separately prevents duplicate user creation when the
-        # lookup key alternates between open_id and union_id across SSO sessions.
-        raw_open_id = None
-        if identity_data:
-            raw_open_id = (
-                identity_data.get("open_id")      # Feishu
-                or identity_data.get("openId")    # DingTalk
-            )
+        # Extract canonical provider IDs from the raw payload. Some callers wrap
+        # the provider response in {"raw_data": ...}, so we normalize that here.
+        raw_union_id, raw_open_id, raw_external_id = self._extract_identity_ids(
+            provider_type, provider_user_id, identity_data
+        )
 
         # Check if OrgMember already exists for this provider user.
         # Search across unionid, external_id, and open_id to handle the case where
         # the lookup key differs between sync (uses user_id/employee_id as external_id)
         # and SSO (uses union_id or open_id as provider_user_id).
-        conditions = [
-            OrgMember.unionid == provider_user_id,
-            OrgMember.external_id == provider_user_id,
-            OrgMember.open_id == provider_user_id,
-        ]
-        if raw_open_id and raw_open_id != provider_user_id:
-            # Also search by the actual open_id from raw data, in case the member
-            # was created with open_id as its primary key (e.g. from a previous SSO login)
-            conditions.append(OrgMember.open_id == raw_open_id)
-            conditions.append(OrgMember.external_id == raw_open_id)
+        lookup_ids = {provider_user_id}
+        if raw_union_id:
+            lookup_ids.add(raw_union_id)
+        if raw_open_id:
+            lookup_ids.add(raw_open_id)
+        if raw_external_id:
+            lookup_ids.add(raw_external_id)
+        lookup_ids.discard("")
+        lookup_ids.discard(None)
+
+        conditions = []
+        for lookup_id in lookup_ids:
+            conditions.extend([
+                OrgMember.unionid == lookup_id,
+                OrgMember.external_id == lookup_id,
+                OrgMember.open_id == lookup_id,
+            ])
 
         member_query = select(OrgMember).where(
             OrgMember.provider_id == provider.id,
@@ -279,9 +323,15 @@ class SSOService:
             # Always link user
             member.user_id = uid
 
-            # Fill in open_id if not already set — prevents future lookup misses
+            if raw_external_id and not member.external_id:
+                member.external_id = raw_external_id
+
             if raw_open_id and not member.open_id:
                 member.open_id = raw_open_id
+
+            if raw_union_id and member.unionid != raw_union_id:
+                if not member.unionid or member.unionid in {provider_user_id, member.open_id, member.external_id}:
+                    member.unionid = raw_union_id
 
             # Passive identity enrichment: update profile fields from SSO data.
             # OrgMember records created by org-sync may have placeholder values
@@ -331,12 +381,8 @@ class SSOService:
                 provider_id=provider.id,
                 user_id=uid,
                 tenant_id=tenant_id,
-                # For Feishu/DingTalk: external_id stores union_id (cross-app stable).
-                # open_id is stored separately so it can also be matched on next login.
-                external_id=provider_user_id,
-                unionid=provider_user_id if provider_type != "wecom" else None,
-                # Explicitly store the raw open_id so future SSO lookups can match on it
-                # even if the lookup key is union_id (and vice versa).
+                external_id=raw_external_id,
+                unionid=raw_union_id if provider_type != "wecom" else None,
                 open_id=raw_open_id,
             )
             db.add(member)

@@ -23,6 +23,27 @@ from app.services.sso_service import sso_service
 class ChannelUserService:
     """Service for resolving channel users via OrgMember and SSO patterns."""
 
+    def _get_channel_ids(
+        self,
+        channel_type: str,
+        external_user_id: str,
+        extra_info: dict[str, Any],
+    ) -> tuple[str | None, str | None, str | None]:
+        unionid = (extra_info.get("unionid") or extra_info.get("union_id") or "").strip() or None
+        open_id = (extra_info.get("open_id") or "").strip() or None
+        external_id = (extra_info.get("external_id") or external_user_id or "").strip() or None
+
+        if channel_type == "feishu":
+            open_id = open_id or external_user_id
+            external_id = (extra_info.get("external_id") or "").strip() or None
+        elif channel_type == "dingtalk":
+            open_id = open_id or None
+        elif channel_type == "wecom":
+            unionid = None
+            open_id = open_id or None
+
+        return unionid, open_id, external_id
+
     async def resolve_channel_user(
         self,
         db: AsyncSession,
@@ -104,13 +125,15 @@ class ChannelUserService:
                         db, user.id, provider.id, tenant_id
                     )
                     if existing_member:
-                        # Reuse the org-synced record: update its channel-specific IDs
-                        # so future lookups by external_id work without a new shell.
-                        if channel_type == "feishu":
-                            if external_user_id.startswith("on_"):
-                                existing_member.unionid = existing_member.unionid or external_user_id
-                            elif external_user_id.startswith("ou_"):
-                                existing_member.open_id = existing_member.open_id or external_user_id
+                        unionid, open_id, external_id = self._get_channel_ids(
+                            channel_type, external_user_id, extra_info
+                        )
+                        if unionid and not existing_member.unionid:
+                            existing_member.unionid = unionid
+                        if open_id and not existing_member.open_id:
+                            existing_member.open_id = open_id
+                        if external_id and not existing_member.external_id:
+                            existing_member.external_id = external_id
                         logger.info(
                             f"[{channel_type}] Reusing org-synced OrgMember {existing_member.id} "
                             f"for user {user.id} instead of creating a duplicate shell"
@@ -232,6 +255,7 @@ class ChannelUserService:
     ) -> OrgMember:
         """Create a shell OrgMember record for this identity."""
         name = extra_info.get("name") or f"{channel_type.capitalize()} User {external_user_id[:8]}"
+        unionid, open_id, external_id = self._get_channel_ids(channel_type, external_user_id, extra_info)
 
         member = OrgMember(
             name=name,
@@ -239,9 +263,9 @@ class ChannelUserService:
             provider_id=provider.id,
             user_id=linked_user_id,
             tenant_id=provider.tenant_id,
-            external_id=external_user_id,
-            unionid=extra_info.get("unionid"),
-            open_id=extra_info.get("open_id"),
+            external_id=external_id,
+            unionid=unionid,
+            open_id=open_id,
             avatar_url=extra_info.get("avatar_url"),
             phone=extra_info.get("mobile"),
             title=extra_info.get("title", ""),
