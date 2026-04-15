@@ -1,11 +1,12 @@
 """Unit tests for app.services.channel_commands.
 
-Covers the two review concerns addressed in PR #342:
-1. `handle_channel_command()` must archive only the session matching the
-   correct `source_channel` (so a Feishu `/new` never archives a DingTalk
-   session with the same external_conv_id, etc.).
-2. The new session it creates must be attributed to the `user_id` passed
-   in by the caller (not silently falling back to some other id).
+Covers:
+1. `handle_channel_command()` scopes its archive lookup by source_channel
+   (no cross-channel collision on shared external_conv_id).
+2. It archives the matching old session by renaming its external_conv_id.
+3. It defers new-session creation to the next user message so the session
+   title auto-names from the first message — rather than being locked to
+   a hard-coded 'New Session' placeholder.
 """
 
 from __future__ import annotations
@@ -125,21 +126,18 @@ async def test_handle_channel_command_scopes_lookup_by_source_channel():
 
 
 @pytest.mark.asyncio
-async def test_handle_channel_command_only_archives_same_channel_session():
-    """A session from a different channel must not be archived.
-
-    We simulate the lookup returning None (as it would when the pre-existing
-    session has a different source_channel) and assert the old record's
-    external_conv_id is left untouched.
+async def test_handle_channel_command_does_not_preempt_session_creation():
+    """New sessions must not be pre-created by /new — they're built by the
+    next user message via find_or_create_channel_session, so the first real
+    message content becomes the session title instead of "New Session".
     """
     agent_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
-    # Simulate a session that belongs to a different channel — the query with
-    # source_channel='feishu' should miss it, so the fake returns None.
+    # Simulate no pre-existing session (lookup miss).
     db = FakeDB(lookup_result=None)
 
-    await channel_commands.handle_channel_command(
+    result = await channel_commands.handle_channel_command(
         db=db,
         command="/new",
         agent_id=agent_id,
@@ -148,25 +146,21 @@ async def test_handle_channel_command_only_archives_same_channel_session():
         source_channel="feishu",
     )
 
-    # Only the new session should have been added; no archival mutation.
-    assert len(db.added) == 1
-    new_sess = db.added[0]
-    assert new_sess.source_channel == "feishu"
-    assert new_sess.external_conv_id == "shared_conv_id_xxx"
-    # Confirm the user_id on the new session is the one we passed in.
-    assert new_sess.user_id == user_id
+    assert result["action"] == "new_session"
+    # Nothing should be added to the DB — creation is deferred.
+    assert db.added == []
+    # And the response must not leak a session_id (there is no session yet).
+    assert "session_id" not in result
 
 
 @pytest.mark.asyncio
-async def test_handle_channel_command_uses_caller_user_id_for_new_session():
-    """Regression test for review concern #1.
-
-    `handle_channel_command()` must attribute the replacement session to the
-    `user_id` the caller supplied. The Feishu caller now passes the resolved
-    platform_user_id (instead of creator_id) — this test locks the contract.
+async def test_handle_channel_command_archives_old_session():
+    """When a session for the same (agent_id, external_conv_id, source_channel)
+    exists, /reset must archive it by renaming its external_conv_id, so the
+    next user message creates a fresh one.
     """
     agent_id = uuid.uuid4()
-    sender_platform_user_id = uuid.uuid4()
+    user_id = uuid.uuid4()
 
     # Existing session to be archived.
     old_session = SimpleNamespace(external_conv_id="feishu_p2p_ou_zzz")
@@ -176,7 +170,7 @@ async def test_handle_channel_command_uses_caller_user_id_for_new_session():
         db=db,
         command="/reset",
         agent_id=agent_id,
-        user_id=sender_platform_user_id,
+        user_id=user_id,
         external_conv_id="feishu_p2p_ou_zzz",
         source_channel="feishu",
     )
@@ -184,13 +178,8 @@ async def test_handle_channel_command_uses_caller_user_id_for_new_session():
     assert result["action"] == "new_session"
     # Old session got its external_conv_id renamed to the archived form.
     assert old_session.external_conv_id.startswith("feishu_p2p_ou_zzz__archived_")
-    # New session was added with the caller-supplied user_id.
-    assert len(db.added) == 1
-    new_sess = db.added[0]
-    assert new_sess.user_id == sender_platform_user_id
-    assert new_sess.agent_id == agent_id
-    assert new_sess.source_channel == "feishu"
-    assert new_sess.external_conv_id == "feishu_p2p_ou_zzz"
+    # No new session pre-created (deferred to next user message).
+    assert db.added == []
 
 
 @pytest.mark.asyncio

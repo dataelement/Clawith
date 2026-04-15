@@ -58,21 +58,11 @@ async def handle_channel_command(
             )
             await db.flush()
 
-        # Create new session
-        new_session = ChatSession(
-            agent_id=agent_id,
-            user_id=user_id,
-            title="New Session",
-            source_channel=source_channel,
-            external_conv_id=external_conv_id,
-            created_at=datetime.now(timezone.utc),
-        )
-        db.add(new_session)
-        await db.flush()
-
+        # Defer session creation to the user's next message so its title
+        # auto-names from that message (via find_or_create_channel_session)
+        # instead of being locked to a hard-coded placeholder.
         return {
             "action": "new_session",
-            "session_id": str(new_session.id),
             "message": "已开启新对话，之前的上下文已清除。",
         }
 
