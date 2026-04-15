@@ -1894,13 +1894,14 @@ class BedrockClient(LLMClient):
             }
             fmt = format_map.get(media_type, "jpeg")
             import base64
+            import binascii
             return {
                 "image": {
                     "format": fmt,
-                    "source": {"bytes": base64.b64decode(b64_data)},
+                    "source": {"bytes": base64.b64decode(b64_data, validate=True)},
                 }
             }
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, binascii.Error):
             return None
 
     def _convert_tools(self, tools: list[dict] | None) -> dict[str, Any] | None:

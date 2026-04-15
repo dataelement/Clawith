@@ -2236,7 +2236,7 @@ export default function EnterpriseSettings() {
                                                 <div className="form-group" style={{ gridColumn: 'span 2' }}>
                                                     <label className="form-label">{isBedrock ? 'AWS Credentials (JSON)' : t('enterprise.llm.apiKey')}</label>
                                                     <input className="form-input" type={isBedrock ? 'text' : 'password'} placeholder={isBedrock ? '{"access_key": "...", "secret_key": "...", "region": "us-east-1"}' : '•••••••• (Leave blank to keep unchanged)'} value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value })} />
-                                                    {isBedrock && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Leave empty to use the default AWS credential chain (env vars, ~/.aws/credentials, instance role).</div>}
+                                                    {isBedrock && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Leave blank to keep existing credentials unchanged.</div>}
                                                 </div>
                                                 <div className="form-group" style={{ gridColumn: 'span 2' }}>
                                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
