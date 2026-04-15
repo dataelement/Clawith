@@ -1727,6 +1727,7 @@ class BedrockClient(LLMClient):
     def _create_boto_client(self) -> Any:
         """Create boto3 bedrock-runtime client from packed credentials."""
         import boto3
+        from botocore.config import Config
 
         kwargs: dict[str, Any] = {}
 
@@ -1744,6 +1745,12 @@ class BedrockClient(LLMClient):
         if self.base_url:
             kwargs["endpoint_url"] = self.base_url
 
+        # Honor configured timeout
+        kwargs["config"] = Config(
+            read_timeout=self.timeout,
+            connect_timeout=min(self.timeout, 10.0),
+        )
+
         return boto3.client("bedrock-runtime", **kwargs)
 
     def _parse_credentials(self) -> dict[str, str]:
@@ -1754,8 +1761,11 @@ class BedrockClient(LLMClient):
             creds = json.loads(self.api_key)
             if isinstance(creds, dict):
                 return creds
-        except (json.JSONDecodeError, TypeError):
-            pass
+        except (json.JSONDecodeError, TypeError) as exc:
+            logger.warning(
+                "Bedrock api_key contains non-JSON value; "
+                "falling back to default AWS credentials: %s", exc
+            )
         return {}
 
     def _get_headers(self) -> dict[str, str]:
@@ -2010,17 +2020,18 @@ class BedrockClient(LLMClient):
         # the entire response has been buffered.
         _SENTINEL = object()
         queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_event_loop()
 
         def _producer():
             """Read the sync Bedrock iterator and push events into the queue."""
             try:
                 for event in stream_body:
-                    queue.put_nowait(event)
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
             finally:
-                queue.put_nowait(_SENTINEL)
+                loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
 
         # Start the blocking iterator in a background thread
-        producer_task = asyncio.get_event_loop().run_in_executor(None, _producer)
+        producer_task = loop.run_in_executor(None, _producer)
 
         while True:
             event = await queue.get()
