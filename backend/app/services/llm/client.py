@@ -1972,7 +1972,7 @@ class BedrockClient(LLMClient):
                 })
 
         stop_reason = response.get("stopReason", "")
-        finish_reason = "tool_calls" if stop_reason == "tool_use" else "stop"
+        finish_reason = self._map_bedrock_finish_reason(stop_reason)
 
         usage = None
         usage_raw = response.get("usage")
@@ -1990,6 +1990,15 @@ class BedrockClient(LLMClient):
             usage=usage,
             model=self.model,
         )
+
+    @staticmethod
+    def _map_bedrock_finish_reason(stop_reason: str | None) -> str:
+        """Map Bedrock stop reasons to unified finish reasons."""
+        if stop_reason == "tool_use":
+            return "tool_calls"
+        if stop_reason:
+            return stop_reason
+        return "stop"
 
     async def complete(
         self,
@@ -2146,7 +2155,7 @@ class BedrockClient(LLMClient):
                 except Exception:
                     pass
 
-        finish_reason = "tool_calls" if stop_reason == "tool_use" else "stop"
+        finish_reason = self._map_bedrock_finish_reason(stop_reason)
 
         return LLMResponse(
             content=full_content,

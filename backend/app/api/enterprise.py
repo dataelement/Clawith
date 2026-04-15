@@ -85,10 +85,12 @@ async def test_llm_model(
     """Test an LLM model configuration by making a simple API call."""
     import time
 
-    # Resolve API key: use provided key, and only fall back to stored model key
-    # for non-Bedrock tests.
-    api_key = data.api_key if data.api_key and not data.api_key.startswith('****') else None
-    if not api_key and data.model_id and data.provider != "bedrock":
+    # Resolve API key: use provided key, or fall back to stored model key.
+    # For Bedrock, only reuse stored key when request carries a masked value
+    # (edit mode unchanged credentials). A blank key should use AWS default chain.
+    is_masked_api_key = bool(data.api_key and data.api_key.startswith('****'))
+    api_key = data.api_key if data.api_key and not is_masked_api_key else None
+    if not api_key and data.model_id and (data.provider != "bedrock" or is_masked_api_key):
         result = await db.execute(select(LLMModel).where(LLMModel.id == data.model_id))
         existing = result.scalar_one_or_none()
         if existing:
