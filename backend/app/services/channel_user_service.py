@@ -228,8 +228,6 @@ class ChannelUserService:
                 lookup_conditions = []
                 if unionid:
                     lookup_conditions.append(OrgMember.unionid == unionid)
-                if open_id:
-                    lookup_conditions.append(OrgMember.open_id == open_id)
                 if external_id:
                     lookup_conditions.append(OrgMember.external_id == external_id)
                 if not lookup_conditions:
@@ -240,7 +238,7 @@ class ChannelUserService:
             elif channel_type == "dingtalk":
                 # DingTalk: unionid is stable across apps, then external_id
                 conditions.append(
-                    (OrgMember.unionid == (unionid or external_user_id)) |
+                    (OrgMember.unionid == unionid) |
                     (OrgMember.external_id == external_id)
                 )
             elif channel_type == "wecom":

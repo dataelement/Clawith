@@ -486,49 +486,49 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         </label>
                                                     ) : field.type === 'password' ? (
                                                         <>
-                                                        {(() => {
-                                                            const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
-                                                            const isUsingGlobal = globalVal && !configData[field.key];
-                                                            
-                                                            if (isUsingGlobal && focusedField !== field.key) {
+                                                            {(() => {
+                                                                const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
+                                                                const isUsingGlobal = globalVal && !configData[field.key];
+
+                                                                if (isUsingGlobal && focusedField !== field.key) {
+                                                                    return (
+                                                                        <div
+                                                                            className="form-input"
+                                                                            style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'text', background: 'var(--bg-tertiary)', borderColor: 'var(--border)', overflow: 'hidden' }}
+                                                                            onClick={() => setFocusedField(field.key)}
+                                                                        >
+                                                                            <span style={{ flex: 1, color: 'var(--text-tertiary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('agent.tools.usingCompanyKey', 'Using company key ({{val}})', { val: globalVal })}</span>
+                                                                            <span style={{ fontSize: '12px', color: 'var(--accent-primary)', flexShrink: 0, cursor: 'pointer' }}>{t('common.edit', 'Edit')}</span>
+                                                                        </div>
+                                                                    );
+                                                                }
+
                                                                 return (
-                                                                    <div 
-                                                                        className="form-input" 
-                                                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'text', background: 'var(--bg-tertiary)', borderColor: 'var(--border)', overflow: 'hidden' }}
-                                                                        onClick={() => setFocusedField(field.key)}
-                                                                    >
-                                                                        <span style={{ flex: 1, color: 'var(--text-tertiary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('agent.tools.usingCompanyKey', 'Using company key ({{val}})', { val: globalVal })}</span>
-                                                                        <span style={{ fontSize: '12px', color: 'var(--accent-primary)', flexShrink: 0, cursor: 'pointer' }}>{t('common.edit', 'Edit')}</span>
+                                                                    <input type="password" autoComplete="new-password" className="form-input"
+                                                                        autoFocus={focusedField === field.key}
+                                                                        value={configData[field.key] ?? ''}
+                                                                        placeholder={globalVal ? t('agent.tools.usingCompanyKey', 'Using company key ({{val}})', { val: globalVal }) : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'))}
+                                                                        onBlur={(e) => {
+                                                                            if (!e.target.value) setFocusedField(null);
+                                                                        }}
+                                                                        onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                                );
+                                                            })()}
+                                                            {/* Per-provider help text for auth_code */}
+                                                            {field.key === 'auth_code' && (() => {
+                                                                const providerField = configTool?.config_schema?.fields?.find((f: any) => f.key === 'email_provider');
+                                                                const selectedProvider = configData['email_provider'] || providerField?.default || '';
+                                                                const providerOption = providerField?.options?.find((o: any) => o.value === selectedProvider);
+                                                                if (!providerOption?.help_text) return null;
+                                                                return (
+                                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', lineHeight: '1.5' }}>
+                                                                        {providerOption.help_text}
+                                                                        {providerOption.help_url && (
+                                                                            <> &middot; <a href={providerOption.help_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>Setup guide</a></>
+                                                                        )}
                                                                     </div>
                                                                 );
-                                                            }
-
-                                                            return (
-                                                                <input type="password" autoComplete="new-password" className="form-input"
-                                                                    autoFocus={focusedField === field.key}
-                                                                    value={configData[field.key] ?? ''}
-                                                                    placeholder={globalVal ? t('agent.tools.usingCompanyKey', 'Using company key ({{val}})', { val: globalVal }) : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'))}
-                                                                    onBlur={(e) => {
-                                                                        if (!e.target.value) setFocusedField(null);
-                                                                    }}
-                                                                    onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
-                                                            );
-                                                        })()}
-                                                        {/* Per-provider help text for auth_code */}
-                                                        {field.key === 'auth_code' && (() => {
-                                                            const providerField = configTool?.config_schema?.fields?.find((f: any) => f.key === 'email_provider');
-                                                            const selectedProvider = configData['email_provider'] || providerField?.default || '';
-                                                            const providerOption = providerField?.options?.find((o: any) => o.value === selectedProvider);
-                                                            if (!providerOption?.help_text) return null;
-                                                            return (
-                                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', lineHeight: '1.5' }}>
-                                                                    {providerOption.help_text}
-                                                                    {providerOption.help_url && (
-                                                                        <> &middot; <a href={providerOption.help_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>Setup guide</a></>
-                                                                    )}
-                                                                </div>
-                                                            );
-                                                        })()}
+                                                            })()}
 
                                                         </>
                                                     ) : field.type === 'select' ? (
@@ -540,34 +540,34 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         <input type="number" className="form-input" value={configData[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''} min={field.min} max={field.max} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value ? Number(e.target.value) : '' }))} />
                                                     ) : (
                                                         <>
-                                                        {(() => {
-                                                            const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
-                                                            const isUsingGlobal = globalVal && !configData[field.key];
-                                                            
-                                                            if (isUsingGlobal && focusedField !== field.key) {
-                                                                return (
-                                                                    <div 
-                                                                        className="form-input" 
-                                                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'text', background: 'var(--bg-tertiary)', borderColor: 'var(--border)', overflow: 'hidden' }}
-                                                                        onClick={() => setFocusedField(field.key)}
-                                                                    >
-                                                                        <span style={{ flex: 1, color: 'var(--text-tertiary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('agent.tools.usingCompanyConfig', 'Using company config ({{val}})', { val: globalVal })}</span>
-                                                                        <span style={{ fontSize: '12px', color: 'var(--accent-primary)', flexShrink: 0, cursor: 'pointer' }}>{t('common.edit', 'Edit')}</span>
-                                                                    </div>
-                                                                );
-                                                            }
+                                                            {(() => {
+                                                                const globalVal = configTool?.global_config?.[field.key] ?? configGlobalData?.[field.key];
+                                                                const isUsingGlobal = globalVal && !configData[field.key];
 
-                                                            return (
-                                                                <input type="text" className="form-input"
-                                                                    autoFocus={focusedField === field.key}
-                                                                    value={configData[field.key] ?? ''}
-                                                                    placeholder={globalVal ? t('agent.tools.usingCompanyConfig', 'Using company config ({{val}})', { val: globalVal }) : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'))}
-                                                                    onBlur={(e) => {
-                                                                        if (!e.target.value) setFocusedField(null);
-                                                                    }}
-                                                                    onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
-                                                            );
-                                                        })()}
+                                                                if (isUsingGlobal && focusedField !== field.key) {
+                                                                    return (
+                                                                        <div
+                                                                            className="form-input"
+                                                                            style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'text', background: 'var(--bg-tertiary)', borderColor: 'var(--border)', overflow: 'hidden' }}
+                                                                            onClick={() => setFocusedField(field.key)}
+                                                                        >
+                                                                            <span style={{ flex: 1, color: 'var(--text-tertiary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('agent.tools.usingCompanyConfig', 'Using company config ({{val}})', { val: globalVal })}</span>
+                                                                            <span style={{ fontSize: '12px', color: 'var(--accent-primary)', flexShrink: 0, cursor: 'pointer' }}>{t('common.edit', 'Edit')}</span>
+                                                                        </div>
+                                                                    );
+                                                                }
+
+                                                                return (
+                                                                    <input type="text" className="form-input"
+                                                                        autoFocus={focusedField === field.key}
+                                                                        value={configData[field.key] ?? ''}
+                                                                        placeholder={globalVal ? t('agent.tools.usingCompanyConfig', 'Using company config ({{val}})', { val: globalVal }) : (field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default'))}
+                                                                        onBlur={(e) => {
+                                                                            if (!e.target.value) setFocusedField(null);
+                                                                        }}
+                                                                        onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                                );
+                                                            })()}
                                                         </>
                                                     )}
                                                 </div>
@@ -699,7 +699,7 @@ function CopyMessageButton({ text }: { text: string }) {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
         };
-        
+
         if (navigator.clipboard && window.isSecureContext) {
             copyToClipboard(text).then(copySuccess).catch(err => console.error('Clipboard API failed', err));
         } else {
@@ -1141,13 +1141,13 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {relationships.map((r: any) => (
                             <div key={r.id} style={{
-                                    borderRadius: '8px', border: '1px solid var(--border-subtle)',
-                                    overflow: 'hidden',
-                                    // Fade out row while delete is in-flight
-                                    opacity: deletingIds.has(r.id) ? 0.4 : 1,
-                                    transition: 'opacity 0.2s ease',
-                                    pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
-                                }}>
+                                borderRadius: '8px', border: '1px solid var(--border-subtle)',
+                                overflow: 'hidden',
+                                // Fade out row while delete is in-flight
+                                opacity: deletingIds.has(r.id) ? 0.4 : 1,
+                                transition: 'opacity 0.2s ease',
+                                pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
+                            }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 600, flexShrink: 0 }}>{r.member?.name?.[0] || '?'}</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -1240,13 +1240,13 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {agentRelationships.map((r: any) => (
                             <div key={r.id} style={{
-                                    borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)',
-                                    background: 'rgba(16,185,129,0.05)', overflow: 'hidden',
-                                    // Fade out row while delete is in-flight
-                                    opacity: deletingIds.has(r.id) ? 0.4 : 1,
-                                    transition: 'opacity 0.2s ease',
-                                    pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
-                                }}>
+                                borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)',
+                                background: 'rgba(16,185,129,0.05)', overflow: 'hidden',
+                                // Fade out row while delete is in-flight
+                                opacity: deletingIds.has(r.id) ? 0.4 : 1,
+                                transition: 'opacity 0.2s ease',
+                                pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
+                            }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: 0 }}>A</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -4231,7 +4231,7 @@ function AgentDetailInner() {
                                                             </div>
                                                             <button className="session-del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
                                                                 title={t('chat.deleteSession', 'Delete session')}>
-                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" /><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" /></svg>
                                                             </button>
                                                         </div>
                                                     );
@@ -4300,430 +4300,430 @@ function AgentDetailInner() {
                             </div>
 
                             {/* ── Right: chat/message area ── */}
-                            <div className={`agent-chat-area ${ !!(liveState.desktop || liveState.browser || liveState.code) ? 'has-live-panel' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'row', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+                            <div className={`agent-chat-area ${!!(liveState.desktop || liveState.browser || liveState.code) ? 'has-live-panel' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'row', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
                                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
                                     {sessionListCollapsed && (
-                                        <button onClick={() => setSessionListCollapsed(false)} style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, width: '28px', height: '28px', borderRadius: '6px', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', cursor: 'pointer' }} title="Show chat sessions" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='var(--bg-elevated)'}>
+                                        <button onClick={() => setSessionListCollapsed(false)} style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, width: '28px', height: '28px', borderRadius: '6px', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', cursor: 'pointer' }} title="Show chat sessions" onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background = 'var(--bg-elevated)'}>
                                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
                                         </button>
                                     )}
-                                {!activeSession ? (
-                                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
-                                        <div>{t('agent.chat.noSessionSelected')}</div>
-                                        {!isViewingOtherUsersSessions && (
-                                            <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
-                                        )}
-                                    </div>
-                                ) : !isWritableSession(activeSession) ? (
-                                    /* ── Read-only history view (other user's session or agent-to-agent) ── */
-                                    <>
-                                        <div
-                                            style={{
-                                                position: 'absolute',
-                                                top: '12px',
-                                                left: sessionListCollapsed ? '52px' : '16px',
-                                                zIndex: 10,
-                                                fontSize: '11px',
-                                                color: 'var(--text-tertiary)',
-                                                padding: '4px 8px',
-                                                background: 'var(--bg-secondary)',
-                                                borderRadius: '4px',
-                                                pointerEvents: 'none',
-                                            }}
-                                        >
-                                            {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                                    {!activeSession ? (
+                                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
+                                            <div>{t('agent.chat.noSessionSelected')}</div>
+                                            {!isViewingOtherUsersSessions && (
+                                                <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
+                                            )}
                                         </div>
-                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
-                                            {(() => {
-                                                // For A2A sessions, determine which participant is "this agent" (left side)
-                                                // Use agent.name matching against sender_name from messages
-                                                const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
-                                                const isHumanReadonly = !isA2A && !activeSession.is_group;
-                                                const thisAgentName = (agent as any)?.name;
-                                                // Find this agent's participant_id from loaded messages
-                                                const thisAgentPid = isA2A && thisAgentName
-                                                    ? historyMsgs.find((m: any) => m.sender_name === thisAgentName)?.participant_id
-                                                    : null;
-                                                return historyMsgs.map((m: any, i: number) => {
-                                                    // Determine if this message is from "this agent" (left) or peer (right)
-                                                    // Actually, "this agent" should be on the RIGHT (like 'me'), and peer on the LEFT
-                                                    const isLeft = isA2A && thisAgentPid
-                                                        ? m.participant_id !== thisAgentPid
-                                                        : m.role === 'assistant';
-                                                    if (m.role === 'tool_call') {
-                                                        const tName = m.toolName || (() => { try { return JSON.parse(m.content || '{}').name; } catch { return 'tool'; } })();
-                                                        const tArgs = m.toolArgs || (() => { try { return JSON.parse(m.content || '{}').args; } catch { return {}; } })();
-                                                        const tResult = m.toolResult ?? (() => { try { return JSON.parse(m.content || '{}').result; } catch { return ''; } })();
-                                                        return (
-                                                            <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
-                                                                <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
-                                                                    <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
-                                                                        <span style={{ fontSize: '13px' }}>⚡</span>
-                                                                        <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
-                                                                        {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
-                                                                    </summary>
-                                                                    {tResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{tResult}</div></div>}
-                                                                </details>
-                                                            </div>
-                                                        );
-                                                    }
-
-                                                    {/* Assistant message with no content: show inline thinking or skip */ }
-                                                    if (m.role === 'assistant' && !m.content?.trim()) {
-                                                        if (m.thinking) {
+                                    ) : !isWritableSession(activeSession) ? (
+                                        /* ── Read-only history view (other user's session or agent-to-agent) ── */
+                                        <>
+                                            <div
+                                                style={{
+                                                    position: 'absolute',
+                                                    top: '12px',
+                                                    left: sessionListCollapsed ? '52px' : '16px',
+                                                    zIndex: 10,
+                                                    fontSize: '11px',
+                                                    color: 'var(--text-tertiary)',
+                                                    padding: '4px 8px',
+                                                    background: 'var(--bg-secondary)',
+                                                    borderRadius: '4px',
+                                                    pointerEvents: 'none',
+                                                }}
+                                            >
+                                                {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                                            </div>
+                                            <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
+                                                {(() => {
+                                                    // For A2A sessions, determine which participant is "this agent" (left side)
+                                                    // Use agent.name matching against sender_name from messages
+                                                    const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
+                                                    const isHumanReadonly = !isA2A && !activeSession.is_group;
+                                                    const thisAgentName = (agent as any)?.name;
+                                                    // Find this agent's participant_id from loaded messages
+                                                    const thisAgentPid = isA2A && thisAgentName
+                                                        ? historyMsgs.find((m: any) => m.sender_name === thisAgentName)?.participant_id
+                                                        : null;
+                                                    return historyMsgs.map((m: any, i: number) => {
+                                                        // Determine if this message is from "this agent" (left) or peer (right)
+                                                        // Actually, "this agent" should be on the RIGHT (like 'me'), and peer on the LEFT
+                                                        const isLeft = isA2A && thisAgentPid
+                                                            ? m.participant_id !== thisAgentPid
+                                                            : m.role === 'assistant';
+                                                        if (m.role === 'tool_call') {
+                                                            const tName = m.toolName || (() => { try { return JSON.parse(m.content || '{}').name; } catch { return 'tool'; } })();
+                                                            const tArgs = m.toolArgs || (() => { try { return JSON.parse(m.content || '{}').args; } catch { return {}; } })();
+                                                            const tResult = m.toolResult ?? (() => { try { return JSON.parse(m.content || '{}').result; } catch { return ''; } })();
                                                             return (
-                                                                <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-                                                                    <details style={{
-                                                                        fontSize: '12px',
-                                                                        background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
-                                                                        border: '1px solid rgba(147, 130, 220, 0.15)',
-                                                                    }}>
-                                                                        <summary style={{
-                                                                            padding: '6px 10px', cursor: 'pointer',
-                                                                            color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
-                                                                            userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
-                                                                        }}>Thinking</summary>
-                                                                        <div style={{
-                                                                            padding: '4px 10px 8px',
-                                                                            fontSize: '12px', lineHeight: '1.6',
-                                                                            color: 'var(--text-secondary)',
-                                                                            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                                                            maxHeight: '300px', overflow: 'auto',
-                                                                        }}>{m.thinking}</div>
+                                                                <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
+                                                                    <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
+                                                                        <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
+                                                                            <span style={{ fontSize: '13px' }}>⚡</span>
+                                                                            <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
+                                                                            {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
+                                                                        </summary>
+                                                                        {tResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{tResult}</div></div>}
                                                                     </details>
                                                                 </div>
                                                             );
                                                         }
-                                                        return null;
-                                                    }
-                                                    return (
-                                                        <ChatMessageItem
-                                                            key={i}
-                                                            msg={m}
-                                                            i={i}
-                                                            isLeft={isLeft}
-                                                            t={t}
-                                                            senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
-                                                            avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
-                                                            forceSenderLabel={isHumanReadonly}
-                                                        />
-                                                    );
-                                                });
-                                            })()}
-                                        </div>
-                                        {showHistoryScrollBtn && (
-                                            <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
-                                        )}
-                                    </>
-                                ) : (
-                                    /* ── Live WebSocket chat (own session) ── */
-                                    <div {...chatDropProps} style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0, overflow: 'hidden' }}>
-                                        {/* Drop overlay */}
-                                        {isChatDragging && (
-                                            <div className="drop-zone-overlay">
-                                                <div className="drop-zone-overlay__icon">📎</div>
-                                                <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop files to attach (max 10)')}</div>
-                                            </div>
-                                        )}
-                                        <div ref={chatContainerRef} onScroll={handleChatScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-                                            {chatMessages.length === 0 && (
-                                                <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
-                                                    <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>
-                                                    <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agent.name })}</div>
-                                                    <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
-                                                </div>
-                                            )}
-                                            {(() => {
-                                                // ── Grouping Algorithm (lookahead-based) ──
-                                                //
-                                                // Goal: merge all "analysis" steps (thinking + tool calls +
-                                                // mid-flow assistant text) into a single AnalysisCard, and
-                                                // only emit a real assistant bubble for the *final* answer.
-                                                //
-                                                // Problem with naive flushing:
-                                                //   Claude and minimax sometimes emit an assistant message with
-                                                //   real content (e.g. "Let me search…") BETWEEN reasoning and
-                                                //   tool calls. The old approach flushed the group on any
-                                                //   assistant content, producing multiple fragmented cards.
-                                                //
-                                                // Solution — two-pass lookahead:
-                                                //   Pass 1: pre-classify every message as either
-                                                //     "analysis"  — part of the internal reasoning/tool loop
-                                                //     "final"     — the actual answer to show the user
-                                                //   Classification rule: an assistant message (even with content)
-                                                //   is "analysis" if there is *at least one more tool_call
-                                                //   somewhere after it in the same sequence*.
-                                                //   Pass 2: build GroupedEntry[] based on classifications.
 
-                                                // Pass 1: mark each index as 'analysis' or 'final'
-                                                const msgClass: ('analysis' | 'final')[] = new Array(chatMessages.length).fill('final');
-
-                                                // Walk backwards: once we see a tool_call, all preceding
-                                                // assistant messages (until the previous user turn or start)
-                                                // are reclassified as 'analysis'.
-                                                let hasFutureTool = false;
-                                                for (let i = chatMessages.length - 1; i >= 0; i--) {
-                                                    const msg = chatMessages[i];
-                                                    if (msg.role === 'tool_call') {
-                                                        msgClass[i] = 'analysis';
-                                                        hasFutureTool = true;
-                                                    } else if (msg.role === 'user') {
-                                                        // User turn resets the lookahead boundary
-                                                        hasFutureTool = false;
-                                                    } else if (msg.role === 'assistant') {
-                                                        if (hasFutureTool) {
-                                                            // This assistant message (thinking-only or with content)
-                                                            // precedes more tool calls → it's part of the analysis
-                                                            msgClass[i] = 'analysis';
-                                                        }
-                                                        // else: it's a final answer, keep 'final'
-                                                    }
-                                                }
-
-                                                // Pass 2: build grouped entries
-                                                type GroupedEntry =
-                                                    | { type: 'analysis_group'; items: AnalysisItem[]; key: number }
-                                                    | { type: 'msg'; msg: any; i: number };
-                                                const grouped: GroupedEntry[] = [];
-                                                let currentGroup: AnalysisItem[] | null = null;
-                                                let groupStartKey = 0;
-                                                const flushGroup = () => {
-                                                    if (currentGroup && currentGroup.length > 0) {
-                                                        grouped.push({ type: 'analysis_group', items: currentGroup, key: groupStartKey });
-                                                        currentGroup = null;
-                                                    }
-                                                };
-                                                for (let i = 0; i < chatMessages.length; i++) {
-
-                                                    const msg = chatMessages[i];
-                                                    if (msgClass[i] === 'analysis') {
-                                                        // Open a new group if needed
-                                                        if (!currentGroup) { currentGroup = []; groupStartKey = i; }
-                                                        if (msg.role === 'tool_call') {
-                                                            currentGroup.push({
-                                                                type: 'tool',
-                                                                name: msg.toolName || 'tool',
-                                                                args: msg.toolArgs || {},
-                                                                status: msg.toolStatus === 'running' ? 'running' : 'done',
-                                                                result: msg.toolResult || undefined,
-                                                            });
-                                                        } else if (msg.role === 'assistant') {
-                                                            // Could be thinking-only OR has content (mid-flow text)
-                                                            const thinkingText = msg.thinking || '';
-                                                            const contentText = msg.content?.trim() || '';
-                                                            // Add thinking block first (if present)
-                                                            if (thinkingText) {
-                                                                currentGroup.push({ type: 'thinking', content: thinkingText });
+                                                        {/* Assistant message with no content: show inline thinking or skip */ }
+                                                        if (m.role === 'assistant' && !m.content?.trim()) {
+                                                            if (m.thinking) {
+                                                                return (
+                                                                    <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
+                                                                        <details style={{
+                                                                            fontSize: '12px',
+                                                                            background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
+                                                                            border: '1px solid rgba(147, 130, 220, 0.15)',
+                                                                        }}>
+                                                                            <summary style={{
+                                                                                padding: '6px 10px', cursor: 'pointer',
+                                                                                color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
+                                                                                userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
+                                                                            }}>Thinking</summary>
+                                                                            <div style={{
+                                                                                padding: '4px 10px 8px',
+                                                                                fontSize: '12px', lineHeight: '1.6',
+                                                                                color: 'var(--text-secondary)',
+                                                                                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                                                                maxHeight: '300px', overflow: 'auto',
+                                                                            }}>{m.thinking}</div>
+                                                                        </details>
+                                                                    </div>
+                                                                );
                                                             }
-                                                            // Add mid-flow content as a thinking block too
-                                                            // (displayed with slightly different style to distinguish)
-                                                            if (contentText) {
-                                                                currentGroup.push({ type: 'thinking', content: contentText });
-                                                            }
+                                                            return null;
                                                         }
-                                                    } else {
-                                                        // 'final': flush any open group first, then emit as chat bubble
-                                                        flushGroup();
-                                                        grouped.push({ type: 'msg', msg, i });
-                                                    }
-                                                }
-                                                flushGroup(); // flush any trailing group
-
-
-                                                return grouped.map((entry, entryIdx) => {
-                                                    if (entry.type === 'analysis_group') {
-                                                        // Group is considered running if it has a running tool,
-                                                        // or if it's the very last entry and the agent is still active
-                                                        const isLastEntry = entryIdx === grouped.length - 1;
-                                                        const hasRunningTool = entry.items.some(
-                                                            it => it.type === 'tool' && it.status === 'running'
-                                                        );
-                                                        const groupIsRunning = hasRunningTool || (isLastEntry && (isWaiting || isStreaming));
                                                         return (
-                                                            <AnalysisCard
-                                                                key={`ag-${entry.key}`}
-                                                                items={entry.items}
+                                                            <ChatMessageItem
+                                                                key={i}
+                                                                msg={m}
+                                                                i={i}
+                                                                isLeft={isLeft}
                                                                 t={t}
-                                                                expanded={!!toolGroupExpandedRef.current.get(entry.key)}
-                                                                onToggle={() => toggleToolGroup(entry.key)}
-                                                                isGroupRunning={groupIsRunning}
+                                                                senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
+                                                                avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
+                                                                forceSenderLabel={isHumanReadonly}
                                                             />
                                                         );
+                                                    });
+                                                })()}
+                                            </div>
+                                            {showHistoryScrollBtn && (
+                                                <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                            )}
+                                        </>
+                                    ) : (
+                                        /* ── Live WebSocket chat (own session) ── */
+                                        <div {...chatDropProps} style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0, overflow: 'hidden' }}>
+                                            {/* Drop overlay */}
+                                            {isChatDragging && (
+                                                <div className="drop-zone-overlay">
+                                                    <div className="drop-zone-overlay__icon">📎</div>
+                                                    <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop files to attach (max 10)')}</div>
+                                                </div>
+                                            )}
+                                            <div ref={chatContainerRef} onScroll={handleChatScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+                                                {chatMessages.length === 0 && (
+                                                    <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
+                                                        <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>
+                                                        <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agent.name })}</div>
+                                                        <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
+                                                    </div>
+                                                )}
+                                                {(() => {
+                                                    // ── Grouping Algorithm (lookahead-based) ──
+                                                    //
+                                                    // Goal: merge all "analysis" steps (thinking + tool calls +
+                                                    // mid-flow assistant text) into a single AnalysisCard, and
+                                                    // only emit a real assistant bubble for the *final* answer.
+                                                    //
+                                                    // Problem with naive flushing:
+                                                    //   Claude and minimax sometimes emit an assistant message with
+                                                    //   real content (e.g. "Let me search…") BETWEEN reasoning and
+                                                    //   tool calls. The old approach flushed the group on any
+                                                    //   assistant content, producing multiple fragmented cards.
+                                                    //
+                                                    // Solution — two-pass lookahead:
+                                                    //   Pass 1: pre-classify every message as either
+                                                    //     "analysis"  — part of the internal reasoning/tool loop
+                                                    //     "final"     — the actual answer to show the user
+                                                    //   Classification rule: an assistant message (even with content)
+                                                    //   is "analysis" if there is *at least one more tool_call
+                                                    //   somewhere after it in the same sequence*.
+                                                    //   Pass 2: build GroupedEntry[] based on classifications.
+
+                                                    // Pass 1: mark each index as 'analysis' or 'final'
+                                                    const msgClass: ('analysis' | 'final')[] = new Array(chatMessages.length).fill('final');
+
+                                                    // Walk backwards: once we see a tool_call, all preceding
+                                                    // assistant messages (until the previous user turn or start)
+                                                    // are reclassified as 'analysis'.
+                                                    let hasFutureTool = false;
+                                                    for (let i = chatMessages.length - 1; i >= 0; i--) {
+                                                        const msg = chatMessages[i];
+                                                        if (msg.role === 'tool_call') {
+                                                            msgClass[i] = 'analysis';
+                                                            hasFutureTool = true;
+                                                        } else if (msg.role === 'user') {
+                                                            // User turn resets the lookahead boundary
+                                                            hasFutureTool = false;
+                                                        } else if (msg.role === 'assistant') {
+                                                            if (hasFutureTool) {
+                                                                // This assistant message (thinking-only or with content)
+                                                                // precedes more tool calls → it's part of the analysis
+                                                                msgClass[i] = 'analysis';
+                                                            }
+                                                            // else: it's a final answer, keep 'final'
+                                                        }
                                                     }
-                                                    const { msg, i } = entry;
-                                                    // All remaining messages have real content; render as chat bubbles
-                                                    return (
-                                                        <ChatMessageItem
-                                                            key={i}
-                                                            msg={msg}
-                                                            i={i}
-                                                            isLeft={msg.role === 'assistant'}
-                                                            t={t}
-                                                            senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
-                                                            avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
-                                                        />
-                                                    );
-                                                });
-                                            })()
-                                            }
-                                            {isWaiting && (
-                                                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
-                                                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
-                                                    <div style={{ padding: '8px 12px', borderRadius: '12px', background: 'var(--bg-secondary)', fontSize: '13px' }}>
-                                                        <div className="thinking-indicator">
-                                                            <div className="thinking-dots">
-                                                                <span /><span /><span />
+
+                                                    // Pass 2: build grouped entries
+                                                    type GroupedEntry =
+                                                        | { type: 'analysis_group'; items: AnalysisItem[]; key: number }
+                                                        | { type: 'msg'; msg: any; i: number };
+                                                    const grouped: GroupedEntry[] = [];
+                                                    let currentGroup: AnalysisItem[] | null = null;
+                                                    let groupStartKey = 0;
+                                                    const flushGroup = () => {
+                                                        if (currentGroup && currentGroup.length > 0) {
+                                                            grouped.push({ type: 'analysis_group', items: currentGroup, key: groupStartKey });
+                                                            currentGroup = null;
+                                                        }
+                                                    };
+                                                    for (let i = 0; i < chatMessages.length; i++) {
+
+                                                        const msg = chatMessages[i];
+                                                        if (msgClass[i] === 'analysis') {
+                                                            // Open a new group if needed
+                                                            if (!currentGroup) { currentGroup = []; groupStartKey = i; }
+                                                            if (msg.role === 'tool_call') {
+                                                                currentGroup.push({
+                                                                    type: 'tool',
+                                                                    name: msg.toolName || 'tool',
+                                                                    args: msg.toolArgs || {},
+                                                                    status: msg.toolStatus === 'running' ? 'running' : 'done',
+                                                                    result: msg.toolResult || undefined,
+                                                                });
+                                                            } else if (msg.role === 'assistant') {
+                                                                // Could be thinking-only OR has content (mid-flow text)
+                                                                const thinkingText = msg.thinking || '';
+                                                                const contentText = msg.content?.trim() || '';
+                                                                // Add thinking block first (if present)
+                                                                if (thinkingText) {
+                                                                    currentGroup.push({ type: 'thinking', content: thinkingText });
+                                                                }
+                                                                // Add mid-flow content as a thinking block too
+                                                                // (displayed with slightly different style to distinguish)
+                                                                if (contentText) {
+                                                                    currentGroup.push({ type: 'thinking', content: contentText });
+                                                                }
+                                                            }
+                                                        } else {
+                                                            // 'final': flush any open group first, then emit as chat bubble
+                                                            flushGroup();
+                                                            grouped.push({ type: 'msg', msg, i });
+                                                        }
+                                                    }
+                                                    flushGroup(); // flush any trailing group
+
+
+                                                    return grouped.map((entry, entryIdx) => {
+                                                        if (entry.type === 'analysis_group') {
+                                                            // Group is considered running if it has a running tool,
+                                                            // or if it's the very last entry and the agent is still active
+                                                            const isLastEntry = entryIdx === grouped.length - 1;
+                                                            const hasRunningTool = entry.items.some(
+                                                                it => it.type === 'tool' && it.status === 'running'
+                                                            );
+                                                            const groupIsRunning = hasRunningTool || (isLastEntry && (isWaiting || isStreaming));
+                                                            return (
+                                                                <AnalysisCard
+                                                                    key={`ag-${entry.key}`}
+                                                                    items={entry.items}
+                                                                    t={t}
+                                                                    expanded={!!toolGroupExpandedRef.current.get(entry.key)}
+                                                                    onToggle={() => toggleToolGroup(entry.key)}
+                                                                    isGroupRunning={groupIsRunning}
+                                                                />
+                                                            );
+                                                        }
+                                                        const { msg, i } = entry;
+                                                        // All remaining messages have real content; render as chat bubbles
+                                                        return (
+                                                            <ChatMessageItem
+                                                                key={i}
+                                                                msg={msg}
+                                                                i={i}
+                                                                isLeft={msg.role === 'assistant'}
+                                                                t={t}
+                                                                senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
+                                                                avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
+                                                            />
+                                                        );
+                                                    });
+                                                })()
+                                                }
+                                                {isWaiting && (
+                                                    <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
+                                                        <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
+                                                        <div style={{ padding: '8px 12px', borderRadius: '12px', background: 'var(--bg-secondary)', fontSize: '13px' }}>
+                                                            <div className="thinking-indicator">
+                                                                <div className="thinking-dots">
+                                                                    <span /><span /><span />
+                                                                </div>
+                                                                <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
                                                             </div>
-                                                            <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
                                                         </div>
                                                     </div>
-                                                </div>
-                                            )}
-                                            <div ref={chatEndRef} />
-                                        </div>
-                                        {showScrollBtn && (
-                                            <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: `${chatScrollBtnBottom}px`, right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
-                                        )}
-                                        {agentExpired ? (
-                                            <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
-                                                <span>u23f8</span>
-                                                <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
-                                            </div>
-                                        ) : !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
-                                            <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                                <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
-                                                Connecting...
-                                            </div>
-                                        ) : null}
-                                        <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
-                                            <div className="chat-composer">
-                                            {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
-                                                <div className="chat-composer-attachments">
-                                                    {chatUploadDrafts.map((draft) => (
-                                                        <div key={draft.id} className="chat-file-pill">
-                                                            <div
-                                                                className="chat-file-pill__fill"
-                                                                style={{ width: `${draft.percent}%` }}
-                                                            />
-                                                            <div className="chat-file-pill__row">
-                                                                {draft.previewUrl ? (
-                                                                    <img className="chat-file-pill__thumb" src={draft.previewUrl} alt="" />
-                                                                ) : (
-                                                                    <span className="chat-file-pill__icon">
-                                                                        <IconPaperclip size={14} stroke={1.75} />
-                                                                    </span>
-                                                                )}
-                                                                <span className="chat-file-pill__name">{draft.name}</span>
-                                                                <span className="chat-file-pill__size">{formatFileSize(draft.sizeBytes)}</span>
-                                                                <span className="chat-file-pill__pct">{draft.percent}%</span>
-                                                                <button
-                                                                    type="button"
-                                                                    className="chat-file-pill__remove"
-                                                                    onClick={() => {
-                                                                        chatUploadAbortRef.current.get(draft.id)?.();
-                                                                    }}
-                                                                    title="Cancel upload"
-                                                                >
-                                                                    ×
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                    {attachedFiles.map((file, idx) => (
-                                                        <div key={`a-${idx}-${file.name}`} className="chat-file-pill">
-                                                            <div className="chat-file-pill__row">
-                                                                {file.imageUrl ? (
-                                                                    <img className="chat-file-pill__thumb" src={file.imageUrl} alt="" />
-                                                                ) : (
-                                                                    <span className="chat-file-pill__icon">
-                                                                        <IconPaperclip size={14} stroke={1.75} />
-                                                                    </span>
-                                                                )}
-                                                                <span className="chat-file-pill__name">{file.name}</span>
-                                                                <button
-                                                                    type="button"
-                                                                    className="chat-file-pill__remove"
-                                                                    onClick={() => setAttachedFiles((prev) => prev.filter((_, i) => i !== idx))}
-                                                                    title="Remove file"
-                                                                >
-                                                                    ×
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            <div className="chat-composer-input-block">
-                                                <textarea
-                                                    ref={chatInputRef}
-                                                    className="chat-input"
-                                                    value={chatInput}
-                                                    onChange={e => {
-                                                        setChatInput(e.target.value);
-                                                        // Auto-grow: reset height then expand to scrollHeight
-                                                        const el = e.target;
-                                                        el.style.height = 'auto';
-                                                        el.style.height = el.scrollHeight + 'px';
-                                                    }}
-                                                    onKeyDown={e => {
-                                                        // Enter sends the message; Shift+Enter inserts a newline
-                                                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
-                                                            e.preventDefault();
-                                                            sendChatMsg();
-                                                        }
-                                                    }}
-                                                    onPaste={handlePaste}
-                                                    placeholder={!wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? 'Connecting...' : t('chat.placeholder')}
-                                                    disabled={!wsConnected}
-                                                    rows={1}
-                                                />
-                                            </div>
-                                            <div className="chat-composer-toolbar">
-                                                <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
-                                                <button
-                                                    type="button"
-                                                    className="chat-composer-btn"
-                                                    onClick={() => fileInputRef.current?.click()}
-                                                    disabled={!wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10}
-                                                    title={t('agent.workspace.uploadFile')}
-                                                >
-                                                    <IconPaperclip size={16} stroke={1.75} />
-                                                </button>
-                                                {(isStreaming || isWaiting) ? (
-                                                    <button
-                                                        type="button"
-                                                        className="btn btn-stop-generation"
-                                                        onClick={() => {
-                                                            if (!id || !activeSession?.id) return;
-                                                            const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-                                                            const activeSocket = wsMapRef.current[activeRuntimeKey];
-                                                            if (activeSocket?.readyState === WebSocket.OPEN) {
-                                                                activeSocket.send(JSON.stringify({ type: 'abort' }));
-                                                                setIsStreaming(false);
-                                                                setIsWaiting(false);
-                                                                setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
-                                                            }
-                                                        }}
-                                                        title={t('chat.stop', 'Stop')}
-                                                    >
-                                                        <span className="stop-icon" />
-                                                    </button>
-                                                ) : (
-                                                    <button
-                                                        type="button"
-                                                        className="btn btn-primary chat-composer-send"
-                                                        onClick={sendChatMsg}
-                                                        disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
-                                                        title={t('chat.send')}
-                                                    >
-                                                        <IconSend size={16} stroke={1.75} />
-                                                    </button>
                                                 )}
+                                                <div ref={chatEndRef} />
+                                            </div>
+                                            {showScrollBtn && (
+                                                <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: `${chatScrollBtnBottom}px`, right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                            )}
+                                            {agentExpired ? (
+                                                <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
+                                                    <span>u23f8</span>
+                                                    <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
+                                                </div>
+                                            ) : !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
+                                                <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                    <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
+                                                    Connecting...
+                                                </div>
+                                            ) : null}
+                                            <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
+                                                <div className="chat-composer">
+                                                    {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
+                                                        <div className="chat-composer-attachments">
+                                                            {chatUploadDrafts.map((draft) => (
+                                                                <div key={draft.id} className="chat-file-pill">
+                                                                    <div
+                                                                        className="chat-file-pill__fill"
+                                                                        style={{ width: `${draft.percent}%` }}
+                                                                    />
+                                                                    <div className="chat-file-pill__row">
+                                                                        {draft.previewUrl ? (
+                                                                            <img className="chat-file-pill__thumb" src={draft.previewUrl} alt="" />
+                                                                        ) : (
+                                                                            <span className="chat-file-pill__icon">
+                                                                                <IconPaperclip size={14} stroke={1.75} />
+                                                                            </span>
+                                                                        )}
+                                                                        <span className="chat-file-pill__name">{draft.name}</span>
+                                                                        <span className="chat-file-pill__size">{formatFileSize(draft.sizeBytes)}</span>
+                                                                        <span className="chat-file-pill__pct">{draft.percent}%</span>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="chat-file-pill__remove"
+                                                                            onClick={() => {
+                                                                                chatUploadAbortRef.current.get(draft.id)?.();
+                                                                            }}
+                                                                            title="Cancel upload"
+                                                                        >
+                                                                            ×
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                            {attachedFiles.map((file, idx) => (
+                                                                <div key={`a-${idx}-${file.name}`} className="chat-file-pill">
+                                                                    <div className="chat-file-pill__row">
+                                                                        {file.imageUrl ? (
+                                                                            <img className="chat-file-pill__thumb" src={file.imageUrl} alt="" />
+                                                                        ) : (
+                                                                            <span className="chat-file-pill__icon">
+                                                                                <IconPaperclip size={14} stroke={1.75} />
+                                                                            </span>
+                                                                        )}
+                                                                        <span className="chat-file-pill__name">{file.name}</span>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="chat-file-pill__remove"
+                                                                            onClick={() => setAttachedFiles((prev) => prev.filter((_, i) => i !== idx))}
+                                                                            title="Remove file"
+                                                                        >
+                                                                            ×
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                    <div className="chat-composer-input-block">
+                                                        <textarea
+                                                            ref={chatInputRef}
+                                                            className="chat-input"
+                                                            value={chatInput}
+                                                            onChange={e => {
+                                                                setChatInput(e.target.value);
+                                                                // Auto-grow: reset height then expand to scrollHeight
+                                                                const el = e.target;
+                                                                el.style.height = 'auto';
+                                                                el.style.height = el.scrollHeight + 'px';
+                                                            }}
+                                                            onKeyDown={e => {
+                                                                // Enter sends the message; Shift+Enter inserts a newline
+                                                                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                                                                    e.preventDefault();
+                                                                    sendChatMsg();
+                                                                }
+                                                            }}
+                                                            onPaste={handlePaste}
+                                                            placeholder={!wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? 'Connecting...' : t('chat.placeholder')}
+                                                            disabled={!wsConnected}
+                                                            rows={1}
+                                                        />
+                                                    </div>
+                                                    <div className="chat-composer-toolbar">
+                                                        <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
+                                                        <button
+                                                            type="button"
+                                                            className="chat-composer-btn"
+                                                            onClick={() => fileInputRef.current?.click()}
+                                                            disabled={!wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10}
+                                                            title={t('agent.workspace.uploadFile')}
+                                                        >
+                                                            <IconPaperclip size={16} stroke={1.75} />
+                                                        </button>
+                                                        {(isStreaming || isWaiting) ? (
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-stop-generation"
+                                                                onClick={() => {
+                                                                    if (!id || !activeSession?.id) return;
+                                                                    const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
+                                                                    const activeSocket = wsMapRef.current[activeRuntimeKey];
+                                                                    if (activeSocket?.readyState === WebSocket.OPEN) {
+                                                                        activeSocket.send(JSON.stringify({ type: 'abort' }));
+                                                                        setIsStreaming(false);
+                                                                        setIsWaiting(false);
+                                                                        setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                                                                    }
+                                                                }}
+                                                                title={t('chat.stop', 'Stop')}
+                                                            >
+                                                                <span className="stop-icon" />
+                                                            </button>
+                                                        ) : (
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-primary chat-composer-send"
+                                                                onClick={sendChatMsg}
+                                                                disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
+                                                                title={t('chat.send')}
+                                                            >
+                                                                <IconSend size={16} stroke={1.75} />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
-                                        </div>
-                                    </div>
-                                )}
+                                    )}
                                 </div>
                                 {/* Live Panel */}
                                 {!!(liveState.desktop || liveState.browser || liveState.code) && (
