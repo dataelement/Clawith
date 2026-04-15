@@ -67,6 +67,8 @@ Each agent has a `soul.md` (personality), `memory.md` (long-term memory), and a 
 - 2-core CPU / 4 GB RAM / 30 GB disk (minimum)
 - Network access to LLM API endpoints
 
+> **Ubuntu/Debian note:** If you use the system Python 3.12 package, also install `python3.12-venv`; otherwise `bash setup.sh` will fail when creating the backend virtual environment.
+
 > **Note:** Clawith does not run any AI models locally — all LLM inference is handled by external API providers (OpenAI, Anthropic, etc.). The local deployment is a standard web application with Docker orchestration.
 
 #### Recommended Configurations
