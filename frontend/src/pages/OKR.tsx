@@ -545,16 +545,20 @@ function ObjectiveCard({
                                     alignItems: 'center',
                                     gap: '4px',
                                     fontSize: '11px',
-                                    color: obj.owner_type === 'agent' ? '#6366f1' : 'var(--text-tertiary)',
-                                    background: obj.owner_type === 'agent' ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
-                                    border: obj.owner_type === 'agent' ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid var(--border-subtle)',
+                                    color: obj.owner_type === 'agent' ? '#6366f1' : '#0ea5e9',
+                                    background: obj.owner_type === 'agent' ? 'rgba(99, 102, 241, 0.1)' : 'rgba(14, 165, 233, 0.08)',
+                                    border: obj.owner_type === 'agent' ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid rgba(14, 165, 233, 0.25)',
                                     borderRadius: '4px',
                                     padding: '1px 6px',
                                     lineHeight: 1,
-                                    fontWeight: obj.owner_type === 'agent' ? 600 : 400
+                                    fontWeight: 500,
                                 }}>
-                                    {obj.owner_type === 'agent' && (
+                                    {obj.owner_type === 'agent' ? (
+                                        // Robot icon for AI agents
                                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
+                                    ) : (
+                                        // Person icon for human members
+                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
                                     )}
                                     {ownerLabel}
                                 </span>
@@ -794,10 +798,12 @@ export default function OKR() {
     const [creating, setCreating] = useState(false);
     const [activeTab, setActiveTab] = useState<'dashboards' | 'reports'>('dashboards');
 
-    // Fetch OKR settings
+    // Fetch OKR settings — always fresh on mount so toggling the switch is reflected immediately
     const { data: settings, isLoading: settingsLoading } = useQuery<OKRSettings>({
         queryKey: ['okr-settings'],
         queryFn: () => fetchJson<OKRSettings>('/okr/settings'),
+        staleTime: 0,
+        refetchOnWindowFocus: true,
     });
 
     // Fetch periods (only when enabled)
@@ -815,13 +821,15 @@ export default function OKR() {
         }
     }, [periods, selectedPeriod]);
 
-    // Fetch objectives for selected period
+    // Fetch objectives for selected period — fresh on mount/focus so OKR Agent creation is visible
     const { data: objectives = [], isLoading: objLoading } = useQuery<Objective[]>({
         queryKey: ['okr-objectives', selectedPeriod?.start, selectedPeriod?.end],
         queryFn: () => fetchJson<Objective[]>(
             `/okr/objectives?period_start=${selectedPeriod!.start}&period_end=${selectedPeriod!.end}`
         ),
         enabled: !!settings?.enabled && !!selectedPeriod,
+        staleTime: 0,
+        refetchOnWindowFocus: true,
     });
 
     function invalidateObjectives() {
@@ -894,9 +902,8 @@ export default function OKR() {
     for (const obj of memberObjs) {
         const key = `${obj.owner_type}:${obj.owner_id ?? ''}`;
         if (!memberGroups[key]) {
-            // Prefer resolved name; fall back to owner_id short form
-            const label = obj.owner_name
-                || (obj.owner_id ? obj.owner_id.slice(0, 8) : obj.owner_type);
+            // Prefer resolved name; fall back to a readable placeholder
+            const label = obj.owner_name || '?';
             memberGroups[key] = { label, objs: [] };
         }
         memberGroups[key].objs.push(obj);
@@ -1121,10 +1128,12 @@ function MembersWithoutOKRPanel({
     const [nudging, setNudging] = React.useState(false);
     const [nudgeResult, setNudgeResult] = React.useState<string | null>(null);
 
+    // Always refetch on mount — list must be live after admin adds/removes OKR Agent relationships
     const { data, isLoading } = useQuery<MembersWithoutOKRData>({
         queryKey: ['okr-members-without-okr', periodStart, periodEnd],
         queryFn: () => fetchJson<MembersWithoutOKRData>('/okr/members-without-okr'),
-        staleTime: 60_000,
+        staleTime: 0,
+        refetchOnWindowFocus: true,
     });
 
     // Don't render when loading or no incomplete members
