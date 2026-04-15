@@ -37,11 +37,15 @@ async def handle_channel_command(
     cmd = command.strip().lower()
 
     if cmd in ("/new", "/reset"):
-        # Find current session
+        # Find current session. Scope by source_channel as well so we never
+        # accidentally archive a session from a different channel that happens
+        # to share the same external_conv_id (defensive against future changes
+        # to the per-channel ID prefix scheme).
         result = await db.execute(
             select(ChatSession).where(
                 ChatSession.agent_id == agent_id,
                 ChatSession.external_conv_id == external_conv_id,
+                ChatSession.source_channel == source_channel,
             )
         )
         old_session = result.scalar_one_or_none()
