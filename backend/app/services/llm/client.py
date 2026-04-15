@@ -2062,6 +2062,25 @@ class BedrockClient(LLMClient):
                 if event is _SENTINEL:
                     break
 
+                stream_error_key = next(
+                    (
+                        key
+                        for key in (
+                            "internalServerException",
+                            "modelStreamErrorException",
+                            "validationException",
+                            "throttlingException",
+                            "serviceUnavailableException",
+                        )
+                        if key in event
+                    ),
+                    None,
+                )
+                if stream_error_key:
+                    details = event.get(stream_error_key) or {}
+                    message = details.get("message") or details.get("originalMessage") or str(details)
+                    raise LLMError(f"Bedrock stream error ({stream_error_key}): {message}")
+
                 if "contentBlockStart" in event:
                     start = event["contentBlockStart"].get("start", {})
                     if "toolUse" in start:

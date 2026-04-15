@@ -251,6 +251,10 @@ async def update_llm_model(
             # Switching to Bedrock without new credentials should not retain
             # old non-Bedrock provider keys, which are incompatible JSON-wise.
             model.api_key_encrypted = encrypt_data("", settings.SECRET_KEY)
+        elif previous_provider == "bedrock" and model.provider != "bedrock" and not has_new_api_key:
+            # Switching away from Bedrock without replacing credentials should
+            # clear stored Bedrock JSON to avoid persisting incompatible keys.
+            model.api_key_encrypted = encrypt_data("", settings.SECRET_KEY)
         elif has_new_api_key:  # Skip masked values
             model.api_key_encrypted = encrypt_data(data.api_key.strip(), settings.SECRET_KEY)
         if data.temperature is not None:
