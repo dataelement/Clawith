@@ -228,6 +228,8 @@ async def update_llm_model(
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
+    previous_provider = model.provider
+
     try:
         if data.provider:
             model.provider = data.provider
@@ -238,6 +240,10 @@ async def update_llm_model(
         if hasattr(data, 'base_url') and data.base_url is not None:
             model.base_url = data.base_url
         if data.clear_api_key is True:
+            model.api_key_encrypted = encrypt_data("", settings.SECRET_KEY)
+        elif previous_provider != "bedrock" and model.provider == "bedrock":
+            # Switching to Bedrock without new credentials should not retain
+            # old non-Bedrock provider keys, which are incompatible JSON-wise.
             model.api_key_encrypted = encrypt_data("", settings.SECRET_KEY)
         elif data.api_key and data.api_key.strip() and not data.api_key.startswith('****'):  # Skip masked values
             model.api_key_encrypted = encrypt_data(data.api_key.strip(), settings.SECRET_KEY)

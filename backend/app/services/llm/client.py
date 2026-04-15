@@ -7,6 +7,8 @@ Provides a consistent interface for all LLM operations across the application.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import re
 from abc import ABC, abstractmethod
@@ -1915,8 +1917,6 @@ class BedrockClient(LLMClient):
                 "image/webp": "webp",
             }
             fmt = format_map.get(media_type, "jpeg")
-            import base64
-            import binascii
             return {
                 "image": {
                     "format": fmt,
