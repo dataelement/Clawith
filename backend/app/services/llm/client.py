@@ -2033,56 +2033,62 @@ class BedrockClient(LLMClient):
         # Start the blocking iterator in a background thread
         producer_task = loop.run_in_executor(None, _producer)
 
-        while True:
-            event = await queue.get()
-            if event is _SENTINEL:
-                break
+        try:
+            while True:
+                event = await queue.get()
+                if event is _SENTINEL:
+                    break
 
-            if "contentBlockStart" in event:
-                start = event["contentBlockStart"].get("start", {})
-                if "toolUse" in start:
-                    tu = start["toolUse"]
-                    current_tool = {
-                        "id": tu.get("toolUseId", ""),
-                        "type": "function",
-                        "function": {
-                            "name": tu.get("name", ""),
-                            "arguments": "",
-                        },
-                    }
-                    current_tool_args = ""
+                if "contentBlockStart" in event:
+                    start = event["contentBlockStart"].get("start", {})
+                    if "toolUse" in start:
+                        tu = start["toolUse"]
+                        current_tool = {
+                            "id": tu.get("toolUseId", ""),
+                            "type": "function",
+                            "function": {
+                                "name": tu.get("name", ""),
+                                "arguments": "",
+                            },
+                        }
+                        current_tool_args = ""
 
-            elif "contentBlockDelta" in event:
-                delta = event["contentBlockDelta"].get("delta", {})
-                if "text" in delta:
-                    text = delta["text"]
-                    full_content += text
-                    if on_chunk:
-                        await on_chunk(text)
-                elif "toolUse" in delta:
-                    current_tool_args += delta["toolUse"].get("input", "")
+                elif "contentBlockDelta" in event:
+                    delta = event["contentBlockDelta"].get("delta", {})
+                    if "text" in delta:
+                        text = delta["text"]
+                        full_content += text
+                        if on_chunk:
+                            await on_chunk(text)
+                    elif "toolUse" in delta:
+                        current_tool_args += delta["toolUse"].get("input", "")
 
-            elif "contentBlockStop" in event:
-                if current_tool is not None:
-                    current_tool["function"]["arguments"] = current_tool_args
-                    tool_calls.append(current_tool)
-                    current_tool = None
-                    current_tool_args = ""
+                elif "contentBlockStop" in event:
+                    if current_tool is not None:
+                        current_tool["function"]["arguments"] = current_tool_args
+                        tool_calls.append(current_tool)
+                        current_tool = None
+                        current_tool_args = ""
 
-            elif "messageStop" in event:
-                stop_reason = event["messageStop"].get("stopReason")
+                elif "messageStop" in event:
+                    stop_reason = event["messageStop"].get("stopReason")
 
-            elif "metadata" in event:
-                usage_raw = event["metadata"].get("usage")
-                if isinstance(usage_raw, dict):
-                    final_usage = {
-                        "input_tokens": usage_raw.get("inputTokens", 0),
-                        "output_tokens": usage_raw.get("outputTokens", 0),
-                        "total_tokens": usage_raw.get("inputTokens", 0) + usage_raw.get("outputTokens", 0),
-                    }
+                elif "metadata" in event:
+                    usage_raw = event["metadata"].get("usage")
+                    if isinstance(usage_raw, dict):
+                        final_usage = {
+                            "input_tokens": usage_raw.get("inputTokens", 0),
+                            "output_tokens": usage_raw.get("outputTokens", 0),
+                            "total_tokens": usage_raw.get("inputTokens", 0) + usage_raw.get("outputTokens", 0),
+                        }
 
-        # Ensure the producer thread has finished
-        await producer_task
+        finally:
+            # Ensure the producer thread finishes even if on_chunk raised
+            try:
+                stream_body.close()
+            except Exception:
+                pass
+            await producer_task
 
         finish_reason = "tool_calls" if stop_reason == "tool_use" else "stop"
 
@@ -2126,9 +2132,11 @@ class BedrockClient(LLMClient):
         return params
 
     async def close(self) -> None:
-        """Close the boto3 client."""
-        # boto3 clients don't require explicit closing
-        pass
+        """Close the boto3 client and release connection pool resources."""
+        try:
+            self._boto_client.close()
+        except Exception:
+            pass
 
 
 # ============================================================================
