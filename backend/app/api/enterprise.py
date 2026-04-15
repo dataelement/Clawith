@@ -92,7 +92,7 @@ async def test_llm_model(
         existing = result.scalar_one_or_none()
         if existing:
             api_key = get_model_api_key(existing)
-    if not api_key:
+    if not api_key and data.provider != "bedrock":
         return {"success": False, "latency_ms": 0, "error": "API Key is required"}
 
     start = time.time()

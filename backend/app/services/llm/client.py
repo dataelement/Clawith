@@ -2005,13 +2005,28 @@ class BedrockClient(LLMClient):
         if stream_body is None:
             raise LLMError("Bedrock ConverseStream returned no stream body")
 
-        # Iterate stream events (sync iterator, wrap each next() call)
-        def _iter_events():
-            return list(stream_body)
+        # Process stream events incrementally via an asyncio.Queue so that
+        # on_chunk callbacks fire as each token arrives rather than after
+        # the entire response has been buffered.
+        _SENTINEL = object()
+        queue: asyncio.Queue = asyncio.Queue()
 
-        events = await asyncio.to_thread(_iter_events)
+        def _producer():
+            """Read the sync Bedrock iterator and push events into the queue."""
+            try:
+                for event in stream_body:
+                    queue.put_nowait(event)
+            finally:
+                queue.put_nowait(_SENTINEL)
 
-        for event in events:
+        # Start the blocking iterator in a background thread
+        producer_task = asyncio.get_event_loop().run_in_executor(None, _producer)
+
+        while True:
+            event = await queue.get()
+            if event is _SENTINEL:
+                break
+
             if "contentBlockStart" in event:
                 start = event["contentBlockStart"].get("start", {})
                 if "toolUse" in start:
@@ -2054,6 +2069,9 @@ class BedrockClient(LLMClient):
                         "output_tokens": usage_raw.get("outputTokens", 0),
                         "total_tokens": usage_raw.get("inputTokens", 0) + usage_raw.get("outputTokens", 0),
                     }
+
+        # Ensure the producer thread has finished
+        await producer_task
 
         finish_reason = "tool_calls" if stop_reason == "tool_use" else "stop"
 
