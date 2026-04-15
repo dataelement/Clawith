@@ -2030,13 +2030,20 @@ select:focus {
   color: var(--text-tertiary);
   font-size: 11px;
   line-height: 16px;
+  transition: color var(--transition-fast), background var(--transition-fast), opacity var(--transition-fast);
+}
+
+.workspace-op-save.saving {
+  color: var(--text-secondary);
 }
 
 .workspace-op-save.saved {
+  background: var(--success-subtle);
   color: var(--success);
 }
 
 .workspace-op-save.error {
+  background: var(--error-subtle);
   color: var(--error);
 }
 

@@ -38,6 +38,8 @@ interface Props {
 const WORKSPACE_ROOT = 'workspace';
 const EDITABLE_EXTS = new Set(['.md', '.markdown', '.csv']);
 const PREVIEW_EXTS = new Set(['.md', '.markdown', '.csv', '.html', '.htm', '.pdf', '.xlsx', '.docx', '.pptx', '.txt']);
+const MIN_SAVING_VISIBLE_MS = 650;
+const SAVED_VISIBLE_MS = 1600;
 
 function extOf(path: string): string {
     const idx = path.lastIndexOf('.');
@@ -196,6 +198,7 @@ export default function WorkspaceOperationPanel({
     const [treeOpen, setTreeOpen] = useState(true);
     const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set([WORKSPACE_ROOT]));
     const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const saveStateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lockTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
     const ext = activePath ? extOf(activePath) : '';
@@ -270,19 +273,44 @@ export default function WorkspaceOperationPanel({
         };
     }, [agentId, activePath, editing, sessionId]);
 
+    const clearSaveStateTimer = () => {
+        if (saveStateTimer.current) {
+            clearTimeout(saveStateTimer.current);
+            saveStateTimer.current = null;
+        }
+    };
+
+    const runAutosaveWithFeedback = async (nextContent: string) => {
+        if (!activePath) return;
+        clearSaveStateTimer();
+        const startedAt = Date.now();
+        setSaveState('saving');
+        try {
+            await fileApi.autosave(agentId, activePath, nextContent, sessionId);
+            const remainingSavingMs = Math.max(0, MIN_SAVING_VISIBLE_MS - (Date.now() - startedAt));
+            await new Promise((resolve) => setTimeout(resolve, remainingSavingMs));
+            setContent(nextContent);
+            setSaveState('saved');
+            setRevisions(await fileApi.revisions(agentId, activePath).catch(() => []));
+            clearSaveStateTimer();
+            saveStateTimer.current = setTimeout(() => {
+                setSaveState('idle');
+                saveStateTimer.current = null;
+            }, SAVED_VISIBLE_MS);
+        } catch {
+            setSaveState('error');
+        }
+    };
+
+    useEffect(() => {
+        return () => clearSaveStateTimer();
+    }, []);
+
     useEffect(() => {
         if (!editing || !activePath || draft === content) return;
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(async () => {
-            try {
-                setSaveState('saving');
-                await fileApi.autosave(agentId, activePath, draft, sessionId);
-                setContent(draft);
-                setSaveState('saved');
-                setRevisions(await fileApi.revisions(agentId, activePath).catch(() => []));
-            } catch {
-                setSaveState('error');
-            }
+            await runAutosaveWithFeedback(draft);
         }, 900);
         return () => {
             if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -301,10 +329,7 @@ export default function WorkspaceOperationPanel({
     const finishEditing = async () => {
         if (saveTimer.current) clearTimeout(saveTimer.current);
         if (activePath && draft !== content) {
-            setSaveState('saving');
-            await fileApi.autosave(agentId, activePath, draft, sessionId);
-            setContent(draft);
-            setSaveState('saved');
+            await runAutosaveWithFeedback(draft);
         }
         setEditing(false);
         onEditingChange?.(false);
