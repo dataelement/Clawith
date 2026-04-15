@@ -114,17 +114,8 @@ async def get_discord_channel(
 
 @router.get("/agents/{agent_id}/discord-channel/webhook-url")
 async def get_discord_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
-    import os
-    from app.models.system_settings import SystemSetting
-    public_base = ""
-    result = await db.execute(select(SystemSetting).where(SystemSetting.key == "platform"))
-    setting = result.scalar_one_or_none()
-    if setting and setting.value.get("public_base_url"):
-        public_base = setting.value["public_base_url"].rstrip("/")
-    if not public_base:
-        public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
-    if not public_base:
-        public_base = str(request.base_url).rstrip("/")
+    from app.services.platform_service import platform_service
+    public_base = await platform_service.get_public_base_url(db, request)
     return {"webhook_url": f"{public_base}/api/channel/discord/{agent_id}/webhook"}
 
 
@@ -279,7 +270,9 @@ async def discord_interaction_webhook(
         application_id = config.app_id or ""
         sender_id = body.get("member", {}).get("user", {}).get("id") or body.get("user", {}).get("id", "")
         channel_id = body.get("channel_id", "")
-        conv_id = f"discord_{channel_id}_{sender_id}" if channel_id else f"discord_dm_{sender_id}"
+        # Discord: guild interactions are group chats, DM interactions are P2P
+        _is_group_discord = bool(body.get("guild_id"))
+        conv_id = f"discord_{channel_id}" if channel_id else f"discord_dm_{sender_id}"
 
         logger.info(f"[Discord] /{command_name} from {sender_id}: {user_text[:80]}")
 
@@ -298,27 +291,27 @@ async def discord_interaction_webhook(
                 agent_r = await bg_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 agent_obj = agent_r.scalar_one_or_none()
                 creator_id = agent_obj.creator_id if agent_obj else agent_id
-                ctx_size = agent_obj.context_window_size if agent_obj else 20
+                from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+                ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
-                # Find-or-create platform user for this Discord sender
-                from app.models.user import User as _User
-                from app.core.security import hash_password as _hp
-                import uuid as _uuid
-                _username = f"discord_{sender_id}"
-                _u_r = await bg_db.execute(select(_User).where(_User.username == _username))
-                _platform_user = _u_r.scalar_one_or_none()
-                if not _platform_user:
-                    _discord_username = body.get("member", {}).get("user", {}).get("username") or body.get("user", {}).get("username", "")
-                    _display = _discord_username or f"Discord User {sender_id[:8]}"
-                    _platform_user = _User(
-                        username=_username,
-                        email=f"{_username}@discord.local",
-                        password_hash=_hp(_uuid.uuid4().hex),
-                        display_name=_display,
-                        role="member",
-                        tenant_id=agent_obj.tenant_id if agent_obj else None,
-                    )
-                    bg_db.add(_platform_user)
+                # Find-or-create platform user for this Discord sender via unified service
+                from app.services.channel_user_service import channel_user_service
+                
+                _discord_username = body.get("member", {}).get("user", {}).get("username") or body.get("user", {}).get("username", "")
+                _display = _discord_username or f"Discord User {sender_id[:8]}"
+                _extra_info = {"name": _display}
+                
+                _platform_user = await channel_user_service.resolve_channel_user(
+                    db=bg_db,
+                    agent=agent_obj,
+                    channel_type="discord",
+                    external_user_id=sender_id,
+                    extra_info=_extra_info,
+                )
+                
+                # Update display_name if we now have a better name
+                if _discord_username and _platform_user.display_name and _platform_user.display_name.startswith("Discord User ") and _platform_user.display_name != _discord_username:
+                    _platform_user.display_name = _discord_username
                     await bg_db.flush()
                 platform_user_id = _platform_user.id
 
@@ -326,10 +319,12 @@ async def discord_interaction_webhook(
                 sess = await find_or_create_channel_session(
                     db=bg_db,
                     agent_id=agent_id,
-                    user_id=platform_user_id,
+                    user_id=creator_id if _is_group_discord else platform_user_id,
                     external_conv_id=conv_id,
                     source_channel="discord",
                     first_message_title=user_text,
+                    is_group=_is_group_discord,
+                    group_name=f"Discord Channel {channel_id[:8]}" if _is_group_discord else None,
                 )
                 session_conv_id = str(sess.id)
 

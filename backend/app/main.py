@@ -25,7 +25,17 @@ async def _start_ss_local() -> None:
     import json as _json
     cfg_file = os.environ.get("SS_CONFIG_FILE", "/data/ss-nodes.json")
     if os.path.exists(cfg_file):
-        nodes = _json.load(open(cfg_file))
+        # Guard against empty or malformed config file — both produce a clear
+        # warning and a clean exit rather than an unhandled JSONDecodeError.
+        try:
+            raw = open(cfg_file).read().strip()
+            if not raw:
+                logger.warning(f"[Proxy] {cfg_file} exists but is empty — skipping proxy")
+                return
+            nodes = _json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(f"[Proxy] Failed to parse {cfg_file}: {exc} — skipping proxy")
+            return
         logger.info(f"[Proxy] Loaded {len(nodes)} node(s) from {cfg_file}")
     elif os.environ.get("SS_SERVER") and os.environ.get("SS_PASSWORD"):
         nodes = [{"server": os.environ["SS_SERVER"], "port": int(os.environ.get("SS_PORT", "1080")),
@@ -61,6 +71,13 @@ async def lifespan(app: FastAPI):
     configure_logging()
     intercept_standard_logging()
     logger.info("[startup] Logging configured")
+
+    # Warn about default JWT secrets in production
+    if "change-me" in settings.SECRET_KEY.lower() or "change-me" in settings.JWT_SECRET_KEY.lower():
+        logger.warning(
+            "[startup] WARNING: SECRET_KEY or JWT_SECRET_KEY contains default 'change-me' value. "
+            "This is insecure for production. Set unique secrets in your .env file."
+        )
 
     import asyncio
     import sys
@@ -98,6 +115,9 @@ async def lifespan(app: FastAPI):
         import app.models.trigger        # noqa
         import app.models.notification   # noqa
         import app.models.gateway_message # noqa
+        import app.models.agent_credential  # noqa
+
+        import app.models.identity       # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("[startup] Database tables ready")
@@ -215,7 +235,8 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
 
     # Start ss-local SOCKS5 proxy for Discord API calls (non-fatal)
-    asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
+    ss_task = asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
+    ss_task.add_done_callback(_bg_task_error)
 
     yield
 
@@ -250,6 +271,7 @@ from app.api.tasks import router as tasks_router
 from app.api.files import router as files_router
 from app.api.websocket import router as ws_router
 from app.api.feishu import router as feishu_router
+from app.api.sso import router as sso_router
 from app.api.organization import router as org_router
 from app.api.enterprise import router as enterprise_router
 from app.api.advanced import router as advanced_router
@@ -279,12 +301,15 @@ from app.api.notification import router as notification_router
 from app.api.gateway import router as gateway_router
 from app.api.admin import router as admin_router
 from app.api.pages import router as pages_router, public_router as pages_public_router
+from app.api.agent_credentials import router as credentials_router
+from app.api.agentbay_control import router as agentbay_control_router
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(agents_router, prefix=settings.API_PREFIX)
 app.include_router(tasks_router, prefix=settings.API_PREFIX)
 app.include_router(files_router, prefix=settings.API_PREFIX)
 app.include_router(feishu_router, prefix=settings.API_PREFIX)
+app.include_router(sso_router, prefix=settings.API_PREFIX)
 app.include_router(org_router, prefix=settings.API_PREFIX)
 app.include_router(enterprise_router, prefix=settings.API_PREFIX)
 app.include_router(advanced_router, prefix=settings.API_PREFIX)
@@ -317,6 +342,8 @@ app.include_router(gateway_router, prefix=settings.API_PREFIX)
 app.include_router(admin_router, prefix=settings.API_PREFIX)
 app.include_router(pages_router, prefix=settings.API_PREFIX)
 app.include_router(pages_public_router)  # Public endpoint for /p/{short_id}, no API prefix
+app.include_router(credentials_router, prefix=settings.API_PREFIX)
+app.include_router(agentbay_control_router, prefix=settings.API_PREFIX)
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])

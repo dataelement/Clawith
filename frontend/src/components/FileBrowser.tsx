@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from './MarkdownRenderer';
+import { useDropZone } from '../hooks/useDropZone';
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -103,6 +104,8 @@ export default function FileBrowser({
     const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percent: number } | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+ 
+
     // Auto-resize textarea to match content height
     useEffect(() => {
         const el = textareaRef.current;
@@ -119,7 +122,7 @@ export default function FileBrowser({
         setTimeout(() => setToast(null), 3000);
     }, []);
 
-    // ─── Load files ───────────────────────────────────
+ 
 
     const reload = useCallback(async () => {
         if (singleFile) {
@@ -145,6 +148,32 @@ export default function FileBrowser({
         }
         setLoading(false);
     }, [api, currentPath, singleFile, fileFilter]);
+
+    // ─── Drag-and-drop upload ─────────────────────
+    const handleDroppedFiles = useCallback(async (files: File[]) => {
+        if (!api.upload || files.length === 0) return;
+        try {
+            for (const file of files) {
+                setUploadProgress({ fileName: file.name, percent: 0 });
+                await api.upload(file, currentPath, (pct) => {
+                    setUploadProgress({ fileName: file.name, percent: pct });
+                });
+            }
+            setUploadProgress(null);
+            reload();
+            onRefresh?.();
+            showToast(t('agent.upload.success', 'Upload successful'));
+        } catch (err: any) {
+            setUploadProgress(null);
+            showToast(t('agent.upload.failed', 'Upload failed') + ': ' + (err.message || ''), 'error');
+        }
+    }, [api, currentPath, reload, onRefresh, showToast, t]);
+
+    const { isDragging, dropZoneProps } = useDropZone({
+        onDrop: handleDroppedFiles,
+        disabled: !upload || !api.upload || !!singleFile || !!viewing || readOnly,
+        accept: uploadAccept,
+    });
 
     useEffect(() => { reload(); }, [reload]);
 
@@ -468,7 +497,15 @@ export default function FileBrowser({
     // FILE LIST / BROWSER MODE
     // ═══════════════════════════════════════════════════
     return (
-        <div>
+        <div className="drop-zone-wrapper" {...dropZoneProps}>
+            {/* Drop overlay */}
+            {isDragging && (
+                <div className="drop-zone-overlay">
+                    <div className="drop-zone-overlay__icon">⬆</div>
+                    <div className="drop-zone-overlay__text">{t('agent.workspace.dragOrClick', 'Drop files to upload')}</div>
+                </div>
+            )}
+
             {/* Toolbar */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
                 {title && <h3 style={{ margin: 0 }}>{title}</h3>}
@@ -514,7 +551,9 @@ export default function FileBrowser({
                 </div>
             ) : files.length === 0 ? (
                 <div className="card" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
-                    {t('common.noData')}
+                    {upload && api.upload
+                        ? t('agent.workspace.dragOrClick', 'Drop files here or click Upload')
+                        : t('common.noData')}
                 </div>
             ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>

@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { Outlet, NavLink, useNavigate, useMatch } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
-import { agentApi } from '../services/api';
+import { agentApi, tenantApi, authApi } from '../services/api';
+
 import {
     IconHome,
     IconPlus,
@@ -23,8 +25,12 @@ import {
     IconPinnedOff,
     IconArrowUpRight,
     IconBuilding,
-    IconChevronUp
+    IconChevronUp,
+    IconSwitchHorizontal,
+    IconChevronRight,
+    IconCheck,
 } from '@tabler/icons-react';
+import { useAppStore } from '../stores';
 
 /* ────── Tabler Icons ────── */
 const SidebarIcons = {
@@ -40,6 +46,18 @@ const SidebarIcons = {
     expand: <IconChevronsRight size={16} stroke={1.5} />,
     bell: <IconBell size={16} stroke={1.5} />,
 };
+
+/** UI locales: native endonym per row. */
+const APP_UI_LANGUAGES: { code: string; nativeLabel: string }[] = [
+    { code: 'zh', nativeLabel: '中文' },
+    { code: 'en', nativeLabel: 'English' },
+];
+
+function resolveUiLangCode(lang: string | undefined): string {
+    if (!lang) return 'en';
+    if (lang.startsWith('zh')) return 'zh';
+    return 'en';
+}
 
 const fetchJson = async <T,>(url: string): Promise<T> => {
     const token = localStorage.getItem('token');
@@ -71,6 +89,7 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
     const [newPassword, setNewPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [saving, setSaving] = useState(false);
+    const [resendingEmail, setResendingEmail] = useState(false);
     const [msg, setMsg] = useState('');
     const [msgType, setMsgType] = useState<'success' | 'error'>('success');
 
@@ -98,6 +117,21 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
             showMsg(isChinese ? '个人信息已更新' : 'Profile updated');
         } catch (e: any) { showMsg(e.message || 'Failed', 'error'); }
         setSaving(false);
+    };
+
+    const handleResendVerification = async () => {
+        setResendingEmail(true);
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch('/api/auth/resend-verification', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ email: user?.email }),
+            });
+            if (!res.ok) { const err = await res.json().catch(() => ({ detail: 'Failed' })); throw new Error(err.detail); }
+            showMsg(isChinese ? '验证邮件已发送，请查收' : 'Verification email sent. Please check your inbox.');
+        } catch (e: any) { showMsg(e.message || 'Failed', 'error'); }
+        setResendingEmail(false);
     };
 
     const handleChangePassword = async () => {
@@ -134,7 +168,37 @@ function AccountSettingsModal({ user, onClose, isChinese }: { user: any; onClose
                 <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>{isChinese ? '个人信息' : 'Profile'}</h4>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
                     <div><label style={labelStyle}>{isChinese ? '用户名' : 'Username'}</label><input className="form-input" value={username} onChange={e => setUsername(e.target.value)} style={inputStyle} /></div>
-                    <div><label style={labelStyle}>{isChinese ? '邮箱' : 'Email'}</label><input className="form-input" type="email" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} /></div>
+                    <div>
+                        <label style={labelStyle}>{isChinese ? '邮箱' : 'Email'}</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <input className="form-input" type="email" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} disabled />
+                            {user?.email_verified ? (
+                                <span style={{ color: '#16a34a', fontSize: '12px', whiteSpace: 'nowrap' }}>✓ {isChinese ? '已验证' : 'Verified'}</span>
+                            ) : (
+                                <button
+                                    onClick={handleResendVerification}
+                                    disabled={resendingEmail}
+                                    style={{
+                                        fontSize: '11px',
+                                        padding: '4px 8px',
+                                        borderRadius: '4px',
+                                        border: '1px solid var(--border-subtle)',
+                                        background: 'var(--bg-secondary)',
+                                        color: 'var(--text-secondary)',
+                                        cursor: resendingEmail ? 'not-allowed' : 'pointer',
+                                        whiteSpace: 'nowrap',
+                                    }}
+                                >
+                                    {resendingEmail ? '...' : (isChinese ? '发送验证' : 'Verify')}
+                                </button>
+                            )}
+                        </div>
+                        {!user?.email_verified && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                {isChinese ? '邮箱未验证，请点击按钮发送验证邮件' : 'Email not verified. Click button to send verification email.'}
+                            </div>
+                        )}
+                    </div>
                     <div><label style={labelStyle}>{isChinese ? '显示名称' : 'Display Name'}</label><input className="form-input" value={displayName} onChange={e => setDisplayName(e.target.value)} style={inputStyle} /></div>
                     <div style={{ display: 'flex', justifyContent: 'flex-end' }}><button className="btn btn-primary" onClick={handleSaveProfile} disabled={saving} style={{ padding: '6px 16px', fontSize: '12px' }}>{saving ? '...' : (isChinese ? '保存' : 'Save')}</button></div>
                 </div>
@@ -170,15 +234,30 @@ function VersionDisplay() {
 export default function Layout() {
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
-    const { user, logout } = useAuthStore();
+    const { user, logout, setAuth } = useAuthStore();
     const queryClient = useQueryClient();
     const isChinese = i18n.language?.startsWith('zh');
+    // Detect chat page: needs fixed-height main-content for inner scroll to work
+    const isChatPage = !!useMatch('/agents/:id/chat');
+
     const [showAccountSettings, setShowAccountSettings] = useState(false);
     const [showAccountMenu, setShowAccountMenu] = useState(false);
+    const [showLanguageSubmenu, setShowLanguageSubmenu] = useState(false);
+    const [langSubmenuPos, setLangSubmenuPos] = useState({ top: 0, left: 0 });
     const accountMenuRef = useRef<HTMLDivElement>(null);
+    const accountDropdownRef = useRef<HTMLDivElement>(null);
+    const langSubmenuPortalRef = useRef<HTMLDivElement>(null);
+    const langHoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [showNotifications, setShowNotifications] = useState(false);
     const [notifCategory, setNotifCategory] = useState<string>('all');
     const [selectedNotification, setSelectedNotification] = useState<any | null>(null);
+    const [showTenantMenu, setShowTenantMenu] = useState(false);
+    const [showJoinCreateForm, setShowJoinCreateForm] = useState(false);
+    const [joinInviteCode, setJoinInviteCode] = useState('');
+    const [createCompanyName, setCreateCompanyName] = useState('');
+    const [tenantFormLoading, setTenantFormLoading] = useState(false);
+    const [tenantFormError, setTenantFormError] = useState('');
+    const [allowSelfCreate, setAllowSelfCreate] = useState(true);
 
     // Notification polling
     const { data: unreadCount = 0 } = useQuery({
@@ -208,6 +287,103 @@ export default function Layout() {
         queryClient.invalidateQueries({ queryKey: ['notifications'] });
     };
 
+    // Tenant switching
+    const { data: myTenants = [] } = useQuery({
+        queryKey: ['my-tenants'],
+        queryFn: async () => {
+            const token = localStorage.getItem('token');
+            const res = await fetch('/api/auth/my-tenants', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+            if (!res.ok) return [];
+            return res.json();
+        },
+        enabled: !!user,
+    });
+
+    const handleSwitchTenant = async (tenantId: string) => {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/auth/switch-tenant', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ tenant_id: tenantId }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: 'Failed to switch tenant' }));
+            alert(err.detail || 'Failed to switch tenant');
+            return;
+        }
+        const data = await res.json();
+        if (data.redirect_url) {
+            localStorage.setItem('token', data.access_token);
+            window.location.href = data.redirect_url;
+        } else if (data.access_token) {
+            localStorage.setItem('token', data.access_token);
+            window.location.reload();
+        }
+    };
+
+    // Open the tenant switcher modal — also fetch self-create config
+    const openTenantModal = () => {
+        setShowTenantMenu(true);
+        setShowJoinCreateForm(false);
+        setJoinInviteCode('');
+        setCreateCompanyName('');
+        setTenantFormError('');
+        // Fetch self-create config
+        tenantApi.registrationConfig().then((d: any) => {
+            setAllowSelfCreate(d.allow_self_create_company);
+        }).catch(() => {});
+    };
+
+    // Join company via invite code (inside modal)
+    const handleModalJoin = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setTenantFormError('');
+        setTenantFormLoading(true);
+        try {
+            const result = await tenantApi.join(joinInviteCode);
+            if (result.access_token) {
+                // Multi-tenant: backend created a new User record, switch context
+                localStorage.setItem('token', result.access_token);
+            } else {
+                // Registration flow: same user updated, refresh store
+                const me = await authApi.me();
+                const token = localStorage.getItem('token');
+                if (token) setAuth(me, token);
+            }
+            setShowTenantMenu(false);
+            window.location.reload();
+        } catch (err: any) {
+            setTenantFormError(err.message || 'Failed to join company');
+        } finally {
+            setTenantFormLoading(false);
+        }
+    };
+
+    // Create company (inside modal)
+    const handleModalCreate = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setTenantFormError('');
+        setTenantFormLoading(true);
+        try {
+            const result = await tenantApi.selfCreate({ name: createCompanyName });
+            if (result.access_token) {
+                // Multi-tenant: backend created a new User record, switch context
+                localStorage.setItem('token', result.access_token);
+            } else {
+                // Registration flow: same user updated, refresh store
+                const me = await authApi.me();
+                const token = localStorage.getItem('token');
+                if (token) setAuth(me, token);
+            }
+            setShowTenantMenu(false);
+            window.location.reload();
+        } catch (err: any) {
+            setTenantFormError(err.message || 'Failed to create company');
+        } finally {
+            setTenantFormLoading(false);
+        }
+    };
+
     // Theme
     const [theme, setTheme] = useState<'dark' | 'light'>(() => {
         return (localStorage.getItem('theme') as 'dark' | 'light') || 'dark';
@@ -221,17 +397,8 @@ export default function Layout() {
     const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
     // Sidebar collapse state
-    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
-        return localStorage.getItem('sidebar_collapsed') === 'true';
-    });
-
-    const toggleSidebar = () => {
-        setIsSidebarCollapsed(prev => {
-            const newState = !prev;
-            localStorage.setItem('sidebar_collapsed', String(newState));
-            return newState;
-        });
-    };
+    const isSidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
+    const toggleSidebar = useAppStore(s => s.toggleSidebar);
 
     // Sidebar agent search & pin
     const [sidebarSearch, setSidebarSearch] = useState('');
@@ -272,22 +439,100 @@ export default function Layout() {
         navigate('/login');
     };
 
-    const toggleLang = () => {
-        i18n.changeLanguage(i18n.language === 'zh' ? 'en' : 'zh');
+    const selectUiLanguage = (code: string) => {
+        i18n.changeLanguage(code);
+        setShowLanguageSubmenu(false);
+        setShowAccountMenu(false);
     };
+
+    const openLangSubmenu = useCallback(() => {
+        if (langHoverCloseTimerRef.current) {
+            clearTimeout(langHoverCloseTimerRef.current);
+            langHoverCloseTimerRef.current = null;
+        }
+        setShowLanguageSubmenu(true);
+    }, []);
+
+    const scheduleCloseLangSubmenu = useCallback(() => {
+        if (langHoverCloseTimerRef.current) clearTimeout(langHoverCloseTimerRef.current);
+        langHoverCloseTimerRef.current = setTimeout(() => {
+            setShowLanguageSubmenu(false);
+            langHoverCloseTimerRef.current = null;
+        }, 200);
+    }, []);
+
+    useEffect(() => {
+        if (!showAccountMenu) {
+            if (langHoverCloseTimerRef.current) {
+                clearTimeout(langHoverCloseTimerRef.current);
+                langHoverCloseTimerRef.current = null;
+            }
+            setShowLanguageSubmenu(false);
+        }
+    }, [showAccountMenu]);
+
+    useEffect(() => () => {
+        if (langHoverCloseTimerRef.current) clearTimeout(langHoverCloseTimerRef.current);
+    }, []);
+
+    const updateLangSubmenuPosition = useCallback(() => {
+        const el = accountDropdownRef.current;
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        setLangSubmenuPos({ top: r.top, left: r.right + 2 });
+    }, []);
+
+    useLayoutEffect(() => {
+        if (!showLanguageSubmenu) return;
+        updateLangSubmenuPosition();
+        window.addEventListener('resize', updateLangSubmenuPosition);
+        window.addEventListener('scroll', updateLangSubmenuPosition, true);
+        return () => {
+            window.removeEventListener('resize', updateLangSubmenuPosition);
+            window.removeEventListener('scroll', updateLangSubmenuPosition, true);
+        };
+    }, [showLanguageSubmenu, updateLangSubmenuPosition]);
 
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
-            if (accountMenuRef.current && !accountMenuRef.current.contains(e.target as Node)) {
-                setShowAccountMenu(false);
-            }
+            const t = e.target as Node;
+            if (accountMenuRef.current?.contains(t)) return;
+            if (langSubmenuPortalRef.current?.contains(t)) return;
+            setShowAccountMenu(false);
         };
-        if (showAccountMenu) document.addEventListener('mousedown', handleClickOutside);
+        if (showAccountMenu || showTenantMenu) document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [showAccountMenu]);
+    }, [showAccountMenu, showTenantMenu]);
+
+    const langSubmenuContent = showAccountMenu && showLanguageSubmenu && (
+        <div
+            ref={langSubmenuPortalRef}
+            className="account-lang-submenu account-lang-submenu-portal"
+            role="menu"
+            style={{ top: langSubmenuPos.top, left: langSubmenuPos.left }}
+            onMouseEnter={openLangSubmenu}
+            onMouseLeave={scheduleCloseLangSubmenu}
+        >
+            {APP_UI_LANGUAGES.map(({ code, nativeLabel }) => {
+                const active = resolveUiLangCode(i18n.language) === code;
+                return (
+                    <button
+                        key={code}
+                        type="button"
+                        role="menuitem"
+                        className={`account-lang-submenu-item${active ? ' is-active' : ''}`}
+                        onClick={() => selectUiLanguage(code)}
+                    >
+                        <span>{nativeLabel}</span>
+                        {active && <IconCheck size={14} stroke={2} />}
+                    </button>
+                );
+            })}
+        </div>
+    );
 
     return (
-        <div className="app-layout">
+        <div className={`app-layout ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
             <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
                 <div className="sidebar-top">
                     <div className="sidebar-logo">
@@ -296,7 +541,7 @@ export default function Layout() {
                         <button className="btn btn-ghost sidebar-collapse-btn" onClick={toggleSidebar} style={{
                             padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center',
                             marginLeft: 'auto', color: 'var(--text-tertiary)',
-                        }} title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}>
+                        }} title={isSidebarCollapsed ? t('common.expandSidebar') : t('common.collapseSidebar')}>
                             {isSidebarCollapsed ? SidebarIcons.expand : SidebarIcons.collapse}
                         </button>
                     </div>
@@ -446,7 +691,7 @@ export default function Layout() {
                         }}>
                             <button className="btn btn-ghost" onClick={toggleTheme} style={{
                                 padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            }} title={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}>
+                            }} title={theme === 'dark' ? t('common.lightMode') : t('common.darkMode')}>
                                 {theme === 'dark' ? SidebarIcons.sun : SidebarIcons.moon}
                             </button>
                             <button className="btn btn-ghost" onClick={() => { setShowNotifications(v => !v); if (!showNotifications) refetchNotifications(); }} style={{
@@ -465,14 +710,40 @@ export default function Layout() {
                                     }}>{(unreadCount as number) > 99 ? '99+' : unreadCount}</span>
                                 )}
                             </button>
+                            <button className="btn btn-ghost" onClick={openTenantModal} style={{
+                                padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                marginLeft: 'auto',
+                            }} title={isChinese ? '切换企业' : 'Switch Organization'}>
+                                <IconSwitchHorizontal size={16} stroke={1.5} />
+                            </button>
                         </div>
                         <div ref={accountMenuRef} style={{ position: 'relative' }}>
                             {showAccountMenu && (
-                                <div className="account-dropdown">
-                                    <button className="account-dropdown-item" onClick={() => { toggleLang(); setShowAccountMenu(false); }}>
-                                        <IconWorld size={15} stroke={1.5} />
-                                        <span>{i18n.language === 'zh' ? 'English' : '中文'}</span>
-                                    </button>
+                                <div className="account-menus-container">
+                                <div className="account-dropdown" ref={accountDropdownRef}>
+                                    <div
+                                        className="account-dropdown-language-hover-wrap"
+                                        onMouseEnter={openLangSubmenu}
+                                        onMouseLeave={scheduleCloseLangSubmenu}
+                                    >
+                                        <button
+                                            type="button"
+                                            className="account-dropdown-item language-menu-trigger"
+                                            aria-haspopup="menu"
+                                            aria-expanded={showLanguageSubmenu}
+                                        >
+                                            <IconWorld size={15} stroke={1.5} />
+                                            <span className="language-menu-label">
+                                                {t('layout.language', {
+                                                    lng: resolveUiLangCode(i18n.language),
+                                                    defaultValue: 'Language',
+                                                })}
+                                            </span>
+                                            <span className="language-menu-chevron" aria-hidden>
+                                                <IconChevronRight size={16} stroke={1.75} />
+                                            </span>
+                                        </button>
+                                    </div>
                                     <button className="account-dropdown-item" onClick={() => { setShowAccountSettings(true); setShowAccountMenu(false); }}>
                                         <IconUser size={15} stroke={1.5} />
                                         <span>{isChinese ? '账户设置' : 'Account Settings'}</span>
@@ -483,7 +754,9 @@ export default function Layout() {
                                         <span>{t('layout.logout', 'Logout')}</span>
                                     </button>
                                 </div>
+                                </div>
                             )}
+                            {typeof document !== 'undefined' && langSubmenuContent && createPortal(langSubmenuContent, document.body)}
                             <div
                                 className="sidebar-account-row"
                                 onClick={() => setShowAccountMenu(v => !v)}
@@ -517,6 +790,131 @@ export default function Layout() {
                     </div>
                 </div>
             </nav>
+
+            {/* Tenant Switcher Modal */}
+            {showTenantMenu && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)' }} onClick={() => setShowTenantMenu(false)}>
+                    <div style={{ background: 'var(--bg-primary)', borderRadius: '12px', border: '1px solid var(--border-subtle)', width: '420px', maxHeight: '80vh', overflow: 'auto', padding: '24px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }} onClick={e => e.stopPropagation()}>
+                        {/* Header */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>{isChinese ? '切换企业' : 'Switch Organization'}</h3>
+                            <button onClick={() => setShowTenantMenu(false)} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', fontSize: '18px', cursor: 'pointer', padding: '4px 8px' }}>×</button>
+                        </div>
+
+                        {/* Tenant List */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' }}>
+                            {myTenants.map((tenant: any) => (
+                                <button
+                                    key={tenant.tenant_id}
+                                    onClick={() => {
+                                        handleSwitchTenant(tenant.tenant_id);
+                                        setShowTenantMenu(false);
+                                    }}
+                                    style={{
+                                        width: '100%', display: 'flex', alignItems: 'center', gap: '10px',
+                                        padding: '10px 12px', borderRadius: '8px',
+                                        background: tenant.tenant_id === currentTenant ? 'var(--bg-tertiary)' : 'transparent',
+                                        border: tenant.tenant_id === currentTenant ? '1px solid var(--border-subtle)' : '1px solid transparent',
+                                        color: 'var(--text-primary)', cursor: 'pointer', fontSize: '13px',
+                                        textAlign: 'left', transition: 'background 0.15s',
+                                    }}
+                                    onMouseEnter={e => { if (tenant.tenant_id !== currentTenant) (e.target as HTMLElement).style.background = 'var(--bg-secondary)'; }}
+                                    onMouseLeave={e => { if (tenant.tenant_id !== currentTenant) (e.target as HTMLElement).style.background = 'transparent'; }}
+                                >
+                                    <IconBuilding size={16} stroke={1.5} style={{ flexShrink: 0 }} />
+                                    <span style={{ flex: 1, fontWeight: tenant.tenant_id === currentTenant ? 500 : 400 }}>{tenant.tenant_name}</span>
+                                    {tenant.tenant_id === currentTenant && (
+                                        <IconCheck size={16} stroke={2} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Divider */}
+                        <div style={{ height: '1px', background: 'var(--border-subtle)', marginBottom: '16px' }} />
+
+                        {/* Join/Create Toggle */}
+                        {!showJoinCreateForm ? (
+                            <button
+                                onClick={() => setShowJoinCreateForm(true)}
+                                style={{
+                                    width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
+                                    padding: '10px 12px', borderRadius: '8px', background: 'transparent',
+                                    border: '1px dashed var(--border-subtle)', color: 'var(--accent-primary)',
+                                    cursor: 'pointer', fontSize: '13px', textAlign: 'left',
+                                    transition: 'background 0.15s, border-color 0.15s',
+                                }}
+                                onMouseEnter={e => { (e.target as HTMLElement).style.background = 'var(--bg-secondary)'; }}
+                                onMouseLeave={e => { (e.target as HTMLElement).style.background = 'transparent'; }}
+                            >
+                                <IconPlus size={16} stroke={1.5} />
+                                <span>{isChinese ? '创建或加入新公司' : 'Create or Join Company'}</span>
+                            </button>
+                        ) : (
+                            <div>
+                                {/* Error message */}
+                                {tenantFormError && (
+                                    <div style={{ padding: '8px 12px', borderRadius: '6px', fontSize: '12px', marginBottom: '12px', background: 'rgba(255,80,80,0.12)', color: 'var(--error)' }}>{tenantFormError}</div>
+                                )}
+
+                                {/* Join Company */}
+                                <form onSubmit={handleModalJoin} style={{ marginBottom: '16px' }}>
+                                    <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                                        {isChinese ? '通过邀请码加入' : 'Join via Invitation Code'}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                        <input
+                                            className="form-input"
+                                            value={joinInviteCode}
+                                            onChange={e => setJoinInviteCode(e.target.value)}
+                                            placeholder={isChinese ? '输入邀请码' : 'Enter invitation code'}
+                                            style={{ flex: 1, fontSize: '13px', textTransform: 'uppercase', letterSpacing: '1px', fontFamily: 'monospace' }}
+                                        />
+                                        <button className="btn btn-primary" type="submit" disabled={tenantFormLoading || !joinInviteCode.trim()} style={{ padding: '6px 14px', fontSize: '12px', whiteSpace: 'nowrap' }}>
+                                            {tenantFormLoading ? '...' : (isChinese ? '加入' : 'Join')}
+                                        </button>
+                                    </div>
+                                </form>
+
+                                {/* Create Company */}
+                                {allowSelfCreate && (
+                                    <>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                                            <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
+                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '1px' }}>{isChinese ? '或者' : 'OR'}</span>
+                                            <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
+                                        </div>
+                                        <form onSubmit={handleModalCreate}>
+                                            <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                                                {isChinese ? '创建新公司' : 'Create a New Company'}
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                <input
+                                                    className="form-input"
+                                                    value={createCompanyName}
+                                                    onChange={e => setCreateCompanyName(e.target.value)}
+                                                    placeholder={isChinese ? '公司名称' : 'Company name'}
+                                                    style={{ flex: 1, fontSize: '13px' }}
+                                                />
+                                                <button className="btn btn-primary" type="submit" disabled={tenantFormLoading || !createCompanyName.trim()} style={{ padding: '6px 14px', fontSize: '12px', whiteSpace: 'nowrap' }}>
+                                                    {tenantFormLoading ? '...' : (isChinese ? '创建' : 'Create')}
+                                                </button>
+                                            </div>
+                                        </form>
+                                    </>
+                                )}
+
+                                {/* Back link */}
+                                <div style={{ marginTop: '12px', textAlign: 'center' }}>
+                                    <button onClick={() => { setShowJoinCreateForm(false); setTenantFormError(''); }} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '4px 8px' }}>
+                                        {isChinese ? '返回' : 'Back'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Notification Modal */}
             {showNotifications && (
@@ -625,7 +1023,7 @@ export default function Layout() {
                 </div>
             )}
 
-            <main className="main-content">
+            <main className={`main-content${isChatPage ? ' chat-page' : ''}`}>
                 <Outlet />
             </main>
 

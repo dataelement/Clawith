@@ -227,15 +227,34 @@ class AutonomyService:
                 select(User).where(User.id == agent.creator_id)
             )
             creator = creator_result.scalar_one_or_none()
-            if creator and (creator.feishu_user_id or creator.feishu_open_id):
-                receive_id = creator.feishu_user_id or creator.feishu_open_id
-                id_type = "user_id" if creator.feishu_user_id else "open_id"
-                await feishu_service.send_message(
-                    channel.app_id, channel.app_secret,
-                    receive_id, "text",
-                    json.dumps({"text": f"[{agent.name}] executed: {action_type}"}),
-                    receive_id_type=id_type,
+            if creator:
+                from app.models.identity import IdentityProvider
+                from app.models.org import OrgMember
+
+                provider_r = await db.execute(
+                    select(IdentityProvider).where(
+                        IdentityProvider.provider_type == "feishu",
+                        IdentityProvider.tenant_id == creator.tenant_id,
+                    )
                 )
+                provider = provider_r.scalar_one_or_none()
+                if provider:
+                    member_r = await db.execute(
+                        select(OrgMember).where(
+                            OrgMember.user_id == creator.id,
+                            OrgMember.provider_id == provider.id,
+                        )
+                    )
+                    member = member_r.scalar_one_or_none()
+                    if member and (member.external_id or member.open_id):
+                        receive_id = member.external_id or member.open_id
+                        id_type = "user_id" if member.external_id else "open_id"
+                        await feishu_service.send_message(
+                            channel.app_id, channel.app_secret,
+                            receive_id, "text",
+                            json.dumps({"text": f"[{agent.name}] executed: {action_type}"}),
+                            receive_id_type=id_type,
+                        )
 
     async def _request_approval(self, db: AsyncSession, agent: Agent,
                                  approval: ApprovalRequest) -> None:
@@ -263,15 +282,34 @@ class AutonomyService:
                 select(User).where(User.id == agent.creator_id)
             )
             creator = creator_result.scalar_one_or_none()
-            if creator and (creator.feishu_user_id or creator.feishu_open_id):
-                receive_id = creator.feishu_user_id or creator.feishu_open_id
-                await feishu_service.send_approval_card(
-                    channel.app_id, channel.app_secret,
-                    receive_id,
-                    agent.name, approval.action_type,
-                    json.dumps(approval.details, ensure_ascii=False),
-                    str(approval.id),
+            if creator:
+                from app.models.identity import IdentityProvider
+                from app.models.org import OrgMember
+
+                provider_r = await db.execute(
+                    select(IdentityProvider).where(
+                        IdentityProvider.provider_type == "feishu",
+                        IdentityProvider.tenant_id == creator.tenant_id,
+                    )
                 )
+                provider = provider_r.scalar_one_or_none()
+                if provider:
+                    member_r = await db.execute(
+                        select(OrgMember).where(
+                            OrgMember.user_id == creator.id,
+                            OrgMember.provider_id == provider.id,
+                        )
+                    )
+                    member = member_r.scalar_one_or_none()
+                    if member and (member.external_id or member.open_id):
+                        receive_id = member.external_id or member.open_id
+                        await feishu_service.send_approval_card(
+                            channel.app_id, channel.app_secret,
+                            receive_id,
+                            agent.name, approval.action_type,
+                            json.dumps(approval.details, ensure_ascii=False),
+                            str(approval.id),
+                        )
 
 
 autonomy_service = AutonomyService()

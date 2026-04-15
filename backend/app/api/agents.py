@@ -169,10 +169,6 @@ async def list_agents(
         .where(
             (AgentPermission.scope_type == "company")
             | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
-            | (
-                (AgentPermission.scope_type == "department")
-                & (AgentPermission.scope_id == current_user.department_id)
-            )
         )
     )
     permitted = select(Agent).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
@@ -274,6 +270,8 @@ async def create_agent(
 
     # Set permissions
     access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
+    if data.permission_scope_type not in ("company", "user"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported permission_scope_type")
     if data.permission_scope_type == "company":
         db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level=access_level))
     elif data.permission_scope_type == "user":
@@ -359,9 +357,18 @@ async def get_agent(
     out = AgentOut.model_validate(agent).model_dump()
     out["access_level"] = access_level
 
-    # Resolve creator username (one extra query, only on detail page)
+    # Resolve creator username (one extra query, only on detail page).
+    # IMPORTANT: User.username is an association_proxy to User.identity.username.
+    # We must eagerly load the identity relationship (selectinload) to avoid
+    # async lazy-loading errors (SQLAlchemy raises MissingGreenlet in async context).
     if agent.creator_id:
-        creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
+        from sqlalchemy.orm import selectinload
+        from app.models.user import Identity  # noqa: F401
+        creator_result = await db.execute(
+            select(User)
+            .where(User.id == agent.creator_id)
+            .options(selectinload(User.identity))
+        )
         creator = creator_result.scalar_one_or_none()
         out["creator_username"] = creator.username if creator else None
 
@@ -431,6 +438,8 @@ async def update_agent_permissions(
     access_level = data.get("access_level", "use")
     if access_level not in ("use", "manage"):
         access_level = "use"
+    if scope_type not in ("company", "user"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported scope_type")
 
     # Delete existing permissions
     from sqlalchemy import delete as sql_delete
@@ -593,6 +602,7 @@ async def delete_agent(
         "gateway_messages",
         "published_pages",
         "notifications",
+        "daily_token_usage",
     ]
 
     for table in cleanup_tables:
@@ -763,8 +773,7 @@ async def generate_or_reset_api_key(
         raise HTTPException(status_code=400, detail="API keys are only available for OpenClaw agents")
 
     raw_key = f"oc-{secrets.token_urlsafe(32)}"
-    # Store in plaintext so frontend can retrieve it anytime to display and copy
-    agent.api_key_hash = raw_key
+    agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     await db.commit()
 
     return {"api_key": raw_key, "message": "Key configured successfully."}

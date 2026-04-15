@@ -58,7 +58,6 @@ load_env() {
     _db_hostpart=$(echo "$DATABASE_URL" | sed 's|.*://[^@]*@||' | sed 's|/.*||' | sed 's|?.*||')
     PG_HOST="${_db_hostpart%%:*}"
     PG_PORT="${_db_hostpart##*:}"
-    [ "$PG_PORT" = "$PG_HOST" ] && PG_PORT="5432"
     PG_PORT=${PG_PORT:-5432}
     export PG_HOST PG_PORT
 
@@ -177,6 +176,10 @@ start_postgres() {
 start_backend() {
     echo -e "${YELLOW}🚀 Starting backend...${NC}"
     cd "$BACKEND_DIR"
+
+    # Auto-run schema migrations via alembic
+    echo -e "${YELLOW}🔄 Running schema migrations...${NC}"
+    .venv/bin/alembic upgrade head 2>/dev/null || true
 
     # Auto-run data migrations (idempotent)
     echo -e "${YELLOW}🔄 Running data migrations...${NC}"

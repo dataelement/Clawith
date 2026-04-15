@@ -2,13 +2,14 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi, skillApi } from '../services/api';
+import { useAuthStore } from '../stores';
 import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import UserManagement from './UserManagement';
 import InvitationCodes from './InvitationCodes';
-
+import LinearCopyButton from '../components/LinearCopyButton';
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -19,14 +20,23 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
     });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Error');
+    if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        // Pydantic validation errors return detail as an array of objects,
+        // each with {loc, msg, type}. Extract readable messages from the array.
+        const detail = body.detail;
+        const msg = Array.isArray(detail)
+            ? detail.map((e: any) => e.msg || JSON.stringify(e)).join('; ')
+            : (typeof detail === 'string' ? detail : 'Error');
+        throw new Error(msg);
+    }
     if (res.status === 204) return undefined as T;
     return res.json();
 }
 
 interface LLMModel {
     id: string; provider: string; model: string; label: string;
-    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; temperature?: number; created_at: string;
+    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; request_timeout?: number; temperature?: number; created_at: string;
 }
 
 interface LLMProviderSpec {
@@ -56,6 +66,17 @@ const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
     { provider: 'custom', display_name: 'Custom', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 4096 },
 ];
 
+const FEISHU_SYNC_PERM_JSON = `{
+  "scopes": {
+    "tenant": [
+      "contact:contact.base:readonly",
+      "contact:department.base:readonly",
+      "contact:user.base:readonly",
+      "contact:user.employee_id:readonly"
+    ],
+    "user": []
+  }
+}`;
 
 
 // ─── Department Tree ───────────────────────────────
@@ -73,17 +94,30 @@ function DeptTree({ departments, parentId, selectedDept, onSelect, level }: {
                 <div key={d.id}>
                     <div
                         style={{
-                            padding: '5px 8px', paddingLeft: `${8 + level * 16}px`, borderRadius: '4px',
-                            cursor: 'pointer', fontSize: '13px', marginBottom: '1px',
+                            padding: '5px 8px',
+                            paddingLeft: `${8 + level * 16}px`,
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '13px',
+                            marginBottom: '1px',
                             background: selectedDept === d.id ? 'rgba(224,238,238,0.12)' : 'transparent',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
                         }}
                         onClick={() => onSelect(d.id)}
                     >
-                        <span style={{ color: 'var(--text-tertiary)', marginRight: '4px', fontSize: '11px' }}>
-                            {departments.some((c: any) => c.parent_id === d.id) ? '▸' : '·'}
-                        </span>
-                        {d.name}
-                        {d.member_count > 0 && <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: '4px' }}>({d.member_count})</span>}
+                        <div>
+                            <span style={{ color: 'var(--text-tertiary)', marginRight: '4px', fontSize: '11px' }}>
+                                {departments.some((c: any) => c.parent_id === d.id) ? '▾' : '·'}
+                            </span>
+                            {d.name}
+                        </div>
+                        {d.member_count !== undefined && (
+                            <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                                {d.member_count}
+                            </span>
+                        )}
                     </div>
                     <DeptTree departments={departments} parentId={d.id} selectedDept={selectedDept} onSelect={onSelect} level={level + 1} />
                 </div>
@@ -92,139 +126,816 @@ function DeptTree({ departments, parentId, selectedDept, onSelect, level }: {
     );
 }
 
-// ─── Org Structure Tab ─────────────────────────────
-function OrgTab() {
+// ─── SSO Channel Section ────────────────────────────────
+function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
+    idpType: string; existingProvider: any; tenant: any; t: any;
+}) {
+    const qc = useQueryClient();
+    const [liveDomain, setLiveDomain] = useState<string>(existingProvider?.sso_domain || tenant?.sso_domain || '');
+    const [ssoError, setSsoError] = useState<string>('');
+    const [toggling, setToggling] = useState(false);
+
+    useEffect(() => {
+        setLiveDomain(existingProvider?.sso_domain || tenant?.sso_domain || '');
+    }, [existingProvider?.sso_domain, tenant?.sso_domain]);
+
+    const ssoEnabled = existingProvider ? !!existingProvider.sso_login_enabled : false;
+    const domain = liveDomain;
+    const callbackUrl = domain ? (domain.startsWith('http') ? `${domain}/api/auth/${idpType}/callback` : `https://${domain}/api/auth/${idpType}/callback`) : '';
+
+    const handleSsoToggle = async () => {
+        if (!existingProvider) {
+            alert(t('enterprise.identity.saveFirst', 'Please save the configuration first to enable SSO.'));
+            return;
+        }
+        const newVal = !ssoEnabled;
+        setToggling(true);
+        setSsoError('');
+        try {
+            const result = await fetchJson<any>(`/enterprise/identity-providers/${existingProvider.id}`, {
+                method: 'PUT',
+                body: JSON.stringify({ sso_login_enabled: newVal }),
+            });
+            if (result?.sso_domain) setLiveDomain(result.sso_domain);
+            qc.invalidateQueries({ queryKey: ['identity-providers'] });
+            if (tenant?.id) qc.invalidateQueries({ queryKey: ['tenant', tenant.id] });
+        } catch (e: any) {
+            const msg = e?.message || '';
+            if (msg.includes('IP address') || msg.includes('multi-tenant')) {
+                setSsoError(t('enterprise.identity.ssoIpConflict', 'IP 模式下只能有一个企业开启 SSO，当前已有其他企业占用。'));
+            } else {
+                setSsoError(msg || t('enterprise.identity.ssoToggleFailed', 'Failed to toggle SSO'));
+            }
+        } finally {
+            setToggling(false);
+        }
+    };
+
+    return (
+        <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px dashed var(--border-subtle)' }}>
+            {/* SSO Toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: ssoError ? '8px' : '16px' }}>
+                <div>
+                    <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('enterprise.identity.ssoLoginToggle', 'SSO Login')}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                        {t('enterprise.identity.ssoLoginToggleHint', 'Allow users to log in via this identity provider.')}
+                    </div>
+                </div>
+                <label style={{ position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: 0, opacity: (existingProvider && !toggling) ? 1 : 0.5 }}>
+                    <input
+                        type="checkbox"
+                        checked={ssoEnabled}
+                        onChange={handleSsoToggle}
+                        disabled={!existingProvider || toggling}
+                        style={{ opacity: 0, width: 0, height: 0 }}
+                    />
+                    <span style={{
+                        position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                        borderRadius: '20px', cursor: (existingProvider && !toggling) ? 'pointer' : 'not-allowed',
+                        background: ssoEnabled ? 'var(--accent-primary)' : 'var(--border-subtle)',
+                        transition: '0.2s',
+                    }}>
+                        <span style={{
+                            position: 'absolute', left: ssoEnabled ? '18px' : '2px', top: '2px',
+                            width: '16px', height: '16px', borderRadius: '50%',
+                            background: '#fff', transition: '0.2s',
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
+                        }} />
+                    </span>
+                </label>
+            </div>
+            {ssoError && (
+                <div style={{ fontSize: '12px', color: 'var(--error)', marginBottom: '12px', padding: '6px 10px', background: 'rgba(var(--error-rgb,220,38,38),0.08)', borderRadius: '6px' }}>
+                    {ssoError}
+                </div>
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div>
+                    <label className="form-label" style={{ fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                        {t('enterprise.identity.ssoSubdomain', 'SSO Login URL')}
+                    </label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{
+                            flex: 1, maxWidth: '400px',
+                            padding: '8px 12px',
+                            background: 'var(--bg-elevated)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            color: domain ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                            fontFamily: 'monospace',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
+                        }}>
+                            {domain ? (domain.startsWith('http') ? domain : `https://${domain}`) : t('enterprise.identity.ssoUrlEmpty', '请先开启 SSO 以生成地址')}
+                        </div>
+                        <LinearCopyButton
+                            className="btn btn-ghost btn-sm"
+                            style={{ fontSize: '11px', width: 'auto', minWidth: '70px', height: '33px' }}
+                            disabled={!domain}
+                            textToCopy={domain ? (domain.startsWith('http') ? domain : `https://${domain}`) : ''}
+                            label={t('common.copy', 'Copy')}
+                            copiedLabel="Copied"
+                        />
+                    </div>
+                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                        {t('enterprise.identity.ssoSubdomainHint', 'Share this URL with your team. SSO login buttons will appear when they visit this address.')}
+                    </div>
+                </div>
+                <div>
+                    <label className="form-label" style={{ fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                        {t('enterprise.identity.callbackUrl', 'Redirect URL (paste this in your app settings)')}
+                    </label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{
+                            flex: 1, maxWidth: '400px',
+                            padding: '8px 12px',
+                            background: 'var(--bg-elevated)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            color: callbackUrl ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                            fontFamily: 'monospace',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
+                        }}>
+                            {callbackUrl || t('enterprise.identity.ssoUrlEmpty', '请先开启 SSO 以生成地址')}
+                        </div>
+                        <LinearCopyButton
+                            className="btn btn-ghost btn-sm"
+                            style={{ fontSize: '11px', width: 'auto', minWidth: '70px', height: '33px' }}
+                            disabled={!callbackUrl}
+                            textToCopy={callbackUrl}
+                            label={t('common.copy', 'Copy')}
+                            copiedLabel="Copied"
+                        />
+                    </div>
+                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                        {t('enterprise.identity.callbackUrlHint', "Add this URL as the OAuth redirect URI in your identity provider's app configuration.")}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+
+// ─── Org & Identity Tab ─────────────────────────────
+function OrgTab({ tenant }: { tenant: any }) {
     const { t } = useTranslation();
     const qc = useQueryClient();
-    const [syncForm, setSyncForm] = useState({ app_id: '', app_secret: '' });
-    const [syncing, setSyncing] = useState(false);
+
+
+
+
+    const SsoStatus = () => {
+        const [isExpanded, setIsExpanded] = useState(!!tenant?.sso_enabled);
+        const [ssoEnabled, setSsoEnabled] = useState(!!tenant?.sso_enabled);
+        const [ssoDomain, setSsoDomain] = useState(tenant?.sso_domain || '');
+        const [saving, setSaving] = useState(false);
+        const [error, setError] = useState('');
+
+        useEffect(() => {
+            setSsoEnabled(!!tenant?.sso_enabled);
+            setSsoDomain(tenant?.sso_domain || '');
+            setIsExpanded(!!tenant?.sso_enabled);
+        }, [tenant]);
+
+        const handleSave = async (forceEnabled?: boolean) => {
+            if (!tenant?.id) return;
+            const targetEnabled = forceEnabled !== undefined ? forceEnabled : ssoEnabled;
+            setSaving(true);
+            setError('');
+            try {
+                await fetchJson(`/tenants/${tenant.id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        sso_enabled: targetEnabled,
+                        sso_domain: targetEnabled ? (ssoDomain.trim() || null) : null,
+                    }),
+                });
+                qc.invalidateQueries({ queryKey: ['tenant', tenant.id] });
+            } catch (e: any) {
+                setError(e.message || 'Failed to update SSO configuration');
+            }
+            setSaving(false);
+        };
+
+        const handleToggle = (e: React.ChangeEvent<HTMLInputElement>) => {
+            const checked = e.target.checked;
+            setSsoEnabled(checked);
+            setIsExpanded(checked);
+            if (!checked) {
+                // auto-save when disabling
+                handleSave(false);
+            }
+        };
+
+        return (
+            <div className="card" style={{ marginBottom: '24px', overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px' }}>
+                    <div>
+                        <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>
+                            {t('enterprise.identity.ssoTitle', 'Enterprise SSO')}
+                        </div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                            {t('enterprise.identity.ssoDisabledHint', 'Seamless enterprise login via Single Sign-On.')}
+                        </div>
+                    </div>
+                    <div>
+                        <label style={{ position: 'relative', display: 'inline-block', width: '36px', height: '20px' }}>
+                            <input
+                                type="checkbox"
+                                checked={ssoEnabled}
+                                onChange={handleToggle}
+                                style={{ opacity: 0, width: 0, height: 0 }}
+                            />
+                            <span style={{
+                                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                                borderRadius: '20px', cursor: 'pointer',
+                                background: ssoEnabled ? 'var(--accent-primary)' : 'var(--border-subtle)',
+                                transition: '0.2s'
+                            }}>
+                                <span style={{
+                                    position: 'absolute', left: ssoEnabled ? '18px' : '2px', top: '2px',
+                                    width: '16px', height: '16px', borderRadius: '50%',
+                                    background: '#fff', transition: '0.2s',
+                                    boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
+                                }} />
+                            </span>
+                        </label>
+                    </div>
+                </div>
+
+                {isExpanded && (
+                    <div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)', paddingTop: '16px' }}>
+                        <div style={{ marginBottom: '16px' }}>
+                            <label className="form-label" style={{ fontSize: '12px', marginBottom: '8px' }}>
+                                {t('enterprise.identity.ssoDomain', 'Custom Access Domain')}
+                            </label>
+                            <input
+                                className="form-input"
+                                value={ssoDomain}
+                                onChange={e => setSsoDomain(e.target.value)}
+                                placeholder={t('enterprise.identity.ssoDomainPlaceholder', 'e.g. acme.clawith.com')}
+                                style={{ fontSize: '13px', width: '100%', maxWidth: '400px' }}
+                            />
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
+                                {t('enterprise.identity.ssoDomainDesc', 'The custom domain users will use to log in via SSO.')}
+                            </div>
+                        </div>
+
+                        {error && <div style={{ color: 'var(--error)', fontSize: '12px', marginBottom: '12px' }}>{error}</div>}
+
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button className="btn btn-primary btn-sm" onClick={() => handleSave()} disabled={saving || !ssoDomain.trim()}>
+                                {saving ? t('common.loading') : t('common.save', 'Save Configuration')}
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    const [syncing, setSyncing] = useState<string | null>(null);
     const [syncResult, setSyncResult] = useState<any>(null);
     const [memberSearch, setMemberSearch] = useState('');
     const [selectedDept, setSelectedDept] = useState<string | null>(null);
+    const [expandedType, setExpandedType] = useState<string | null>(null);
+    const [savingProvider, setSavingProvider] = useState(false);
+    const [saveProviderOk, setSaveProviderOk] = useState(false);
 
-    const { data: config } = useQuery({
-        queryKey: ['system-settings', 'feishu_org_sync'],
-        queryFn: () => fetchJson<any>('/enterprise/system-settings/feishu_org_sync'),
+    // Identity Providers state
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const [useOAuth2Form, setUseOAuth2Form] = useState(false);
+    const [form, setForm] = useState({
+        provider_type: 'feishu',
+        name: '',
+        config: {} as any,
+        app_id: '',
+        app_secret: '',
+        authorize_url: '',
+        token_url: '',
+        user_info_url: '',
+        scope: 'openid profile email'
     });
-
-    useEffect(() => {
-        if (config?.value?.app_id) {
-            setSyncForm({ app_id: config.value.app_id, app_secret: '' });
-        }
-    }, [config]);
 
     const currentTenantId = localStorage.getItem('current_tenant_id') || '';
-    const { data: departments = [] } = useQuery({
-        queryKey: ['org-departments', currentTenantId],
-        queryFn: () => fetchJson<any[]>(`/enterprise/org/departments${currentTenantId ? `?tenant_id=${currentTenantId}` : ''}`),
+
+    // Queries
+    const { data: providers = [] } = useQuery({
+        queryKey: ['identity-providers', currentTenantId],
+        queryFn: () => fetchJson<any[]>(`/enterprise/identity-providers${currentTenantId ? `?tenant_id=${currentTenantId}` : ''}`),
     });
+
+    const { data: departmentsData = { items: [], total_member: 0 } } = useQuery({
+        queryKey: ['org-departments', currentTenantId, editingId],
+        queryFn: () => {
+            const params = new URLSearchParams();
+            if (currentTenantId) params.set('tenant_id', currentTenantId);
+            if (editingId) params.set('provider_id', editingId);
+            return fetchJson<{ items: any[]; total_member: number }>(`/enterprise/org/departments?${params}`);
+        },
+        enabled: !!editingId,
+    });
+
     const { data: members = [] } = useQuery({
-        queryKey: ['org-members', selectedDept, memberSearch, currentTenantId],
+        queryKey: ['org-members', selectedDept, memberSearch, currentTenantId, editingId],
         queryFn: () => {
             const params = new URLSearchParams();
             if (selectedDept) params.set('department_id', selectedDept);
             if (memberSearch) params.set('search', memberSearch);
             if (currentTenantId) params.set('tenant_id', currentTenantId);
+            if (editingId) params.set('provider_id', editingId);
             return fetchJson<any[]>(`/enterprise/org/members?${params}`);
         },
+        enabled: !!editingId,
     });
 
-    const saveConfig = async () => {
-        await fetchJson('/enterprise/system-settings/feishu_org_sync', {
-            method: 'PUT',
-            body: JSON.stringify({ value: { app_id: syncForm.app_id, app_secret: syncForm.app_secret } }),
-        });
-        qc.invalidateQueries({ queryKey: ['system-settings', 'feishu_org_sync'] });
-    };
+    // Mutations
+    const addProvider = useMutation({
+        mutationFn: (data: any) => {
+            const payload = { ...data, tenant_id: currentTenantId, is_active: true };
+            if (data.provider_type === 'oauth2' && useOAuth2Form) {
+                return fetchJson('/enterprise/identity-providers/oauth2', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+            }
+            return fetchJson('/enterprise/identity-providers', { method: 'POST', body: JSON.stringify(payload) });
+        },
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['identity-providers'] });
+            setUseOAuth2Form(false);
+            setSavingProvider(false);
+            setSaveProviderOk(true);
+            setTimeout(() => setSaveProviderOk(false), 2500);
+        },
+        onError: () => setSavingProvider(false),
+    });
 
-    const triggerSync = async () => {
-        setSyncing(true);
+    const updateProvider = useMutation({
+        mutationFn: ({ id, data }: { id: string; data: any }) => {
+            if (data.provider_type === 'oauth2' && useOAuth2Form) {
+                return fetchJson(`/enterprise/identity-providers/${id}/oauth2`, {
+                    method: 'PATCH',
+                    body: JSON.stringify(data)
+                });
+            }
+            return fetchJson(`/enterprise/identity-providers/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+        },
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['identity-providers'] });
+            setUseOAuth2Form(false);
+            setSavingProvider(false);
+            setSaveProviderOk(true);
+            setTimeout(() => setSaveProviderOk(false), 2500);
+        },
+        onError: () => setSavingProvider(false),
+    });
+
+    const deleteProvider = useMutation({
+        mutationFn: (id: string) => fetchJson(`/enterprise/identity-providers/${id}`, { method: 'DELETE' }),
+        onSuccess: () => qc.invalidateQueries({ queryKey: ['identity-providers'] }),
+    });
+
+    const triggerSync = async (providerId: string) => {
+        setSyncing(providerId);
         setSyncResult(null);
         try {
-            if (syncForm.app_secret) await saveConfig();
-            const result = await fetchJson<any>('/enterprise/org/sync', { method: 'POST' });
-            setSyncResult(result);
+            const result = await fetchJson<any>(`/enterprise/org/sync?provider_id=${providerId}`, { method: 'POST' });
+            setSyncResult({ ...result, providerId });
             qc.invalidateQueries({ queryKey: ['org-departments'] });
             qc.invalidateQueries({ queryKey: ['org-members'] });
+            qc.invalidateQueries({ queryKey: ['identity-providers'] });
         } catch (e: any) {
-            setSyncResult({ error: e.message });
+            setSyncResult({ error: e.message, providerId });
         }
-        setSyncing(false);
+        setSyncing(null);
     };
 
-    return (
-        <div>
-            {/* Sync Config */}
-            <div className="card" style={{ marginBottom: '16px' }}>
-                <h4 style={{ marginBottom: '12px' }}>{t('enterprise.org.feishuSync')}</h4>
-                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                    {t('enterprise.org.feishuSync')}
-                </p>
-                <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
-                    <div style={{ flex: 1 }}>
-                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App ID</label>
-                        <input className="input" value={syncForm.app_id} onChange={e => setSyncForm({ ...syncForm, app_id: e.target.value })} placeholder="cli_xxxxxxxx" />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App Secret</label>
-                        <input className="input" type="password" value={syncForm.app_secret} onChange={e => setSyncForm({ ...syncForm, app_secret: e.target.value })} placeholder={config?.value?.app_id ? '' : ''} />
-                    </div>
-                </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <button className="btn btn-primary" onClick={triggerSync} disabled={syncing || !syncForm.app_id}>
-                        {syncing ? t('enterprise.org.syncing') : t('enterprise.org.syncNow')}
-                    </button>
-                    {config?.value?.last_synced_at && (
-                        <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                            Last sync: {new Date(config.value.last_synced_at).toLocaleString()}
-                        </span>
-                    )}
-                </div>
-                {syncResult && (
-                    <div style={{ marginTop: '12px', padding: '8px 12px', borderRadius: '6px', fontSize: '12px', background: syncResult.error ? 'rgba(255,0,0,0.1)' : 'rgba(0,200,0,0.1)' }}>
-                        {syncResult.error ? `${syncResult.error}` : t('enterprise.org.syncComplete', { departments: syncResult.departments, members: syncResult.members })}
+    const initOAuth2FromConfig = (config: any) => ({
+        app_id: config?.app_id || config?.client_id || '',
+        app_secret: config?.app_secret || config?.client_secret || '',
+        authorize_url: config?.authorize_url || '',
+        token_url: config?.token_url || '',
+        user_info_url: config?.user_info_url || '',
+        scope: config?.scope || 'openid profile email'
+    });
+
+    const save = () => {
+        setSavingProvider(true);
+        setSaveProviderOk(false);
+        if (editingId) {
+            updateProvider.mutate({ id: editingId, data: form });
+        } else {
+            addProvider.mutate(form);
+        }
+    };
+
+    const IDP_TYPES = [
+        { type: 'feishu', name: 'Feishu', desc: 'Feishu / Lark Integration', icon: <img src="/feishu.png" width="20" height="20" alt="Feishu" /> },
+        { type: 'wecom', name: 'WeCom', desc: 'WeChat Work Integration', icon: <img src="/wecom.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="WeCom" /> },
+        { type: 'dingtalk', name: 'DingTalk', desc: 'DingTalk App Integration', icon: <img src="/dingtalk.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="DingTalk" /> },
+        { type: 'oauth2', name: 'OAuth2', desc: 'Generic OIDC Provider', icon: <div style={{ width: 20, height: 20, background: 'var(--accent-primary)', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 700 }}>O</div> }
+    ];
+
+    const handleExpand = (type: string, existingProvider?: any) => {
+        if (expandedType === type) {
+            setExpandedType(null);
+            return;
+        }
+        setExpandedType(type);
+        setEditingId(existingProvider ? existingProvider.id : null);
+        setUseOAuth2Form(type === 'oauth2');
+
+        if (existingProvider) {
+            setForm({ ...existingProvider, ...(type === 'oauth2' ? initOAuth2FromConfig(existingProvider.config) : {}) });
+        } else {
+            const defaults: any = {
+                feishu: { app_id: '', app_secret: '', corp_id: '' },
+                dingtalk: { app_key: '', app_secret: '', corp_id: '' },
+                wecom: { corp_id: '', secret: '', agent_id: '', app_secret: '', bot_id: '', bot_secret: '', verify_token: '', verify_aes_key: '' },
+            };
+            const nameMap: Record<string, string> = { feishu: 'Feishu', wecom: 'WeCom', dingtalk: 'DingTalk', oauth2: 'OAuth2' };
+            setForm({
+                provider_type: type,
+                name: nameMap[type] || type,
+                config: defaults[type] || {},
+                app_id: '', app_secret: '', authorize_url: '', token_url: '', user_info_url: '',
+                scope: 'openid profile email'
+            });
+        }
+        setSelectedDept(null);
+        setMemberSearch('');
+    };
+
+    const renderForm = (type: string, existingProvider?: any) => {
+        return (
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
+                {/* Setup Guide moved to the top */}
+                {['feishu', 'dingtalk'].includes(type) && (
+                    <div style={{ background: 'var(--bg-primary)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-subtle)', marginBottom: '20px', fontSize: '12px' }}>
+                        <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '8px', color: 'var(--text-primary)' }}>
+                            👉 {t('enterprise.org.syncSetupGuide', 'Setup Guide & Required Permissions')}
+                        </div>
+                        <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                            {type === 'feishu' && (
+                                <>
+                                    {Array.from({ length: 7 }).map((_, i) => (
+                                        <div key={i} style={{ marginBottom: '6px' }}>
+                                            {i + 1}. {t(`enterprise.org.syncGuide.feishu.step${i + 1}`)}
+                                        </div>
+                                    ))}
+                                    <div style={{ marginTop: '16px', marginBottom: '8px' }}>
+                                        {t('enterprise.org.feishuGuideText', 'Permission JSON (bulk import)')}
+                                    </div>
+                                    <div style={{ position: 'relative', background: '#282c34', borderRadius: '6px', padding: '12px', paddingRight: '40px', color: '#abb2bf', fontFamily: 'monospace', fontSize: '11px', whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
+                                        <LinearCopyButton
+                                            className="btn btn-ghost"
+                                            style={{ position: 'absolute', top: '8px', right: '8px', fontSize: '10px', color: '#abb2bf', padding: '4px 8px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', border: 'none', borderRadius: '4px', height: 'fit-content', minWidth: '60px' }}
+                                            textToCopy={FEISHU_SYNC_PERM_JSON}
+                                            label="Copy"
+                                            copiedLabel="Copied✓"
+                                        />
+                                        {FEISHU_SYNC_PERM_JSON}
+                                    </div>
+                                    <div style={{ marginTop: '8px', color: 'var(--text-secondary)' }}>
+                                        {t('enterprise.org.feishuGuideWarning', 'Note: You must re-publish the app each time you add new permissions.')}
+                                    </div>
+                                </>
+                            )}
+                            {type === 'dingtalk' && (
+                                <>
+                                    {Array.from({ length: 6 }).map((_, i) => (
+                                        <div key={i} style={{ marginBottom: '6px' }}>
+                                            {i + 1}. {t(`enterprise.org.syncGuide.dingtalk.step${i + 1}`)}
+                                        </div>
+                                    ))}
+                                </>
+                            )}
+                            {type === 'wecom' && (
+                                <>
+                                    {Array.from({ length: 5 }).map((_, i) => (
+                                        <div key={i} style={{ marginBottom: '6px' }}>
+                                            {i + 1}. {t(`enterprise.org.syncGuide.wecom.step${i + 1}`)}
+                                        </div>
+                                    ))}
+                                </>
+                            )}
+                        </div>
                     </div>
                 )}
-            </div>
 
-            {/* Department & Members Browser */}
-            <div className="card">
-                <h4 style={{ marginBottom: '12px' }}>{t('enterprise.org.orgBrowser')}</h4>
+                {/* Name field only for oauth2 */}
+                {type === 'oauth2' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                        <div className="form-group">
+                            <label className="form-label">{t('enterprise.identity.name')}</label>
+                            <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+                        </div>
+                    </div>
+                )}
+
+                {type === 'oauth2' ? (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div className="form-group">
+                            <label className="form-label">Client ID</label>
+                            <input className="form-input" value={form.app_id} onChange={e => setForm({ ...form, app_id: e.target.value })} />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">Client Secret</label>
+                            <input className="form-input" type="password" value={form.app_secret} onChange={e => setForm({ ...form, app_secret: e.target.value })} />
+                        </div>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <label className="form-label">Authorize URL</label>
+                            <input className="form-input" value={form.authorize_url} onChange={e => setForm({ ...form, authorize_url: e.target.value })} />
+                        </div>
+                    </div>
+                ) : type === 'wecom' ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+                        {/* Prerequisites notice — all strings via i18n */}
+                        <div style={{
+                            padding: '16px',
+                            borderRadius: '8px',
+                            border: '1px solid var(--border-subtle)',
+                            background: 'var(--bg-primary)',
+                            fontSize: '13px',
+                            lineHeight: 1.7,
+                            color: 'var(--text-secondary)',
+                        }}>
+                            <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)', marginBottom: '10px' }}>
+                                {t('enterprise.identity.wecomNotice.title')}
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                <div>
+                                    <div style={{ fontWeight: 500, color: 'var(--text-primary)', marginBottom: '3px' }}>
+                                        {t('enterprise.identity.wecomNotice.syncTitle')}
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                        {t('enterprise.identity.wecomNotice.syncDesc')}
+                                    </div>
+                                </div>
+                                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '10px' }}>
+                                    <div style={{ fontWeight: 500, color: 'var(--text-primary)', marginBottom: '3px' }}>
+                                        {t('enterprise.identity.wecomNotice.ssoTitle')}
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                        {t('enterprise.identity.wecomNotice.ssoDesc')}
+                                    </div>
+                                </div>
+                                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '10px' }}>
+                                    <div style={{ fontWeight: 500, color: 'var(--text-primary)', marginBottom: '3px' }}>
+                                        {t('enterprise.identity.wecomNotice.messagingTitle')}
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                        {t('enterprise.identity.wecomNotice.messagingDesc')}
+                                    </div>
+                                </div>
+                            </div>
+                            <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid var(--border-subtle)', fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+                                {t('enterprise.identity.wecomNotice.footerText')}
+                            </div>
+                        </div>
+                    </div>
+
+
+                ) : type === 'dingtalk' ? (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('enterprise.identity.providerHints.dingtalk')}</div>
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">App Key</label>
+                            <input className="form-input" value={form.config.app_key || ''} onChange={e => setForm({ ...form, config: { ...form.config, app_key: e.target.value } })} placeholder="dingxxxxxxxxxxxx" />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">App Secret</label>
+                            <input className="form-input" type="password" value={form.config.app_secret || ''} onChange={e => setForm({ ...form, config: { ...form.config, app_secret: e.target.value } })} />
+                        </div>
+                    </div>
+                ) : type === 'feishu' ? (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('enterprise.identity.providerHints.feishu')}</div>
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">App ID</label>
+                            <input className="form-input" value={form.config.app_id || ''} onChange={e => setForm({ ...form, config: { ...form.config, app_id: e.target.value } })} placeholder="cli_xxxxxxxxxxxx" />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">App Secret</label>
+                            <input className="form-input" type="password" value={form.config.app_secret || ''} onChange={e => setForm({ ...form, config: { ...form.config, app_secret: e.target.value } })} />
+                        </div>
+                    </div>
+                ) : null}
+
+                {/* Hide save/delete for WeCom while config is disabled */}
+                {type !== 'wecom' && (
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '16px' }}>
+                        <button className="btn btn-primary btn-sm" onClick={save} disabled={savingProvider}>
+                            {savingProvider ? t('common.loading') : t('common.save', 'Save')}
+                        </button>
+                        {saveProviderOk && (
+                            <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>
+                        )}
+                        {existingProvider && (
+                            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={() => confirm('Are you sure you want to delete this configuration?') && deleteProvider.mutate(existingProvider.id)}>
+                                {t('common.delete', 'Delete')}
+                            </button>
+                        )}
+                    </div>
+                )}
+                {/* WeCom App IP Whitelist verification URL — hidden while WeCom config is disabled */}
+                {type === 'wecom' && false && editingId && (existingProvider?.config?.verify_token || form.config?.verify_token) && (() => {
+                    const verifyToken = form.config?.verify_token || existingProvider?.config?.verify_token || '';
+                    const aesKey = form.config?.verify_aes_key || existingProvider?.config?.verify_aes_key || '';
+                    // Use window.location.origin as the base, but if it's a private/non-standard URL let user know
+                    const base = window.location.origin;
+                    const callbackUrl = aesKey
+                        ? `${base}/api/enterprise/org/wecom-callback/${verifyToken}?aes_key=${aesKey}`
+                        : `${base}/api/enterprise/org/wecom-callback/${verifyToken}?aes_key=(configure EncodingAESKey above first)`;
+                    return (
+                        <div style={{ marginTop: '16px', padding: '12px', background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
+                            <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                                WeCom Receive Message Server URL
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                Step 1: Go to WeCom App Management (AgentID 1000010) → App Settings → Set Receive Message Server URL.
+                                Use this URL. In the Token field, enter your Verify Token. In EncodingAESKey, enter your key below.
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <code style={{ flex: 1, fontSize: '11px', padding: '6px 10px', background: 'var(--bg-secondary)', borderRadius: '4px', wordBreak: 'break-all', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                                    {callbackUrl}
+                                </code>
+                                {aesKey && (
+                                    <LinearCopyButton
+                                        className="btn btn-ghost"
+                                        style={{ fontSize: '11px', padding: '4px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                                        textToCopy={callbackUrl}
+                                        label="Copy"
+                                        copiedLabel="Copied"
+                                    />
+                                )}
+                            </div>
+                            {!aesKey && (
+                                <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--warning, #f59e0b)' }}>
+                                    Configure the Verify Token and EncodingAESKey fields above, then Save to generate the final URL.
+                                </div>
+                            )}
+                            <div style={{ marginTop: '10px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                Step 2: After URL verification passes, configure Enterprise Trusted IP with your server IPs in the WeCom console.
+                            </div>
+                            <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                Step 3: Paste the App Secret (from that same app page) into the App Secret field above.
+                            </div>
+                        </div>
+                    );
+                })()}
+
+            </div>
+        );
+    };
+
+    const renderOrgBrowser = (p: any) => {
+        return (
+            <div style={{ marginTop: '24px', paddingTop: '24px', borderTop: '1px dashed var(--border-subtle)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+                    <div style={{ fontWeight: 500, fontSize: '14px' }}>{t('enterprise.org.orgBrowser', 'Organization Browser')}</div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
+                        {['feishu', 'dingtalk'].includes(p.provider_type) && (
+                            <button className="btn btn-secondary btn-sm" style={{ fontSize: '12px' }} onClick={() => triggerSync(p.id)} disabled={!!syncing}>
+                                {syncing === p.id ? 'Syncing...' : 'Sync Directory'}
+                            </button>
+                        )}
+                        {syncResult && (
+                            <div style={{ padding: '6px 10px', borderRadius: '4px', fontSize: '11px', background: syncResult.error || (syncResult.errors && syncResult.errors.length > 0) ? 'rgba(255,100,0,0.1)' : 'rgba(0,200,0,0.1)' }}>
+                                {syncResult.error
+                                    ? `Error: ${syncResult.error}`
+                                    : `Sync complete: ${syncResult.departments || 0} depts, ${syncResult.members || 0} members synced.`}
+                                {syncResult.errors && syncResult.errors.length > 0 && (
+                                    <div style={{ marginTop: '4px', color: 'var(--color-warning, #f90)' }}>
+                                        {/* Show first error to help diagnose permission issues */}
+                                        {`Warning: ${syncResult.errors[0]}`}
+                                        {syncResult.errors.length > 1 && ` (+${syncResult.errors.length - 1} more)`}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+
                 <div style={{ display: 'flex', gap: '16px' }}>
                     <div style={{ width: '260px', borderRight: '1px solid var(--border-subtle)', paddingRight: '16px', maxHeight: '500px', overflowY: 'auto' }}>
-                        <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>{t('enterprise.org.allDepartments')}</div>
-                        <div
-                            style={{ padding: '6px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', marginBottom: '2px', background: !selectedDept ? 'rgba(224,238,238,0.1)' : 'transparent' }}
-                            onClick={() => setSelectedDept(null)}
-                        >
+                        <div style={{ padding: '6px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: !selectedDept ? 'rgba(224,238,238,0.1)' : 'transparent' }} onClick={() => setSelectedDept(null)}>
                             {t('common.all')}
+                            {departmentsData.total_member > 0 && <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>({departmentsData.total_member})</span>}
                         </div>
-                        <DeptTree departments={departments} parentId={null} selectedDept={selectedDept} onSelect={setSelectedDept} level={0} />
-                        {departments.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px' }}>{t('common.noData')}</div>}
+                        <DeptTree departments={departmentsData.items} parentId={null} selectedDept={selectedDept} onSelect={setSelectedDept} level={0} />
                     </div>
 
                     <div style={{ flex: 1 }}>
-                        <input className="input" placeholder={t("enterprise.org.searchMembers")} value={memberSearch} onChange={e => setMemberSearch(e.target.value)} style={{ marginBottom: '12px', fontSize: '13px' }} />
+                        <input className="form-input" placeholder={t("enterprise.org.searchMembers")} value={memberSearch} onChange={e => setMemberSearch(e.target.value)} style={{ marginBottom: '12px' }} />
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '400px', overflowY: 'auto' }}>
                             {members.map((m: any) => (
                                 <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
-                                    <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 600 }}>
-                                        {m.name?.[0] || '?'}
-                                    </div>
+                                    <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 600 }}>{m.name?.[0]}</div>
                                     <div>
                                         <div style={{ fontWeight: 500, fontSize: '13px' }}>{m.name}</div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                            {m.title || '-'} · {m.department_path || '-'}
-                                            {m.email && ` · ${m.email}`}
+                                            {m.provider_type && <span style={{ marginRight: '4px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-secondary)', fontSize: '10px' }}>{m.provider_type}</span>}
+                                            {m.title || '-'} · {m.department_path || m.department_id || '-'}
                                         </div>
                                     </div>
                                 </div>
                             ))}
-                            {members.length === 0 && <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('enterprise.org.noMembers')}</div>}
+                            {members.length === 0 && <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)' }}>{t('enterprise.org.noMembers')}</div>}
                         </div>
                     </div>
                 </div>
             </div>
+        );
+    };
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            {/* SSO status is now derived from per-channel toggles — no global switch */}
+
+            {/* 1. Identity Providers Section */}
+            <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+                <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
+                    <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>
+                        {t('enterprise.identity.title', 'Organization & Directory Sync')}
+                    </h3>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                        Configure enterprise directory synchronization and Identity Provider settings.
+                    </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    {IDP_TYPES.map((idp, index) => {
+                        const existingProvider = providers.find((p: any) => p.provider_type === idp.type);
+                        const isExpanded = expandedType === idp.type;
+
+                        return (
+                            <div key={idp.type} style={{ borderBottom: index < IDP_TYPES.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+                                <div
+                                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', cursor: 'pointer', background: isExpanded ? 'var(--bg-secondary)' : 'transparent', transition: 'background 0.2s' }}
+                                    onClick={() => handleExpand(idp.type, existingProvider)}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        {idp.icon}
+                                        <div>
+                                            <div style={{ fontWeight: 500, fontSize: '14px' }}>{idp.name}</div>
+                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{idp.desc}</div>
+                                        </div>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                                        {existingProvider ? (
+                                            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: '8px' }}>
+                                                <span className="badge badge-success" style={{ fontSize: '10px' }}>Active</span>
+                                                {existingProvider.last_synced_at && (
+                                                    <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                                                        Synced: {new Date(existingProvider.last_synced_at).toLocaleDateString()}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <span className="badge badge-secondary" style={{ fontSize: '10px' }}>Not configured</span>
+                                        )}
+                                        <div style={{ color: 'var(--text-tertiary)', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', fontSize: '12px' }}>
+                                            ▼
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {isExpanded && (
+                                    <div style={{ padding: '0 20px 20px', background: 'var(--bg-secondary)' }}>
+                                        {renderForm(idp.type, existingProvider)}
+
+                                        {/* Per-channel SSO Login URLs & Toggle */}
+                                        {['feishu', 'dingtalk', 'oauth2'].includes(idp.type) && (
+                                            <SsoChannelSection
+                                                idpType={idp.type}
+                                                existingProvider={existingProvider}
+                                                tenant={tenant}
+                                                t={t}
+                                            />
+                                        )}
+                                        {existingProvider && idp.type !== 'wecom' && renderOrgBrowser(existingProvider)}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
         </div>
     );
 }
@@ -453,8 +1164,8 @@ function SkillsTab() {
                         title="Settings"
                     >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="12" cy="12" r="3"/>
-                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                            <circle cx="12" cy="12" r="3" />
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                         </svg>
                     </button>
                     <button
@@ -487,11 +1198,11 @@ function SkillsTab() {
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
                             <span className="metric-tooltip" style={{ width: '300px', bottom: 'auto', top: 'calc(100% + 6px)', left: '-8px', fontWeight: 400 }}>
                                 <div style={{ marginBottom: '6px', fontWeight: 500 }}>{t('enterprise.tools.howToGenerateGithubToken')}</div>
-                                {t('enterprise.tools.githubTokenStep1')}<br/>
-                                {t('enterprise.tools.githubTokenStep2')}<br/>
-                                {t('enterprise.tools.githubTokenStep3')}<br/>
-                                {t('enterprise.tools.githubTokenStep4')}<br/>
-                                {t('enterprise.tools.githubTokenStep5')}<br/>
+                                {t('enterprise.tools.githubTokenStep1')}<br />
+                                {t('enterprise.tools.githubTokenStep2')}<br />
+                                {t('enterprise.tools.githubTokenStep3')}<br />
+                                {t('enterprise.tools.githubTokenStep4')}<br />
+                                {t('enterprise.tools.githubTokenStep5')}<br />
                                 <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                     {t('enterprise.tools.orVisit')}
                                 </div>
@@ -877,29 +1588,34 @@ const COMMON_TIMEZONES = [
 
 function CompanyTimezoneEditor() {
     const { t } = useTranslation();
-    const tenantId = localStorage.getItem('current_tenant_id') || '';
+    const user = useAuthStore((s) => s.user);
+    const tenantId = user?.tenant_id || localStorage.getItem('current_tenant_id') || '';
     const [timezone, setTimezone] = useState('UTC');
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [error, setError] = useState('');
 
     useEffect(() => {
         if (!tenantId) return;
         fetchJson<any>(`/tenants/${tenantId}`)
             .then(d => { if (d?.timezone) setTimezone(d.timezone); })
-            .catch(() => { });
+            .catch((e: any) => setError(e.message || 'Failed to load timezone'));
     }, [tenantId]);
 
     const handleSave = async (tz: string) => {
         if (!tenantId) return;
         setTimezone(tz);
         setSaving(true);
+        setError('');
         try {
             await fetchJson(`/tenants/${tenantId}`, {
                 method: 'PUT', body: JSON.stringify({ timezone: tz }),
             });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
-        } catch (e) { }
+        } catch (e: any) {
+            setError(e.message || 'Failed to save timezone');
+        }
         setSaving(false);
     };
 
@@ -911,13 +1627,23 @@ function CompanyTimezoneEditor() {
                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                         {t('enterprise.timezone.description', 'Default timezone for all agents. Agents can override individually.')}
                     </div>
+                    {error && (
+                        <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                            ⚠ {error}
+                        </div>
+                    )}
+                    {!tenantId && (
+                        <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                            ⚠ {t('enterprise.timezone.noTenant', 'No company selected. Please refresh the page or contact support.')}
+                        </div>
+                    )}
                 </div>
                 <select
                     className="form-input"
                     value={timezone}
                     onChange={e => handleSave(e.target.value)}
                     style={{ width: '220px', fontSize: '13px' }}
-                    disabled={saving}
+                    disabled={saving || !tenantId}
                 >
                     {COMMON_TIMEZONES.map(tz => (
                         <option key={tz} value={tz}>{tz}</option>
@@ -935,8 +1661,9 @@ function BroadcastSection() {
     const { t } = useTranslation();
     const [title, setTitle] = useState('');
     const [body, setBody] = useState('');
+    const [sendEmail, setSendEmail] = useState(false);
     const [sending, setSending] = useState(false);
-    const [result, setResult] = useState<{ users: number; agents: number } | null>(null);
+    const [result, setResult] = useState<{ users: number; agents: number; emails: number } | null>(null);
 
     const handleSend = async () => {
         if (!title.trim()) return;
@@ -947,7 +1674,7 @@ function BroadcastSection() {
             const res = await fetch('/api/notifications/broadcast', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                body: JSON.stringify({ title: title.trim(), body: body.trim() }),
+                body: JSON.stringify({ title: title.trim(), body: body.trim(), send_email: sendEmail }),
             });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
@@ -956,9 +1683,14 @@ function BroadcastSection() {
                 return;
             }
             const data = await res.json();
-            setResult({ users: data.users_notified, agents: data.agents_notified });
+            setResult({
+                users: data.users_notified,
+                agents: data.agents_notified,
+                emails: data.emails_sent || 0,
+            });
             setTitle('');
             setBody('');
+            setSendEmail(false);
         } catch (e: any) {
             alert(e.message || 'Failed');
         }
@@ -989,13 +1721,25 @@ function BroadcastSection() {
                     rows={3}
                     style={{ resize: 'vertical', fontSize: '13px', marginBottom: '12px' }}
                 />
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontSize: '13px' }}>
+                    <input
+                        type="checkbox"
+                        checked={sendEmail}
+                        onChange={e => setSendEmail(e.target.checked)}
+                    />
+                    <span>{t('enterprise.broadcast.sendEmail', 'Also send email to users with a configured address')}</span>
+                </label>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <button className="btn btn-primary" onClick={handleSend} disabled={sending || !title.trim()}>
                         {sending ? t('common.loading') : t('enterprise.broadcast.send', 'Send Broadcast')}
                     </button>
                     {result && (
                         <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                            {t('enterprise.broadcast.sent', `Sent to ${result.users} users and ${result.agents} agents`, { users: result.users, agents: result.agents })}
+                            {t(
+                                'enterprise.broadcast.sentWithEmail',
+                                `Sent to ${result.users} users, ${result.agents} agents, and ${result.emails} email recipients`,
+                                { users: result.users, agents: result.agents, emails: result.emails },
+                            )}
                         </span>
                     )}
                 </div>
@@ -1004,6 +1748,8 @@ function BroadcastSection() {
     );
 }
 
+
+// ─── Identity Providers Tab ──────────────────────────
 
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
@@ -1050,6 +1796,7 @@ export default function EnterpriseSettings() {
     const [companyIntroSaving, setCompanyIntroSaving] = useState(false);
     const [companyIntroSaved, setCompanyIntroSaved] = useState(false);
 
+
     // Company intro key: always per-tenant scoped
     const companyIntroKey = selectedTenantId ? `company_intro_${selectedTenantId}` : 'company_intro';
 
@@ -1090,12 +1837,20 @@ export default function EnterpriseSettings() {
 
     const [allTools, setAllTools] = useState<any[]>([]);
     const [showAddMCP, setShowAddMCP] = useState(false);
-    const [mcpForm, setMcpForm] = useState({ server_url: '', server_name: '' });
+    const [mcpForm, setMcpForm] = useState({ server_url: '', server_name: '', api_key: '' });
     const [mcpRawInput, setMcpRawInput] = useState('');
     const [mcpTestResult, setMcpTestResult] = useState<any>(null);
     const [mcpTesting, setMcpTesting] = useState(false);
+    // Edit Server modal state — null when closed, otherwise the server to edit
+    const [editingMcpServer, setEditingMcpServer] = useState<{
+        server_name: string;
+        server_url: string;
+        api_key: string;
+    } | null>(null);
+    const [mcpServerSaving, setMcpServerSaving] = useState(false);
     const [editingToolId, setEditingToolId] = useState<string | null>(null);
     const [editingConfig, setEditingConfig] = useState<Record<string, any>>({});
+
     const [configCategory, setConfigCategory] = useState<string | null>(null);
 
     // Category-level config schemas: tools sharing the same key have config on category header
@@ -1104,6 +1859,7 @@ export default function EnterpriseSettings() {
             title: 'AgentBay Settings',
             fields: [
                 { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' },
+                { key: 'os_type', label: 'Cloud Computer OS', type: 'select', default: 'windows', options: [{ value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' }] },
             ],
         },
     };
@@ -1179,6 +1935,12 @@ export default function EnterpriseSettings() {
     };
 
 
+    const { data: currentTenant } = useQuery({
+        queryKey: ['tenant', selectedTenantId],
+        queryFn: () => fetchJson<any>(`/tenants/${selectedTenantId}`),
+        enabled: !!selectedTenantId,
+    });
+
     // ─── Stats (scoped to selected tenant)
     const { data: stats } = useQuery({
         queryKey: ['enterprise-stats', selectedTenantId],
@@ -1193,7 +1955,7 @@ export default function EnterpriseSettings() {
     });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, temperature: '' as string });
+    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, request_timeout: '' as string, temperature: '' as string });
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
@@ -1296,6 +2058,7 @@ export default function EnterpriseSettings() {
                                     base_url: defaultSpec?.default_base_url || '',
                                     label: '', supports_vision: false,
                                     max_output_tokens: defaultSpec ? String(defaultSpec.default_max_tokens) : '4096',
+                                    request_timeout: '',
                                     temperature: '',
                                 });
                                 setShowAddModel(true);
@@ -1330,11 +2093,11 @@ export default function EnterpriseSettings() {
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.model')}</label>
-                                        <input 
-                                            className="form-input" 
+                                        <input
+                                            className="form-input"
                                             placeholder={t('enterprise.llm.modelPlaceholder', 'e.g. claude-sonnet-4-20250514')}
-                                            value={modelForm.model} 
-                                            onChange={e => setModelForm({ ...modelForm, model: e.target.value })} 
+                                            value={modelForm.model}
+                                            onChange={e => setModelForm({ ...modelForm, model: e.target.value })}
                                         />
                                     </div>
                                     <div className="form-group">
@@ -1360,6 +2123,11 @@ export default function EnterpriseSettings() {
                                         <label className="form-label">{t('enterprise.llm.maxOutputTokens', 'Max Output Tokens')}</label>
                                         <input className="form-input" type="number" placeholder={t('enterprise.llm.maxOutputTokensPlaceholder', 'e.g. 4096')} value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc', 'Limits generation length')}</div>
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">{t('enterprise.llm.requestTimeout', 'Request Timeout (s)')}</label>
+                                        <input className="form-input" type="number" min="1" placeholder={t('enterprise.llm.requestTimeoutPlaceholder', 'e.g. 120 (Leave empty for default)')} value={modelForm.request_timeout} onChange={e => setModelForm({ ...modelForm, request_timeout: e.target.value })} />
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.requestTimeoutDesc', 'Increase for slow local models.')}</div>
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.temperature', 'Temperature')}</label>
@@ -1396,9 +2164,10 @@ export default function EnterpriseSettings() {
                                         }
                                     }}>{t('enterprise.llm.test')}</button>
                                     <button className="btn btn-primary" onClick={() => {
-                                        const data = { 
-                                            ...modelForm, 
+                                        const data = {
+                                            ...modelForm,
                                             max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
+                                            request_timeout: modelForm.request_timeout ? Number(modelForm.request_timeout) : null,
                                             temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
                                         };
                                         addModel.mutate(data);
@@ -1433,11 +2202,11 @@ export default function EnterpriseSettings() {
                                                 </div>
                                                 <div className="form-group">
                                                     <label className="form-label">{t('enterprise.llm.model')}</label>
-                                                    <input 
-                                                        className="form-input" 
+                                                    <input
+                                                        className="form-input"
                                                         placeholder={t('enterprise.llm.modelPlaceholder', 'e.g. claude-sonnet-4-20250514')}
-                                                        value={modelForm.model} 
-                                                        onChange={e => setModelForm({ ...modelForm, model: e.target.value })} 
+                                                        value={modelForm.model}
+                                                        onChange={e => setModelForm({ ...modelForm, model: e.target.value })}
                                                     />
                                                 </div>
                                                 <div className="form-group">
@@ -1463,6 +2232,11 @@ export default function EnterpriseSettings() {
                                                     <label className="form-label">{t('enterprise.llm.maxOutputTokens', 'Max Output Tokens')}</label>
                                                     <input className="form-input" type="number" placeholder={t('enterprise.llm.maxOutputTokensPlaceholder', 'e.g. 4096')} value={modelForm.max_output_tokens} onChange={e => setModelForm({ ...modelForm, max_output_tokens: e.target.value })} />
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.maxOutputTokensDesc', 'Limits generation length')}</div>
+                                                </div>
+                                                <div className="form-group">
+                                                    <label className="form-label">{t('enterprise.llm.requestTimeout', 'Request Timeout (s)')}</label>
+                                                    <input className="form-input" type="number" min="1" placeholder={t('enterprise.llm.requestTimeoutPlaceholder', 'e.g. 120 (Leave empty for default)')} value={modelForm.request_timeout} onChange={e => setModelForm({ ...modelForm, request_timeout: e.target.value })} />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.requestTimeoutDesc', 'Increase for slow local models.')}</div>
                                                 </div>
                                                 <div className="form-group">
                                                     <label className="form-label">{t('enterprise.llm.temperature', 'Temperature')}</label>
@@ -1500,9 +2274,10 @@ export default function EnterpriseSettings() {
                                                     }
                                                 }}>{t('enterprise.llm.test')}</button>
                                                 <button className="btn btn-primary" onClick={() => {
-                                                    const data = { 
-                                                        ...modelForm, 
+                                                    const data = {
+                                                        ...modelForm,
                                                         max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
+                                                        request_timeout: modelForm.request_timeout ? Number(modelForm.request_timeout) : null,
                                                         temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
                                                     };
                                                     updateModel.mutate({ id: editingModelId!, data });
@@ -1538,7 +2313,7 @@ export default function EnterpriseSettings() {
                                                     title={m.enabled ? t('enterprise.llm.clickToDisable', 'Click to disable') : t('enterprise.llm.clickToEnable', 'Click to enable')}
                                                     style={{
                                                         position: 'relative', width: '36px', height: '20px', borderRadius: '10px', border: 'none', cursor: 'pointer', transition: 'background 0.2s',
-                                                        background: m.enabled ? 'var(--success, #00b478)' : 'var(--bg-tertiary, #444)',
+                                                        background: m.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary, #444)',
                                                         padding: 0, flexShrink: 0,
                                                     }}
                                                 >
@@ -1551,7 +2326,7 @@ export default function EnterpriseSettings() {
                                                 {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>Vision</span>}
                                                 <button className="btn btn-ghost" onClick={() => {
                                                     setEditingModelId(m.id);
-                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
+                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', request_timeout: m.request_timeout ? String(m.request_timeout) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
                                                     setShowAddModel(true);
                                                 }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
@@ -1566,7 +2341,7 @@ export default function EnterpriseSettings() {
                 )}
 
                 {/* ── Org Structure ── */}
-                {activeTab === 'org' && <OrgTab />}
+                {activeTab === 'org' && <OrgTab tenant={currentTenant} />}
 
                 {/* ── Approvals ── */}
                 {activeTab === 'approvals' && (
@@ -1663,7 +2438,7 @@ export default function EnterpriseSettings() {
                         {/* ── 0.5. Company Timezone ── */}
                         <CompanyTimezoneEditor key={`tz-${selectedTenantId}`} />
 
-                        {/* ── 1. Company Intro ── */}
+                        {/* ── 2. Company Intro ── */}
                         <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyIntro.title', 'Company Intro')}</h3>
                         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                             {t('enterprise.companyIntro.description', 'Describe your company\'s mission, products, and culture. This information is included in every agent conversation as context.')}
@@ -1707,6 +2482,95 @@ export default function EnterpriseSettings() {
 
                         {/* ── Broadcast ── */}
                         <BroadcastSection />
+
+                        {/* ── A2A Async Communication (Beta) ── */}
+                        <div style={{ marginTop: '24px', marginBottom: '24px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                <h3 style={{ margin: 0 }}>
+                                    {t('enterprise.a2aAsync.title', 'Agent-to-Agent Async Communication')}
+                                </h3>
+                                <span style={{
+                                    fontSize: '11px', padding: '2px 8px', borderRadius: '10px',
+                                    background: 'var(--warning-bg, #fef3cd)', color: 'var(--warning-text, #856404)',
+                                    fontWeight: 500, letterSpacing: '0.3px',
+                                }}>
+                                    BETA
+                                </span>
+                            </div>
+                            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px', lineHeight: 1.6 }}>
+                                {t('enterprise.a2aAsync.description',
+                                    'Enable agents to communicate asynchronously with three modes: notify (one-way announcement), task_delegate (delegate work and get results back), and consult (synchronous question). When disabled, all agent-to-agent messages use synchronous consult mode — the same behavior as before this feature was introduced.'
+                                )}
+                            </p>
+                            <div className="card" style={{ padding: '16px', display: 'flex', alignItems: 'center', gap: '16px' }}>
+                                <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                                    <input type="checkbox"
+                                        checked={!!currentTenant?.a2a_async_enabled}
+                                        onChange={async (e) => {
+                                            const wantEnable = e.target.checked;
+                                            if (wantEnable) {
+                                                const confirmed = window.confirm(
+                                                    t('enterprise.a2aAsync.enableWarning',
+                                                        [
+                                                            '⚠️ You are about to enable the A2A Async Communication feature (Beta).',
+                                                            '',
+                                                            'This feature allows agents to communicate asynchronously via notify and task_delegate modes.',
+                                                            '',
+                                                            'Known potential issues:',
+                                                            '• Agent replies may contain internal technical terms (trigger names, focus items, etc.)',
+                                                            '• task_delegate callbacks may occasionally be delayed or dropped due to rate limiting',
+                                                            '• Token consumption will increase because each async message triggers a separate agent session',
+                                                            '• Agent loops may occur if triggers are not properly configured',
+                                                            '',
+                                                            'If you encounter any issues, please return to this page and disable the toggle to restore stable synchronous behavior.',
+                                                            '',
+                                                            'Are you sure you want to enable this feature?'
+                                                        ].join('\n')
+                                                    )
+                                                );
+                                                if (!confirmed) return;
+                                            }
+                                            try {
+                                                await fetchJson(`/tenants/${selectedTenantId}`, {
+                                                    method: 'PUT',
+                                                    body: JSON.stringify({ a2a_async_enabled: wantEnable }),
+                                                });
+                                                qc.invalidateQueries({ queryKey: ['tenant', selectedTenantId] });
+                                            } catch (err: any) {
+                                                alert(err.message || 'Update failed');
+                                            }
+                                        }}
+                                        style={{ opacity: 0, width: 0, height: 0 }}
+                                    />
+                                    <span style={{
+                                        position: 'absolute', inset: 0,
+                                        background: currentTenant?.a2a_async_enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                        borderRadius: '11px', transition: 'background 0.2s',
+                                    }}>
+                                        <span style={{
+                                            position: 'absolute',
+                                            left: currentTenant?.a2a_async_enabled ? '20px' : '2px',
+                                            top: '2px', width: '18px', height: '18px',
+                                            background: '#fff', borderRadius: '50%', transition: 'left 0.2s',
+                                        }} />
+                                    </span>
+                                </label>
+                                <div>
+                                    <span style={{ fontSize: '13px', fontWeight: 500 }}>
+                                        {currentTenant?.a2a_async_enabled
+                                            ? t('enterprise.a2aAsync.enabled', 'Enabled')
+                                            : t('enterprise.a2aAsync.disabled', 'Disabled')
+                                        }
+                                    </span>
+                                    <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', margin: '2px 0 0 0' }}>
+                                        {currentTenant?.a2a_async_enabled
+                                            ? t('enterprise.a2aAsync.enabledHint', 'Agents can use notify, task_delegate, and consult modes.')
+                                            : t('enterprise.a2aAsync.disabledHint', 'All agent messages use synchronous consult mode.')
+                                        }
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
 
                         {/* ── Danger Zone: Delete Company ── */}
                         <div style={{ marginTop: '32px', padding: '16px', border: '1px solid var(--status-error, #e53e3e)', borderRadius: '8px' }}>
@@ -1924,7 +2788,7 @@ export default function EnterpriseSettings() {
                                                         const name = names[0];
                                                         const cfg = servers[name];
                                                         const url = cfg.url || cfg.uri || '';
-                                                        setMcpForm({ server_name: name, server_url: url });
+                                                        setMcpForm(p => ({ ...p, server_name: name, server_url: url }));
                                                     }
                                                 } catch {
                                                     // Not JSON — treat as plain URL
@@ -1944,16 +2808,40 @@ export default function EnterpriseSettings() {
                                                 <input className="form-input" value={mcpForm.server_name} onChange={e => setMcpForm(p => ({ ...p, server_name: e.target.value }))} placeholder="My MCP Server" />
                                             </div>
                                         )}
+
+                                        {/* Optional standalone API Key — sent as Authorization: Bearer */}
+                                        <div>
+                                            <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>
+                                                API Key <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>(optional)</span>
+                                            </label>
+                                            <input
+                                                type="password"
+                                                className="form-input"
+                                                value={mcpForm.api_key}
+                                                onChange={e => setMcpForm(p => ({ ...p, api_key: e.target.value }))}
+                                                placeholder="Leave blank if the key is already embedded in the URL"
+                                                autoComplete="new-password"
+                                            />
+                                        </div>
+
+                                        {/* Auth explanation for non-obvious behavior */}
+                                        <div style={{ padding: '10px 12px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)', borderRadius: '6px', fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.65' }}>
+                                            <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-primary)' }}>How authentication works</div>
+                                            <div>- If your MCP server embeds the key in the URL (e.g. Tavily uses <code style={{ background: 'rgba(0,0,0,0.06)', padding: '0 3px', borderRadius: '3px' }}>?tavilyApiKey=xxx</code>), leave the field above blank.</div>
+                                            <div>- For servers that use <strong>Bearer token</strong> auth, enter the key here. It is sent as <code style={{ background: 'rgba(0,0,0,0.06)', padding: '0 3px', borderRadius: '3px' }}>Authorization: Bearer ...</code> on every request.</div>
+                                            <div>- If both are provided, the API Key field takes priority. All keys are stored encrypted.</div>
+                                        </div>
+
                                         <div style={{ display: 'flex', gap: '8px' }}>
                                             <button className="btn btn-secondary" disabled={mcpTesting || !mcpForm.server_url} onClick={async () => {
                                                 setMcpTesting(true); setMcpTestResult(null);
                                                 try {
-                                                    const r = await fetchJson<any>('/tools/test-mcp', { method: 'POST', body: JSON.stringify({ server_url: mcpForm.server_url }) });
+                                                    const r = await fetchJson<any>('/tools/test-mcp', { method: 'POST', body: JSON.stringify({ server_url: mcpForm.server_url, api_key: mcpForm.api_key || undefined }) });
                                                     setMcpTestResult(r);
                                                 } catch (e: any) { setMcpTestResult({ ok: false, error: e.message }); }
                                                 setMcpTesting(false);
                                             }}>{mcpTesting ? t('enterprise.tools.testing') : t('enterprise.tools.testConnection')}</button>
-                                            <button className="btn btn-secondary" onClick={() => { setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '' }); setMcpRawInput(''); }}>{t('common.cancel')}</button>
+                                            <button className="btn btn-secondary" onClick={() => { setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '', api_key: '' }); setMcpRawInput(''); }}>{t('common.cancel')}</button>
                                         </div>
                                         {mcpTestResult && (
                                             <div className="card" style={{ padding: '12px', background: mcpTestResult.ok ? 'rgba(0,200,100,0.1)' : 'rgba(255,0,0,0.1)' }}>
@@ -1968,6 +2856,7 @@ export default function EnterpriseSettings() {
                                                                 </div>
                                                                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={async () => {
                                                                     try {
+                                                                        const serverName = mcpForm.server_name || mcpForm.server_url;
                                                                         await fetchJson('/tools', {
                                                                             method: 'POST', body: JSON.stringify({
                                                                                 name: `mcp_${tool.name}`,
@@ -1977,13 +2866,18 @@ export default function EnterpriseSettings() {
                                                                                 category: 'custom',
                                                                                 icon: '·',
                                                                                 mcp_server_url: mcpForm.server_url,
-                                                                                mcp_server_name: mcpForm.server_name || mcpForm.server_url,
+                                                                                mcp_server_name: serverName,
                                                                                 mcp_tool_name: tool.name,
                                                                                 parameters_schema: tool.inputSchema || {},
                                                                                 is_default: false,
+                                                                                tenant_id: selectedTenantId || undefined,
                                                                             })
                                                                         });
-                                                                        loadAllTools();
+                                                                        // Store API key on all tools from this server after creation
+                                                                        if (mcpForm.api_key) {
+                                                                            await fetchJson('/tools/mcp-server', { method: 'PUT', body: JSON.stringify({ server_name: serverName, server_url: mcpForm.server_url, api_key: mcpForm.api_key, tenant_id: selectedTenantId || undefined }) }).catch(() => {});
+                                                                        }
+                                                                        await loadAllTools();
                                                                     } catch (e: any) {
                                                                         alert(`${t('enterprise.tools.importFailed') || 'Import failed'}: ${e.message}`);
                                                                     }
@@ -1995,6 +2889,7 @@ export default function EnterpriseSettings() {
                                                                 const tools = mcpTestResult.tools || [];
                                                                 let successCount = 0;
                                                                 const errors: string[] = [];
+                                                                const serverName = mcpForm.server_name || mcpForm.server_url;
                                                                 for (const tool of tools) {
                                                                     try {
                                                                         await fetchJson('/tools', {
@@ -2006,10 +2901,11 @@ export default function EnterpriseSettings() {
                                                                                 category: 'custom',
                                                                                 icon: '·',
                                                                                 mcp_server_url: mcpForm.server_url,
-                                                                                mcp_server_name: mcpForm.server_name || mcpForm.server_url,
+                                                                                mcp_server_name: serverName,
                                                                                 mcp_tool_name: tool.name,
                                                                                 parameters_schema: tool.inputSchema || {},
                                                                                 is_default: false,
+                                                                                tenant_id: selectedTenantId || undefined,
                                                                             })
                                                                         });
                                                                         successCount++;
@@ -2017,8 +2913,12 @@ export default function EnterpriseSettings() {
                                                                         errors.push(`${tool.name}: ${e.message}`);
                                                                     }
                                                                 }
-                                                                loadAllTools();
-                                                                setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '' }); setMcpRawInput('');
+                                                                // Store API key on all tools from this server in one request
+                                                                if (mcpForm.api_key && successCount > 0) {
+                                                                    await fetchJson('/tools/mcp-server', { method: 'PUT', body: JSON.stringify({ server_name: serverName, server_url: mcpForm.server_url, api_key: mcpForm.api_key, tenant_id: selectedTenantId || undefined }) }).catch(() => {});
+                                                                }
+                                                                await loadAllTools();
+                                                                setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '', api_key: '' }); setMcpRawInput('');
                                                                 if (errors.length > 0) {
                                                                     alert(`Imported ${successCount}/${tools.length} tools.\nFailed:\n${errors.join('\n')}`);
                                                                 }
@@ -2052,28 +2952,192 @@ export default function EnterpriseSettings() {
                                         {Object.entries(grouped).map(([category, catTools]) => {
                                             const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[category];
 
+                                            // For 'custom' category: sub-group MCP tools by mcp_server_name
+                                            // so that Edit Server is presented once per server, not per tool.
+                                            if (category === 'custom') {
+                                                const mcpByServer: Record<string, any[]> = {};
+                                                const nonMcpTools: any[] = [];
+                                                (catTools as any[]).forEach((t: any) => {
+                                                    if (t.type === 'mcp' && t.mcp_server_name) {
+                                                        (mcpByServer[t.mcp_server_name] = mcpByServer[t.mcp_server_name] || []).push(t);
+                                                    } else {
+                                                        nonMcpTools.push(t);
+                                                    }
+                                                });
+
+                                                return (
+                                                    <div key={category}>
+                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 14px', marginBottom: '8px' }}>
+                                                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                                                {categoryLabels[category] || category}
+                                                            </div>
+                                                        </div>
+                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                                                            {/* MCP servers sub-grouped */}
+                                                            {Object.entries(mcpByServer).map(([serverName, serverTools]) => (
+                                                                <div key={serverName} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden' }}>
+                                                                    {/* Server sub-header */}
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 14px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)' }}>
+                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                                                                            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)' }} title={serverName}>{(() => { try { if (serverName.startsWith('http')) { return new URL(serverName).hostname; } } catch {} return serverName; })()}</span>
+                                                                            <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.12)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
+                                                                            {(serverTools as any[]).some((t: any) => t.config && Object.keys(t.config).length > 0) && (
+                                                                                <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.12)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>Configured</span>
+                                                                            )}
+                                                                        </div>
+                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                            <button
+                                                                                style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 9px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                                                                onClick={() => {
+                                                                                    // Pre-fill with current server URL from first tool
+                                                                                    const firstTool = (serverTools as any[])[0];
+                                                                                    setEditingMcpServer({
+                                                                                        server_name: serverName,
+                                                                                        server_url: firstTool?.mcp_server_url || '',
+                                                                                        api_key: '',
+                                                                                    });
+                                                                                }}
+                                                                            >Edit Server</button>
+                                                                            {/* Server-level enable/disable all toggle */}
+                                                                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${serverName} tools`}>
+                                                                                <input type="checkbox"
+                                                                                    checked={(serverTools as any[]).every(t => t.enabled)}
+                                                                                    onChange={async (e) => {
+                                                                                        const payload = (serverTools as any[]).map(t => ({ tool_id: t.id, enabled: e.target.checked }));
+                                                                                        await fetchJson('/tools/bulk', { method: 'PUT', body: JSON.stringify(payload) });
+                                                                                        loadAllTools();
+                                                                                    }}
+                                                                                    style={{ opacity: 0, width: 0, height: 0 }} />
+                                                                                <span style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: '22px', background: (serverTools as any[]).every(t => t.enabled) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', transition: '0.3s' }}>
+                                                                                    <span style={{ position: 'absolute', left: (serverTools as any[]).every(t => t.enabled) ? '20px' : '2px', top: '2px', width: '18px', height: '18px', borderRadius: '50%', background: '#fff', transition: '0.3s' }} />
+                                                                                </span>
+                                                                            </label>
+                                                                        </div>
+                                                                    </div>
+                                                                    {/* Tools under this server */}
+                                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                                                                        {(serverTools as any[]).map((tool: any, toolIdx: number) => (
+                                                                            <div key={tool.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 14px', borderBottom: toolIdx < serverTools.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+                                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
+                                                                                    <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>·</span>
+                                                                                    <div style={{ minWidth: 0 }}>
+                                                                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</div>
+                                                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.description?.slice(0, 90)}</div>
+                                                                                    </div>
+                                                                                </div>
+                                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                                                                    <button className="btn btn-danger" style={{ padding: '3px 7px', fontSize: '10px' }} onClick={async () => {
+                                                                                        if (!confirm(`${t('common.delete')} ${tool.display_name}?`)) return;
+                                                                                        await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
+                                                                                        await loadAllTools();
+                                                                                    }}>{t('common.delete')}</button>
+                                                                                    <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                                                                                        <input type="checkbox" checked={tool.enabled} onChange={async (e) => {
+                                                                                            await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }) });
+                                                                                            loadAllTools();
+                                                                                        }} style={{ opacity: 0, width: 0, height: 0 }} />
+                                                                                        <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
+                                                                                            <span style={{ position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                                                                        </span>
+                                                                                    </label>
+                                                                                </div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                            {/* Non-MCP custom tools shown normally */}
+                                                            {nonMcpTools.length > 0 && (
+                                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                                                    {nonMcpTools.map((tool: any) => {
+                                                                        const hasOwnConfig = tool.config_schema?.fields?.length > 0;
+                                                                        return (
+                                                                            <div key={tool.id} className="card" style={{ padding: '0', overflow: 'hidden' }}>
+                                                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
+                                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
+                                                                                        <span style={{ fontSize: '18px' }}>{tool.icon}</span>
+                                                                                        <div style={{ minWidth: 0 }}>
+                                                                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</div>
+                                                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.description?.slice(0, 80)}</div>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                                                                        {hasOwnConfig && (
+                                                                                            <button style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }} onClick={() => { setEditingToolId(tool.id); setEditingConfig({ ...tool.config }); }}>Configure</button>
+                                                                                        )}
+                                                                                        <button className="btn btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
+                                                                                            if (!confirm(`${t('common.delete')} ${tool.display_name}?`)) return;
+                                                                                            await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
+                                                                                            loadAllTools();
+                                                                                        }}>{t('common.delete')}</button>
+                                                                                        <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                                                                                            <input type="checkbox" checked={tool.enabled} onChange={async (e) => {
+                                                                                                await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }) });
+                                                                                                loadAllTools();
+                                                                                            }} style={{ opacity: 0, width: 0, height: 0 }} />
+                                                                                            <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
+                                                                                                <span style={{ position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                                                                            </span>
+                                                                                        </label>
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            }
+
                                             return (
                                                 <div key={category}>
                                                     {/* Category header */}
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 14px', marginBottom: '8px' }}>
                                                         <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                                                             {categoryLabels[category] || category}
                                                         </div>
-                                                        {hasCategoryConfig && (
-                                                            <button
-                                                                onClick={() => {
-                                                                    setConfigCategory(category);
-                                                                    setEditingConfig({});
-                                                                    // Load existing global config from the first tool in this category
-                                                                    const firstToolWithConfig = (catTools as any[]).find((tl: any) => tl.config_schema?.fields?.length > 0);
-                                                                    if (firstToolWithConfig?.config) {
-                                                                        setEditingConfig({ ...firstToolWithConfig.config });
-                                                                    }
-                                                                }}
-                                                                style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                                                                title={`Configure ${category}`}
-                                                            >Configure</button>
-                                                        )}
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                            {hasCategoryConfig && (
+                                                                <button
+                                                                    onClick={() => {
+                                                                        setConfigCategory(category);
+                                                                        setEditingConfig({});
+                                                                        // Load existing global config from the first tool in this category that has a non-empty config.
+                                                                        // Do NOT require config_schema — some categories (e.g. AgentBay)
+                                                                        // define their schema only in frontend CATEGORY_CONFIG_SCHEMAS.
+                                                                        const firstToolWithConfig = (catTools as any[]).find((tl: any) => tl.config && Object.keys(tl.config).length > 0);
+                                                                        if (firstToolWithConfig?.config) {
+                                                                            setEditingConfig({ ...firstToolWithConfig.config });
+                                                                        }
+                                                                    }}
+                                                                    style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                                                    title={`Configure ${category}`}
+                                                                >
+                                                                    ⚙️ {t('enterprise.tools.configure', 'Configure')}
+                                                                </button>
+                                                            )}
+                                                            {/* Category Bulk Toggle */}
+                                                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${categoryLabels[category] || category} tools`}>
+                                                                <input type="checkbox"
+                                                                    checked={(catTools as any[]).every(t => t.enabled)}
+                                                                    onChange={async (e) => {
+                                                                        const targetEnabled = e.target.checked;
+                                                                        try {
+                                                                            const payload = (catTools as any[]).map(t => ({ tool_id: t.id, enabled: targetEnabled }));
+                                                                            await fetchJson('/tools/bulk', { method: 'PUT', body: JSON.stringify(payload) });
+                                                                            loadAllTools();
+                                                                        } catch (err: any) {
+                                                                            alert('Bulk update failed: ' + err.message);
+                                                                        }
+                                                                    }}
+                                                                    style={{ opacity: 0, width: 0, height: 0 }} />
+                                                                <span style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: '22px', background: (catTools as any[]).every(t => t.enabled) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', transition: '0.3s', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)' }}>
+                                                                    <span style={{ position: 'absolute', left: (catTools as any[]).every(t => t.enabled) ? '20px' : '2px', top: '2px', width: '18px', height: '18px', borderRadius: '50%', background: '#fff', transition: '0.3s', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }} />
+                                                                </span>
+                                                            </label>
+                                                        </div>
                                                     </div>
 
                                                     {/* Tools in this category */}
@@ -2095,6 +3159,9 @@ export default function EnterpriseSettings() {
                                                                                         {tool.type === 'mcp' ? 'MCP' : 'Built-in'}
                                                                                     </span>
                                                                                     {tool.is_default && <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.15)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>Default</span>}
+                                                                                    {tool.config && Object.keys(tool.config).length > 0 && (
+                                                                                        <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>{t('enterprise.tools.configured', 'Configured')}</span>
+                                                                                    )}
                                                                                 </div>
                                                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                                                                     {tool.description?.slice(0, 80)}
@@ -2106,13 +3173,12 @@ export default function EnterpriseSettings() {
                                                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
                                                                             {/* Per-tool config button: only if the tool has its own schema AND is NOT part of a category config */}
                                                                             {hasOwnConfig && (
-                                                                                <button className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
-                                                                                    if (isEditing) {
-                                                                                        setEditingToolId(null);
-                                                                                    } else {
+                                                                                <button
+                                                                                    style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                                                                    title={t('enterprise.tools.configureSettings', 'Configure settings')}
+                                                                                    onClick={async () => {
                                                                                         setEditingToolId(tool.id);
                                                                                         const cfg = { ...tool.config };
-                                                                                        // Pre-load jina api_key from system_settings
                                                                                         if (tool.name === 'jina_search' || tool.name === 'jina_read') {
                                                                                             try {
                                                                                                 const token = localStorage.getItem('token');
@@ -2122,8 +3188,10 @@ export default function EnterpriseSettings() {
                                                                                             } catch { }
                                                                                         }
                                                                                         setEditingConfig(cfg);
-                                                                                    }
-                                                                                }}>{isEditing ? t('enterprise.tools.collapse') : t('enterprise.tools.configure')}</button>
+                                                                                    }}
+                                                                                >
+                                                                                    ⚙️ {t('enterprise.tools.configure')}
+                                                                                </button>
                                                                             )}
 
                                                                             {/* Delete (non-builtin only) */}
@@ -2142,7 +3210,7 @@ export default function EnterpriseSettings() {
                                                                                     await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }) });
                                                                                     loadAllTools();
                                                                                 }} style={{ opacity: 0, width: 0, height: 0 }} />
-                                                                                <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? '#22c55e' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
+                                                                                <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
                                                                                     <span style={{ position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
                                                                                 </span>
                                                                             </label>
@@ -2150,62 +3218,7 @@ export default function EnterpriseSettings() {
                                                                     </div>
 
                                                                     {/* Inline config editing form (per-tool only) */}
-                                                                    {isEditing && hasOwnConfig && (
-                                                                        <div style={{ borderTop: '1px solid var(--border-color)', padding: '16px', background: 'var(--bg-secondary)' }}>
-                                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                                                                {(tool.config_schema.fields || []).map((field: any) => {
-                                                                                    // Check depends_on
-                                                                                    if (field.depends_on) {
-                                                                                        const visible = Object.entries(field.depends_on).every(([k, vals]: [string, any]) =>
-                                                                                            vals.includes(editingConfig[k])
-                                                                                        );
-                                                                                        if (!visible) return null;
-                                                                                    }
-                                                                                    return (
-                                                                                        <div key={field.key}>
-                                                                                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>{field.label}</label>
-                                                                                            {field.type === 'select' ? (
-                                                                                                <select className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))}>
-                                                                                                    {(field.options || []).map((opt: any) => (
-                                                                                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                                                                                    ))}
-                                                                                                </select>
-                                                                                            ) : field.type === 'number' ? (
-                                                                                                <input type="number" className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} min={field.min} max={field.max}
-                                                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: Number(e.target.value) }))} />
-                                                                                            ) : field.type === 'password' ? (
-                                                                                                <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''}
-                                                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
-                                                                                            ) : (
-                                                                                                <input type="text" className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''}
-                                                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
-                                                                                            )}
-                                                                                        </div>
-                                                                                    );
-                                                                                })}
-                                                                                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                                                                                    <button className="btn btn-primary" onClick={async () => {
-                                                                                        if (tool.name === 'jina_search' || tool.name === 'jina_read') {
-                                                                                            // Save api_key to system_settings (shared by both jina tools)
-                                                                                            if (editingConfig.api_key) {
-                                                                                                const token = localStorage.getItem('token');
-                                                                                                await fetch('/api/enterprise/system-settings/jina_api_key', {
-                                                                                                    method: 'PUT',
-                                                                                                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                                                                    body: JSON.stringify({ value: { api_key: editingConfig.api_key } }),
-                                                                                                });
-                                                                                            }
-                                                                                        } else {
-                                                                                            await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
-                                                                                        }
-                                                                                        setEditingToolId(null);
-                                                                                        loadAllTools();
-                                                                                    }}>{t('enterprise.tools.saveConfig')}</button>
-                                                                                    <button className="btn btn-secondary" onClick={() => setEditingToolId(null)}>{t('common.cancel')}</button>
-                                                                                </div>
-                                                                            </div>
-                                                                        </div>
-                                                                    )}
+                                                                    {/* Inline config editing form replaced by global modal */}
                                                                 </div>
                                                             );
                                                         })}
@@ -2213,6 +3226,172 @@ export default function EnterpriseSettings() {
                                                 </div>
                                             );
                                         })}
+                                    </div>
+                                );
+                            })()}
+
+                            {/* ─── Edit MCP Server Modal ─── */}
+                            {editingMcpServer && (
+                                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                                    onClick={e => { if (e.target === e.currentTarget) setEditingMcpServer(null); }}>
+                                    <div className="card" style={{ width: '480px', maxWidth: '95vw', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                        <h3 style={{ margin: 0, fontSize: '15px' }}>Edit MCP Server</h3>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', background: 'var(--bg-tertiary)', padding: '6px 10px', borderRadius: '6px' }}>
+                                            <strong>{editingMcpServer.server_name}</strong>
+                                            <span style={{ marginLeft: '8px', color: 'var(--text-tertiary)' }}>Updates all tools from this server at once</span>
+                                        </div>
+
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                            <div>
+                                                <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>Server URL</label>
+                                                <input
+                                                    type="password"
+                                                    className="form-input"
+                                                    value={editingMcpServer.server_url}
+                                                    onChange={e => setEditingMcpServer(s => s ? { ...s, server_url: e.target.value } : null)}
+                                                    placeholder="https://mcp.example.com/sse"
+                                                    autoComplete="off"
+                                                />
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '3px' }}>Stored encrypted. For URL-embedded keys (e.g. Tavily), include the key directly here.</div>
+                                            </div>
+                                            <div>
+                                                <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>
+                                                    API Key <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>(optional)</span>
+                                                </label>
+                                                <input
+                                                    type="password"
+                                                    className="form-input"
+                                                    value={editingMcpServer.api_key}
+                                                    onChange={e => setEditingMcpServer(s => s ? { ...s, api_key: e.target.value } : null)}
+                                                    placeholder="Leave blank to keep existing key"
+                                                    autoComplete="new-password"
+                                                />
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '3px' }}>Sent as <code style={{ background: 'rgba(0,0,0,0.06)', padding: '0 3px', borderRadius: '3px' }}>Authorization: Bearer ...</code> Takes priority over URL-embedded keys.</div>
+                                            </div>
+
+                                            {/* Auth explanation */}
+                                            <div style={{ padding: '10px 12px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)', borderRadius: '6px', fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.65' }}>
+                                                <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-primary)' }}>How authentication works</div>
+                                                <div>- <strong>URL-embedded key</strong> (e.g. Tavily <code style={{ background: 'rgba(0,0,0,0.06)', padding: '0 3px', borderRadius: '3px' }}>?tavilyApiKey=xxx</code>): include in Server URL above, leave API Key blank.</div>
+                                                <div>- <strong>Bearer token</strong> auth: enter in the API Key field. It is injected as an HTTP header on every request — the URL stays clean.</div>
+                                                <div>- If both are present, the API Key field takes priority over any URL-embedded value.</div>
+                                            </div>
+                                        </div>
+
+                                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                            <button className="btn btn-secondary" onClick={() => setEditingMcpServer(null)} disabled={mcpServerSaving}>Cancel</button>
+                                            <button className="btn btn-primary" disabled={mcpServerSaving || !editingMcpServer.server_url} onClick={async () => {
+                                                setMcpServerSaving(true);
+                                                try {
+                                                    await fetchJson('/tools/mcp-server', {
+                                                        method: 'PUT',
+                                                        body: JSON.stringify({
+                                                            server_name: editingMcpServer.server_name,
+                                                            server_url: editingMcpServer.server_url,
+                                                            // Only send api_key if the user typed something; null = keep existing
+                                                            api_key: editingMcpServer.api_key || undefined,
+                                                            tenant_id: selectedTenantId || undefined,
+                                                        })
+                                                    });
+                                                    await loadAllTools();
+                                                    setEditingMcpServer(null);
+                                                } catch (e: any) {
+                                                    alert('Failed to update server: ' + e.message);
+                                                }
+                                                setMcpServerSaving(false);
+                                            }}>{mcpServerSaving ? 'Saving...' : 'Save Changes'}</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Per-Tool Config Modal */}
+                            {editingToolId && (() => {
+                                const tool = allTools.find(t => t.id === editingToolId);
+                                if (!tool) return null;
+                                return (
+                                    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                                        onClick={() => setEditingToolId(null)}>
+                                        <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                                <div>
+                                                    <h3 style={{ margin: 0 }}>⚙️ {tool.display_name}</h3>
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>Global configuration used by all agents</div>
+                                                </div>
+                                                <button onClick={() => setEditingToolId(null)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
+                                            </div>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                                {(tool.config_schema.fields || []).map((field: any) => {
+                                                    // Check depends_on
+                                                    if (field.depends_on) {
+                                                        const visible = Object.entries(field.depends_on).every(([k, vals]: [string, any]) =>
+                                                            vals.includes(editingConfig[k])
+                                                        );
+                                                        if (!visible) return null;
+                                                    }
+                                                    return (
+                                                        <div key={field.key}>
+                                                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>{field.label}</label>
+                                                            {field.type === 'checkbox' ? (
+                                                                <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer' }}>
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={editingConfig[field.key] ?? field.default ?? false}
+                                                                        onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.checked }))}
+                                                                        style={{ opacity: 0, width: 0, height: 0 }}
+                                                                    />
+                                                                    <span style={{
+                                                                        position: 'absolute', inset: 0,
+                                                                        background: (editingConfig[field.key] ?? field.default) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                                                        borderRadius: '11px', transition: 'background 0.2s',
+                                                                    }}>
+                                                                        <span style={{
+                                                                            position: 'absolute', left: (editingConfig[field.key] ?? field.default) ? '20px' : '2px', top: '2px',
+                                                                            width: '18px', height: '18px', background: '#fff',
+                                                                            borderRadius: '50%', transition: 'left 0.2s',
+                                                                        }} />
+                                                                    </span>
+                                                                </label>
+                                                            ) : field.type === 'select' ? (
+                                                                <select className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))}>
+                                                                    {(field.options || []).map((opt: any) => (
+                                                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                                    ))}
+                                                                </select>
+                                                            ) : field.type === 'number' ? (
+                                                                <input type="number" className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} min={field.min} max={field.max}
+                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: Number(e.target.value) }))} />
+                                                            ) : field.type === 'password' ? (
+                                                                <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''}
+                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                            ) : (
+                                                                <input type="text" className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''}
+                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                                <div style={{ display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'flex-end', borderTop: '1px solid var(--border-subtle)', paddingTop: '16px' }}>
+                                                    <button className="btn btn-secondary" onClick={() => setEditingToolId(null)}>{t('common.cancel')}</button>
+                                                    <button className="btn btn-primary" onClick={async () => {
+                                                        if (tool.name === 'jina_search' || tool.name === 'jina_read') {
+                                                            if (editingConfig.api_key) {
+                                                                const token = localStorage.getItem('token');
+                                                                await fetch('/api/enterprise/system-settings/jina_api_key', {
+                                                                    method: 'PUT',
+                                                                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                                    body: JSON.stringify({ value: { api_key: editingConfig.api_key } }),
+                                                                });
+                                                            }
+                                                        } else {
+                                                            await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
+                                                        }
+                                                        setEditingToolId(null);
+                                                        loadAllTools();
+                                                    }}>{t('enterprise.tools.saveConfig')}</button>
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
                                 );
                             })()}
@@ -2236,6 +3415,10 @@ export default function EnterpriseSettings() {
                                                     {field.type === 'password' ? (
                                                         <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''}
                                                             onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                    ) : field.type === 'select' ? (
+                                                        <select className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))}>
+                                                            {(field.options || []).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                                        </select>
                                                     ) : (
                                                         <input type="text" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''}
                                                             onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
@@ -2245,10 +3428,12 @@ export default function EnterpriseSettings() {
                                             <div style={{ display: 'flex', gap: '8px', marginTop: '8px', justifyContent: 'flex-end' }}>
                                                 <button className="btn btn-secondary" onClick={() => setConfigCategory(null)}>{t('common.cancel')}</button>
                                                 <button className="btn btn-primary" onClick={async () => {
-                                                    // Save config to all tools in this category that have config_schema
-                                                    const catTools = allTools.filter((tl: any) => (tl.category || 'general') === configCategory && tl.config_schema?.fields?.length > 0);
-                                                    for (const tl of catTools) {
-                                                        await fetchJson(`/tools/${tl.id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
+                                                    // Save config to the first tool in this category.
+                                                    // We write to one representative tool per category;
+                                                    // get_category_config endpoint reads it back.
+                                                    const catTools = allTools.filter((tl: any) => (tl.category || 'general') === configCategory);
+                                                    if (catTools.length > 0) {
+                                                        await fetchJson(`/tools/${catTools[0].id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
                                                     }
                                                     setConfigCategory(null);
                                                     loadAllTools();
