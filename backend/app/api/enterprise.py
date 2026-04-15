@@ -85,9 +85,10 @@ async def test_llm_model(
     """Test an LLM model configuration by making a simple API call."""
     import time
 
-    # Resolve API key: use provided key, or look up from stored model
+    # Resolve API key: use provided key, and only fall back to stored model key
+    # for non-Bedrock tests.
     api_key = data.api_key if data.api_key and not data.api_key.startswith('****') else None
-    if not api_key and data.model_id:
+    if not api_key and data.model_id and data.provider != "bedrock":
         result = await db.execute(select(LLMModel).where(LLMModel.id == data.model_id))
         existing = result.scalar_one_or_none()
         if existing:
