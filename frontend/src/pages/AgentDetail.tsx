@@ -4903,6 +4903,8 @@ function AgentDetailInner() {
                                         if (!livePanelVisible) {
                                             setSidePanelTab('workspace');
                                             setLivePanelVisible(true);
+                                            setSessionListCollapsed(true);
+                                            useAppStore.setState({ sidebarCollapsed: true });
                                         } else {
                                             setLivePanelVisible(false);
                                         }
