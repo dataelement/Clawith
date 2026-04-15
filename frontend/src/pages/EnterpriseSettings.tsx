@@ -2194,7 +2194,17 @@ export default function EnterpriseSettings() {
                                                     <label className="form-label">{t('enterprise.llm.provider')}</label>
                                                     <select className="form-input" value={modelForm.provider} onChange={e => {
                                                         const newProvider = e.target.value;
-                                                        setModelForm(f => ({ ...f, provider: newProvider }));
+                                                        const spec = providerOptions.find(p => p.provider === newProvider);
+                                                        const updates: any = { provider: newProvider };
+                                                        if (spec?.default_base_url) {
+                                                            updates.base_url = spec.default_base_url;
+                                                        } else {
+                                                            updates.base_url = '';
+                                                        }
+                                                        if (spec) {
+                                                            updates.max_output_tokens = String(spec.default_max_tokens);
+                                                        }
+                                                        setModelForm(f => ({ ...f, ...updates }));
                                                     }}>
                                                         {providerOptions.map((p) => (
                                                             <option key={p.provider} value={p.provider}>{p.display_name}</option>
