@@ -2077,6 +2077,8 @@ export default function EnterpriseSettings() {
                                             const newProvider = e.target.value;
                                             const spec = providerOptions.find(p => p.provider === newProvider);
                                             const updates: any = { provider: newProvider };
+                                            updates.api_key = '';
+                                            updates.clear_api_key = false;
                                             if (spec?.default_base_url) {
                                                 updates.base_url = spec.default_base_url;
                                             } else {
@@ -2196,6 +2198,8 @@ export default function EnterpriseSettings() {
                                                         const newProvider = e.target.value;
                                                         const spec = providerOptions.find(p => p.provider === newProvider);
                                                         const updates: any = { provider: newProvider };
+                                                        updates.api_key = '';
+                                                        updates.clear_api_key = false;
                                                         if (spec?.default_base_url) {
                                                             updates.base_url = spec.default_base_url;
                                                         } else {
