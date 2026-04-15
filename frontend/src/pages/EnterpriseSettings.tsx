@@ -1961,7 +1961,8 @@ export default function EnterpriseSettings() {
         queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
         enabled: activeTab === 'llm',
     });
-    const providerOptions = providerSpecs.length > 0 ? providerSpecs : FALLBACK_LLM_PROVIDERS;
+    const providerOptions = (providerSpecs.length > 0 ? providerSpecs : FALLBACK_LLM_PROVIDERS).slice().sort((a, b) => a.display_name.localeCompare(b.display_name));
+    const isBedrock = modelForm.provider === 'bedrock';
     const addModel = useMutation({
         mutationFn: (data: any) => fetchJson(`/enterprise/llm-models${selectedTenantId ? `?tenant_id=${selectedTenantId}` : ''}`, { method: 'POST', body: JSON.stringify(data) }),
         onSuccess: () => { qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] }); setShowAddModel(false); setEditingModelId(null); },
@@ -2104,13 +2105,16 @@ export default function EnterpriseSettings() {
                                         <label className="form-label">{t('enterprise.llm.label')}</label>
                                         <input className="form-input" placeholder={t('enterprise.llm.labelPlaceholder')} value={modelForm.label} onChange={e => setModelForm({ ...modelForm, label: e.target.value })} />
                                     </div>
+                                    {!isBedrock && (
                                     <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.baseUrl')}</label>
                                         <input className="form-input" placeholder={t('enterprise.llm.baseUrlPlaceholder')} value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
                                     </div>
-                                    <div className="form-group" style={{ gridColumn: 'span 2' }}>
-                                        <label className="form-label">{t('enterprise.llm.apiKey')}</label>
-                                        <input className="form-input" type="password" placeholder={t('enterprise.llm.apiKeyPlaceholder')} value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value })} />
+                                    )}
+                                    <div className="form-group" style={{ gridColumn: isBedrock ? 'span 2' : 'span 2' }}>
+                                        <label className="form-label">{isBedrock ? 'AWS Credentials (JSON)' : t('enterprise.llm.apiKey')}</label>
+                                        <input className="form-input" type={isBedrock ? 'text' : 'password'} placeholder={isBedrock ? '{"access_key": "...", "secret_key": "...", "region": "us-east-1"}' : t('enterprise.llm.apiKeyPlaceholder')} value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value })} />
+                                        {isBedrock && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Leave empty to use the default AWS credential chain (env vars, ~/.aws/credentials, instance role).</div>}
                                     </div>
                                     <div className="form-group" style={{ gridColumn: 'span 2' }}>
                                         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
@@ -2137,7 +2141,7 @@ export default function EnterpriseSettings() {
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
                                     <button className="btn btn-secondary" onClick={() => { setShowAddModel(false); setEditingModelId(null); }}>{t('common.cancel')}</button>
-                                    <button className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '6px' }} disabled={!modelForm.model || !modelForm.api_key} onClick={async () => {
+                                    <button className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '6px' }} disabled={!modelForm.model || (!isBedrock && !modelForm.api_key)} onClick={async () => {
                                         const btn = document.activeElement as HTMLButtonElement;
                                         const origText = btn?.textContent || '';
                                         if (btn) btn.textContent = t('enterprise.llm.testing');
@@ -2171,7 +2175,7 @@ export default function EnterpriseSettings() {
                                             temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
                                         };
                                         addModel.mutate(data);
-                                    }} disabled={!modelForm.model || !modelForm.api_key}>
+                                    }} disabled={!modelForm.model || (!isBedrock && !modelForm.api_key)}>
                                         {t('common.save')}
                                     </button>
                                 </div>
@@ -2213,13 +2217,16 @@ export default function EnterpriseSettings() {
                                                     <label className="form-label">{t('enterprise.llm.label')}</label>
                                                     <input className="form-input" placeholder={t('enterprise.llm.labelPlaceholder')} value={modelForm.label} onChange={e => setModelForm({ ...modelForm, label: e.target.value })} />
                                                 </div>
+                                                {!isBedrock && (
                                                 <div className="form-group">
                                                     <label className="form-label">{t('enterprise.llm.baseUrl')}</label>
                                                     <input className="form-input" placeholder={t('enterprise.llm.baseUrlPlaceholder')} value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
                                                 </div>
+                                                )}
                                                 <div className="form-group" style={{ gridColumn: 'span 2' }}>
-                                                    <label className="form-label">{t('enterprise.llm.apiKey')}</label>
-                                                    <input className="form-input" type="password" placeholder="•••••••• (Leave blank to keep unchanged)" value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value })} />
+                                                    <label className="form-label">{isBedrock ? 'AWS Credentials (JSON)' : t('enterprise.llm.apiKey')}</label>
+                                                    <input className="form-input" type={isBedrock ? 'text' : 'password'} placeholder={isBedrock ? '{"access_key": "...", "secret_key": "...", "region": "us-east-1"}' : '•••••••• (Leave blank to keep unchanged)'} value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value })} />
+                                                    {isBedrock && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Leave empty to use the default AWS credential chain (env vars, ~/.aws/credentials, instance role).</div>}
                                                 </div>
                                                 <div className="form-group" style={{ gridColumn: 'span 2' }}>
                                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>

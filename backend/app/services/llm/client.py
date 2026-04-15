@@ -1699,6 +1699,409 @@ class AnthropicClient(LLMClient):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
+
+# ============================================================================
+# AWS Bedrock Client (Converse API)
+# ============================================================================
+
+class BedrockClient(LLMClient):
+    """Client for AWS Bedrock Converse API.
+
+    Supports Claude, Llama, Mistral, and other Bedrock-hosted models.
+    AWS credentials are packed as JSON in the api_key parameter:
+        {"access_key": "...", "secret_key": "...", "region": "us-east-1"}
+    If empty or {}, falls back to boto3 default credential chain (IAM role, env vars).
+    The base_url parameter can be used for VPC endpoint overrides.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str | None = None,
+        model: str | None = None,
+        timeout: float = 120.0,
+    ):
+        super().__init__(api_key, base_url, model, timeout)
+        self._boto_client = self._create_boto_client()
+
+    def _create_boto_client(self) -> Any:
+        """Create boto3 bedrock-runtime client from packed credentials."""
+        import boto3
+
+        kwargs: dict[str, Any] = {}
+
+        # Parse JSON-packed credentials
+        creds = self._parse_credentials()
+        if creds.get("access_key") and creds.get("secret_key"):
+            kwargs["aws_access_key_id"] = creds["access_key"]
+            kwargs["aws_secret_access_key"] = creds["secret_key"]
+            if creds.get("session_token"):
+                kwargs["aws_session_token"] = creds["session_token"]
+        if creds.get("region"):
+            kwargs["region_name"] = creds["region"]
+
+        # VPC endpoint override via base_url
+        if self.base_url:
+            kwargs["endpoint_url"] = self.base_url
+
+        return boto3.client("bedrock-runtime", **kwargs)
+
+    def _parse_credentials(self) -> dict[str, str]:
+        """Parse AWS credentials from JSON-packed api_key."""
+        if not self.api_key or not self.api_key.strip():
+            return {}
+        try:
+            creds = json.loads(self.api_key)
+            if isinstance(creds, dict):
+                return creds
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return {}
+
+    def _get_headers(self) -> dict[str, str]:
+        """Not used — boto3 handles auth internally."""
+        return {}
+
+    # -- Message conversion helpers --
+
+    def _messages_to_bedrock(
+        self, messages: list[LLMMessage]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Convert LLMMessage list to Bedrock Converse format.
+
+        Returns (system_prompts, bedrock_messages).
+        """
+        system_prompts: list[dict[str, Any]] = []
+        bedrock_messages: list[dict[str, Any]] = []
+
+        for msg in messages:
+            if msg.role == "system":
+                text = msg.content or ""
+                if isinstance(text, list):
+                    text = "\n".join(
+                        p.get("text", "") for p in text if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                if msg.dynamic_content:
+                    text = f"{text}\n\n{msg.dynamic_content}"
+                if text:
+                    system_prompts.append({"text": text})
+                continue
+
+            if msg.role == "user":
+                content_blocks = self._content_to_bedrock_blocks(msg.content)
+                if content_blocks:
+                    bedrock_messages.append({"role": "user", "content": content_blocks})
+                continue
+
+            if msg.role == "assistant":
+                content_blocks = self._content_to_bedrock_blocks(msg.content)
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        fn = tc.get("function", {})
+                        args_raw = fn.get("arguments", "{}")
+                        if isinstance(args_raw, str):
+                            try:
+                                args_parsed = json.loads(args_raw)
+                            except json.JSONDecodeError:
+                                args_parsed = {}
+                        elif isinstance(args_raw, dict):
+                            args_parsed = args_raw
+                        else:
+                            args_parsed = {}
+                        content_blocks.append({
+                            "toolUse": {
+                                "toolUseId": tc.get("id", ""),
+                                "name": fn.get("name", ""),
+                                "input": args_parsed,
+                            }
+                        })
+                if content_blocks:
+                    bedrock_messages.append({"role": "assistant", "content": content_blocks})
+                continue
+
+            if msg.role == "tool":
+                result_content: list[dict[str, Any]] = []
+                if isinstance(msg.content, list):
+                    for part in msg.content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            result_content.append({"text": part.get("text", "")})
+                        elif isinstance(part, dict) and part.get("type") == "image_url":
+                            img_block = self._image_url_to_bedrock(part)
+                            if img_block:
+                                result_content.append(img_block)
+                else:
+                    result_content.append({"text": msg.content or ""})
+
+                bedrock_messages.append({
+                    "role": "user",
+                    "content": [{
+                        "toolResult": {
+                            "toolUseId": msg.tool_call_id or "",
+                            "content": result_content,
+                        }
+                    }],
+                })
+
+        return system_prompts, bedrock_messages
+
+    def _content_to_bedrock_blocks(self, content: str | list | None) -> list[dict[str, Any]]:
+        """Convert message content to Bedrock content blocks."""
+        if content is None:
+            return []
+        if isinstance(content, str):
+            return [{"text": content}] if content else []
+        if isinstance(content, list):
+            blocks: list[dict[str, Any]] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "text":
+                    text = part.get("text", "")
+                    if text:
+                        blocks.append({"text": text})
+                elif ptype == "image_url":
+                    img_block = self._image_url_to_bedrock(part)
+                    if img_block:
+                        blocks.append(img_block)
+            return blocks
+        return [{"text": str(content)}]
+
+    def _image_url_to_bedrock(self, part: dict[str, Any]) -> dict[str, Any] | None:
+        """Convert an OpenAI image_url content part to Bedrock image block."""
+        img_url = part.get("image_url", {}).get("url", "")
+        if not img_url.startswith("data:image/"):
+            return None
+        try:
+            header, b64_data = img_url.split(",", 1)
+            media_type = header.split(":")[1].split(";")[0]  # e.g. image/jpeg
+            # Bedrock format mapping
+            format_map = {
+                "image/jpeg": "jpeg",
+                "image/png": "png",
+                "image/gif": "gif",
+                "image/webp": "webp",
+            }
+            fmt = format_map.get(media_type, "jpeg")
+            import base64
+            return {
+                "image": {
+                    "format": fmt,
+                    "source": {"bytes": base64.b64decode(b64_data)},
+                }
+            }
+        except (ValueError, IndexError):
+            return None
+
+    def _convert_tools(self, tools: list[dict] | None) -> dict[str, Any] | None:
+        """Convert OpenAI-style tools to Bedrock toolConfig."""
+        if not tools:
+            return None
+        tool_list: list[dict[str, Any]] = []
+        for tool in tools:
+            if tool.get("type") != "function":
+                continue
+            fn = tool.get("function", {})
+            spec: dict[str, Any] = {
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "inputSchema": {
+                    "json": fn.get("parameters", {"type": "object"}),
+                },
+            }
+            tool_list.append({"toolSpec": spec})
+        if not tool_list:
+            return None
+        return {"tools": tool_list}
+
+    def _parse_bedrock_response(self, response: dict[str, Any]) -> LLMResponse:
+        """Parse Bedrock Converse response into LLMResponse."""
+        output = response.get("output", {})
+        message = output.get("message", {})
+        content_blocks = message.get("content", [])
+
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+
+        for block in content_blocks:
+            if "text" in block:
+                text_parts.append(block["text"])
+            elif "toolUse" in block:
+                tu = block["toolUse"]
+                args = tu.get("input", {})
+                tool_calls.append({
+                    "id": tu.get("toolUseId", ""),
+                    "type": "function",
+                    "function": {
+                        "name": tu.get("name", ""),
+                        "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args),
+                    },
+                })
+
+        stop_reason = response.get("stopReason", "")
+        finish_reason = "tool_calls" if stop_reason == "tool_use" else "stop"
+
+        usage = None
+        usage_raw = response.get("usage")
+        if isinstance(usage_raw, dict):
+            usage = {
+                "input_tokens": usage_raw.get("inputTokens", 0),
+                "output_tokens": usage_raw.get("outputTokens", 0),
+                "total_tokens": usage_raw.get("inputTokens", 0) + usage_raw.get("outputTokens", 0),
+            }
+
+        return LLMResponse(
+            content="".join(text_parts),
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            usage=usage,
+            model=self.model,
+        )
+
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Non-streaming completion via Bedrock Converse API."""
+        params = self._build_converse_params(messages, tools, temperature, max_tokens)
+
+        try:
+            response = await asyncio.to_thread(self._boto_client.converse, **params)
+        except Exception as e:
+            raise LLMError(f"Bedrock Converse error: {e}")
+
+        return self._parse_bedrock_response(response)
+
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        on_chunk: ChunkCallback | None = None,
+        on_thinking: ThinkingCallback | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Streaming completion via Bedrock ConverseStream API."""
+        params = self._build_converse_params(messages, tools, temperature, max_tokens)
+
+        try:
+            response = await asyncio.to_thread(self._boto_client.converse_stream, **params)
+        except Exception as e:
+            raise LLMError(f"Bedrock ConverseStream error: {e}")
+
+        full_content = ""
+        tool_calls: list[dict[str, Any]] = []
+        current_tool: dict[str, Any] | None = None
+        current_tool_args = ""
+        final_usage: dict[str, int] | None = None
+        stop_reason: str | None = None
+
+        stream_body = response.get("stream")
+        if stream_body is None:
+            raise LLMError("Bedrock ConverseStream returned no stream body")
+
+        # Iterate stream events (sync iterator, wrap each next() call)
+        def _iter_events():
+            return list(stream_body)
+
+        events = await asyncio.to_thread(_iter_events)
+
+        for event in events:
+            if "contentBlockStart" in event:
+                start = event["contentBlockStart"].get("start", {})
+                if "toolUse" in start:
+                    tu = start["toolUse"]
+                    current_tool = {
+                        "id": tu.get("toolUseId", ""),
+                        "type": "function",
+                        "function": {
+                            "name": tu.get("name", ""),
+                            "arguments": "",
+                        },
+                    }
+                    current_tool_args = ""
+
+            elif "contentBlockDelta" in event:
+                delta = event["contentBlockDelta"].get("delta", {})
+                if "text" in delta:
+                    text = delta["text"]
+                    full_content += text
+                    if on_chunk:
+                        await on_chunk(text)
+                elif "toolUse" in delta:
+                    current_tool_args += delta["toolUse"].get("input", "")
+
+            elif "contentBlockStop" in event:
+                if current_tool is not None:
+                    current_tool["function"]["arguments"] = current_tool_args
+                    tool_calls.append(current_tool)
+                    current_tool = None
+                    current_tool_args = ""
+
+            elif "messageStop" in event:
+                stop_reason = event["messageStop"].get("stopReason")
+
+            elif "metadata" in event:
+                usage_raw = event["metadata"].get("usage")
+                if isinstance(usage_raw, dict):
+                    final_usage = {
+                        "input_tokens": usage_raw.get("inputTokens", 0),
+                        "output_tokens": usage_raw.get("outputTokens", 0),
+                        "total_tokens": usage_raw.get("inputTokens", 0) + usage_raw.get("outputTokens", 0),
+                    }
+
+        finish_reason = "tool_calls" if stop_reason == "tool_use" else "stop"
+
+        return LLMResponse(
+            content=full_content,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            usage=final_usage,
+            model=self.model,
+        )
+
+    def _build_converse_params(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None,
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> dict[str, Any]:
+        """Build parameter dict for converse / converse_stream."""
+        system_prompts, bedrock_messages = self._messages_to_bedrock(messages)
+
+        params: dict[str, Any] = {
+            "modelId": self.model,
+            "messages": bedrock_messages,
+        }
+        if system_prompts:
+            params["system"] = system_prompts
+
+        inference_config: dict[str, Any] = {}
+        if max_tokens:
+            inference_config["maxTokens"] = max_tokens
+        if temperature is not None:
+            inference_config["temperature"] = temperature
+        if inference_config:
+            params["inferenceConfig"] = inference_config
+
+        tool_config = self._convert_tools(tools)
+        if tool_config:
+            params["toolConfig"] = tool_config
+
+        return params
+
+    async def close(self) -> None:
+        """Close the boto3 client."""
+        # boto3 clients don't require explicit closing
+        pass
+
+
 # ============================================================================
 # Factory and Utilities
 # ============================================================================
@@ -1709,7 +2112,7 @@ class ProviderSpec:
 
     provider: str
     display_name: str
-    protocol: Literal["openai_compatible", "anthropic", "openai_responses", "gemini"]
+    protocol: Literal["openai_compatible", "anthropic", "openai_responses", "gemini", "bedrock"]
     default_base_url: str | None
     supports_tool_choice: bool = True
     default_max_tokens: int = 4096
@@ -1845,6 +2248,24 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url=None,
         default_max_tokens=4096,
     ),
+    "bedrock": ProviderSpec(
+        provider="bedrock",
+        display_name="AWS Bedrock",
+        protocol="bedrock",
+        default_base_url=None,
+        supports_tool_choice=True,
+        default_max_tokens=4096,
+        model_max_tokens={
+            "anthropic.claude-3-5-sonnet": 8192,
+            "anthropic.claude-3-opus": 4096,
+            "anthropic.claude-3-haiku": 4096,
+            "anthropic.claude-3-5-haiku": 8192,
+            "anthropic.claude-sonnet-4": 16384,
+            "anthropic.claude-opus-4": 16384,
+            "meta.llama3": 4096,
+            "mistral.": 4096,
+        },
+    ),
 }
 
 
@@ -1885,6 +2306,8 @@ PROVIDER_CLIENTS: dict[str, type[LLMClient]] = {
         if spec.protocol == "openai_responses"
         else GeminiClient
         if spec.protocol == "gemini"
+        else BedrockClient
+        if spec.protocol == "bedrock"
         else OpenAICompatibleClient
     )
     for spec in PROVIDER_REGISTRY.values()
@@ -2004,6 +2427,13 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice,
+        )
+    elif spec and spec.protocol == "bedrock":
+        return BedrockClient(
+            api_key=api_key,
+            base_url=final_base_url,
+            model=model,
+            timeout=timeout,
         )
     elif normalized_provider in PROVIDER_CLIENTS:
         supports_tool_choice = normalized_provider in TOOL_CHOICE_PROVIDERS

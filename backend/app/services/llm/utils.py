@@ -15,6 +15,7 @@ from app.models.llm import LLMModel
 # Re-export all client classes and functions from client.py
 from .client import (
     AnthropicClient,
+    BedrockClient,
     GeminiClient,
     LLMClient,
     LLMError,
