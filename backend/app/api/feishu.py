@@ -446,22 +446,12 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
             ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
-            # Check for channel commands (/new, /reset)
+            # Detect channel command early, but defer processing until we have
+            # resolved the real sender's platform_user_id (see below). Handling the
+            # command before resolve_channel_user() would attribute the new P2P
+            # session to the agent creator instead of the actual Feishu sender.
             from app.services.channel_commands import is_channel_command, handle_channel_command
-            if is_channel_command(user_text):
-                _cmd_result = await handle_channel_command(
-                    db=db, command=user_text, agent_id=agent_id,
-                    user_id=creator_id, external_conv_id=conv_id,
-                    source_channel="feishu",
-                )
-                await db.commit()
-                import json as _j_cmd
-                _cmd_reply = _j_cmd.dumps({"text": _cmd_result["message"]})
-                if chat_type == "group" and chat_id:
-                    await feishu_service.send_message(config.app_id, config.app_secret, chat_id, "text", _cmd_reply, receive_id_type="chat_id")
-                else:
-                    await feishu_service.send_message(config.app_id, config.app_secret, sender_open_id, "text", _cmd_reply)
-                return {"code": 0, "msg": "command handled"}
+            _is_cmd = is_channel_command(user_text)
 
             # Pre-resolve session so history lookup uses the UUID  (session created later if new)
             _pre_sess_r = await db.execute(
@@ -577,6 +567,27 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 extra_info=extra_info,
             )
             platform_user_id = platform_user.id
+
+            # Now that the real sender is resolved, handle /new or /reset so the
+            # replacement P2P session is attributed to the sender (not creator_id).
+            # Mirrors the user_id rule used by find_or_create_channel_session below:
+            # group → creator_id (placeholder); P2P → platform_user_id.
+            if _is_cmd:
+                _is_group_cmd = (chat_type == "group")
+                _cmd_user_id = creator_id if _is_group_cmd else platform_user_id
+                _cmd_result = await handle_channel_command(
+                    db=db, command=user_text, agent_id=agent_id,
+                    user_id=_cmd_user_id, external_conv_id=conv_id,
+                    source_channel="feishu",
+                )
+                await db.commit()
+                import json as _j_cmd
+                _cmd_reply = _j_cmd.dumps({"text": _cmd_result["message"]})
+                if _is_group_cmd and chat_id:
+                    await feishu_service.send_message(config.app_id, config.app_secret, chat_id, "text", _cmd_reply, receive_id_type="chat_id")
+                else:
+                    await feishu_service.send_message(config.app_id, config.app_secret, sender_open_id, "text", _cmd_reply)
+                return {"code": 0, "msg": "command handled"}
 
             # ── Find-or-create a ChatSession via external_conv_id (DB-based, no cache needed) ──
             from datetime import datetime as _dt, timezone as _tz
