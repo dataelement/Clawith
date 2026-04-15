@@ -1759,14 +1759,36 @@ class BedrockClient(LLMClient):
             return {}
         try:
             creds = json.loads(self.api_key)
-            if isinstance(creds, dict):
-                return creds
+            if not isinstance(creds, dict):
+                raise LLMError("Bedrock credentials must be a JSON object")
+
+            # Empty object explicitly means default AWS credential chain.
+            if not creds:
+                return {}
+
+            has_access = bool(creds.get("access_key"))
+            has_secret = bool(creds.get("secret_key"))
+            if has_access != has_secret:
+                raise LLMError(
+                    "Bedrock credentials require both access_key and secret_key when using static keys"
+                )
+
+            if creds.get("session_token") and not has_access:
+                raise LLMError("session_token requires access_key and secret_key")
+
+            allowed_keys = {"access_key", "secret_key", "session_token", "region"}
+            if not any(k in creds for k in allowed_keys):
+                raise LLMError(
+                    "Bedrock credentials JSON has no supported fields; "
+                    "use access_key/secret_key[/session_token]/region or leave blank for default chain"
+                )
+
+            return creds
         except (json.JSONDecodeError, TypeError) as exc:
-            logger.warning(
-                "Bedrock api_key contains non-JSON value; "
-                "falling back to default AWS credentials: %s", exc
-            )
-        return {}
+            raise LLMError(
+                "Invalid Bedrock credentials JSON. "
+                "Expected {\"access_key\":\"...\",\"secret_key\":\"...\",\"region\":\"us-east-1\"}"
+            ) from exc
 
     def _get_headers(self) -> dict[str, str]:
         """Not used — boto3 handles auth internally."""
@@ -2089,7 +2111,21 @@ class BedrockClient(LLMClient):
                 stream_body.close()
             except Exception:
                 pass
-            await producer_task
+            import sys
+
+            pending_exc = sys.exc_info()[1]
+            if pending_exc is None:
+                # No earlier failure: surface producer errors as provider errors.
+                try:
+                    await producer_task
+                except Exception as e:
+                    raise LLMError(f"Bedrock stream producer error: {e}") from e
+            else:
+                # Preserve the original exception from consumer/on_chunk path.
+                try:
+                    await producer_task
+                except Exception:
+                    pass
 
         finish_reason = "tool_calls" if stop_reason == "tool_use" else "stop"
 

@@ -1955,7 +1955,7 @@ export default function EnterpriseSettings() {
     });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, request_timeout: '' as string, temperature: '' as string });
+    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', clear_api_key: false, base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, request_timeout: '' as string, temperature: '' as string });
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
@@ -2055,7 +2055,7 @@ export default function EnterpriseSettings() {
                                 const defaultSpec = providerOptions[0];
                                 setModelForm({
                                     provider: defaultSpec?.provider || 'anthropic',
-                                    model: '', api_key: '',
+                                    model: '', api_key: '', clear_api_key: false,
                                     base_url: defaultSpec?.default_base_url || '',
                                     label: '', supports_vision: false,
                                     max_output_tokens: defaultSpec ? String(defaultSpec.default_max_tokens) : '4096',
@@ -2235,8 +2235,18 @@ export default function EnterpriseSettings() {
                                                 )}
                                                 <div className="form-group" style={{ gridColumn: 'span 2' }}>
                                                     <label className="form-label">{isBedrock ? 'AWS Credentials (JSON)' : t('enterprise.llm.apiKey')}</label>
-                                                    <input className="form-input" type={isBedrock ? 'text' : 'password'} placeholder={isBedrock ? '{"access_key": "...", "secret_key": "...", "region": "us-east-1"}' : '•••••••• (Leave blank to keep unchanged)'} value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value })} />
+                                                    <input className="form-input" type={isBedrock ? 'text' : 'password'} placeholder={isBedrock ? '{"access_key": "...", "secret_key": "...", "region": "us-east-1"}' : '•••••••• (Leave blank to keep unchanged)'} value={modelForm.api_key} onChange={e => setModelForm({ ...modelForm, api_key: e.target.value, clear_api_key: false })} />
                                                     {isBedrock && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>Leave blank to keep existing credentials unchanged.</div>}
+                                                    {isBedrock && (
+                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={Boolean(modelForm.clear_api_key)}
+                                                                onChange={e => setModelForm({ ...modelForm, clear_api_key: e.target.checked, api_key: e.target.checked ? '' : modelForm.api_key })}
+                                                            />
+                                                            Use default AWS credential chain (clear stored credentials)
+                                                        </label>
+                                                    )}
                                                 </div>
                                                 <div className="form-group" style={{ gridColumn: 'span 2' }}>
                                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
@@ -2343,7 +2353,7 @@ export default function EnterpriseSettings() {
                                                 {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>Vision</span>}
                                                 <button className="btn btn-ghost" onClick={() => {
                                                     setEditingModelId(m.id);
-                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', request_timeout: m.request_timeout ? String(m.request_timeout) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
+                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', clear_api_key: false, supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', request_timeout: m.request_timeout ? String(m.request_timeout) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
                                                     setShowAddModel(true);
                                                 }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>

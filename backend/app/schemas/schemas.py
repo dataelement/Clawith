@@ -386,6 +386,7 @@ class LLMModelUpdate(BaseModel):
     provider: str | None = None
     model: str | None = None
     api_key: str | None = None
+    clear_api_key: bool | None = None
     base_url: str | None = None
     label: str | None = None
     temperature: float | None = Field(None, ge=0.0, le=2.0)
