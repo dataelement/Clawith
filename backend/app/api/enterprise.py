@@ -231,6 +231,12 @@ async def update_llm_model(
     previous_provider = model.provider
 
     try:
+        has_new_api_key = bool(
+            data.api_key
+            and data.api_key.strip()
+            and not data.api_key.startswith('****')
+        )
+
         if data.provider:
             model.provider = data.provider
         if data.model:
@@ -241,11 +247,11 @@ async def update_llm_model(
             model.base_url = data.base_url
         if data.clear_api_key is True:
             model.api_key_encrypted = encrypt_data("", settings.SECRET_KEY)
-        elif previous_provider != "bedrock" and model.provider == "bedrock":
+        elif previous_provider != "bedrock" and model.provider == "bedrock" and not has_new_api_key:
             # Switching to Bedrock without new credentials should not retain
             # old non-Bedrock provider keys, which are incompatible JSON-wise.
             model.api_key_encrypted = encrypt_data("", settings.SECRET_KEY)
-        elif data.api_key and data.api_key.strip() and not data.api_key.startswith('****'):  # Skip masked values
+        elif has_new_api_key:  # Skip masked values
             model.api_key_encrypted = encrypt_data(data.api_key.strip(), settings.SECRET_KEY)
         if data.temperature is not None:
             model.temperature = data.temperature
