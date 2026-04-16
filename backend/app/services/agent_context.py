@@ -564,4 +564,24 @@ You have internet access through these tools — **use them proactively when you
     if current_user_name:
         dynamic_parts.append(f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate.")
 
+    # Inject platform base URL so agent knows where it is deployed
+    try:
+        from app.services.platform_service import platform_service
+        _platform_url = (await platform_service.get_public_base_url()).rstrip("/")
+        platform_lines = [
+            "\n## Platform Base URLs",
+            "You are running on the Clawith platform. Always use these URLs exactly -- never guess or invent domain names.",
+            "",
+            "- **Platform base**: " + _platform_url,
+            "- **Webhook**: " + _platform_url + "/api/webhooks/t/<token>  (replace <token> with actual trigger token)",
+            "- **Public page**: " + _platform_url + "/p/<short_id>  (replace <short_id> with actual page id returned by publish_page)",
+            "- **File download**: " + _platform_url + "/api/agents/<agent_id>/files/download?path=<rel_path>",
+            "- **Gateway poll**: " + _platform_url + "/api/gateway/poll  (used by external agents to check inbox)",
+            "",
+            "Never use placeholder domains (clawith.com, try.clawith.ai, webhook.clawith.com, api.clawith.ai, etc.).",
+        ]
+        dynamic_parts.append("\n".join(platform_lines))
+    except Exception:
+        pass
+
     return "\n".join(static_parts), "\n".join(dynamic_parts)
