@@ -109,6 +109,10 @@ function PlatformTab() {
     const [nbSaving, setNbSaving] = useState(false);
     const [nbSaved, setNbSaved] = useState(false);
 
+    // Public Base URL
+    const [publicBaseUrl, setPublicBaseUrl] = useState('');
+    const [publicBaseUrlSaving, setPublicBaseUrlSaving] = useState(false);
+    const [publicBaseUrlSaved, setPublicBaseUrlSaved] = useState(false);
 
     // System email configuration
     const [systemEmailConfig, setSystemEmailConfig] = useState({
@@ -163,6 +167,16 @@ function PlatformTab() {
             }
         }).catch(() => { });
             
+        // Load Public Base URL
+        const token2 = localStorage.getItem('token');
+        fetch('/api/enterprise/system-settings/platform', {
+            headers: { 'Content-Type': 'application/json', ...(token2 ? { Authorization: `Bearer ${token2}` } : {}) },
+        }).then(r => r.json()).then(d => {
+            if (d?.value?.public_base_url) {
+                setPublicBaseUrl(d.value.public_base_url);
+            }
+        }).catch(() => { });
+
         // Load System Email
         fetchJson<any>('/enterprise/system-settings/system_email_platform')
             .then(d => {
@@ -218,6 +232,24 @@ function PlatformTab() {
         setNbSaving(false);
     };
 
+
+    const savePublicBaseUrl = async () => {
+        setPublicBaseUrlSaving(true);
+        try {
+            const token = localStorage.getItem('token');
+            await fetch('/api/enterprise/system-settings/platform', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                body: JSON.stringify({ value: { public_base_url: publicBaseUrl.trim() || null } }),
+            });
+            setPublicBaseUrlSaved(true);
+            setTimeout(() => setPublicBaseUrlSaved(false), 2000);
+            showToast(t('enterprise.config.saved', 'Saved'));
+        } catch (e: any) {
+            showToast(e.message || t('common.error', 'Failed to save'), 'error');
+        }
+        setPublicBaseUrlSaving(false);
+    };
 
     const saveEmailConfig = async () => {
         setEmailConfigSaving(true);
@@ -331,6 +363,29 @@ function PlatformTab() {
                             </label>
                         </div>
                     ))}
+                </div>
+            </div>
+
+            {/* Public Base URL */}
+            <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                    {t('admin.publicUrl.title', 'Public URL')}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                    {t('admin.publicUrl.desc', 'The external URL used for webhook callbacks and published page links. Include the protocol (e.g. https://example.com).')}
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input
+                        className="form-input"
+                        value={publicBaseUrl}
+                        onChange={e => setPublicBaseUrl(e.target.value)}
+                        placeholder="https://clawith.example.com"
+                        style={{ fontSize: '13px', flex: 1, maxWidth: '400px' }}
+                    />
+                    <button className="btn btn-primary" onClick={savePublicBaseUrl} disabled={publicBaseUrlSaving}>
+                        {publicBaseUrlSaving ? t('common.loading') : t('common.save', 'Save')}
+                    </button>
+                    {publicBaseUrlSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('enterprise.config.saved', 'Saved')}</span>}
                 </div>
             </div>
 

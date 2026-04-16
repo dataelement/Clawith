@@ -1635,7 +1635,11 @@
     "all": "全部",
     "filterStatus": "按状态筛选",
     "enable": "启用",
-    "noFilterResults": "没有符合当前筛选条件的公司。"
+    "noFilterResults": "没有符合当前筛选条件的公司。",
+    "publicUrl": {
+      "title": "公开访问地址",
+      "desc": "用于 SSO 回调、子域名生成和邮件链接的外部 URL。请包含协议（如 https://example.com）。"
+    }
   },
   "companySetup": {
     "title": "设置你的公司",

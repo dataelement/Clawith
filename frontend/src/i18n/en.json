@@ -1740,6 +1740,10 @@
     "ssoConfigDesc": "Configure SSO and custom domain for this company.",
     "ssoEnabled": "Enable SSO",
     "ssoDomain": "Custom Access Domain",
-    "ssoDomainPlaceholder": "e.g. acme.clawith.com"
+    "ssoDomainPlaceholder": "e.g. acme.clawith.com",
+    "publicUrl": {
+      "title": "Public URL",
+      "desc": "The external URL used for SSO callbacks, subdomain generation, and email links. Include the protocol (e.g. https://example.com)."
+    }
   }
 }

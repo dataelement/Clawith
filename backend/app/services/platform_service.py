@@ -20,23 +20,37 @@ class PlatformService:
 
     async def get_public_base_url(self, db: AsyncSession | None = None, request: Request | None = None) -> str:
         """Resolve the platform's public base URL with priority lookup.
-        
+
         Priority:
         1. Environment variable (PUBLIC_BASE_URL) - from .env or docker
-        2. Incoming request's base URL (browser address)
-        3. Hardcoded fallback (https://try.clawith.ai)
+        2. Database system_settings (platform.public_base_url)
+        3. Incoming request's base URL (browser address)
+        4. Hardcoded fallback (https://try.clawith.ai)
         """
         # 1. Try environment variable
         env_url = os.environ.get("PUBLIC_BASE_URL")
         if env_url:
             return env_url.rstrip("/")
 
-        # 2. Fallback to request (browser address)
+        # 2. Try database system_settings
+        if db:
+            try:
+                from app.models.system_settings import SystemSetting
+                result = await db.execute(
+                    select(SystemSetting).where(SystemSetting.key == "platform")
+                )
+                setting = result.scalar_one_or_none()
+                if setting and setting.value and setting.value.get("public_base_url"):
+                    return setting.value["public_base_url"].rstrip("/")
+            except Exception:
+                pass
+
+        # 3. Fallback to request (browser address)
         if request:
             # Note: request.base_url might include trailing slash
             return str(request.base_url).rstrip("/")
 
-        # 3. Absolute fallback
+        # 4. Absolute fallback
         return "https://try.clawith.ai"
 
 
