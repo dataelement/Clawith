@@ -5360,7 +5360,8 @@ function AgentDetailInner() {
                                 {(() => {
                                     const scopeLabels: Record<string, string> = {
                                         company: '🏢 ' + t('agent.settings.perm.companyWide', 'Company-wide'),
-                                        user: '👤 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
+                                        user: '👥 ' + t('agent.settings.perm.specificUsers', 'Specific Users'),
+                                        private: '🔒 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
                                     };
 
                                     const handleScopeChange = async (newScope: string) => {
@@ -5368,7 +5369,11 @@ function AgentDetailInner() {
                                             await fetchAuth(`/agents/${id}/permissions`, {
                                                 method: 'PUT',
                                                 headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ scope_type: newScope, scope_ids: [], access_level: permData?.access_level || 'use' }),
+                                                body: JSON.stringify({ 
+                                                    scope_type: newScope, 
+                                                    scope_ids: newScope === 'user' ? permData?.scope_ids || [] : [], 
+                                                    access_level: permData?.access_level || 'use' 
+                                                }),
                                             });
                                             queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
                                             queryClient.invalidateQueries({ queryKey: ['agent', id] });
@@ -5394,6 +5399,8 @@ function AgentDetailInner() {
                                     const isOwner = permData?.is_owner ?? false;
                                     const currentScope = permData?.scope_type || 'company';
                                     const currentAccessLevel = permData?.access_level || 'use';
+                                    // Can manage permissions if owner OR has manage access level
+                                    const canManagePermissions = isOwner || currentAccessLevel === 'manage';
 
                                     return (
                                         <div className="card" style={{ marginBottom: '12px' }}>
@@ -5404,7 +5411,7 @@ function AgentDetailInner() {
 
                                             {/* Scope Selection */}
                                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-                                                {(['company', 'user'] as const).map((scope) => (
+                                                {(['company', 'user', 'private'] as const).map((scope) => (
                                                     <label
                                                         key={scope}
                                                         style={{
@@ -5413,14 +5420,14 @@ function AgentDetailInner() {
                                                             gap: '10px',
                                                             padding: '12px 14px',
                                                             borderRadius: '8px',
-                                                            cursor: isOwner ? 'pointer' : 'default',
+                                                            cursor: canManagePermissions ? 'pointer' : 'default',
                                                             border: currentScope === scope
                                                                 ? '1px solid var(--accent-primary)'
                                                                 : '1px solid var(--border-subtle)',
                                                             background: currentScope === scope
                                                                 ? 'rgba(99,102,241,0.06)'
                                                                 : 'transparent',
-                                                            opacity: isOwner ? 1 : 0.7,
+                                                            opacity: canManagePermissions ? 1 : 0.7,
                                                             transition: 'all 0.15s',
                                                         }}
                                                     >
@@ -5428,7 +5435,7 @@ function AgentDetailInner() {
                                                             type="radio"
                                                             name="perm_scope"
                                                             checked={currentScope === scope}
-                                                            disabled={!isOwner}
+                                                            disabled={!canManagePermissions}
                                                             onChange={() => handleScopeChange(scope)}
                                                             style={{ accentColor: 'var(--accent-primary)' }}
                                                         />
@@ -5436,7 +5443,8 @@ function AgentDetailInner() {
                                                             <div style={{ fontWeight: 500, fontSize: '13px' }}>{scopeLabels[scope]}</div>
                                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                                                                 {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
-                                                                {scope === 'user' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
+                                                                {scope === 'user' && t('agent.settings.perm.specificUsersDesc', 'Only selected users can use this agent')}
+                                                                {scope === 'private' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
                                                             </div>
                                                         </div>
                                                     </label>
@@ -5444,7 +5452,7 @@ function AgentDetailInner() {
                                             </div>
 
                                             {/* Access Level for company scope */}
-                                            {currentScope === 'company' && isOwner && (
+                                            {currentScope === 'company' && canManagePermissions && (
                                                 <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
                                                     <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
                                                         {t('agent.settings.perm.defaultAccess', 'Default Access Level')}
@@ -5480,6 +5488,25 @@ function AgentDetailInner() {
                                                 </div>
                                             )}
 
+                                            {/* User Selection — for specific users scope */}
+                                            {currentScope === 'user' && canManagePermissions && (
+                                                <UserSelector 
+                                                    agentId={id!} 
+                                                    selectedUserIds={permData?.scope_ids || []}
+                                                    onUsersChange={(userIds) => {
+                                                        // This will be implemented in the next step
+                                                    }}
+                                                    creatorId={permData?.creator_id || agent?.creator_id}
+                                                    userPermissions={
+                                                        // Convert scope_names to { userId: accessLevel } map
+                                                        permData?.scope_names?.reduce((acc: Record<string, string>, s: any) => {
+                                                            acc[s.id] = s.access_level || 'use';
+                                                            return acc;
+                                                        }, {} as Record<string, string>)
+                                                    }
+                                                />
+                                            )}
+
                                             {currentScope !== 'company' && permData?.scope_names?.length > 0 && (
                                                 <div style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
                                                     <span style={{ fontWeight: 500 }}>{t('agent.settings.perm.currentAccess', 'Current access')}:</span>{' '}
@@ -5487,7 +5514,7 @@ function AgentDetailInner() {
                                                 </div>
                                             )}
 
-                                            {!isOwner && (
+                                            {!canManagePermissions && (
                                                 <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
                                                     {t('agent.settings.perm.readOnly', 'Only the creator or admin can change permissions')}
                                                 </div>
@@ -5708,7 +5735,23 @@ function AgentDetailInner() {
                         setFileEditing(true);
                         setFileDraft('');
                     } else if (action === 'newSkill') {
-                        const template = `---\nname: ${value}\ndescription: Describe what this skill does\n---\n\n# ${value}\n\n## Overview\nDescribe the purpose and when to use this skill.\n\n## Process\n1. Step one\n2. Step two\n\n## Output Format\nDescribe the expected output format.\n`;
+                        const template = `---
+name: ${value}
+description: Describe what this skill does
+---
+
+# ${value}
+
+## Overview
+Describe the purpose and when to use this skill.
+
+## Process
+1. Step one
+2. Step two
+
+## Output Format
+Describe the expected output format.
+`;
                         await fileApi.write(id!, `skills/${value}/SKILL.md`, template);
                         queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
                         setViewingFile(`skills/${value}/SKILL.md`);
@@ -5862,5 +5905,238 @@ export default function AgentDetailWithErrorBoundary() {
         <AgentDetailErrorBoundary>
             <AgentDetailInner />
         </AgentDetailErrorBoundary>
+    );
+}
+
+// User Selector Component for agent permissions
+function UserSelector({ 
+    agentId, 
+    selectedUserIds, 
+    onUsersChange,
+    creatorId,
+    userPermissions // Add per-user permissions: { userId: accessLevel }
+}: { 
+    agentId: string; 
+    selectedUserIds: string[];
+    onUsersChange: (userIds: string[]) => void;
+    creatorId?: string;
+    userPermissions?: Record<string, string>;
+}) {
+    const { t } = useTranslation();
+    const queryClient = useQueryClient();
+    const [currentTenant] = useState<string | null>(() => localStorage.getItem('current_tenant_id'));
+    const [saving, setSaving] = useState(false);
+    const [searchKeyword, setSearchKeyword] = useState('');
+
+    // Fetch current user
+    const { data: currentUser } = useQuery({
+        queryKey: ['auth', 'me'],
+        queryFn: () => import('../services/api').then(m => m.authApi.me()),
+    });
+
+    // Fetch users
+    const { data: users = [], isLoading } = useQuery({
+        queryKey: ['users', currentTenant],
+        queryFn: () => enterpriseApi.users(currentTenant || undefined),
+    });
+
+    const handleToggleUser = async (userId: string, checked: boolean) => {
+        const newSelectedIds = checked 
+            ? [...selectedUserIds, userId]
+            : selectedUserIds.filter(id => id !== userId);
+        
+        // Preserve existing permissions or set default
+        const newUserPermissions = { ...userPermissions };
+        if (checked) {
+            newUserPermissions[userId] = newUserPermissions[userId] || 'use';
+        } else {
+            delete newUserPermissions[userId];
+        }
+        
+        setSaving(true);
+        try {
+            await fetchAuth(`/agents/${agentId}/permissions`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    scope_type: 'user', 
+                    scope_ids: newSelectedIds,
+                    user_permissions: newUserPermissions
+                }),
+            });
+            onUsersChange(newSelectedIds);
+            queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
+        } catch (e) {
+            console.error('Failed to update permissions', e);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleAccessLevelChange = async (userId: string, accessLevel: string) => {
+        // Cannot change creator's permission
+        if (userId === creatorId) {
+            return;
+        }
+        
+        setSaving(true);
+        try {
+            const newUserPermissions = { ...userPermissions, [userId]: accessLevel };
+            await fetchAuth(`/agents/${agentId}/permissions`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    scope_type: 'user', 
+                    scope_ids: selectedUserIds,
+                    user_permissions: newUserPermissions
+                }),
+            });
+            queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
+        } catch (e) {
+            console.error('Failed to update access level', e);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    if (isLoading) {
+        return (
+            <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                {t('common.loading', 'Loading...')}
+            </div>
+        );
+    }
+
+    return (
+        <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
+                {t('agent.settings.perm.selectUsers', 'Select Users')}
+            </label>
+            
+            {/* Search Input */}
+            <div style={{ marginBottom: '12px' }}>
+                <input
+                    type="text"
+                    placeholder={t('common.searchPlaceholder', 'Search by name or email...')}
+                    value={searchKeyword}
+                    onChange={(e) => setSearchKeyword(e.target.value)}
+                    className="input"
+                    style={{ width: '100%', fontSize: '13px' }}
+                />
+            </div>
+
+            <div style={{ 
+                maxHeight: '300px', 
+                overflowY: 'auto', 
+                border: '1px solid var(--border-default)',
+                borderRadius: '8px',
+                padding: '12px',
+                background: 'var(--bg-elevated)',
+            }}>
+                {(users as any[])
+                    // Filter out current user and creator (they already have manage permission)
+                    .filter((user: any) => user.id !== currentUser?.id && user.id !== creatorId)
+                    .filter((user: any) => {
+                        if (!searchKeyword.trim()) return true;
+                        const keyword = searchKeyword.toLowerCase();
+                        const name = (user.display_name || user.username || '').toLowerCase();
+                        const email = (user.email || '').toLowerCase();
+                        return name.includes(keyword) || email.includes(keyword);
+                    })
+                    .map((user: any) => {
+                        const isSelected = selectedUserIds.includes(user.id);
+                        const isCreator = user.id === creatorId;
+                        const accessLevel = userPermissions?.[user.id] || 'use';
+                        
+                        return (
+                            <div 
+                                key={user.id}
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '10px',
+                                    padding: '8px 10px',
+                                    borderRadius: '6px',
+                                    background: isSelected ? 'var(--accent-subtle)' : 'transparent',
+                                    border: isSelected ? '1px solid var(--accent-primary)' : '1px solid transparent',
+                                    marginBottom: '4px',
+                                    transition: 'all 0.15s',
+                                    opacity: saving ? 0.6 : 1,
+                                }}
+                            >
+                                {/* Checkbox for selecting/deselecting user */}
+                                <input 
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    disabled={saving || isCreator} // Cannot deselect creator
+                                    onChange={(e) => handleToggleUser(user.id, e.target.checked)}
+                                    style={{ accentColor: 'var(--accent-primary)', cursor: isCreator ? 'not-allowed' : 'pointer' }}
+                                    title={isCreator ? t('agent.settings.perm.cannotChangeCreator', 'Cannot change creator permission') : ''}
+                                />
+                                <div style={{ flex: 1 }}>
+                                    <div style={{ fontWeight: 500, fontSize: '13px' }}>
+                                        {user.display_name || user.username}
+                                        {isCreator && (
+                                            <span style={{ 
+                                                marginLeft: '6px', 
+                                                fontSize: '10px', 
+                                                color: 'var(--text-tertiary)',
+                                                fontStyle: 'italic'
+                                            }}>
+                                                {t('agent.settings.perm.creator', '(Creator)')}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {user.email && (
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                            {user.email}
+                                        </div>
+                                    )}
+                                </div>
+                                {/* Access level selector - only show if user is selected */}
+                                {isSelected && (
+                                    <select
+                                        className="input"
+                                        value={accessLevel}
+                                        disabled={saving || isCreator} // Cannot change creator's permission
+                                        onChange={(e) => handleAccessLevelChange(user.id, e.target.value)}
+                                        style={{ 
+                                            width: '100px', 
+                                            fontSize: '12px',
+                                            cursor: isCreator ? 'not-allowed' : 'pointer',
+                                            opacity: isCreator ? 0.6 : 1
+                                        }}
+                                        title={isCreator ? t('agent.settings.perm.cannotChangeCreator', 'Cannot change creator permission') : ''}
+                                    >
+                                        <option value="use">{t('agent.settings.perm.canUse', 'Can Use')}</option>
+                                        <option value="manage">{t('agent.settings.perm.canManage', 'Can Manage')}</option>
+                                    </select>
+                                )}
+                            </div>
+                        );
+                    })}
+                {(users as any[])
+                    .filter((user: any) => user.id !== currentUser?.id && user.id !== creatorId)
+                    .filter((user: any) => {
+                        if (!searchKeyword.trim()) return true;
+                        const keyword = searchKeyword.toLowerCase();
+                        const name = (user.display_name || user.username || '').toLowerCase();
+                        const email = (user.email || '').toLowerCase();
+                        return name.includes(keyword) || email.includes(keyword);
+                    }).length === 0 && (
+                    <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                        {searchKeyword.trim() 
+                            ? t('common.noSearchResults', 'No users found matching your search')
+                            : t('common.noData', 'No users found')
+                        }
+                    </div>
+                )}
+            </div>
+            {selectedUserIds.length > 0 && (
+                <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    {t('agent.settings.perm.selectedCount', '{{count}} users selected').replace('{{count}}', String(selectedUserIds.length))}
+                </div>
+            )}
+        </div>
     );
 }

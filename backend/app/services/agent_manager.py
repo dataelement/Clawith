@@ -25,9 +25,18 @@ class AgentManager:
 
     def __init__(self):
         try:
-            self.docker_client = docker.from_env()
-        except DockerException:
-            logger.warning("Docker not available — agent containers will not be managed")
+            # Set a timeout to avoid hanging if Docker daemon is unresponsive
+            import os
+            if os.getenv('SKIP_DOCKER', 'false').lower() == 'true':
+                logger.info("Docker skipped via SKIP_DOCKER environment variable")
+                self.docker_client = None
+            else:
+                self.docker_client = docker.from_env()
+                # Quick health check - ping Docker daemon
+                self.docker_client.ping()
+                logger.info("Docker connected successfully")
+        except Exception as e:
+            logger.warning(f"Docker not available ({e}) — agent containers will not be managed")
             self.docker_client = None
 
     def _agent_dir(self, agent_id: uuid.UUID) -> Path:
