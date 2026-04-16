@@ -199,9 +199,10 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     try:
         from app.models.channel_config import ChannelConfig
         from app.database import async_session as _ctx_session
+        from sqlalchemy import select as _feishu_select
         async with _ctx_session() as _ctx_db:
             _cfg_r = await _ctx_db.execute(
-                select(ChannelConfig).where(
+                _feishu_select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "feishu",
                     ChannelConfig.is_configured == True,
@@ -334,6 +335,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
     try:
         from app.database import async_session
         from app.models.system_settings import SystemSetting
+        from app.models.agent import Agent as _AgentModel
         from sqlalchemy import select as sa_select
         async with async_session() as db:
             # Resolve agent's tenant_id
