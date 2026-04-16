@@ -707,6 +707,8 @@ async def wecom_callback(
         user, _ = await auth_provider.find_or_create_user(
             db, user_info, tenant_id=tenant_id or provider.tenant_id
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"WeCom login/register error: {e}")
         return HTMLResponse(f"Auth failed: {str(e)}")
