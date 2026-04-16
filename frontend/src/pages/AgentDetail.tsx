@@ -748,7 +748,25 @@ function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     return fetch(`/api${url}`, {
         ...options,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    }).then(r => r.json());
+    }).then(async (r) => {
+        if (!r.ok) {
+            const bodyText = await r.text();
+            let detail: unknown;
+            try {
+                detail = bodyText ? JSON.parse(bodyText)?.detail : undefined;
+            } catch {
+                detail = bodyText;
+            }
+            const message = typeof detail === 'string'
+                ? detail
+                : bodyText?.trim() || `HTTP ${r.status}`;
+            const error: any = new Error(message);
+            error.status = r.status;
+            error.detail = detail;
+            throw error;
+        }
+        return r.json();
+    });
 }
 
 // ── Pulse LED keyframe (shared with Chat.tsx, guarded by ID) ──────────────
@@ -4877,11 +4895,19 @@ function AgentDetailInner() {
                     activeTab === 'approvals' && (() => {
                         const ApprovalsTab = () => {
                             const isChinese = i18n.language?.startsWith('zh');
-                            const { data: approvals = [], refetch: refetchApprovals } = useQuery({
+                            const {
+                                data: approvals = [],
+                                error: approvalsError,
+                                refetch: refetchApprovals,
+                            } = useQuery({
                                 queryKey: ['agent-approvals', id],
-                                queryFn: () => fetchAuth<any[]>(`/agents/${id}/approvals`),
+                                queryFn: async () => {
+                                    const data = await fetchAuth<any[]>(`/agents/${id}/approvals`);
+                                    return Array.isArray(data) ? data : [];
+                                },
                                 enabled: !!id,
                                 refetchInterval: 15000,
+                                retry: false,
                             });
                             const resolveMut = useMutation({
                                 mutationFn: async ({ approvalId, action }: { approvalId: string; action: string }) => {
@@ -4899,6 +4925,9 @@ function AgentDetailInner() {
                             });
                             const pending = (approvals as any[]).filter((a: any) => a.status === 'pending');
                             const resolved = (approvals as any[]).filter((a: any) => a.status !== 'pending');
+                            const approvalsErrorMessage = approvalsError instanceof Error
+                                ? approvalsError.message
+                                : (isChinese ? '审批记录加载失败' : 'Failed to load approval records');
                             const statusStyle = (s: string) => ({
                                 padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600,
                                 background: s === 'approved' ? 'rgba(0,180,120,0.12)' : s === 'rejected' ? 'rgba(255,80,80,0.12)' : 'rgba(255,180,0,0.12)',
@@ -4906,6 +4935,23 @@ function AgentDetailInner() {
                             });
                             return (
                                 <div style={{ padding: '20px 24px' }}>
+                                    {approvalsError && (
+                                        <div style={{
+                                            marginBottom: '16px',
+                                            padding: '14px 16px',
+                                            borderRadius: '8px',
+                                            background: 'rgba(255, 180, 0, 0.08)',
+                                            border: '1px solid rgba(255, 180, 0, 0.2)',
+                                            color: 'var(--text-secondary)',
+                                            fontSize: '13px',
+                                            lineHeight: 1.5,
+                                        }}>
+                                            <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--warning)' }}>
+                                                {isChinese ? '无法加载审批记录' : 'Unable to load approval records'}
+                                            </div>
+                                            <div>{approvalsErrorMessage}</div>
+                                        </div>
+                                    )}
                                     {/* Pending */}
                                     {pending.length > 0 && (
                                         <>
