@@ -20,6 +20,54 @@ from app.schemas.schemas import ChannelConfigOut
 router = APIRouter(tags=["dingtalk"])
 
 
+# ─── DingTalk Corp API helpers ──────────────────────────
+
+async def _get_dingtalk_user_detail(
+    app_key: str,
+    app_secret: str,
+    staff_id: str,
+) -> dict | None:
+    """Query DingTalk user detail via corp API to get unionId/mobile/email.
+
+    Uses /topapi/v2/user/get, requires contact.user.read permission.
+    Returns None on failure (graceful degradation).
+    """
+    import httpx
+    from app.services.dingtalk_token import dingtalk_token_manager
+
+    try:
+        access_token = await dingtalk_token_manager.get_corp_token(app_key, app_secret)
+        if not access_token:
+            return None
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            user_resp = await client.post(
+                "https://oapi.dingtalk.com/topapi/v2/user/get",
+                params={"access_token": access_token},
+                json={"userid": staff_id, "language": "zh_CN"},
+            )
+            user_data = user_resp.json()
+
+            if user_data.get("errcode") != 0:
+                logger.warning(
+                    f"[DingTalk] /topapi/v2/user/get failed for {staff_id}: "
+                    f"errcode={user_data.get('errcode')} errmsg={user_data.get('errmsg')}"
+                )
+                return None
+
+            result = user_data.get("result", {})
+            return {
+                "unionid": result.get("unionid", ""),
+                "mobile": result.get("mobile", ""),
+                "email": result.get("email", "") or result.get("org_email", ""),
+                "name": result.get("name", ""),
+            }
+
+    except Exception as e:
+        logger.warning(f"[DingTalk] _get_dingtalk_user_detail error for {staff_id}: {e}")
+        return None
+
+
 # ─── Config CRUD ────────────────────────────────────────
 
 @router.post("/agents/{agent_id}/dingtalk-channel", response_model=ChannelConfigOut, status_code=201)
@@ -145,6 +193,8 @@ async def process_dingtalk_message(
     conversation_id: str,
     conversation_type: str,
     session_webhook: str,
+    sender_nick: str = "",
+    sender_id: str = "",
 ):
     """Process an incoming DingTalk bot message and reply via session webhook."""
     import json
@@ -177,13 +227,46 @@ async def process_dingtalk_message(
             # P2P / single chat
             conv_id = f"dingtalk_p2p_{sender_staff_id}"
 
-        # Resolve channel user via unified service (uses OrgMember + SSO patterns)
+        # Build extra_info for user resolution using senderStaffId as primary key.
+        # Try to enrich with corp API data (unionid/mobile/email) for better
+        # cross-channel matching when the basic OrgMember lookup fails.
+        extra_info: dict = {"name": sender_nick} if sender_nick else {}
+
+        # Load channel config for corp API calls
+        _cfg_r = await db.execute(
+            _select(ChannelConfig).where(
+                ChannelConfig.agent_id == agent_id,
+                ChannelConfig.channel_type == "dingtalk",
+            )
+        )
+        _cfg = _cfg_r.scalar_one_or_none()
+
+        if _cfg and _cfg.app_id and _cfg.app_secret:
+            dt_detail = await _get_dingtalk_user_detail(
+                _cfg.app_id, _cfg.app_secret, sender_staff_id
+            )
+            if dt_detail:
+                if dt_detail.get("unionid"):
+                    extra_info["unionid"] = dt_detail["unionid"]
+                if dt_detail.get("mobile"):
+                    extra_info["mobile"] = dt_detail["mobile"]
+                if dt_detail.get("email"):
+                    extra_info["email"] = dt_detail["email"]
+                if dt_detail.get("name") and not sender_nick:
+                    extra_info["name"] = dt_detail["name"]
+                logger.debug(
+                    f"[DingTalk] Enriched user detail for {sender_staff_id}: "
+                    f"unionid={dt_detail.get('unionid', '')[:8]}..."
+                )
+
+        # Resolve channel user via unified service (uses OrgMember + SSO patterns).
+        # senderStaffId is the stable enterprise userId — used as external_user_id.
         platform_user = await channel_user_service.resolve_channel_user(
             db=db,
             agent=agent_obj,
             channel_type="dingtalk",
             external_user_id=sender_staff_id,
-            extra_info={"unionid": sender_staff_id},
+            extra_info=extra_info,
         )
         platform_user_id = platform_user.id
 
