@@ -512,12 +512,18 @@ async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSes
         user = valid_users[0]
     else:
         # Specific tenant requested (Dedicated Link flow)
-        # Search for the user record in that tenant
-        user = next((u for u in valid_users if u.tenant_id == data.tenant_id), None)
-        
+        # Search for the user record in that tenant.
+        # Also allow users with tenant_id=None (SSO-created but not yet
+        # assigned to a tenant) so they can proceed to company setup.
+        user = next(
+            (u for u in valid_users
+             if u.tenant_id == data.tenant_id or u.tenant_id is None),
+            None,
+        )
+
         # Cross-tenant access check
         if not user:
-             # Even platform admins must have a valid record in the targeted tenant 
+             # Even platform admins must have a valid record in the targeted tenant
              # when logging in via a dedicated tenant URL / tenant_id.
              raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
