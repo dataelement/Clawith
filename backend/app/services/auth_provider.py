@@ -630,6 +630,154 @@ class WeComAuthProvider(BaseAuthProvider):
             )
 
 
+class OAuth2AuthProvider(BaseAuthProvider):
+    """Generic OAuth2 provider (RFC 6749 Authorization Code flow).
+
+    Works with any OAuth2-compliant identity provider (Google, Azure AD,
+    Keycloak, Auth0, custom corporate OAuth2 servers, etc.).
+
+    Config keys:
+        client_id, client_secret, authorize_url, token_url, userinfo_url,
+        scope, field_mapping
+    """
+
+    provider_type = "oauth2"
+
+    def __init__(self, provider=None, config=None):
+        super().__init__(provider, config)
+        self.client_id = self.config.get("client_id") or self.config.get("app_id", "")
+        self.client_secret = self.config.get("client_secret") or self.config.get("app_secret", "")
+        self.authorize_url = self.config.get("authorize_url", "")
+        self.token_url = self.config.get("token_url", "")
+        self.userinfo_url = self.config.get("userinfo_url") or self.config.get("user_info_url", "")
+        self.scope = self.config.get("scope", "openid profile email")
+
+        # Derive token_url / userinfo_url from authorize_url if not provided
+        if self.authorize_url and not self.token_url:
+            base = self.authorize_url.rsplit("/", 1)[0]
+            self.token_url = f"{base}/token"
+        if self.authorize_url and not self.userinfo_url:
+            base = self.authorize_url.rsplit("/", 1)[0]
+            self.userinfo_url = f"{base}/userinfo"
+
+        # Configurable field mapping: provider response field -> Clawith field
+        self.field_mapping = self.config.get("field_mapping") or {}
+
+    async def get_authorization_url(self, redirect_uri: str, state: str) -> str:
+        from urllib.parse import quote, urlencode
+        params = urlencode({
+            "response_type": "code",
+            "client_id": self.client_id,
+            "redirect_uri": redirect_uri,
+            "scope": self.scope,
+            "state": state,
+        })
+        return f"{self.authorize_url}?{params}"
+
+    async def exchange_code_for_token(self, code: str, redirect_uri: str = "") -> dict:
+        """Exchange authorization code for access token.
+
+        Uses application/x-www-form-urlencoded per RFC 6749 Section 4.1.3.
+        """
+        async with httpx.AsyncClient() as client:
+            data = {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+            }
+            if redirect_uri:
+                data["redirect_uri"] = redirect_uri
+            resp = await client.post(
+                self.token_url,
+                data=data,
+            )
+            if resp.status_code != 200:
+                logger.error(
+                    "OAuth2 token exchange failed (HTTP %s): %s",
+                    resp.status_code,
+                    resp.text[:500],
+                )
+                return {}
+            return resp.json()
+
+    def _resolve_field(self, data: dict, clawith_field: str, default_keys: list[str]) -> str:
+        """Resolve a field using user-configured mapping first, then standard fallbacks."""
+        custom_key = self.field_mapping.get(clawith_field)
+        if custom_key and data.get(custom_key):
+            return str(data[custom_key])
+        for key in default_keys:
+            if data.get(key):
+                return str(data[key])
+        return ""
+
+    async def get_user_info(self, access_token: str) -> ExternalUserInfo:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                self.userinfo_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+            # Gracefully handle non-200 responses
+            if resp.status_code != 200:
+                logger.error("OAuth2 userinfo returned HTTP %s", resp.status_code)
+                return ExternalUserInfo(
+                    provider_type=self.provider_type,
+                    provider_user_id="",
+                    raw_data={"error": f"userinfo HTTP {resp.status_code}"},
+                )
+
+            try:
+                resp_data = resp.json()
+            except Exception:
+                logger.error("OAuth2 userinfo response is not valid JSON")
+                return ExternalUserInfo(
+                    provider_type=self.provider_type,
+                    provider_user_id="",
+                    raw_data={"error": "userinfo JSON parse error"},
+                )
+
+            # Some providers wrap payload in {"data": {...}}; standard OIDC is flat
+            if "data" in resp_data and isinstance(resp_data["data"], dict):
+                info = resp_data["data"]
+            else:
+                info = resp_data
+
+            user_id = self._resolve_field(info, "provider_user_id", ["sub", "id", "user_id", "userId"])
+            name = self._resolve_field(info, "display_name", ["name", "preferred_username", "nickname", "userName"])
+            email = self._resolve_field(info, "email", ["email"])
+            mobile = self._resolve_field(info, "mobile", ["phone_number", "mobile", "phone"])
+            avatar = self._resolve_field(info, "avatar_url", ["picture", "avatar_url", "avatar"])
+
+            return ExternalUserInfo(
+                provider_type=self.provider_type,
+                provider_user_id=str(user_id),
+                name=name,
+                email=email,
+                mobile=mobile,
+                avatar_url=avatar,
+                raw_data=info,
+            )
+
+    async def get_user_info_from_token_data(self, token_data: dict) -> ExternalUserInfo:
+        """Fallback: extract user info directly from token response data."""
+        info = token_data
+        user_id = self._resolve_field(info, "provider_user_id", ["sub", "id", "user_id", "userId", "openid"])
+        name = self._resolve_field(info, "display_name", ["name", "preferred_username", "nickname"])
+        email = self._resolve_field(info, "email", ["email"])
+        mobile = self._resolve_field(info, "mobile", ["phone_number", "mobile", "phone"])
+        avatar = self._resolve_field(info, "avatar_url", ["picture", "avatar_url", "avatar"])
+        return ExternalUserInfo(
+            provider_type=self.provider_type,
+            provider_user_id=str(user_id),
+            name=name,
+            email=email,
+            mobile=mobile,
+            avatar_url=avatar,
+            raw_data=info,
+        )
+
+
 class MicrosoftTeamsAuthProvider(BaseAuthProvider):
     """Microsoft Teams OAuth provider implementation."""
 
@@ -651,5 +799,6 @@ PROVIDER_CLASSES = {
     "feishu": FeishuAuthProvider,
     "dingtalk": DingTalkAuthProvider,
     "wecom": WeComAuthProvider,
+    "oauth2": OAuth2AuthProvider,
     "microsoft_teams": MicrosoftTeamsAuthProvider,
 }

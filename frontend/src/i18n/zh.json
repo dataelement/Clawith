@@ -1541,7 +1541,30 @@
         "messagingTitle": "3. AI 主动发送一对一消息",
         "messagingDesc": "向企微成员主动发消息，需先获取有效的 API access_token，而获取 token 的请求 IP 必须在自建应用的「企业可信IP」白名单中。与飞书不同，企微对所有 API 调用均强制要求 IP 白名单，没有仅凭 token 认证的选项。",
         "footerText": "由于上述限制，目前大多数用户无法轻松完成企业微信集成配置。我们正在积极探索替代方案——包括申请企微服务商（ISV）资质及寻找限制更少的接入方式——同时也希望企微能够降低对 SaaS 平台的接入门槛。待可行路径明确后，配置入口将重新开启。"
-      }
+      },
+      "avatarUrlField": "头像地址字段",
+      "avatarUrlFieldPlaceholder": "默认: picture",
+      "authorizeUrlPlaceholder": "https://sso.example.com/oauth2/authorize",
+      "clearAllMappings": "清空所有字段映射",
+      "clearField": "清空此字段",
+      "deleteConfirmProvider": "确定要删除此配置吗？",
+      "emailField": "邮箱字段",
+      "emailFieldPlaceholder": "默认：email",
+      "fieldMapping": "字段映射",
+      "fieldMappingHint": "可选，留空使用标准 OIDC 字段",
+      "hasCustomMapping": "当前已配置自定义字段映射",
+      "mobileField": "手机号字段",
+      "mobileFieldPlaceholder": "默认：phone_number",
+      "nameField": "姓名字段",
+      "nameFieldPlaceholder": "默认：name",
+      "oauth2": "OAuth2",
+      "oauth2Desc": "通用 OIDC 提供商",
+      "scope": "Scope",
+      "scopePlaceholder": "openid profile email",
+      "tokenUrlPlaceholder": "留空则从授权地址自动推导",
+      "userIdField": "用户 ID 字段",
+      "userIdFieldPlaceholder": "默认：sub",
+      "userInfoUrlPlaceholder": "留空则从授权地址自动推导"
     }
   },
   "common": {

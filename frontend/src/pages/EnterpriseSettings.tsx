@@ -420,7 +420,8 @@ function OrgTab({ tenant }: { tenant: any }) {
         authorize_url: '',
         token_url: '',
         user_info_url: '',
-        scope: 'openid profile email'
+        scope: 'openid profile email',
+        field_mapping: {} as Record<string, string>,
     });
 
     const currentTenantId = localStorage.getItem('current_tenant_id') || '';
@@ -523,7 +524,8 @@ function OrgTab({ tenant }: { tenant: any }) {
         authorize_url: config?.authorize_url || '',
         token_url: config?.token_url || '',
         user_info_url: config?.user_info_url || '',
-        scope: config?.scope || 'openid profile email'
+        scope: config?.scope || 'openid profile email',
+        field_mapping: config?.field_mapping || {},
     });
 
     const save = () => {
@@ -566,7 +568,8 @@ function OrgTab({ tenant }: { tenant: any }) {
                 name: nameMap[type] || type,
                 config: defaults[type] || {},
                 app_id: '', app_secret: '', authorize_url: '', token_url: '', user_info_url: '',
-                scope: 'openid profile email'
+                scope: 'openid profile email',
+                field_mapping: {},
             });
         }
         setSelectedDept(null);
@@ -651,8 +654,57 @@ function OrgTab({ tenant }: { tenant: any }) {
                             <input className="form-input" type="password" value={form.app_secret} onChange={e => setForm({ ...form, app_secret: e.target.value })} />
                         </div>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                            <label className="form-label">Authorize URL</label>
-                            <input className="form-input" value={form.authorize_url} onChange={e => setForm({ ...form, authorize_url: e.target.value })} />
+                            <label className="form-label">{t('enterprise.identity.authorizeUrl', 'Authorize URL')}</label>
+                            <input className="form-input" value={form.authorize_url} onChange={e => setForm({ ...form, authorize_url: e.target.value })} placeholder={t('enterprise.identity.authorizeUrlPlaceholder', 'https://sso.example.com/oauth2/authorize')} />
+                        </div>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <label className="form-label">{t('enterprise.identity.tokenUrl', 'Token URL')}</label>
+                            <input className="form-input" value={form.token_url} onChange={e => setForm({ ...form, token_url: e.target.value })} placeholder={t('enterprise.identity.tokenUrlPlaceholder', 'Leave empty to auto-derive from Authorize URL')} />
+                        </div>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <label className="form-label">{t('enterprise.identity.userInfoUrl', 'UserInfo URL')}</label>
+                            <input className="form-input" value={form.user_info_url} onChange={e => setForm({ ...form, user_info_url: e.target.value })} placeholder={t('enterprise.identity.userInfoUrlPlaceholder', 'Leave empty to auto-derive from Authorize URL')} />
+                        </div>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <label className="form-label">{t('enterprise.identity.scope', 'Scope')}</label>
+                            <input className="form-input" value={form.scope} onChange={e => setForm({ ...form, scope: e.target.value })} placeholder={t('enterprise.identity.scopePlaceholder', 'openid profile email')} />
+                        </div>
+                        <div style={{ gridColumn: '1 / -1', marginTop: '4px' }}>
+                            <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                {t('enterprise.identity.fieldMapping', 'Field Mapping')} ({t('enterprise.identity.fieldMappingHint', 'Optional, leave empty to use standard OIDC fields')})
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                <div className="form-group">
+                                    <label className="form-label" style={{ fontSize: '11px' }}>{t('enterprise.identity.userIdField', 'User ID Field')}</label>
+                                    <input className="form-input" value={form.field_mapping?.provider_user_id || ''}
+                                        onChange={e => setForm({ ...form, field_mapping: { ...form.field_mapping, provider_user_id: e.target.value } })}
+                                        placeholder={t('enterprise.identity.userIdFieldPlaceholder', 'Default: sub')} style={{ fontSize: '12px' }} />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label" style={{ fontSize: '11px' }}>{t('enterprise.identity.nameField', 'Name Field')}</label>
+                                    <input className="form-input" value={form.field_mapping?.display_name || ''}
+                                        onChange={e => setForm({ ...form, field_mapping: { ...form.field_mapping, display_name: e.target.value } })}
+                                        placeholder={t('enterprise.identity.nameFieldPlaceholder', 'Default: name')} style={{ fontSize: '12px' }} />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label" style={{ fontSize: '11px' }}>{t('enterprise.identity.emailField', 'Email Field')}</label>
+                                    <input className="form-input" value={form.field_mapping?.email || ''}
+                                        onChange={e => setForm({ ...form, field_mapping: { ...form.field_mapping, email: e.target.value } })}
+                                        placeholder={t('enterprise.identity.emailFieldPlaceholder', 'Default: email')} style={{ fontSize: '12px' }} />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label" style={{ fontSize: '11px' }}>{t('enterprise.identity.mobileField', 'Mobile Field')}</label>
+                                    <input className="form-input" value={form.field_mapping?.mobile || ''}
+                                        onChange={e => setForm({ ...form, field_mapping: { ...form.field_mapping, mobile: e.target.value } })}
+                                        placeholder={t('enterprise.identity.mobileFieldPlaceholder', 'Default: phone_number')} style={{ fontSize: '12px' }} />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label" style={{ fontSize: '11px' }}>{t('enterprise.identity.avatarUrlField', 'Avatar URL Field')}</label>
+                                    <input className="form-input" value={form.field_mapping?.avatar_url || ''}
+                                        onChange={e => setForm({ ...form, field_mapping: { ...form.field_mapping, avatar_url: e.target.value } })}
+                                        placeholder={t('enterprise.identity.avatarUrlFieldPlaceholder', 'Default: picture')} style={{ fontSize: '12px' }} />
+                                </div>
+                            </div>
                         </div>
                     </div>
                 ) : type === 'wecom' ? (

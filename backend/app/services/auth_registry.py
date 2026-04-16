@@ -15,6 +15,7 @@ from app.services.auth_provider import (
     DingTalkAuthProvider,
     FeishuAuthProvider,
     MicrosoftTeamsAuthProvider,
+    OAuth2AuthProvider,
     WeComAuthProvider,
 )
 

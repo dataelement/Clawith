@@ -911,14 +911,26 @@ async def oauth_callback(
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not supported")
 
     try:
-        # Exchange code for token
-        token_data = await auth_provider.exchange_code_for_token(data.code)
+        # Exchange code for token (pass redirect_uri for OAuth2 providers that require it)
+        if hasattr(auth_provider, 'exchange_code_for_token') and data.redirect_uri:
+            token_data = await auth_provider.exchange_code_for_token(data.code, redirect_uri=data.redirect_uri)
+        else:
+            token_data = await auth_provider.exchange_code_for_token(data.code)
         access_token = token_data.get("access_token")
         if not access_token:
             raise HTTPException(status_code=400, detail="Failed to get access token from provider")
 
-        # Get user info
-        user_info = await auth_provider.get_user_info(access_token)
+        # Get user info with fallback to token_data extraction
+        try:
+            user_info = await auth_provider.get_user_info(access_token)
+        except Exception:
+            if hasattr(auth_provider, 'get_user_info_from_token_data'):
+                user_info = await auth_provider.get_user_info_from_token_data(token_data)
+            else:
+                raise
+        if not user_info.provider_user_id and hasattr(auth_provider, 'get_user_info_from_token_data'):
+            # try token_data as last resort
+            user_info = await auth_provider.get_user_info_from_token_data(token_data)
 
         # Find or create user
         user, is_new = await auth_provider.find_or_create_user(db, user_info)
