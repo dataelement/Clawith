@@ -32,6 +32,20 @@ def _default_agent_data_dir() -> str:
     return str(Path.home() / ".clawith" / "data" / "agents")
 
 
+def _default_agent_template_dir() -> str:
+    """Locate the agent template directory for both Docker and source deployments.
+
+    In a Docker container the backend source is copied to /app, so the template
+    lives at /app/agent_template.  In a source deployment it sits next to the
+    backend/ package root, i.e. <repo>/backend/agent_template.
+    """
+    if _running_in_container():
+        return "/app/agent_template"
+    # Source layout: backend/app/config.py -> ../.. = backend/ -> agent_template
+    source_path = Path(__file__).resolve().parent.parent / "agent_template"
+    return str(source_path)
+
+
 def _read_version() -> str:
     """Read version from local VERSION file, fallback to root."""
     for candidate in [Path(__file__).resolve().parent.parent / "VERSION",
@@ -70,7 +84,7 @@ class Settings(BaseSettings):
 
     # File Storage
     AGENT_DATA_DIR: str = _default_agent_data_dir()
-    AGENT_TEMPLATE_DIR: str = "/app/agent_template"
+    AGENT_TEMPLATE_DIR: str = _default_agent_template_dir()
 
     # Docker (for Agent containers)
     DOCKER_NETWORK: str = "clawith_network"
@@ -88,6 +102,9 @@ class Settings(BaseSettings):
 
     # Jina AI (Reader + Search APIs)
     JINA_API_KEY: str = ""
+
+    # Exa AI (Search API)
+    EXA_API_KEY: str = ""
 
 
     # Sandbox configuration

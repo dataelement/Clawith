@@ -177,7 +177,22 @@ async def register_init(
         password=data.password,
         is_platform_admin=is_first_user
     )
-    
+
+    # Defense-in-depth: verify the returned identity actually belongs to the
+    # submitted email. Under normal circumstances this should never trigger
+    # (find_or_create_identity no longer uses username as a lookup key), but
+    # this guard protects against future regressions.
+    if identity.email and identity.email != data.email:
+        logger.warning(
+            "[REGISTER_INIT] Identity email mismatch: submitted=%s returned=%s — rejecting",
+            data.email,
+            identity.email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username already taken. Please choose a different username.",
+        )
+
     # If identity existed, verify password
     if identity.password_hash and not verify_password(data.password, identity.password_hash):
          raise HTTPException(
@@ -348,6 +363,20 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         password=data.password,
         is_platform_admin=is_first_user
     )
+
+    # Defense-in-depth: verify the returned identity actually belongs to the
+    # submitted email. Should be unreachable after the username-lookup fix, but
+    # acts as a safety net against future regressions.
+    if identity.email and identity.email != data.email:
+        logger.warning(
+            "[REGISTER_LEGACY] Identity email mismatch: submitted=%s returned=%s — rejecting",
+            data.email,
+            identity.email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username already taken. Please choose a different username.",
+        )
     
     if is_first_user:
         identity.email_verified = True
@@ -685,7 +714,8 @@ async def update_me(
 
     for field, value in update_data.items():
         setattr(current_user, field, value)
-    await db.flush()
+    await db.commit()
+    await db.refresh(current_user)
 
     # Sync email/phone to OrgMember if changed
     if "email" in update_data or "primary_mobile" in update_data:
@@ -942,7 +972,13 @@ async def bind_identity(
         user_info = await auth_provider.get_user_info(access_token)
 
         # Check if identity is already linked to another user
-        existing_user = await sso_service.check_duplicate_identity(db, provider, user_info.provider_user_id)
+        lookup_provider_user_id = user_info.provider_union_id or user_info.provider_user_id
+        existing_user = await sso_service.check_duplicate_identity(
+            db,
+            provider,
+            lookup_provider_user_id,
+            identity_data=user_info.raw_data,
+        )
         if existing_user and existing_user.id != current_user.id:
             raise HTTPException(
                 status_code=409,
@@ -954,7 +990,7 @@ async def bind_identity(
             db,
             str(current_user.id),
             provider,
-            user_info.provider_user_id,
+            lookup_provider_user_id,
             user_info.raw_data,
         )
 

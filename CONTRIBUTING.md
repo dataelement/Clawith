@@ -60,6 +60,80 @@ Please describe:
    - Frontend: TypeScript — standard React conventions
 5. Use `Fixes #<issue_number>` in the PR description
 
+## Working on Multiple Features
+
+It is common to develop several improvements in one sitting before submitting. Rather than sending one giant PR, please split your work into smaller, focused PRs — this makes review faster and merges cleaner.
+
+### Preferred: one branch per feature from the start
+
+```bash
+# Start each new feature from a fresh branch off main
+git checkout main && git pull
+git checkout -b feat/i18n-emoji-cleanup
+
+# ... develop, commit ...
+
+git checkout main
+git checkout -b feat/admin-email-templates
+
+# ... develop, commit ...
+```
+
+Each branch becomes one PR. Small, clean, easy to review.
+
+### Already mixed everything into one branch? Split it with `git add -p`
+
+`git add -p` (patch mode) lets you selectively stage individual change *hunks* from a file — perfect for creating several commits from one messy branch.
+
+**Step-by-step example:**
+
+```bash
+# Assume your branch is called my-big-branch and has 3 logical changes mixed in.
+# Goal: create 3 separate PRs from it.
+
+# --- PR 1: emoji cleanup ---
+git checkout -b feat/i18n-emoji-cleanup main
+
+# Interactively stage only the emoji-related hunks from en.json and zh.json:
+git add -p frontend/src/i18n/en.json   # answer y/n for each hunk
+git add -p frontend/src/i18n/zh.json
+git commit -m "fix: remove emoji from i18n strings"
+git push -u origin feat/i18n-emoji-cleanup
+# → open PR
+
+# --- PR 2: hardcoded strings → t() ---
+git checkout -b feat/i18n-component-strings main
+
+git add -p frontend/src/pages/AgentDetail.tsx   # stage only t() hunk
+git add -p frontend/src/components/ChannelConfig.tsx
+git commit -m "feat: replace hardcoded UI strings with i18n t() calls"
+git push -u origin feat/i18n-component-strings
+# → open PR
+
+# --- PR 3: admin improvements ---
+git checkout -b feat/admin-improvements main
+git checkout my-big-branch -- frontend/src/pages/AdminCompanies.tsx  # cherry-pick whole file if clean
+git commit -m "feat: improve admin company settings"
+git push -u origin feat/admin-improvements
+# → open PR
+```
+
+**Key commands:**
+
+| Command | What it does |
+|---------|-------------|
+| `git add -p <file>` | Stage hunks interactively (y = yes, n = no, s = split hunk smaller) |
+| `git checkout <branch> -- <file>` | Copy a whole file from another branch |
+| `git cherry-pick <commit>` | Apply a single commit to the current branch |
+| `git diff main...HEAD -- <file>` | Preview what changed in a specific file vs main |
+
+### Tips
+
+- **Commit early, commit often** on your dev branch — individual commits are much easier to cherry-pick later than one large commit.
+- Use descriptive commit messages (e.g. `fix: remove emoji from zh.json`, not `update stuff`).
+- If two features touch the same file heavily, submit PR 1 first, wait for it to merge, then rebase PR 2 on `main` before opening it.
+
+
 ## Project Structure
 
 ```

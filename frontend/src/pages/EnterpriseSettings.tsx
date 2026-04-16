@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi, skillApi } from '../services/api';
+import { useAuthStore } from '../stores';
 import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
@@ -557,7 +558,7 @@ function OrgTab({ tenant }: { tenant: any }) {
             const defaults: any = {
                 feishu: { app_id: '', app_secret: '', corp_id: '' },
                 dingtalk: { app_key: '', app_secret: '', corp_id: '' },
-                wecom: { corp_id: '', secret: '', agent_id: '', bot_id: '', bot_secret: '' },
+                wecom: { corp_id: '', secret: '', agent_id: '', app_secret: '', bot_id: '', bot_secret: '', verify_token: '', verify_aes_key: '' },
             };
             const nameMap: Record<string, string> = { feishu: 'Feishu', wecom: 'WeCom', dingtalk: 'DingTalk', oauth2: 'OAuth2' };
             setForm({
@@ -576,7 +577,7 @@ function OrgTab({ tenant }: { tenant: any }) {
         return (
             <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
                 {/* Setup Guide moved to the top */}
-                {['feishu', 'dingtalk', 'wecom'].includes(type) && (
+                {['feishu', 'dingtalk'].includes(type) && (
                     <div style={{ background: 'var(--bg-primary)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-subtle)', marginBottom: '20px', fontSize: '12px' }}>
                         <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '8px', color: 'var(--text-primary)' }}>
                             👉 {t('enterprise.org.syncSetupGuide', 'Setup Guide & Required Permissions')}
@@ -655,34 +656,53 @@ function OrgTab({ tenant }: { tenant: any }) {
                         </div>
                     </div>
                 ) : type === 'wecom' ? (
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
-                                {t('enterprise.identity.providerHints.wecom')}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+                        {/* Prerequisites notice — all strings via i18n */}
+                        <div style={{
+                            padding: '16px',
+                            borderRadius: '8px',
+                            border: '1px solid var(--border-subtle)',
+                            background: 'var(--bg-primary)',
+                            fontSize: '13px',
+                            lineHeight: 1.7,
+                            color: 'var(--text-secondary)',
+                        }}>
+                            <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)', marginBottom: '10px' }}>
+                                {t('enterprise.identity.wecomNotice.title')}
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                <div>
+                                    <div style={{ fontWeight: 500, color: 'var(--text-primary)', marginBottom: '3px' }}>
+                                        {t('enterprise.identity.wecomNotice.syncTitle')}
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                        {t('enterprise.identity.wecomNotice.syncDesc')}
+                                    </div>
+                                </div>
+                                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '10px' }}>
+                                    <div style={{ fontWeight: 500, color: 'var(--text-primary)', marginBottom: '3px' }}>
+                                        {t('enterprise.identity.wecomNotice.ssoTitle')}
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                        {t('enterprise.identity.wecomNotice.ssoDesc')}
+                                    </div>
+                                </div>
+                                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '10px' }}>
+                                    <div style={{ fontWeight: 500, color: 'var(--text-primary)', marginBottom: '3px' }}>
+                                        {t('enterprise.identity.wecomNotice.messagingTitle')}
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                        {t('enterprise.identity.wecomNotice.messagingDesc')}
+                                    </div>
+                                </div>
+                            </div>
+                            <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid var(--border-subtle)', fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+                                {t('enterprise.identity.wecomNotice.footerText')}
                             </div>
                         </div>
-                        <div className="form-group">
-                            <label className="form-label">Corp ID</label>
-                            <input className="form-input" value={form.config.corp_id || ''} onChange={e => setForm({ ...form, config: { ...form.config, corp_id: e.target.value } })} placeholder="wwxxxxxxxxxxxx" />
-                        </div>
-                        <div className="form-group">
-                            <label className="form-label">Secret</label>
-                            <input className="form-input" type="password" value={form.config.secret || ''} onChange={e => setForm({ ...form, config: { ...form.config, secret: e.target.value } })} />
-                        </div>
-                        <div className="form-group">
-                            <label className="form-label">Agent ID (Optional)</label>
-                            <input className="form-input" value={form.config.agent_id || ''} onChange={e => setForm({ ...form, config: { ...form.config, agent_id: e.target.value } })} />
-                        </div>
-                        <div style={{ gridColumn: '1 / -1', height: '1px', background: 'var(--border-subtle)', margin: '8px 0' }} />
-                        <div className="form-group">
-                            <label className="form-label">Bot ID (Intelligent Robot)</label>
-                            <input className="form-input" value={form.config.bot_id || ''} onChange={e => setForm({ ...form, config: { ...form.config, bot_id: e.target.value } })} placeholder="aibXXXXXXXXXXXX" />
-                        </div>
-                        <div className="form-group">
-                            <label className="form-label">Bot Secret</label>
-                            <input className="form-input" type="password" value={form.config.bot_secret || ''} onChange={e => setForm({ ...form, config: { ...form.config, bot_secret: e.target.value } })} />
-                        </div>
                     </div>
+
+
                 ) : type === 'dingtalk' ? (
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
@@ -713,19 +733,69 @@ function OrgTab({ tenant }: { tenant: any }) {
                     </div>
                 ) : null}
 
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '16px' }}>
-                    <button className="btn btn-primary btn-sm" onClick={save} disabled={savingProvider}>
-                        {savingProvider ? t('common.loading') : t('common.save', 'Save')}
-                    </button>
-                    {saveProviderOk && (
-                        <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>
-                    )}
-                    {existingProvider && (
-                        <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={() => confirm('Are you sure you want to delete this configuration?') && deleteProvider.mutate(existingProvider.id)}>
-                            {t('common.delete', 'Delete')}
+                {/* Hide save/delete for WeCom while config is disabled */}
+                {type !== 'wecom' && (
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '16px' }}>
+                        <button className="btn btn-primary btn-sm" onClick={save} disabled={savingProvider}>
+                            {savingProvider ? t('common.loading') : t('common.save', 'Save')}
                         </button>
-                    )}
-                </div>
+                        {saveProviderOk && (
+                            <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>
+                        )}
+                        {existingProvider && (
+                            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={() => confirm('Are you sure you want to delete this configuration?') && deleteProvider.mutate(existingProvider.id)}>
+                                {t('common.delete', 'Delete')}
+                            </button>
+                        )}
+                    </div>
+                )}
+                {/* WeCom App IP Whitelist verification URL — hidden while WeCom config is disabled */}
+                {type === 'wecom' && false && editingId && (existingProvider?.config?.verify_token || form.config?.verify_token) && (() => {
+                    const verifyToken = form.config?.verify_token || existingProvider?.config?.verify_token || '';
+                    const aesKey = form.config?.verify_aes_key || existingProvider?.config?.verify_aes_key || '';
+                    // Use window.location.origin as the base, but if it's a private/non-standard URL let user know
+                    const base = window.location.origin;
+                    const callbackUrl = aesKey
+                        ? `${base}/api/enterprise/org/wecom-callback/${verifyToken}?aes_key=${aesKey}`
+                        : `${base}/api/enterprise/org/wecom-callback/${verifyToken}?aes_key=(configure EncodingAESKey above first)`;
+                    return (
+                        <div style={{ marginTop: '16px', padding: '12px', background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
+                            <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                                WeCom Receive Message Server URL
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                Step 1: Go to WeCom App Management (AgentID 1000010) → App Settings → Set Receive Message Server URL.
+                                Use this URL. In the Token field, enter your Verify Token. In EncodingAESKey, enter your key below.
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <code style={{ flex: 1, fontSize: '11px', padding: '6px 10px', background: 'var(--bg-secondary)', borderRadius: '4px', wordBreak: 'break-all', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                                    {callbackUrl}
+                                </code>
+                                {aesKey && (
+                                    <LinearCopyButton
+                                        className="btn btn-ghost"
+                                        style={{ fontSize: '11px', padding: '4px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                                        textToCopy={callbackUrl}
+                                        label="Copy"
+                                        copiedLabel="Copied"
+                                    />
+                                )}
+                            </div>
+                            {!aesKey && (
+                                <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--warning, #f59e0b)' }}>
+                                    Configure the Verify Token and EncodingAESKey fields above, then Save to generate the final URL.
+                                </div>
+                            )}
+                            <div style={{ marginTop: '10px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                Step 2: After URL verification passes, configure Enterprise Trusted IP with your server IPs in the WeCom console.
+                            </div>
+                            <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                Step 3: Paste the App Secret (from that same app page) into the App Secret field above.
+                            </div>
+                        </div>
+                    );
+                })()}
+
             </div>
         );
     };
@@ -737,14 +807,23 @@ function OrgTab({ tenant }: { tenant: any }) {
                     <div style={{ fontWeight: 500, fontSize: '14px' }}>{t('enterprise.org.orgBrowser', 'Organization Browser')}</div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
-                        {['feishu', 'dingtalk', 'wecom'].includes(p.provider_type) && (
+                        {['feishu', 'dingtalk'].includes(p.provider_type) && (
                             <button className="btn btn-secondary btn-sm" style={{ fontSize: '12px' }} onClick={() => triggerSync(p.id)} disabled={!!syncing}>
                                 {syncing === p.id ? 'Syncing...' : 'Sync Directory'}
                             </button>
                         )}
                         {syncResult && (
-                            <div style={{ padding: '6px 10px', borderRadius: '4px', fontSize: '11px', background: syncResult.error ? 'rgba(255,0,0,0.1)' : 'rgba(0,200,0,0.1)' }}>
-                                {syncResult.error ? `Error: ${syncResult.error}` : `Sync complete: ${syncResult.users_created || 0} users created, ${syncResult.profiles_synced || 0} profiles synced.`}
+                            <div style={{ padding: '6px 10px', borderRadius: '4px', fontSize: '11px', background: syncResult.error || (syncResult.errors && syncResult.errors.length > 0) ? 'rgba(255,100,0,0.1)' : 'rgba(0,200,0,0.1)' }}>
+                                {syncResult.error
+                                    ? `Error: ${syncResult.error}`
+                                    : `Sync complete: ${syncResult.departments || 0} depts, ${syncResult.members || 0} members synced.`}
+                                {syncResult.errors && syncResult.errors.length > 0 && (
+                                    <div style={{ marginTop: '4px', color: 'var(--color-warning, #f90)' }}>
+                                        {/* Show first error to help diagnose permission issues */}
+                                        {`Warning: ${syncResult.errors[0]}`}
+                                        {syncResult.errors.length > 1 && ` (+${syncResult.errors.length - 1} more)`}
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
@@ -840,7 +919,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                         {renderForm(idp.type, existingProvider)}
 
                                         {/* Per-channel SSO Login URLs & Toggle */}
-                                        {['feishu', 'dingtalk', 'wecom', 'oauth2'].includes(idp.type) && (
+                                        {['feishu', 'dingtalk', 'oauth2'].includes(idp.type) && (
                                             <SsoChannelSection
                                                 idpType={idp.type}
                                                 existingProvider={existingProvider}
@@ -848,7 +927,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                                 t={t}
                                             />
                                         )}
-                                        {existingProvider && renderOrgBrowser(existingProvider)}
+                                        {existingProvider && idp.type !== 'wecom' && renderOrgBrowser(existingProvider)}
                                     </div>
                                 )}
                             </div>
@@ -1509,29 +1588,34 @@ const COMMON_TIMEZONES = [
 
 function CompanyTimezoneEditor() {
     const { t } = useTranslation();
-    const tenantId = localStorage.getItem('current_tenant_id') || '';
+    const user = useAuthStore((s) => s.user);
+    const tenantId = user?.tenant_id || localStorage.getItem('current_tenant_id') || '';
     const [timezone, setTimezone] = useState('UTC');
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [error, setError] = useState('');
 
     useEffect(() => {
         if (!tenantId) return;
         fetchJson<any>(`/tenants/${tenantId}`)
             .then(d => { if (d?.timezone) setTimezone(d.timezone); })
-            .catch(() => { });
+            .catch((e: any) => setError(e.message || 'Failed to load timezone'));
     }, [tenantId]);
 
     const handleSave = async (tz: string) => {
         if (!tenantId) return;
         setTimezone(tz);
         setSaving(true);
+        setError('');
         try {
             await fetchJson(`/tenants/${tenantId}`, {
                 method: 'PUT', body: JSON.stringify({ timezone: tz }),
             });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
-        } catch (e) { }
+        } catch (e: any) {
+            setError(e.message || 'Failed to save timezone');
+        }
         setSaving(false);
     };
 
@@ -1543,13 +1627,23 @@ function CompanyTimezoneEditor() {
                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                         {t('enterprise.timezone.description', 'Default timezone for all agents. Agents can override individually.')}
                     </div>
+                    {error && (
+                        <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                            ⚠ {error}
+                        </div>
+                    )}
+                    {!tenantId && (
+                        <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                            ⚠ {t('enterprise.timezone.noTenant', 'No company selected. Please refresh the page or contact support.')}
+                        </div>
+                    )}
                 </div>
                 <select
                     className="form-input"
                     value={timezone}
                     onChange={e => handleSave(e.target.value)}
                     style={{ width: '220px', fontSize: '13px' }}
-                    disabled={saving}
+                    disabled={saving || !tenantId}
                 >
                     {COMMON_TIMEZONES.map(tz => (
                         <option key={tz} value={tz}>{tz}</option>
@@ -2219,7 +2313,7 @@ export default function EnterpriseSettings() {
                                                     title={m.enabled ? t('enterprise.llm.clickToDisable', 'Click to disable') : t('enterprise.llm.clickToEnable', 'Click to enable')}
                                                     style={{
                                                         position: 'relative', width: '36px', height: '20px', borderRadius: '10px', border: 'none', cursor: 'pointer', transition: 'background 0.2s',
-                                                        background: m.enabled ? 'var(--success, #00b478)' : 'var(--bg-tertiary, #444)',
+                                                        background: m.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary, #444)',
                                                         padding: 0, flexShrink: 0,
                                                     }}
                                                 >
@@ -2388,6 +2482,95 @@ export default function EnterpriseSettings() {
 
                         {/* ── Broadcast ── */}
                         <BroadcastSection />
+
+                        {/* ── A2A Async Communication (Beta) ── */}
+                        <div style={{ marginTop: '24px', marginBottom: '24px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                <h3 style={{ margin: 0 }}>
+                                    {t('enterprise.a2aAsync.title', 'Agent-to-Agent Async Communication')}
+                                </h3>
+                                <span style={{
+                                    fontSize: '11px', padding: '2px 8px', borderRadius: '10px',
+                                    background: 'var(--warning-bg, #fef3cd)', color: 'var(--warning-text, #856404)',
+                                    fontWeight: 500, letterSpacing: '0.3px',
+                                }}>
+                                    BETA
+                                </span>
+                            </div>
+                            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px', lineHeight: 1.6 }}>
+                                {t('enterprise.a2aAsync.description',
+                                    'Enable agents to communicate asynchronously with three modes: notify (one-way announcement), task_delegate (delegate work and get results back), and consult (synchronous question). When disabled, all agent-to-agent messages use synchronous consult mode — the same behavior as before this feature was introduced.'
+                                )}
+                            </p>
+                            <div className="card" style={{ padding: '16px', display: 'flex', alignItems: 'center', gap: '16px' }}>
+                                <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                                    <input type="checkbox"
+                                        checked={!!currentTenant?.a2a_async_enabled}
+                                        onChange={async (e) => {
+                                            const wantEnable = e.target.checked;
+                                            if (wantEnable) {
+                                                const confirmed = window.confirm(
+                                                    t('enterprise.a2aAsync.enableWarning',
+                                                        [
+                                                            '⚠️ You are about to enable the A2A Async Communication feature (Beta).',
+                                                            '',
+                                                            'This feature allows agents to communicate asynchronously via notify and task_delegate modes.',
+                                                            '',
+                                                            'Known potential issues:',
+                                                            '• Agent replies may contain internal technical terms (trigger names, focus items, etc.)',
+                                                            '• task_delegate callbacks may occasionally be delayed or dropped due to rate limiting',
+                                                            '• Token consumption will increase because each async message triggers a separate agent session',
+                                                            '• Agent loops may occur if triggers are not properly configured',
+                                                            '',
+                                                            'If you encounter any issues, please return to this page and disable the toggle to restore stable synchronous behavior.',
+                                                            '',
+                                                            'Are you sure you want to enable this feature?'
+                                                        ].join('\n')
+                                                    )
+                                                );
+                                                if (!confirmed) return;
+                                            }
+                                            try {
+                                                await fetchJson(`/tenants/${selectedTenantId}`, {
+                                                    method: 'PUT',
+                                                    body: JSON.stringify({ a2a_async_enabled: wantEnable }),
+                                                });
+                                                qc.invalidateQueries({ queryKey: ['tenant', selectedTenantId] });
+                                            } catch (err: any) {
+                                                alert(err.message || 'Update failed');
+                                            }
+                                        }}
+                                        style={{ opacity: 0, width: 0, height: 0 }}
+                                    />
+                                    <span style={{
+                                        position: 'absolute', inset: 0,
+                                        background: currentTenant?.a2a_async_enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                        borderRadius: '11px', transition: 'background 0.2s',
+                                    }}>
+                                        <span style={{
+                                            position: 'absolute',
+                                            left: currentTenant?.a2a_async_enabled ? '20px' : '2px',
+                                            top: '2px', width: '18px', height: '18px',
+                                            background: '#fff', borderRadius: '50%', transition: 'left 0.2s',
+                                        }} />
+                                    </span>
+                                </label>
+                                <div>
+                                    <span style={{ fontSize: '13px', fontWeight: 500 }}>
+                                        {currentTenant?.a2a_async_enabled
+                                            ? t('enterprise.a2aAsync.enabled', 'Enabled')
+                                            : t('enterprise.a2aAsync.disabled', 'Disabled')
+                                        }
+                                    </span>
+                                    <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', margin: '2px 0 0 0' }}>
+                                        {currentTenant?.a2a_async_enabled
+                                            ? t('enterprise.a2aAsync.enabledHint', 'Agents can use notify, task_delegate, and consult modes.')
+                                            : t('enterprise.a2aAsync.disabledHint', 'All agent messages use synchronous consult mode.')
+                                        }
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
 
                         {/* ── Danger Zone: Delete Company ── */}
                         <div style={{ marginTop: '32px', padding: '16px', border: '1px solid var(--status-error, #e53e3e)', borderRadius: '8px' }}>

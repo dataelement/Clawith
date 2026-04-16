@@ -8,7 +8,7 @@ export default function CompanySetup() {
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
     const location = useLocation();
-    const { user, setAuth, logout } = useAuthStore();
+    const { user, setAuth } = useAuthStore();
     const [allowCreate, setAllowCreate] = useState(true);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
@@ -59,9 +59,9 @@ export default function CompanySetup() {
         setLoading(true);
         try {
             await tenantApi.join(inviteCode);
-
             if (fromRegister) {
-                // In registration flow: go to verify email
+                // In registration flow: refresh user then go to verify email
+                await refreshUser();
                 navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
             } else {
                 // Normal flow: refresh user and go home
@@ -81,9 +81,9 @@ export default function CompanySetup() {
         setLoading(true);
         try {
             await tenantApi.selfCreate({ name: companyName });
-
             if (fromRegister) {
-                // In registration flow: go to verify email
+                // In registration flow: refresh user then go to verify email
+                await refreshUser();
                 navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
             } else {
                 // Normal flow: refresh user and go to Enterprise Settings

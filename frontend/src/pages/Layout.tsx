@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate, useMatch } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
@@ -237,6 +237,9 @@ export default function Layout() {
     const { user, logout, setAuth } = useAuthStore();
     const queryClient = useQueryClient();
     const isChinese = i18n.language?.startsWith('zh');
+    // Detect chat page: needs fixed-height main-content for inner scroll to work
+    const isChatPage = !!useMatch('/agents/:id/chat');
+
     const [showAccountSettings, setShowAccountSettings] = useState(false);
     const [showAccountMenu, setShowAccountMenu] = useState(false);
     const [showLanguageSubmenu, setShowLanguageSubmenu] = useState(false);
@@ -1020,7 +1023,7 @@ export default function Layout() {
                 </div>
             )}
 
-            <main className="main-content">
+            <main className={`main-content${isChatPage ? ' chat-page' : ''}`}>
                 <Outlet />
             </main>
 

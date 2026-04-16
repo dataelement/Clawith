@@ -379,8 +379,15 @@
       "cancel": "取消"
     },
     "chat": {
+      "sessionListTitle": "会话列表",
+      "collapseSidebar": "收起会话列表",
       "mySessions": "我的会话",
       "allUsers": "所有用户",
+      "viewOtherUsersSessions": "查看其他用户会话",
+      "otherUsersTab": "其他用户",
+      "selectUserToView": "选择用户",
+      "selectUserFirstHint": "请先选择用户，查看其与该数字员工的会话（只读）。",
+      "noOtherUsersSessions": "暂无其他用户与该数字员工的会话。",
       "newSession": "新建会话",
       "noSessionsYet": "还没有会话。",
       "clickToStart": "点击\"新建会话\"开始。",
@@ -397,7 +404,9 @@
       "askAboutFile": "关于 {{name}} 的问题...",
       "thinking": "思考中...",
       "collapseSessions": "折叠会话列表",
-      "showSessions": "显示聊天会话"
+      "showSessions": "显示聊天会话",
+      "toolCallChain": "使用工具",
+      "analysing": "分析中"
     },
     "activityLog": {
       "title": "工作日志",
@@ -465,6 +474,13 @@
         "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
         "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})",
         "notConfigured": "未配置",
+        "saveSuccess": "渠道配置已保存。",
+        "saveFailed": "渠道配置保存失败。",
+        "disconnectSuccess": "渠道已断开。",
+        "disconnectFailed": "渠道断开失败。",
+        "websocketConnected": "已通过 WebSocket 连接（无需回调 URL）",
+        "websocketDisconnected": "已配置为 WebSocket，但当前未连接",
+        "websocketDisconnectedHint": "重新保存一次企业微信 WebSocket 配置即可重新连接。",
         "saveChannel": "保存配置",
         "syncHint": "在配置飞书机器人之前，请先在企业设置 → 组织架构中同步您的组织结构。这确保机器人能够识别消息发送者。"
       },
@@ -1051,12 +1067,21 @@
       "audit": "审计日志",
       "config": "平台配置",
       "kb": "公司知识库",
-      "approvals": "审批",
-      "skills": "技能管理",
+      "approvals": "审批流程",
+      "skills": "技能",
       "quotas": "配额",
-      "users": "用户",
+      "users": "用户管理",
       "invites": "邀请码",
       "identity": "OA管理"
+    },
+    "a2aAsync": {
+      "title": "数字员工间异步通信",
+      "description": "允许数字员工之间以三种模式通信：notify（单向通知，无需回复）、task_delegate（委派任务并等待结果返回）、consult（同步问答）。关闭后，所有数字员工间的消息将使用同步 consult 模式——即此功能上线前的原有行为。",
+      "enabled": "已开启",
+      "disabled": "已关闭",
+      "enabledHint": "数字员工可使用 notify、task_delegate 和 consult 三种通信模式。",
+      "disabledHint": "所有数字员工消息使用同步 consult 模式。",
+      "enableWarning": "⚠️ 您即将开启数字员工间异步通信功能（测试版）。\n\n此功能允许数字员工通过 notify 和 task_delegate 模式进行异步通信。\n\n已知可能的问题：\n• 数字员工的回复中可能包含内部技术术语（触发器名称、关注项等）\n• task_delegate 回调可能因速率限制而偶尔延迟或丢失\n• Token 消耗将增加，因为每条异步消息都会触发一个独立的数字员工会话\n• 如果触发器配置不当，可能出现数字员工循环调用\n\n如遇到任何问题，请返回此页面关闭开关，即可恢复稳定的同步通信行为。\n\n确定要开启此功能吗？"
     },
     "invites": {
       "pageTitle": "邀请码",
@@ -1322,19 +1347,19 @@
         "feishu": {
           "step1": "打开 open.feishu.cn → 登录 → 开发者后台 → 创建企业自建应用",
           "step2": "左侧菜单 → 凭证与基础信息 → 复制 App ID 和 App Secret，填入下方并保存配置",
-          "step3": "左侧菜单 → 权限管理 → 点击「批量导入/导出权限」→ 粘贴下方权限 JSON → 确认导入",
+          "step3": "左侧菜单 → 权限管理 → 点击「批量导入/导出权限」→ 粘贴下方权限 JSON → 确认导入。【关键权限说明】：同步组织架构时系统使用 user_id（employee_id）作为用户唯一标识，确保组织成员与飞书机器人通道的用户能正确对应（open_id 在不同应用之间不同，不能作为跨应用识别符）。因此 contact:user.employee_id:readonly 权限是必须开通的",
           "step4": "【如需免登】左侧菜单 → 添加应用能力 → 找到「网页应用」→ 点击添加，将下方的 SSO Login URL 填入「桌面端主页」和「移动端主页」",
           "step5": "【如需免登】左侧菜单 → 安全设置 → 在「重定向 URL」中添加下方的 Redirect URL",
           "step6": "【如需免登】打开下方的“SSO登录”开关，团队成员即可通过 SSO Login URL 一键免登",
-          "step7": "左侧菜单 → 版本管理与发布 → 创建版本（可用范围设为所有员工）→ 提交审核发布 → 在飞书管理后台审批通过"
+          "step7": "【必须执行】左侧菜单 → 版本管理与发布 → 创建版本（可用范围设为所有员工）→ 提交审核发布 → 在飞书管理后台审批通过。注意：与钉钉不同，飞书所有权限必须经过发版并由企业管理员审批后才能生效，未发布则同步和 SSO 均无法正常使用"
         },
         "dingtalk": {
-          "step1": "打开 open.dingtalk.com → 登录 → 开发者后台 → 创建企业内部应用 → 填写名称",
-          "step2": "应用能力 → 找到「通讯录」→ 点击添加",
-          "step3": "应用信息 → 复制 AppKey 和 AppSecret",
-          "step4": "通讯录权限 → 勾选部门和成员的读取权限",
-          "step5": "将 AppKey 和 AppSecret 填入下方 → 点击保存配置",
-          "step6": "如需使用钉钉免登：打开下方的SSO登录开关，然后在钉钉中配置：登录与分享 → 填写回调域名（即下方的 Redirect URL 的域名）。分享下方的 SSO Login URL 给团队成员，他们即可一键登录。"
+          "step1": "打开 open.dingtalk.com → 登录 → 进入「应用开发」→ 创建企业内部应用 → 填写名称",
+          "step2": "应用创建后，进入应用页面 → 左侧菜单「凭证与基础信息」→ 复制 AppKey 和 AppSecret，填入下方并保存",
+          "step3": "左侧菜单「开发配置」→「权限管理」→ 在分类「通讯录管理」下，逐一找到并点击「立即开通」以下权限（无需审批，立即生效）：① 通讯录部门信息读权限（含：获取部门列表 qyapi_get_department_list、获取部门详情、获取指定部门的所有父部门列表）；② 成员信息读权限（qyapi_get_member，查询用户详情）；③ 获取部门成员详情（qyapi_get_department_member，用于同步部门用户列表）；④ 企业员工手机号信息（fieldMobile）；⑤ 邮箱等个人信息（fieldEmail）",
+          "step4": "在同一「权限管理」页面 → 切换到「通讯录权限范围」→ 设置为「全部员工」（如有需要也可选择特定部门范围，但需覆盖所有你希望同步的成员）",
+          "step5": "将 AppKey 和 AppSecret 填入下方 → 点击保存配置 → 点击「同步」按钮完成首次同步",
+          "step6": "如需使用钉钉免登：① 在权限管理 → 个人权限分类下，找到「通讯录个人信息读权限」（Contact.User.Read）→ 立即开通（SSO 登录时拉取用户信息必须）；② 打开下方的 SSO 登录开关；③ 在钉钉开发者后台 → 开发配置 → 分享设置 → 接入登录 → 将下方回调域名地址添加为回调域名；④ 将下方的 SSO Login URL 分享给团队成员，即可一键登录"
         },
         "wecom": {
           "step1": "登录企业微信管理后台 → 管理工具 → 通讯录同步",
@@ -1506,7 +1531,17 @@
       "botId": "机器人 ID（智能机器人）",
       "botSecret": "机器人密钥",
       "appKey": "App Key",
-      "appSecret": "App Secret"
+      "appSecret": "App Secret",
+      "wecomNotice": {
+        "title": "企业微信集成前置条件",
+        "syncTitle": "1. 通讯录同步",
+        "syncDesc": "通过通讯录 Secret 可以获取成员 ID，但要同步完整信息（姓名、头像、邮箱），需要将服务器 IP 加入企微自建应用的「企业可信IP」白名单，该操作需由企微管理员完成。",
+        "ssoTitle": "2. SSO 登录（单点登录）",
+        "ssoDesc": "企业微信 OAuth 要求回调域名完成 ICP 备案，且备案主体须与企微企业一致。当前平台域名（clawith.ai）属于 .ai 顶级域名，在中国大陆无法完成 ICP 备案，因此 SSO 功能暂时无法使用。需要已备案的 .com/.cn 域名，或通过企微服务商（ISV）渠道接入。",
+        "messagingTitle": "3. AI 主动发送一对一消息",
+        "messagingDesc": "向企微成员主动发消息，需先获取有效的 API access_token，而获取 token 的请求 IP 必须在自建应用的「企业可信IP」白名单中。与飞书不同，企微对所有 API 调用均强制要求 IP 白名单，没有仅凭 token 认证的选项。",
+        "footerText": "由于上述限制，目前大多数用户无法轻松完成企业微信集成配置。我们正在积极探索替代方案——包括申请企微服务商（ISV）资质及寻找限制更少的接入方式——同时也希望企微能够降低对 SaaS 平台的接入门槛。待可行路径明确后，配置入口将重新开启。"
+      }
     }
   },
   "common": {
@@ -1546,7 +1581,8 @@
     "lightMode": "浅色模式",
     "darkMode": "深色模式",
     "collapseSidebar": "折叠侧边栏",
-    "expandSidebar": "展开侧边栏"
+    "expandSidebar": "展开侧边栏",
+    "deleting": "删除中..."
   },
   "admin": {
     "title": "公司管理",

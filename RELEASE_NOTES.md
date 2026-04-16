@@ -1,55 +1,85 @@
-# v1.8.0-beta.3
+# v1.8.3-beta.2 — A2A Async Communication, Image Context & Search Tools
 
-## What's Changed
+## What's New
 
-### New Features
+### Agent-to-Agent (A2A) Async Communication — Beta
+- **Three communication modes** for `send_message_to_agent`:
+  - `notify` — fire-and-forget, one-way announcement
+  - `task_delegate` — delegate work and get results back asynchronously via `on_message` trigger
+  - `consult` — synchronous question-reply (original behaviour)
+- **Feature flag**: controlled at the tenant level via Company Settings → Company Info → A2A Async toggle (default: **OFF**)
+- When disabled, the `msg_type` parameter is **hidden from the LLM** so agents only see synchronous consult mode
+- Security: chain depth protection (max 3 hops), regex filtering of internal terms, SQL injection prevention
+- Performance: async wake sessions use the agent's own `max_tool_rounds` setting (default 50)
 
-- **Split Code Executor into Local and E2B Cloud tools** — The single "Code Executor" tool has been separated into two independent tools. The local tool shows CPU/memory/network config; the E2B Cloud tool only requires an API key. E2B errors are now surfaced explicitly instead of silently falling back to local execution.
-- **MCP Server credential management** — New "Edit Server" UI and `PUT /tools/mcp-server` API endpoint for bulk-updating MCP server URLs and API keys across all tools sharing the same server.
-- **Feishu Wiki document creation** — `feishu_doc_create` now supports creating documents directly inside Wiki knowledge bases, with automatic detection of Wiki node tokens.
-- **Feishu permission JSON UI redesign** — Two-tier segmented control (Basic / Full) with i18n support for Feishu app permission configuration.
-- **Live Preview auto-sizing** — AgentBay Live Preview panel now auto-sizes to 50% of the chat container width.
+### Multimodal Image Context
+- Base64 image markers are now persisted to the database at write time
+- Chat UI correctly strips `[image_data:]` markers and renders thumbnails
+- Fixed chat page vertical scrolling (flexbox `min-height: 0` constraint)
+- Removed deprecated `/agents/:id/chat` route
+
+### Search Engine Tools
+- New `Exa Search` tool — AI-powered semantic search with category filtering
+- New standalone search engine tools: DuckDuckGo, Tavily, Google, Bing (each as own tool)
+
+### UI Improvements
+- Drag-and-drop file upload across the application
+- Chat sidebar polish: segment control, session items styling
+- Agent-to-agent sessions now visible in the admin "Other Users" tab
 
 ### Bug Fixes
+- DingTalk org sync rate limiting to prevent API throttling
+- Tool seeder: `parameters_schema` now correctly included in new tool INSERT
+- Unified `msg_type` enum references across codebase
+- Docker access port corrected to 3008
 
-- **Plaintext SMTP relay support** — STARTTLS is now auto-negotiated based on server ESMTP capabilities instead of being forced on port 25/587. AUTH is skipped for unauthenticated IP-whitelisted internal relays. Password is no longer a required field in email configuration.
-- **Unified context window size** — Introduced `DEFAULT_CONTEXT_WINDOW_SIZE = 100` constant and unified all 9 communication channels (WebSocket, Feishu, Discord, WeCom, DingTalk, Teams, Slack) to use consistent fallback values.
-- **LLM stream retry** — Added `httpx.RemoteProtocolError` to the stream retry logic to handle upstream connection resets.
-- **Tool config double-encryption** — Fixed a bug where already-encrypted sensitive config fields were encrypted again on save.
-- **Loguru format collision** — Replaced `logger.error(..., exc_info=True)` with `logger.exception(...)` across all channel handlers to prevent crashes when error messages contain special characters.
-- **WeCom message handler** — Fixed `NameError` (`agent` vs `agent_obj`) and migrated user creation to `channel_user_service` to avoid AssociationProxy errors.
-- **Duplicate tool definition** — Removed `send_channel_message` from `_ALWAYS_INCLUDE_CORE` to prevent "Tool names must be unique" LLM errors.
-- **AgentBay connection test** — Fixed test image name (`linux_latest`) and `api_key` lookup in global tool config fallback.
-- **FastAPI route ordering** — Reordered `/tools/mcp-server/bulk` before `/tools/{tool_id}` to prevent 422 validation errors on older FastAPI versions.
-- **Other fixes** — LLM model temperature persistence, org_admin access to GitHub/ClawHub tokens, MCP tool import tenant scoping.
+---
 
-### UI / i18n
+## v1.8.3-beta.2 — Bug Fixes
 
-- **Context Window Size terminology** — Corrected misleading "Max Rounds" / "Context Rounds" labels to industry-standard "Context Window Size" with accurate descriptions.
-- **MCP Server group header** — Displays hostname instead of full URL for cleaner display.
+### A2A Chat History Fixes
+- **A2A session now shows both sides of the conversation**: when a target agent is woken via `notify` or `task_delegate`, its reply is now mirrored into the shared A2A chat session so the full conversation is visible in the admin **Other Users** tab
+- **Removed hardcoded 2-round tool call limit** for A2A wake invocations: agents were hitting the limit before completing basic tasks; they now use their own configurable `max_tool_rounds` setting (default 50)
+- **Fixed message loading order**: sessions with many messages (e.g. long-running A2A threads) were only showing the oldest 500 messages; now correctly loads the most recent 500
 
-## Upgrade Notes
+## Upgrade Guide
 
-This is a **drop-in upgrade** from v1.8.0-beta.2. No breaking changes.
+> **Database migration required.** Run `alembic upgrade heads` to add the `a2a_async_enabled` column.
 
-- **No database migrations required**
-- **No new dependencies**
-- **No environment variable changes**
-- The new `execute_code_e2b` tool will be automatically created by the tool seeder on startup. It is **not** a default tool — agents will not have it unless explicitly added.
-- The existing `execute_code` tool's config schema will be auto-synced (the sandbox type dropdown is removed since it's now always "subprocess").
+### Docker Deployment (Recommended)
 
-### Docker Deployment
 ```bash
 git pull origin main
+
+# Run database migration
+docker exec clawith-backend-1 alembic upgrade heads
+
+# Rebuild and restart
 docker compose down && docker compose up -d --build
 ```
 
 ### Source Deployment
+
 ```bash
 git pull origin main
-# Backend
-pip install -r backend/requirements.txt  # no changes expected, but safe to run
-# Frontend (pre-built dist.zip is included)
-cd frontend && unzip -o dist.zip -d dist/
+
+# Run database migration
+alembic upgrade heads
+
+# Rebuild frontend
+cd frontend && npm install && npm run build
+cd ..
+
 # Restart services
 ```
+
+### Kubernetes (Helm)
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+# Run migration job for a2a_async_enabled column
+```
+
+### Notes
+- The A2A Async feature is **disabled by default**. No behaviour changes until explicitly enabled.
+- The `a2a_async_enabled` column defaults to `FALSE`, so existing tenants are unaffected.

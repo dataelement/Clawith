@@ -23,9 +23,12 @@ class UserQuotaUpdate(BaseModel):
 
 class UserOut(BaseModel):
     id: uuid.UUID
-    username: str
-    email: str
-    display_name: str
+    # username/email/display_name can be None for SSO-created users whose Identity
+    # was created without explicit values (e.g., DingTalk/Feishu OAuth flow).
+    # The frontend should handle None gracefully.
+    username: str | None = None
+    email: str | None = None
+    display_name: str | None = None
     role: str
     is_active: bool
     # Quota fields
@@ -38,7 +41,7 @@ class UserOut(BaseModel):
     agents_count: int = 0
     # Source info
     created_at: str | None = None
-    source: str = 'registered'  # 'registered' | 'feishu'
+    source: str = 'registered'  # 'registered' | 'feishu' | 'dingtalk' | 'wecom' | etc.
 
     model_config = {"from_attributes": True}
 
@@ -77,9 +80,11 @@ async def list_users(
 
         user_dict = {
             "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "display_name": u.display_name,
+            # Fallback to empty string if username/email/display_name is None to prevent
+            # serialization errors for SSO-created users with incomplete Identity records.
+            "username": u.username or u.email or f"{u.registration_source or 'user'}_{str(u.id)[:8]}",
+            "email": u.email or "",
+            "display_name": u.display_name or u.username or "",
             "role": u.role,
             "is_active": u.is_active,
             "quota_message_limit": u.quota_message_limit,

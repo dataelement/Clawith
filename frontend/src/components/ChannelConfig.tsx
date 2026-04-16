@@ -9,7 +9,16 @@ function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     return fetch(`/api${url}`, {
         ...options,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    }).then(r => r.json());
+    }).then(async r => {
+        if (r.status === 204) {
+            return undefined as T;
+        }
+        if (!r.ok) {
+            const error = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
+            throw new Error(error.detail || `HTTP ${r.status}`);
+        }
+        return r.json() as Promise<T>;
+    });
 }
 
 // ─── Types ──────────────────────────────────────────────
@@ -326,6 +335,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     // Atlassian test connection state
     const [atlassianTesting, setAtlassianTesting] = useState(false);
     const [atlassianTestResult, setAtlassianTestResult] = useState<{ ok: boolean; message?: string; tool_count?: number; error?: string } | null>(null);
+    const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
     // AgentBay test connection state
     const [agentbayTesting, setAgentbayTesting] = useState(false);
@@ -443,6 +453,16 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             // Reset form
             setForms(prev => ({ ...prev, [ch.id]: {} }));
             setEditing(ch.id, false);
+            setActionFeedback({
+                type: 'success',
+                text: t('agent.settings.channel.saveSuccess', 'Channel configuration saved.'),
+            });
+        },
+        onError: (error: Error) => {
+            setActionFeedback({
+                type: 'error',
+                text: error.message || t('agent.settings.channel.saveFailed', 'Failed to save channel configuration.'),
+            });
         },
     });
 
@@ -460,6 +480,17 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
             if (ch.id === 'atlassian') setAtlassianTestResult(null);
             if (ch.id === 'agentbay') setAgentbayTestResult(null);
+            setEditing(ch.id, false);
+            setActionFeedback({
+                type: 'success',
+                text: t('agent.settings.channel.disconnectSuccess', 'Channel disconnected.'),
+            });
+        },
+        onError: (error: Error) => {
+            setActionFeedback({
+                type: 'error',
+                text: error.message || t('agent.settings.channel.disconnectFailed', 'Failed to disconnect channel.'),
+            });
         },
     });
 
@@ -788,10 +819,27 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 {/* WeCom websocket status */}
                                 {ch.id === 'wecom' && configConnMode === 'websocket' && (
                                     <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#07C160', display: 'inline-block' }}></span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>Connected via WebSocket (No callback URL needed)</span>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                            <span
+                                                style={{
+                                                    width: '6px',
+                                                    height: '6px',
+                                                    borderRadius: '50%',
+                                                    background: config.is_connected ? '#07C160' : '#F59E0B',
+                                                    display: 'inline-block',
+                                                }}
+                                            ></span>
+                                            <span style={{ color: 'var(--text-secondary)' }}>
+                                                {config.is_connected
+                                                    ? t('agent.settings.channel.websocketConnected', 'Connected via WebSocket (No callback URL needed)')
+                                                    : t('agent.settings.channel.websocketDisconnected', 'Configured for WebSocket, but currently disconnected')}
+                                            </span>
                                         </div>
+                                        {!config.is_connected && (
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                {t('agent.settings.channel.websocketDisconnectedHint', 'Reconnect by saving the WeCom WebSocket configuration again.')}
+                                            </div>
+                                        )}
                                     </div>
                                 )}
 
@@ -1048,6 +1096,21 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         <div className="card" style={{ marginBottom: '12px' }}>
             <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.channel.title')}</h4>
             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>{t('agent.settings.channel.title')}</p>
+            {actionFeedback && (
+                <div
+                    style={{
+                        padding: '10px 14px',
+                        borderRadius: '8px',
+                        marginBottom: '12px',
+                        background: actionFeedback.type === 'success' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
+                        border: `1px solid ${actionFeedback.type === 'success' ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                        fontSize: '12px',
+                        color: actionFeedback.type === 'success' ? 'rgb(5,150,105)' : 'rgb(220,38,38)',
+                    }}
+                >
+                    {actionFeedback.text}
+                </div>
+            )}
             <div style={{
                 padding: '10px 14px', borderRadius: '8px', marginBottom: '16px',
                 background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)',

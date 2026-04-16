@@ -16,6 +16,7 @@ from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
+from app.services.llm import call_llm, call_llm_with_failover
 
 router = APIRouter(tags=["websocket"])
 
@@ -109,310 +110,6 @@ async def get_chat_history(
     return out
 
 
-async def call_llm(
-    model: LLMModel,
-    messages: list[dict],
-    agent_name: str,
-    role_description: str,
-    agent_id=None,
-    user_id=None,
-    session_id: str = "",
-    on_chunk=None,
-    on_tool_call=None,
-    on_thinking=None,
-    supports_vision=False,
-) -> str:
-    """Call LLM via unified client with function-calling tool loop.
-
-    Args:
-        on_chunk: Optional async callback(text: str) for streaming chunks to client.
-        on_thinking: Optional async callback(text: str) for reasoning/thinking content.
-        on_tool_call: Optional async callback(dict) for tool call status updates.
-    """
-    from app.services.agent_tools import AGENT_TOOLS, execute_tool, get_agent_tools_for_llm
-    from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError
-
-    # ── Token limit check & config ──
-    _max_tool_rounds = 50  # default
-    if agent_id:
-        try:
-            from app.models.agent import Agent as AgentModel
-            async with async_session() as _db:
-                _ar = await _db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-                _agent = _ar.scalar_one_or_none()
-                if _agent:
-                    _max_tool_rounds = _agent.max_tool_rounds or 50
-                    if _agent.max_tokens_per_day and _agent.tokens_used_today >= _agent.max_tokens_per_day:
-                        return f"⚠️ Daily token usage has reached the limit ({_agent.tokens_used_today:,}/{_agent.max_tokens_per_day:,}). Please try again tomorrow or ask admin to increase the limit."
-                    if _agent.max_tokens_per_month and _agent.tokens_used_month >= _agent.max_tokens_per_month:
-                        return f"⚠️ Monthly token usage has reached the limit ({_agent.tokens_used_month:,}/{_agent.max_tokens_per_month:,}). Please ask admin to increase the limit."
-        except Exception:
-            pass
-
-    # Build rich prompt with soul, memory, skills, relationships
-    from app.services.agent_context import build_agent_context
-    # Look up current user's display name so the agent knows who it's talking to
-    _current_user_name = None
-    if user_id:
-        try:
-            from app.models.user import User as _UserModel
-            async with async_session() as _udb:
-                _ur = await _udb.execute(select(_UserModel).where(_UserModel.id == user_id))
-                _u = _ur.scalar_one_or_none()
-                if _u:
-                    _current_user_name = _u.display_name or _u.username
-        except Exception:
-            pass
-    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
-
-    # Load tools dynamically from DB
-    tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
-
-    # Convert messages to LLMMessage format
-    api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
-    for msg in messages:
-        api_messages.append(LLMMessage(
-            role=msg.get("role", "user"),
-            content=msg.get("content"),
-            tool_calls=msg.get("tool_calls"),
-            tool_call_id=msg.get("tool_call_id"),
-        ))
-
-    # ── Vision format conversion ──
-    # If the model supports vision, convert image markers in user messages
-    # to OpenAI Vision API format: content becomes an array of parts.
-    if supports_vision:
-        import re as _re_v
-        for i, msg in enumerate(api_messages):
-            if msg.role != "user" or not msg.content or not isinstance(msg.content, str):
-                continue
-            content_str = msg.content
-            # Find [image_data:data:image/...;base64,...] markers
-            pattern = r'\[image_data:(data:image/[^;]+;base64,[A-Za-z0-9+/=]+)\]'
-            images = _re_v.findall(pattern, content_str)
-            if not images:
-                continue
-            # Build content array
-            text = _re_v.sub(pattern, '', content_str).strip()
-            parts = []
-            for img_url in images:
-                parts.append({"type": "image_url", "image_url": {"url": img_url}})
-            if text:
-                parts.append({"type": "text", "text": text})
-            # Replace the message content with the array format
-            api_messages[i] = LLMMessage(
-                role=msg.role,
-                content=parts,  # type: ignore  # This is valid for vision models
-            )
-    else:
-        # Strip base64 image markers for non-vision models to avoid wasting tokens
-        import re as _re_strip
-        _img_pattern = r'\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]'
-        for i, msg in enumerate(api_messages):
-            if msg.role != "user" or not isinstance(msg.content, str):
-                continue
-            if "[image_data:" in msg.content:
-                _n_imgs = len(_re_strip.findall(_img_pattern, msg.content))
-                cleaned = _re_strip.sub(_img_pattern, '', msg.content).strip()
-                if _n_imgs > 0:
-                    cleaned += f"\n[用户发送了 {_n_imgs} 张图片，但当前模型不支持视觉，无法查看图片内容]"
-                api_messages[i] = LLMMessage(
-                    role=msg.role,
-                    content=cleaned,
-                )
-
-    # Create the unified LLM client
-    try:
-        client = create_llm_client(
-            provider=model.provider,
-            api_key=model.api_key_encrypted,
-            model=model.model,
-            base_url=model.base_url,
-            timeout=float(getattr(model, 'request_timeout', None) or 120.0),
-        )
-    except Exception as e:
-        return f"[Error] Failed to create LLM client: {e}"
-
-    max_tokens = get_max_tokens(model.provider, model.model, getattr(model, 'max_output_tokens', None))
-
-    # ── Per-round token accumulator ──
-    from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
-    _accumulated_tokens = 0
-
-    # Tool-calling loop (configurable per agent, default 50)
-    for round_i in range(_max_tool_rounds):
-        # ── Dynamic tool-call limit warning (Aware engine) ──
-        # Don't tell the agent about limits at the start — only warn when approaching.
-        # This prevents models from rushing to complete tasks prematurely.
-        _warn_threshold_80 = int(_max_tool_rounds * 0.8)
-        _warn_threshold_96 = _max_tool_rounds - 2
-        if round_i == _warn_threshold_80:
-            api_messages.append(LLMMessage(
-                role="user",
-                content=(
-                    f"⚠️ 你已使用 {round_i}/{_max_tool_rounds} 轮工具调用。"
-                    "如果当前任务尚未完成，请尽快保存进度到 focus.md，"
-                    "并使用 set_trigger 设置续接触发器，在剩余轮次中做好收尾。"
-                ),
-            ))
-        elif round_i == _warn_threshold_96:
-            api_messages.append(LLMMessage(
-                role="user",
-                content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 focus.md 并设置续接触发器。",
-            ))
-
-        try:
-            # Use streaming API for real-time responses
-            response = await client.stream(
-                messages=api_messages,
-                tools=tools_for_llm if tools_for_llm else None,
-                temperature=model.temperature,
-                max_tokens=max_tokens,
-                on_chunk=on_chunk,
-                on_thinking=on_thinking,
-            )
-        except LLMError as e:
-            # Record accumulated tokens before returning error
-            logger.error(
-                f"[LLM] LLMError provider={getattr(model, 'provider', '?')} "
-                f"model={getattr(model, 'model', '?')} round={round_i + 1}: {e}"
-            )
-            if agent_id and _accumulated_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_tokens)
-            return f"[LLM Error] {e}"
-        except Exception as e:
-            logger.error(
-                f"[LLM] Unexpected error provider={getattr(model, 'provider', '?')} "
-                f"model={getattr(model, 'model', '?')} round={round_i + 1}: "
-                f"{type(e).__name__}: {str(e)[:300]}"
-            )
-            if agent_id and _accumulated_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_tokens)
-            return f"[LLM call error] {type(e).__name__}: {str(e)[:200]}"
-
-        # ── Track tokens for this round ──
-        real_tokens = extract_usage_tokens(response.usage)
-        if real_tokens:
-            _accumulated_tokens += real_tokens
-        else:
-            # Fallback: estimate from message content length
-            round_chars = sum(len(m.content or '') if isinstance(m.content, str) else 0 for m in api_messages) + len(response.content or '')
-            _accumulated_tokens += estimate_tokens_from_chars(round_chars)
-
-        # If no tool calls, return the final content
-        if not response.tool_calls:
-            if agent_id and _accumulated_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_tokens)
-            await client.close()
-            return response.content or "[LLM returned empty content]"
-
-        # Execute tool calls
-        logger.info(f"[LLM] Round {round_i+1}: {len(response.tool_calls)} tool call(s), finish_reason={response.finish_reason}")
-
-        # Add assistant message with tool calls
-        api_messages.append(LLMMessage(
-            role="assistant",
-            content=response.content or None,
-            tool_calls=[{
-                "id": tc["id"],
-                "type": "function",
-                "function": tc["function"],
-            } for tc in response.tool_calls],
-            reasoning_content=response.reasoning_content,
-        ))
-
-        full_reasoning_content = response.reasoning_content or ""
-
-        # Tools that require arguments — if LLM sends empty args, skip and ask to retry
-        _TOOLS_REQUIRING_ARGS = {"write_file", "read_file", "delete_file", "read_document", "send_message_to_agent", "send_feishu_message", "send_email"}
-
-        for tc in response.tool_calls:
-            fn = tc["function"]
-            tool_name = fn["name"]
-            raw_args = fn.get("arguments", "{}")
-            logger.info(f"[LLM] Raw arguments for {tool_name} (len={len(raw_args)}): {repr(raw_args[:300])}")
-            try:
-                args = json.loads(raw_args) if raw_args else {}
-            except json.JSONDecodeError:
-                args = {}
-
-            # Guard: if a tool that requires arguments received empty args,
-            # return an error to LLM instead of executing (Claude sometimes
-            # emits tool_use blocks with no input_json_delta events)
-            if not args and tool_name in _TOOLS_REQUIRING_ARGS:
-                logger.warning(f"[LLM] Empty arguments for {tool_name}, asking LLM to retry")
-                api_messages.append(LLMMessage(
-                    role="tool",
-                    content=f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments.",
-                    tool_call_id=tc.get("id", ""),
-                ))
-                continue
-
-            logger.info(f"[LLM] Calling tool: {tool_name}({args})")
-            # Notify client about tool call (in-progress)
-            if on_tool_call:
-                try:
-                    await on_tool_call({
-                        "name": tool_name,
-                        "args": args,
-                        "status": "running",
-                        "reasoning_content": full_reasoning_content
-                    })
-                except Exception:
-                    pass
-
-            result = await execute_tool(
-                tool_name, args,
-                agent_id=agent_id,
-                user_id=user_id or agent_id,
-                session_id=session_id,
-            )
-            logger.debug(f"[LLM] Tool result: {result[:100]}")
-
-            # Notify client about tool call result
-            if on_tool_call:
-                try:
-                    await on_tool_call({
-                        "name": tool_name,
-                        "args": args,
-                        "status": "done",
-                        "result": result,
-                        "reasoning_content": full_reasoning_content
-                    })
-                except Exception as _cb_err:
-                    logger.warning(f"[LLM] on_tool_call callback error: {_cb_err}")
-
-            # ── Vision injection for screenshot tools ──
-            # If the model supports vision, try to inject the actual screenshot
-            # image into the tool result so the LLM can SEE what's on screen.
-            # Without this, the LLM only gets text like "Screenshot saved to ..."
-            # and blindly guesses the page content.
-            tool_content: str | list = str(result)
-            if supports_vision and agent_id:
-                try:
-                    from app.services.vision_inject import try_inject_screenshot_vision
-                    from app.services.agent_tools import WORKSPACE_ROOT
-                    ws_path = WORKSPACE_ROOT / str(agent_id)
-                    vision_content = try_inject_screenshot_vision(tool_name, str(result), ws_path)
-                    if vision_content:
-                        tool_content = vision_content
-                        logger.info(f"[LLM] Injected screenshot vision for {tool_name}")
-                except Exception as e:
-                    logger.warning(f"[LLM] Vision injection failed for {tool_name}: {e}")
-
-            api_messages.append(LLMMessage(
-                role="tool",
-                tool_call_id=tc["id"],
-                content=tool_content,
-            ))
-
-    # Record tokens even on "too many rounds" exit
-    if agent_id and _accumulated_tokens > 0:
-        await record_token_usage(agent_id, _accumulated_tokens)
-    await client.close()
-    return "[Error] Too many tool call rounds"
-
-
 @router.websocket("/ws/chat/{agent_id}")
 async def websocket_chat(
     websocket: WebSocket,
@@ -474,8 +171,7 @@ async def websocket_chat(
             agent_type = agent.agent_type or ""
             role_description = agent.role_description or ""
             welcome_message = agent.welcome_message or ""
-            from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
-            ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
+            ctx_size = agent.context_window_size or 100
             logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}, ctx: {ctx_size}")
 
             # Load the agent's primary model
@@ -484,7 +180,6 @@ async def websocket_chat(
                     select(LLMModel).where(LLMModel.id == agent.primary_model_id)
                 )
                 llm_model = model_result.scalar_one_or_none()
-                # Treat disabled models as unavailable at runtime
                 if llm_model and not llm_model.enabled:
                     logger.info(f"[WS] Primary model {llm_model.model} is disabled, skipping")
                     llm_model = None
@@ -497,7 +192,6 @@ async def websocket_chat(
                     select(LLMModel).where(LLMModel.id == agent.fallback_model_id)
                 )
                 fallback_llm_model = fb_result.scalar_one_or_none()
-                # Treat disabled fallback models as unavailable
                 if fallback_llm_model and not fallback_llm_model.enabled:
                     logger.info(f"[WS] Fallback model {fallback_llm_model.model} is disabled, skipping")
                     fallback_llm_model = None
@@ -516,16 +210,26 @@ async def websocket_chat(
             from datetime import datetime as _dt, timezone as _tz
             conv_id = session_id
             if conv_id:
-                # Validate the session belongs to this agent
-                _sr = await db.execute(
-                    _sel(ChatSession).where(
-                        ChatSession.id == uuid.UUID(conv_id),
-                        ChatSession.agent_id == agent_id,
+                # Validate the session belongs to this agent and to this user.
+                try:
+                    _sid = uuid.UUID(conv_id)
+                except (ValueError, TypeError):
+                    conv_id = None
+                    _existing = None
+                else:
+                    _sr = await db.execute(
+                        _sel(ChatSession).where(
+                            ChatSession.id == _sid,
+                            ChatSession.agent_id == agent_id,
+                        )
                     )
-                )
-                _existing = _sr.scalar_one_or_none()
-                if not _existing:
-                    conv_id = None  # fall through to create
+                    _existing = _sr.scalar_one_or_none()
+                    if not _existing:
+                        conv_id = None
+                    elif _existing.source_channel != "agent" and str(_existing.user_id) != str(user_id):
+                        await websocket.send_json({"type": "error", "content": "Not authorized for this session"})
+                        await websocket.close(code=4003)
+                        return
             if not conv_id:
                 # Find most recent session for this user+agent
                 _sr = await db.execute(
@@ -577,12 +281,10 @@ async def websocket_chat(
     manager.active_connections[agent_id_str].append((websocket, conv_id))
     logger.info(f"[WS] Ready! Agent={agent_name}")
 
-    # Send session_id to frontend so Take Control can reference the correct session
+    # Send session_id to frontend so Take Control can reference the correct session.
     await websocket.send_json({"type": "connected", "session_id": conv_id})
 
     # Build conversation context from history
-    # IMPORTANT: Include tool_call messages so the LLM maintains tool-calling behavior.
-    # Without them, Claude sees user→assistant-text patterns and learns to skip tools.
     conversation: list[dict] = []
     for msg in history_messages:
         if msg.role == "tool_call":
@@ -608,9 +310,6 @@ async def websocket_chat(
                     asst_msg["reasoning_content"] = tc_data["reasoning_content"]
                 conversation.append(asst_msg)
                 # Tool result message.
-                # Sanitize any stale [ImageID: ...] markers left by the ephemeral
-                # screenshot cache — those images are gone from memory and would
-                # confuse the LLM if sent as-is.
                 from app.services.vision_inject import sanitize_history_tool_result
                 sanitized_result = sanitize_history_tool_result(str(tc_result))
                 conversation.append({
@@ -635,7 +334,7 @@ async def websocket_chat(
             logger.info(f"[WS] Waiting for message from {agent_name}...")
             data = await websocket.receive_json()
 
-            # Set a unique trace ID for this specific message processing
+            # Set a unique trace ID for this specific message processing.
             from app.core.logging_config import set_trace_id
             import uuid as _trace_uuid
             trace_id = str(_trace_uuid.uuid4())[:12]
@@ -668,11 +367,17 @@ async def websocket_chat(
             # Add user message to conversation (full LLM context)
             conversation.append({"role": "user", "content": content})
 
-            # Save user message — display_content for history display, content for LLM
-            # Prefix with [file:name] if there's a file attachment so history can show it
-            saved_content = display_content if display_content else content
-            if file_name:
-                saved_content = f"[file:{file_name}]\n{saved_content}"
+            # Save user message to DB.
+            #
+            # If the LLM content contains [image_data:...] markers, persist the full
+            # payload so subsequent turns can still forward the image to the model.
+            has_image_marker = "[image_data:" in content
+            if has_image_marker:
+                saved_content = f"[file:{file_name}]\n{content}" if file_name else content
+            else:
+                saved_content = display_content if display_content else content
+                if file_name:
+                    saved_content = f"[file:{file_name}]\n{saved_content}"
             async with async_session() as db:
                 user_msg = ChatMessage(
                     agent_id=agent_id,
@@ -747,39 +452,31 @@ async def websocket_chat(
                         partial_chunks.append(text)
                         await websocket.send_json({"type": "chunk", "content": text})
                     
-                    # Track which agentbay live URLs have been sent to avoid redundant pushes
-                    _sent_live_envs: set[str] = set()
-
                     async def tool_call_to_ws(data: dict):
                         """Send tool call info to client and persist completed ones."""
-                        # ── AgentBay live preview: embed screenshot URL in tool_call message ──
-                        # We embed live preview data directly in the tool_call payload
-                        # because separate WebSocket messages get silently dropped by nginx.
                         if data.get("status") == "done":
                             try:
                                 from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
-                                import re as _re_live
+
                                 tool_name = data.get("name", "")
                                 env = detect_agentbay_env(tool_name)
-                                if env:
+                                if env == "desktop":
+                                    b64_url = await get_desktop_screenshot(agent_id, session_id=conv_id)
+                                    if b64_url:
+                                        data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                        logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                elif env == "browser":
+                                    b64_url = await get_browser_snapshot(agent_id, session_id=conv_id)
+                                    if b64_url:
+                                        data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                        logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                elif env == "code":
                                     tool_result = data.get("result", "") or ""
-                                    if env == "desktop":
-                                        b64_url = await get_desktop_screenshot(agent_id, session_id=conv_id)
-                                        if b64_url:
-                                            data["live_preview"] = {"env": env, "screenshot_url": b64_url}
-                                            logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
-                                    elif env == "browser":
-                                        b64_url = await get_browser_snapshot(agent_id, session_id=conv_id)
-                                        if b64_url:
-                                            data["live_preview"] = {"env": env, "screenshot_url": b64_url}
-                                            logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
-                                    elif env == "code":
-                                        data["live_preview"] = {"env": "code", "output": tool_result[:5000]}
+                                    data["live_preview"] = {"env": "code", "output": tool_result[:5000]}
                             except Exception as _lp_err:
                                 logger.warning(f"[WS][LivePreview] Embed failed: {_lp_err}")
 
                         await websocket.send_json({"type": "tool_call", **data})
-
                         # Save completed tool calls to DB so they persist in chat history
                         if data.get("status") == "done":
                             try:
@@ -813,20 +510,33 @@ async def websocket_chat(
 
                     import asyncio as _aio
 
-                    # Run call_llm as a cancellable task
-                    llm_task = _aio.create_task(call_llm(
-                        llm_model,
-                        conversation[-ctx_size:],
-                        agent_name,
-                        role_description,
-                        agent_id=agent_id,
-                        user_id=user_id,
-                        session_id=conv_id,
-                        on_chunk=stream_to_ws,
-                        on_tool_call=tool_call_to_ws,
-                        on_thinking=thinking_to_ws,
-                        supports_vision=getattr(llm_model, 'supports_vision', False),
-                    ))
+                    # Run call_llm_with_failover as a cancellable task
+                    async def _call_with_failover():
+                        async def _on_failover(reason: str):
+                            await websocket.send_json({"type": "info", "content": f"Primary model error, {reason}"})
+
+                        # To prevent tool call message pairs(assistant + tool) from being broken down.
+                        _truncated = conversation[-ctx_size:]
+                        while _truncated and _truncated[0].get("role") == "tool":
+                            _truncated.pop(0)
+
+                        return await call_llm_with_failover(
+                            primary_model=llm_model,
+                            fallback_model=fallback_llm_model,
+                            messages=_truncated,
+                            agent_name=agent_name,
+                            role_description=role_description,
+                            agent_id=agent_id,
+                            user_id=user_id,
+                            session_id=conv_id,
+                            on_chunk=stream_to_ws,
+                            on_tool_call=tool_call_to_ws,
+                            on_thinking=thinking_to_ws,
+                            supports_vision=getattr(llm_model, 'supports_vision', False),
+                            on_failover=_on_failover,
+                        )
+
+                    llm_task = _aio.create_task(_call_with_failover())
 
                     # Listen for abort while LLM is running
                     aborted = False
@@ -892,31 +602,7 @@ async def websocket_chat(
                     logger.error(f"[WS] LLM error: {e}")
                     import traceback
                     traceback.print_exc()
-                    # Runtime fallback: primary model failed -> retry with fallback model
-                    if fallback_llm_model:
-                        logger.info(f"[WS] Primary model failed, retrying with fallback: {fallback_llm_model.model}")
-                        try:
-                            await websocket.send_json({"type": "info", "content": f"Primary model error, switching to fallback model ({fallback_llm_model.model})..."})
-                            assistant_response = await call_llm(
-                                fallback_llm_model,
-                                conversation[-ctx_size:],
-                                agent_name,
-                                role_description,
-                                agent_id=agent_id,
-                                user_id=user_id,
-                                session_id=conv_id,
-                                on_chunk=stream_to_ws,
-                                on_tool_call=tool_call_to_ws,
-                                on_thinking=thinking_to_ws,
-                                supports_vision=getattr(fallback_llm_model, 'supports_vision', False),
-                            )
-                            logger.info(f"[WS] Fallback LLM response: {assistant_response[:80]}")
-                        except Exception as e2:
-                            logger.error(f"[WS] Fallback LLM also failed: {e2}")
-                            traceback.print_exc()
-                            assistant_response = f"[LLM call error] Primary: {str(e)[:100]} | Fallback: {str(e2)[:100]}"
-                    else:
-                        assistant_response = f"[LLM call error] {str(e)[:200]}"
+                    assistant_response = f"[LLM call error] {str(e)[:200]}"
             else:
                 assistant_response = f"⚠️ {agent_name} has no LLM model configured. Please select a model in the agent's Settings tab."
 
@@ -939,47 +625,44 @@ async def websocket_chat(
                             db.add(task)
                             await db.commit()
                             await db.refresh(task)
+                            logger.info(f"[WS] Task created: {task.id}")
+                            # Trigger background execution
                             task_id = task.id
                         _asyncio.create_task(execute_task(task_id, agent_id))
                         assistant_response += f"\n\n📋 Task synced to task board: [{task_title}]"
-                        logger.info(f"[WS] Created task: {task_title}")
-                    except Exception as e:
-                        logger.error(f"[WS] Failed to create task: {e}")
+                    except Exception as te:
+                        logger.error(f"[WS] Task creation failed: {te}")
 
-            # Add assistant response to conversation
+            # Add assistant response to in-memory conversation for subsequent turns.
             conversation.append({"role": "assistant", "content": assistant_response})
 
-            # Save assistant message
+            # Save assistant reply
             async with async_session() as db:
-                asst_msg = ChatMessage(
+                assistant_msg = ChatMessage(
                     agent_id=agent_id,
                     user_id=user_id,
                     role="assistant",
                     content=assistant_response,
-                    thinking=''.join(thinking_content) if thinking_content else None,
                     conversation_id=conv_id,
+                    thinking="".join(thinking_content) if thinking_content else None,
                 )
-                db.add(asst_msg)
+                db.add(assistant_msg)
                 await db.commit()
             logger.info("[WS] Assistant message saved")
 
-            # Send done signal with final content (for non-streaming clients)
-            await websocket.send_json({
-                "type": "done",
-                "role": "assistant",
-                "content": assistant_response,
-            })
-            logger.info("[WS] Response done sent to client")
+            # Final 'done' packet
+            await websocket.send_json({"type": "done", "role": "assistant", "content": assistant_response})
+
+            # Re-process any queued messages (if user sent something during generation)
+            for qm in queued_messages:
+                # In a real implementation, you might want to push these back to the main loop
+                pass
 
     except WebSocketDisconnect:
-        logger.info(f"[WS] Client disconnected: {agent_name}")
-        manager.disconnect(agent_id_str, websocket)
+        logger.info(f"[WS] Client disconnected: {user_id}")
+        manager.disconnect(str(agent_id), websocket)
     except Exception as e:
-        logger.error(f"[WS] Error in message loop: {type(e).__name__}: {e}")
+        logger.error(f"[WS] Unexpected error: {e}")
         import traceback
         traceback.print_exc()
-        manager.disconnect(agent_id_str, websocket)
-        try:
-            await websocket.close(code=1011)
-        except Exception:
-            pass
+        manager.disconnect(str(agent_id), websocket)

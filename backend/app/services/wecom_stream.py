@@ -15,12 +15,54 @@ from app.database import async_session
 from app.models.channel_config import ChannelConfig
 
 
+def _disable_wecom_sdk_proxy() -> None:
+    """Force the WeCom SDK websocket path to bypass system proxies."""
+    import wecom_aibot_sdk.ws as sdk_ws
+
+    if getattr(sdk_ws.websockets.connect, "__clawith_no_proxy_patch__", False):
+        return
+
+    original_connect = sdk_ws.websockets.connect
+
+    def connect_no_proxy(*args, **kwargs):
+        kwargs.setdefault("proxy", None)
+        return original_connect(*args, **kwargs)
+
+    connect_no_proxy.__clawith_no_proxy_patch__ = True
+    sdk_ws.websockets.connect = connect_no_proxy
+
+
+def _extract_wecom_sender_id(body: dict) -> str:
+    sender = body.get("from")
+    if isinstance(sender, dict):
+        sender_id = sender.get("user_id") or sender.get("userid")
+        if sender_id:
+            return str(sender_id).strip()
+    return str(body.get("from_userid") or body.get("userid") or "").strip()
+
+
+def _extract_wecom_chat_type(body: dict) -> str:
+    return str(body.get("chattype") or body.get("chat_type") or "single").strip().lower()
+
+
+def _extract_wecom_chat_id(body: dict) -> str:
+    return str(body.get("chatid") or body.get("chat_id") or "").strip()
+
+
+def _build_wecom_conv_id(sender_id: str, chat_id: str, chat_type: str) -> str:
+    normalized_type = (chat_type or "single").strip().lower()
+    if normalized_type in {"group", "groupchat", "group_chat"} and chat_id:
+        return f"wecom_group_{chat_id}"
+    return f"wecom_p2p_{sender_id}"
+
+
 class WeComStreamManager:
     """Manages WeCom AI Bot WebSocket clients for all agents."""
 
     def __init__(self):
         self._clients: Dict[uuid.UUID, object] = {}
         self._tasks: Dict[uuid.UUID, asyncio.Task] = {}
+        self._connected: Dict[uuid.UUID, bool] = {}
 
     async def start_client(
         self,
@@ -40,6 +82,7 @@ class WeComStreamManager:
         if stop_existing:
             await self.stop_client(agent_id)
 
+        self._connected[agent_id] = False
         task = asyncio.create_task(
             self._run_client(agent_id, bot_id, bot_secret),
             name=f"wecom-stream-{str(agent_id)[:8]}",
@@ -56,6 +99,7 @@ class WeComStreamManager:
         try:
             from wecom_aibot_sdk import WSClient, generate_req_id
         except ImportError:
+            self._connected[agent_id] = False
             logger.warning(
                 "[WeCom Stream] wecom-aibot-sdk-python not installed. "
                 "Install with: pip install wecom-aibot-sdk-python"
@@ -63,6 +107,7 @@ class WeComStreamManager:
             return
 
         try:
+            _disable_wecom_sdk_proxy()
             client = WSClient({
                 "bot_id": bot_id,
                 "secret": bot_secret,
@@ -80,17 +125,29 @@ class WeComStreamManager:
                     if not user_text:
                         return
 
-                    sender = body.get("from", {})
-                    sender_id = sender.get("user_id", "") or sender.get("userid", "")
-                    chat_id = body.get("chatid", "")
-                    # WeCom SDK's 'chattype' is unreliable (always 'single').
-                    # The real group indicator is the PRESENCE of 'chatid' field.
-                    is_group_msg = bool(chat_id)
+                    sender_id = _extract_wecom_sender_id(body)
+                    if not sender_id:
+                        logger.warning(
+                            f"[WeCom Stream] Missing sender id in text payload for agent {agent_id}: "
+                            f"body_keys={list(body.keys())}"
+                        )
+                        stream_id = generate_req_id("stream")
+                        await client.reply_stream(
+                            frame,
+                            stream_id,
+                            "Unable to identify the sender for this WeCom message.",
+                            finish=True,
+                        )
+                        return
+
+                    chat_type = _extract_wecom_chat_type(body)
+                    chat_id = _extract_wecom_chat_id(body)
+                    is_group_msg = chat_type in {"group", "groupchat", "group_chat"} and bool(chat_id)
 
                     # Debug: log full body to understand the data structure
                     logger.info(
                         f"[WeCom Stream] Text from {sender_id}, "
-                        f"is_group={is_group_msg}, chat_id={chat_id or 'N/A'}, "
+                        f"chat_type={chat_type}, is_group={is_group_msg}, chat_id={chat_id or 'N/A'}, "
                         f"body_keys={list(body.keys())}: {user_text[:80]}"
                     )
 
@@ -100,7 +157,7 @@ class WeComStreamManager:
                         sender_id=sender_id,
                         user_text=user_text,
                         chat_id=chat_id,
-                        is_group=is_group_msg,
+                        chat_type=chat_type,
                     )
 
                     # Reply via streaming
@@ -126,8 +183,7 @@ class WeComStreamManager:
             async def on_image(frame):
                 try:
                     body = frame.body or {}
-                    sender = body.get("from", {})
-                    sender_id = sender.get("user_id", "") or sender.get("userid", "")
+                    sender_id = _extract_wecom_sender_id(body)
                     logger.info(f"[WeCom Stream] Image message from {sender_id} (not yet handled)")
                     stream_id = generate_req_id("stream")
                     await client.reply_stream(
@@ -142,8 +198,7 @@ class WeComStreamManager:
             async def on_file(frame):
                 try:
                     body = frame.body or {}
-                    sender = body.get("from", {})
-                    sender_id = sender.get("user_id", "") or sender.get("userid", "")
+                    sender_id = _extract_wecom_sender_id(body)
                     logger.info(f"[WeCom Stream] File message from {sender_id} (not yet handled)")
                     stream_id = generate_req_id("stream")
                     await client.reply_stream(
@@ -184,22 +239,26 @@ class WeComStreamManager:
                 try:
                     logger.info(f"[WeCom Stream] Connecting for agent {agent_id}...")
                     await client.connect_async()
+                    self._connected[agent_id] = True
 
                     # Keep alive
                     retry_delay = 5  # Reset on successful connect
                     while client.is_connected:
                         await asyncio.sleep(1)
 
+                    self._connected[agent_id] = False
                     logger.info(f"[WeCom Stream] Client disconnected for agent {agent_id}, reconnecting in {retry_delay}s...")
                 except asyncio.CancelledError:
                     raise  # Propagate cancellation
                 except Exception as e:
+                    self._connected[agent_id] = False
                     logger.error(f"[WeCom Stream] Connection error for {agent_id}: {e}, retrying in {retry_delay}s...")
 
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)
 
         except asyncio.CancelledError:
+            self._connected[agent_id] = False
             logger.info(f"[WeCom Stream] Client task cancelled for agent {agent_id}")
             if agent_id in self._clients:
                 try:
@@ -211,6 +270,7 @@ class WeComStreamManager:
             import traceback
             traceback.print_exc()
         finally:
+            self._connected.pop(agent_id, None)
             self._clients.pop(agent_id, None)
             self._tasks.pop(agent_id, None)
 
@@ -226,6 +286,7 @@ class WeComStreamManager:
                 await client.disconnect()
             except Exception:
                 pass
+        self._connected.pop(agent_id, None)
 
     async def start_all(self):
         """Start WebSocket clients for all configured WeCom agents with bot credentials."""
@@ -233,7 +294,7 @@ class WeComStreamManager:
         async with async_session() as db:
             result = await db.execute(
                 select(ChannelConfig).where(
-                    ChannelConfig.is_configured == True,
+                    ChannelConfig.is_configured,
                     ChannelConfig.channel_type == "wecom",
                 )
             )
@@ -256,8 +317,8 @@ class WeComStreamManager:
     def status(self) -> dict:
         """Return status of all active WebSocket clients."""
         return {
-            str(aid): not self._tasks[aid].done()
-            for aid in self._tasks
+            str(aid): connected
+            for aid, connected in self._connected.items()
         }
 
 
@@ -268,7 +329,7 @@ async def _process_wecom_stream_message(
     sender_id: str,
     user_text: str,
     chat_id: str = "",
-    is_group: bool = False,
+    chat_type: str = "single",
 ) -> str:
     """Process a WeCom message through the LLM pipeline and return the reply text."""
     from datetime import datetime, timezone
@@ -290,12 +351,8 @@ async def _process_wecom_stream_message(
         from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
         ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
 
-        # Conversation ID: differentiate single chat vs group chat
-        # Group detection is based on chatid presence, not chattype (SDK bug)
-        if is_group and chat_id:
-            conv_id = f"wecom_group_{chat_id}"
-        else:
-            conv_id = f"wecom_p2p_{sender_id}"
+        normalized_chat_type = (chat_type or "single").strip().lower()
+        conv_id = _build_wecom_conv_id(sender_id, chat_id, normalized_chat_type)
 
         # Resolve or create platform user via unified channel user service.
         # This correctly handles the User/Identity model relationship
@@ -311,7 +368,7 @@ async def _process_wecom_stream_message(
         platform_user_id = platform_user.id
 
         # Find or create session
-        _is_group = (is_group and bool(chat_id))
+        _is_group = normalized_chat_type in {"group", "groupchat", "group_chat"} and bool(chat_id)
         sess = await find_or_create_channel_session(
             db=db,
             agent_id=agent_id,

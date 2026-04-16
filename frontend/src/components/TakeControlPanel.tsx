@@ -19,6 +19,8 @@ interface Props {
     agentId: string;
     sessionId: string;
     onClose: () => void;
+    /** Which AgentBay environment to connect to: 'browser' | 'computer' | 'code'. Default: 'browser'. */
+    envType?: 'browser' | 'computer' | 'code';
     /** Called with the last screenshot data URI when TC panel closes,
      *  so the parent live preview can update immediately. */
     onLastScreenshot?: (dataUri: string) => void;
@@ -56,7 +58,7 @@ const SaveIcon = (
     </svg>
 );
 
-export default function TakeControlPanel({ agentId, sessionId, onClose, onLastScreenshot }: Props) {
+export default function TakeControlPanel({ agentId, sessionId, onClose, envType = 'browser', onLastScreenshot }: Props) {
     const [screenshot, setScreenshot] = useState<string | null>(null);
     const [textInput, setTextInput] = useState('');
     const [locked, setLocked] = useState(false);
@@ -86,7 +88,7 @@ export default function TakeControlPanel({ agentId, sessionId, onClose, onLastSc
         mountedRef.current = true;
         (async () => {
             try {
-                const res = await controlApi.lock(agentId, { session_id: sessionId });
+                const res = await controlApi.lock(agentId, { session_id: sessionId, env_type: envType });
                 if (mountedRef.current) {
                     setLocked(true);
                     setStatusText('You are in control. Click or drag on the screenshot.');
@@ -495,7 +497,7 @@ export default function TakeControlPanel({ agentId, sessionId, onClose, onLastSc
                 {/* ── Action bar ── */}
                 <div className="tc-action-bar">
                     <div className="tc-domain-row">
-                        <span className="tc-domain-label">保存登录状态到</span>
+                        <span className="tc-domain-label">Save login state to</span>
                         <input
                             className="tc-domain-input"
                             type="text"
@@ -506,14 +508,14 @@ export default function TakeControlPanel({ agentId, sessionId, onClose, onLastSc
                     </div>
                     <div className="tc-action-buttons">
                         <button className="tc-btn-cancel" onClick={handleCancel}>
-                            退出接管
+                            Exit
                         </button>
                         <button
                             className="tc-btn-save"
                             onClick={handleComplete}
                             disabled={!locked}
                         >
-                            {SaveIcon} 保存登录状态
+                            {SaveIcon} Save Login State
                         </button>
                     </div>
                 </div>

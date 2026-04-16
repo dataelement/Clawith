@@ -4,6 +4,7 @@ This module provides a base class for syncing org structure (departments/members
 from various identity providers (Feishu, DingTalk, WeCom, etc.).
 """
 
+import asyncio
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -19,7 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.identity import IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
 from app.models.user import User, Identity
-from pypinyin import pinyin, Style
+from pypinyin import pinyin, lazy_pinyin, Style
+from anyascii import anyascii as _anyascii
 
 from app.core.security import hash_password
 
@@ -134,6 +136,7 @@ class BaseOrgSyncAdapter(ABC):
         user_count = 0
         profile_count = 0
         sync_start = datetime.now()
+        partial_failure = False
 
         # Ensure provider exists
         provider = await self._ensure_provider(db)
@@ -147,6 +150,7 @@ class BaseOrgSyncAdapter(ABC):
                         await self._upsert_department(db, provider, dept)
                     dept_count += 1
                 except Exception as e:
+                    partial_failure = True
                     errors.append(f"Department {dept.external_id}: {str(e)}")
                     logger.error(f"[OrgSync] Failed to sync department {dept.external_id}: {e}")
 
@@ -155,6 +159,7 @@ class BaseOrgSyncAdapter(ABC):
                 try:
                     users = await self.fetch_users(dept.external_id)
                 except Exception as e:
+                    partial_failure = True
                     logger.error(f"[OrgSync] Failed to fetch users in department {dept.external_id}: {e}")
                     errors.append(f"Fetch users in dept {dept.external_id}: {str(e)}")
                     continue
@@ -169,6 +174,7 @@ class BaseOrgSyncAdapter(ABC):
                                 profile_count += 1
                         member_count += 1
                     except Exception as e:
+                        partial_failure = True
                         logger.error(f"[OrgSync] Failed to sync member {user.external_id} ({user.name}): {e}")
                         errors.append(f"Member {user.external_id}: {str(e)}")
 
@@ -179,9 +185,15 @@ class BaseOrgSyncAdapter(ABC):
                 self.provider.config = config
                 await db.flush()
                 
-                # Reconciliation: mark records not updated in this sync as deleted
-                await self._reconcile(db, provider.id, sync_start)
-                await db.flush()
+                if partial_failure:
+                    logger.warning(
+                        f"[OrgSync] Skipping reconcile for provider {provider.id} because this sync had partial failures"
+                    )
+                    errors.append("Reconcile skipped due to partial sync failures")
+                else:
+                    # Reconciliation: mark records not updated in this sync as deleted
+                    await self._reconcile(db, provider.id, sync_start)
+                    await db.flush()
 
                 # Recalculate member counts for all departments (crucial for DingTalk/WeCom)
                 await self._update_member_counts(db, provider.id)
@@ -277,18 +289,14 @@ class BaseOrgSyncAdapter(ABC):
         update_mappings = [{"id": d_id, "member_count": d_data["total"]} for d_id, d_data in dept_map.items()]
         
         if update_mappings:
-            from app.database import async_engine
-            # Use core update with executemany approach handled cleanly by SQLAlchemy mapping
-            # SQLAlchemy 2.0 style bulk update
-            from sqlalchemy import bindparam
-            stmt = (
-                update(OrgDepartment)
-                .where(OrgDepartment.id == bindparam("b_id"))
-                .values(member_count=bindparam("b_count"))
-            )
-            # Re-map keys for bindparams
-            bind_mappings = [{"b_id": m["id"], "b_count": m["member_count"]} for m in update_mappings]
-            await db.execute(stmt, bind_mappings)
+            # Execute individual UPDATE statements to avoid SQLAlchemy 2.x
+            # "Bulk UPDATE by Primary Key" ambiguity when passing a list to execute().
+            for m in update_mappings:
+                await db.execute(
+                    update(OrgDepartment)
+                    .where(OrgDepartment.id == m["id"])
+                    .values(member_count=m["member_count"])
+                )
 
     async def _ensure_provider(self, db: AsyncSession) -> IdentityProvider:
         """Ensure IdentityProvider record exists."""
@@ -388,6 +396,7 @@ class BaseOrgSyncAdapter(ABC):
     ) -> dict[str, Any]:
         """Insert or update a member, platform user, and identity."""
         stats = {"user_created": False, "profile_synced": False}
+        self._validate_member_identifiers(provider, user)
 
         # Find department using user's actual department list.
         # DingTalk's dept_id_list last item is the most specific (leaf) department.
@@ -415,23 +424,7 @@ class BaseOrgSyncAdapter(ABC):
             )
             department = dept_result.scalars().first()
 
-        # Check if exists by unionid or external_id or open_id (any matches), and provider
-        conditions = []
-        if user.unionid:
-            conditions.append(OrgMember.unionid == user.unionid)
-        if user.external_id:
-            conditions.append(OrgMember.external_id == user.external_id)
-        if user.open_id:
-            conditions.append(OrgMember.open_id == user.open_id)
-
-        if conditions:
-            result = await db.execute(
-                select(OrgMember).where(
-                    OrgMember.provider_id == provider.id,
-                    or_(*conditions)
-                )
-            )
-        existing_member = result.scalars().first()
+        existing_member = await self._find_existing_member(db, provider, user)
 
         now = datetime.now()
 
@@ -465,8 +458,10 @@ class BaseOrgSyncAdapter(ABC):
         # Update/Create OrgMember
         if existing_member:
             existing_member.name = user.name
-            # Generate transliteration
-            existing_member.name_translit_full = "".join([i[0] for i in pinyin(user.name, style=Style.NORMAL)])
+            # Generate transliteration using layered strategy:
+            # 1. pypinyin converts CJK characters to pinyin
+            # 2. anyascii handles remaining non-ASCII scripts (Korean, Japanese kana, Arabic, etc.)
+            existing_member.name_translit_full = _anyascii("".join(lazy_pinyin(user.name, errors="default")))
             existing_member.name_translit_initial = "".join([i[0] for i in pinyin(user.name, style=Style.FIRST_LETTER)])
             
             if email is not None:
@@ -490,7 +485,10 @@ class BaseOrgSyncAdapter(ABC):
                 existing_member.user_id = user_id
             stats["profile_synced"] = True
         else:
-            translit_full = "".join([i[0] for i in pinyin(user.name, style=Style.NORMAL)])
+            # Generate transliteration using layered strategy:
+            # 1. pypinyin converts CJK characters to pinyin
+            # 2. anyascii handles remaining non-ASCII scripts (Korean, Japanese kana, Arabic, etc.)
+            translit_full = _anyascii("".join(lazy_pinyin(user.name, errors="default")))
             translit_initial = "".join([i[0] for i in pinyin(user.name, style=Style.FIRST_LETTER)])
             
             new_member = OrgMember(
@@ -531,6 +529,70 @@ class BaseOrgSyncAdapter(ABC):
 
         await db.flush()
         return stats
+
+    def _provider_requires_unionid(self, provider: IdentityProvider) -> bool:
+        provider_type = (provider.provider_type or self.provider_type or "").lower()
+        return provider_type in {"feishu", "dingtalk"}
+
+    def _validate_member_identifiers(self, provider: IdentityProvider, user: ExternalUser) -> None:
+        user.unionid = (user.unionid or "").strip()
+        user.external_id = (user.external_id or "").strip()
+        user.open_id = (user.open_id or "").strip()
+
+        if self._provider_requires_unionid(provider) and not user.unionid:
+            raise ValueError(
+                f"unionid is required for {provider.provider_type} org sync user {user.external_id or user.name}"
+            )
+
+        if user.unionid and user.external_id and user.unionid == user.external_id:
+            raise ValueError(
+                f"invalid unionid for org sync user {user.external_id or user.name}: unionid must not equal external_id"
+            )
+
+    async def _find_existing_member(
+        self,
+        db: AsyncSession,
+        provider: IdentityProvider,
+        user: ExternalUser,
+    ) -> OrgMember | None:
+        if user.unionid:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.provider_id == provider.id,
+                    OrgMember.unionid == user.unionid,
+                )
+            )
+            existing_member = result.scalars().first()
+            if existing_member:
+                return existing_member
+
+        fallback_conditions = []
+        if user.external_id:
+            fallback_conditions.append(OrgMember.external_id == user.external_id)
+        if user.open_id:
+            fallback_conditions.append(OrgMember.open_id == user.open_id)
+
+        if not fallback_conditions:
+            return None
+
+        fallback_query = select(OrgMember).where(
+            OrgMember.provider_id == provider.id,
+            or_(*fallback_conditions),
+        )
+
+        # When unionid is required, only allow external/open id fallback to attach
+        # shell records that do not have a conflicting unionid yet.
+        if self._provider_requires_unionid(provider) and user.unionid:
+            fallback_query = fallback_query.where(
+                or_(
+                    OrgMember.unionid.is_(None),
+                    OrgMember.unionid == "",
+                    OrgMember.unionid == user.unionid,
+                )
+            )
+
+        result = await db.execute(fallback_query)
+        return result.scalars().first()
 
     async def _resolve_platform_user(self, db: AsyncSession, user: ExternalUser) -> User | None:
         """Resolve platform user from external user info."""
@@ -584,7 +646,6 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
 
     async def fetch_departments(self) -> list[ExternalDepartment]:
         """Fetch all departments from Feishu using concurrent recursive calls to get parent-child relationships."""
-        import asyncio
         token = await self.get_access_token()
         all_depts: list[ExternalDepartment] = []
         # Add a virtual root for the tenant, consistent with DingTalk root behavior
@@ -660,10 +721,19 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
 
     async def fetch_users(self, department_external_id: str) -> list[ExternalUser]:
         """Fetch users in a department.
-        
-        Uses user_id_type=user_id which requires the contact:user.employee_id:readonly
-        permission. If the Feishu API returns an error due to missing permission, raises
-        a clear error instructing the user to add the required scope.
+
+        IMPORTANT: Uses user_id_type=user_id (employee_id), which requires the
+        'contact:user.employee_id:readonly' permission in the Feishu app.
+
+        WHY user_id (not open_id or union_id):
+        - open_id is app-specific: the same user has a different open_id in each Feishu app.
+          Using open_id would break matching between org-sync users and Feishu bot channel users,
+          since they use different apps.
+        - union_id is ISV-scoped (same across apps from the same ISV), but not universal.
+        - user_id (employee_id) is the only enterprise-wide stable identifier that works
+          consistently across org sync, SSO, and bot channel user resolution.
+
+        This permission requires app re-publishing in Feishu console (not instant like DingTalk).
         """
         token = await self.get_access_token()
         users: list[ExternalUser] = []
@@ -674,7 +744,9 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                 params = {
                     "department_id": department_external_id,
                     "department_id_type": "open_department_id",
-                    "user_id_type": "user_id",  # Requires contact:user.employee_id:readonly
+                    # user_id (employee_id) is the enterprise-wide stable identifier.
+                    # Requires 'contact:user.employee_id:readonly' permission + app re-publish.
+                    "user_id_type": "user_id",
                     "page_size": "50",
                 }
                 if page_token:
@@ -694,12 +766,13 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                         f"Feishu fetch users error for dept {department_external_id}: "
                         f"code={error_code}, msg={error_msg}"
                     )
-                    # Raise a user-friendly error for permission issues
                     raise RuntimeError(
                         f"Feishu API error (code {error_code}): {error_msg}. "
-                        f"Please ensure the Feishu app has the 'contact:user.employee_id:readonly' "
-                        f"permission enabled. Go to Feishu Open Platform -> App -> Permissions -> "
-                        f"search 'employee_id' -> enable and publish a new version."
+                        f"Access denied. One of the following scopes is required: "
+                        f"[contact:user.employee_id:readonly]. "
+                        f"Please enable this permission in Feishu Open Platform -> App -> "
+                        f"Permissions -> search 'employee_id' -> enable and publish a new version. "
+                        f"Note: unlike DingTalk, Feishu permissions require app re-publishing to take effect."
                     )
 
                 res_data = data.get("data", {})
@@ -709,8 +782,11 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                     raw_dept_ids = item.get("department_ids", [])
                     department_ids = [str(did) for did in raw_dept_ids] if raw_dept_ids else [department_external_id]
                     
+                    # When user_id_type=open_id, Feishu returns the open_id value in the
+                    # "user_id" field of the response. So external_id == open_id == open_id field.
+                    # The open_id field is also present for consistency.
                     external_id = item.get("user_id", "") or item.get("open_id", "")
-                    
+
                     # For Feishu, a user is considered inactive if they are explicitly frozen or resigned.
                     # Merely not being activated (is_activated=False) shouldn't hide them from the org chart.
                     feishu_status = item.get("status", {})
@@ -793,6 +869,7 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
 
         seen: set[int] = set()
         queue: list[int] = [1]  # DingTalk root dept id
+        _request_count = 0
 
         async with httpx.AsyncClient() as client:
             while queue:
@@ -800,6 +877,12 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
                 if parent_id in seen:
                     continue
                 seen.add(parent_id)
+
+                # DingTalk rate limit: ~20 QPS per app per interface.
+                # Sleep 60ms between requests to stay under the limit.
+                if _request_count > 0:
+                    await asyncio.sleep(0.06)
+                _request_count += 1
 
                 resp = await client.post(
                     self.DINGTALK_DEPT_LIST_URL,
@@ -858,6 +941,10 @@ class DingTalkOrgSyncAdapter(BaseOrgSyncAdapter):
 
         async with httpx.AsyncClient() as client:
             while True:
+                # DingTalk rate limit: ~20 QPS per app per interface.
+                # Sleep 60ms between requests to stay under the limit.
+                await asyncio.sleep(0.06)
+
                 resp = await client.post(
                     self.DINGTALK_USER_LIST_URL,
                     params={"access_token": token},
@@ -934,131 +1021,161 @@ class WeComOrgSyncAdapter(BaseOrgSyncAdapter):
 
     WECOM_API_URL = "https://qyapi.weixin.qq.com"
     WECOM_TOKEN_URL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
-    WECOM_DEPT_LIST_URL = "https://qyapi.weixin.qq.com/cgi-bin/department/list"
+    # Use simplelist (newer API) instead of the deprecated department/list.
+    # The simplelist endpoint is accessible to the contact assistant token
+    # (obtained via the 通讯录同步 Secret) without requiring app-level IP whitelist.
+    WECOM_DEPT_LIST_URL = "https://qyapi.weixin.qq.com/cgi-bin/department/simplelist"
     WECOM_USER_LIST_URL = "https://qyapi.weixin.qq.com/cgi-bin/user/list"
+    # Fallback APIs for contact assistant token (cannot call user/list):
+    # list_id returns {userid, open_userid} for all dept members
+    # user/get returns full details for a single user by userid
+    WECOM_USER_LIST_ID_URL = "https://qyapi.weixin.qq.com/cgi-bin/user/list_id"
+    WECOM_USER_GET_URL = "https://qyapi.weixin.qq.com/cgi-bin/user/get"
 
     def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None, tenant_id: uuid.UUID | None = None):
         super().__init__(provider, config, tenant_id)
-        # Handle various config key naming conventions
+        # corp_id: the enterprise's WeCom corp ID
+        # secret: the 通讯录同步 (contact-sync) secret — used for department/simplelist and user/list_id
         self.corp_id = self.config.get("corp_id") or self.config.get("app_id") or self.config.get("corpid")
-        self.secret = self.config.get("secret") or self.config.get("app_secret") or self.config.get("corpsecret") or self.config.get("bot_secret")
-        self.bot_id = self.config.get("bot_id")
-        self.bot_secret = self.config.get("bot_secret") or self.secret
+        self.secret = self.config.get("secret") or self.config.get("app_secret") or self.config.get("corpsecret")
         self._access_token: str | None = None
         self._token_expires_at: datetime | None = None
+
+    async def _fetch_token(self, corp_id: str, secret: str) -> str:
+        """Fetch a fresh WeCom access_token for the given corp_id/secret pair."""
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                self.WECOM_TOKEN_URL,
+                params={"corpid": corp_id, "corpsecret": secret},
+            )
+            data = resp.json()
+            if data.get("errcode") == 0:
+                return data.get("access_token") or ""
+            raise RuntimeError(f"[WeCom] gettoken failed for corpid={corp_id}: {data}")
 
     @property
     def api_base_url(self) -> str:
         return self.WECOM_API_URL
 
     async def get_access_token(self) -> str:
-        """Get valid access token for WeCom API."""
+        """Get valid access token using the 通讯录同步 (contact-sync) secret.
+
+        This token can call department/simplelist and user/list_id.
+        It cannot call user/list or user/get (those raise errcode 48009).
+        Full user profiles are obtained passively via SSO login instead.
+        """
         if self._access_token and self._token_expires_at and datetime.now() < self._token_expires_at:
             return self._access_token
 
-        # Priority 1: Standard CorpID + Secret
-        if self.corp_id and self.secret:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    self.WECOM_TOKEN_URL,
-                    params={"corpid": self.corp_id, "corpsecret": self.secret},
-                )
-                data = resp.json()
-                if data.get("errcode") == 0:
-                    token = data.get("access_token") or ""
-                    expires_in = int(data.get("expires_in") or 7200)
-                    self._access_token = token
-                    self._token_expires_at = datetime.now() + timedelta(seconds=max(expires_in - 300, 300))
-                    return token
-                else:
-                    logger.error(f"[WeCom Sync] Token error with corp_id: {data}")
+        if not self.corp_id or not self.secret:
+            raise ValueError("WeCom corp_id or secret missing in provider config")
 
-        # Priority 2: Try bot_id as corp_id if no corp_id provided (fallback)
-        if not self.corp_id and self.bot_id and self.bot_secret:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    self.WECOM_TOKEN_URL,
-                    params={"corpid": self.bot_id, "corpsecret": self.bot_secret},
-                )
-                data = resp.json()
-                if data.get("errcode") == 0:
-                    token = data.get("access_token") or ""
-                    expires_in = int(data.get("expires_in") or 7200)
-                    self._access_token = token
-                    self._token_expires_at = datetime.now() + timedelta(seconds=max(expires_in - 300, 300))
-                    return token
+        token = await self._fetch_token(self.corp_id, self.secret)
+        self._access_token = token
+        # Refresh slightly before true expiry to avoid clock-skew issues
+        self._token_expires_at = datetime.now() + timedelta(seconds=7200 - 300)
+        return token
 
-        raise ValueError("WeCom credentials (corp_id/secret or bot_id/secret) missing or invalid")
+
 
     async def fetch_departments(self) -> list[ExternalDepartment]:
-        """Fetch all departments from WeCom."""
+        """Fetch all departments from WeCom using the simplelist endpoint.
+
+        department/simplelist is accessible to the 通讯录助手 (contact assistant)
+        token obtained from the 通讯录同步 Secret, unlike the deprecated
+        department/list which requires strict app-level IP whitelist.
+        """
         token = await self.get_access_token()
         all_depts: list[ExternalDepartment] = []
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
                 self.WECOM_DEPT_LIST_URL,
+                # id omitted → returns all departments
                 params={"access_token": token},
             )
             data = resp.json()
             if data.get("errcode") != 0:
                 raise RuntimeError(f"WeCom department list error: {data.get('errmsg') or data}")
 
-            items = data.get("department", [])
+            # simplelist response: {"department_id": [{"id":x, "parentid":x, "name":…, "order":…}]}
+            items = data.get("department_id", []) or data.get("department", [])
             for item in items:
                 dept_id = str(item.get("id"))
-                parent_id = str(item.get("parentid")) if item.get("parentid") and item.get("parentid") != 0 else None
-                
+                parentid = item.get("parentid", 0)
+                parent_id = str(parentid) if parentid and parentid != 0 else None
+
                 all_depts.append(
                     ExternalDepartment(
                         external_id=dept_id,
                         name=item.get("name", ""),
                         parent_external_id=parent_id,
-                        member_count=0,  # WeCom doesn't return member count in this API
+                        member_count=0,  # simplelist does not return member count
                         raw_data=item,
                     )
                 )
         return all_depts
 
     async def fetch_users(self, department_external_id: str) -> list[ExternalUser]:
-        """Fetch user details in a department from WeCom."""
+        """Fetch user stubs for a department using user/list_id.
+
+        WeCom API strategy for org sync:
+        - user/list  (bulk detail) → errcode 48009 for contact-sync token; removed.
+        - user/get   (per-user detail) → IP-whitelisted only; removed.
+        - user/list_id (ID only)   → works with contact-sync token; used here.
+
+        Only userid and open_userid are obtained in org sync. Full profile
+        data (name, avatar, email, mobile) is enriched passively when each
+        user completes their first WeCom SSO login (via auth/getuserdetail).
+        """
         token = await self.get_access_token()
-        users: list[ExternalUser] = []
+        return await self._fetch_user_stubs(token, department_external_id)
+
+    async def _fetch_user_stubs(self, sync_token: str, department_external_id: str) -> list[ExternalUser]:
+        """Fetch minimal user stubs via user/list_id.
+
+        Returns placeholder ExternalUser objects with only userid and open_userid
+        populated. The name is intentionally set to the userid so the passive
+        SSO enrichment in sso_service.link_identity() can detect the placeholder
+        and overwrite it with the real name from auth/getuserdetail.
+        """
+        user_stubs: list[ExternalUser] = []
+        cursor = ""
 
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                self.WECOM_USER_LIST_URL,
-                params={
-                    "access_token": token,
+            while True:
+                params: dict = {
+                    "access_token": sync_token,
                     "department_id": department_external_id,
-                    "fetch_child": 0,  # Only this department, parent loop handles recursion
-                },
-            )
-            data = resp.json()
-            if data.get("errcode") != 0:
-                raise RuntimeError(f"WeCom user list error: {data.get('errmsg') or data}")
+                    "limit": 1000,
+                }
+                if cursor:
+                    params["cursor"] = cursor
 
-            items = data.get("userlist", [])
-            for item in items:
-                external_id = item.get("userid", "")
-                dept_ids = [str(did) for did in item.get("department", [])]
-                
-                user = ExternalUser(
-                    external_id=external_id,
-                    name=item.get("name", ""),
-                    open_id="",  # WeCom doesn't return openid in list API
-                    email=item.get("email", "") or item.get("biz_mail", ""),
-                    avatar_url=item.get("avatar", ""),
-                    title=item.get("position", ""),
-                    department_external_id=department_external_id,
-                    department_ids=dept_ids,
-                    mobile=item.get("mobile", ""),
-                    status="active" if item.get("status") == 1 else "inactive",
-                    raw_data=item,
-                )
-                users.append(user)
+                resp = await client.get(self.WECOM_USER_LIST_ID_URL, params=params)
+                data = resp.json()
+                if data.get("errcode") != 0:
+                    raise RuntimeError(f"WeCom user/list_id error: {data.get('errmsg') or data}")
 
-        return users
+                for entry in data.get("dept_user", []):
+                    uid = entry.get("userid", "")
+                    if not uid:
+                        continue
+                    # Use userid as the name placeholder so link_identity() knows
+                    # to overwrite it once the user logs in via SSO.
+                    user_stubs.append(ExternalUser(
+                        external_id=uid,
+                        name=uid,  # placeholder — enriched on first SSO login
+                        open_id=entry.get("open_userid", ""),
+                        department_external_id=department_external_id,
+                        department_ids=[department_external_id],
+                    ))
+
+                cursor = data.get("next_cursor", "")
+                if not cursor:
+                    break
+
+        return user_stubs
 
 
 # Adapter class mapping

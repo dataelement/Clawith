@@ -37,6 +37,7 @@ class TenantOut(BaseModel):
     is_active: bool
     sso_enabled: bool = False
     sso_domain: str | None = None
+    a2a_async_enabled: bool = False
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -49,18 +50,57 @@ class TenantUpdate(BaseModel):
     is_active: bool | None = None
     sso_enabled: bool | None = None
     sso_domain: str | None = None
+    a2a_async_enabled: bool | None = None
 
 
 # ─── Helpers ────────────────────────────────────────────
 
 def _slugify(name: str) -> str:
-    """Generate a URL-friendly slug from a company name."""
-    # Replace CJK and non-alphanumeric chars with hyphens
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower().strip())
+    """Generate a URL-friendly slug from a company name.
+
+    Uses a layered transliteration strategy so non-Latin company names produce
+    meaningful, readable slugs instead of collapsing to the generic 'company'
+    placeholder:
+
+      1. pypinyin   — CJK/Chinese characters → pinyin (e.g. '公司' → 'gongsi')
+      2. anyascii   — remaining non-ASCII scripts → closest ASCII approximation
+                      (Korean '안녕' → 'annyeong', Japanese 'ひらがな' → 'hiragana',
+                       Arabic 'مرحبا' → 'mrhb', Cyrillic 'Привет' → 'Privet', …)
+      3. NFKD norm  — accented Latin chars stripped of diacritics (é → e)
+
+    A short random hex suffix is always appended to guarantee global uniqueness
+    even when two tenants choose the same company name.
+    """
+    import unicodedata
+    from pypinyin import lazy_pinyin
+    from anyascii import anyascii
+
+    # Step 1: Convert CJK characters to pinyin; non-CJK chars pass through unchanged.
+    # lazy_pinyin with errors='default' keeps non-CJK chars as-is so they are
+    # handled by the subsequent anyascii pass rather than being silently dropped.
+    parts = lazy_pinyin(name, errors="default")
+    text = "".join(parts)
+
+    # Step 2: Convert remaining non-ASCII characters using anyascii.
+    # anyascii is a no-op on ASCII input, so it is safe to apply to the whole
+    # string after pypinyin has already processed the CJK portion.
+    text = anyascii(text)
+
+    # Step 3: Normalize any remaining accented Latin chars (é → e, ü → u, etc.)
+    # and drop anything that still cannot be represented in ASCII.
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+
+    # Step 4: Lowercase, collapse non-alphanumeric runs to hyphens, trim to 40 chars.
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower().strip())
     slug = slug.strip("-")[:40]
+
     if not slug:
+        # Extremely unlikely after anyascii, but keep as a safety net
+        # for inputs that are entirely punctuation or whitespace.
         slug = "company"
-    # Add short random suffix for uniqueness
+
+    # Add a short random hex suffix to ensure global uniqueness.
     slug = f"{slug}-{secrets.token_hex(3)}"
     return slug
 
@@ -146,6 +186,8 @@ async def self_create_company(
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         await db.flush()
+
+    await db.commit()
 
     return SelfCreateResponse(
         tenant=TenantOut.model_validate(tenant),
@@ -275,6 +317,8 @@ async def join_company(
     code_obj.used_count += 1
     await db.flush()
 
+    await db.commit()
+
     return JoinResponse(
         tenant=TenantOut.model_validate(tenant),
         role=final_role,
@@ -377,8 +421,11 @@ async def get_tenant(
     """Get tenant details. Platform admins can view any; org_admins only their own."""
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
-    if current_user.role == "org_admin" and str(current_user.tenant_id) != str(tenant_id):
-        raise HTTPException(status_code=403, detail="Access denied")
+    if current_user.role == "org_admin":
+        if not current_user.tenant_id:
+            raise HTTPException(status_code=403, detail="Organization admin must belong to a company")
+        if current_user.tenant_id != tenant_id:
+            raise HTTPException(status_code=403, detail="Access denied")
     result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
@@ -394,8 +441,11 @@ async def update_tenant(
     db: AsyncSession = Depends(get_db),
 ):
     """Update tenant settings. Platform admins can update any; org_admins only their own."""
-    if current_user.role == "org_admin" and str(current_user.tenant_id) != str(tenant_id):
-        raise HTTPException(status_code=403, detail="Can only update your own company")
+    if current_user.role == "org_admin":
+        if not current_user.tenant_id:
+            raise HTTPException(status_code=403, detail="Organization admin must belong to a company")
+        if current_user.tenant_id != tenant_id:
+            raise HTTPException(status_code=403, detail="Can only update your own company")
     result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:

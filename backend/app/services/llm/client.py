@@ -108,7 +108,25 @@ class LLMMessage:
             })
 
         if self.content:
-            content_blocks.append({"type": "text", "text": self.content})
+            if isinstance(self.content, list):
+                for part in self.content:
+                    if part.get("type") == "text":
+                        content_blocks.append({"type": "text", "text": part.get("text", "")})
+                    elif part.get("type") == "image_url":
+                        img_url = part.get("image_url", {}).get("url", "")
+                        if img_url.startswith("data:image/"):
+                            header, b64_data = img_url.split(",", 1)
+                            media_type = header.split(":")[1].split(";")[0]
+                            content_blocks.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64_data,
+                                }
+                            })
+            else:
+                content_blocks.append({"type": "text", "text": self.content})
             
         # Tool requests (from assistant to user)
         if self.tool_calls:
@@ -246,7 +264,7 @@ class OpenAICompatibleClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -272,9 +290,11 @@ class OpenAICompatibleClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
+        messages_payload = [m.to_openai_format() for m in messages]
+        logger.debug(f"[LLM-Debug] OpenAICompatibleClient payload messages for model {self.model}: {json.dumps(messages_payload, indent=2, ensure_ascii=False)}")
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [m.to_openai_format() for m in messages],
+            "messages": messages_payload,
             "stream": stream,
         }
         if temperature is not None:
@@ -475,7 +495,6 @@ class OpenAICompatibleClient(LLMClient):
         """Streaming completion."""
         url = f"{self._normalize_base_url()}/chat/completions"
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=True, **kwargs)
-
         full_content = ""
         full_reasoning = ""
         tool_calls_data: list[dict] = []
@@ -541,15 +560,10 @@ class OpenAICompatibleClient(LLMClient):
 
                 break  # Success
 
-            except (httpx.TransportError, httpx.ConnectTimeout) as e:
-                # TransportError covers all network-layer issues:
-                # - ConnectError, ReadError, WriteError (NetworkError subclasses)
-                # - RemoteProtocolError, LocalProtocolError (ProtocolError subclasses)
-                # The last case is common with local vLLM when the server closes
-                # the connection mid-stream (e.g. OOM, context limit exceeded).
+            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
                 if attempt < max_retries - 1:
                     wait = (attempt + 1) * 1
-                    logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}: {e}), retrying in {wait}s...")
+                    logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}), retrying in {wait}s...")
                     await asyncio.sleep(wait)
                     full_content = ""
                     full_reasoning = ""
@@ -558,7 +572,7 @@ class OpenAICompatibleClient(LLMClient):
                     tag_buffer = ""
                     json_buffer = ""
                 else:
-                    raise LLMError(f"Connection failed after {max_retries} attempts: {type(e).__name__}: {e}")
+                    raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
 
         # Clean up any remaining think tags
         full_content = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_content).strip()
@@ -602,7 +616,7 @@ class OpenAIResponsesClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -692,7 +706,7 @@ class OpenAIResponsesClient(LLMClient):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None,
-        temperature: float | None,
+        temperature: float,
         max_tokens: int | None,
         stream: bool = False,
         **kwargs: Any,
@@ -701,10 +715,9 @@ class OpenAIResponsesClient(LLMClient):
         payload: dict[str, Any] = {
             "model": self.model,
             "input": self._messages_to_input(messages),
+            "temperature": temperature,
             "stream": stream,
         }
-        if temperature is not None:
-            payload["temperature"] = temperature
 
         if max_tokens:
             payload["max_output_tokens"] = max_tokens
@@ -900,7 +913,7 @@ class GeminiClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     async def _get_openai_fallback_client(self) -> OpenAICompatibleClient:
@@ -1105,13 +1118,11 @@ class GeminiClient(LLMClient):
                     }],
                 })
 
-        generation_config: dict[str, Any] = {}
-        if temperature is not None:
-            generation_config["temperature"] = temperature
-
         payload: dict[str, Any] = {
             "contents": contents or [{"role": "user", "parts": [{"text": ""}]}],
-            "generationConfig": generation_config,
+            "generationConfig": {
+                "temperature": temperature,
+            },
         }
 
         if max_tokens:
@@ -1337,10 +1348,8 @@ class GeminiClient(LLMClient):
                                 },
                             })
 
-        except (httpx.TransportError, httpx.ConnectTimeout) as e:
-            # TransportError covers NetworkError (ConnectError, ReadError) and
-            # ProtocolError (RemoteProtocolError) — all common with local vLLM.
-            raise LLMError(f"Connection failed: {type(e).__name__}: {e}")
+        except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+            raise LLMError(f"Connection failed: {e}")
 
         return LLMResponse(
             content=full_text,
@@ -1364,7 +1373,7 @@ class GeminiClient(LLMClient):
 
 class AnthropicClient(LLMClient):
     """Client for Anthropic's native Messages API.
-    
+
     Supports Claude 3.x and Claude 3.7+ with extended thinking.
     """
 
@@ -1384,7 +1393,7 @@ class AnthropicClient(LLMClient):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=None)
         return self._client
 
     def _get_headers(self) -> dict[str, str]:
@@ -1518,7 +1527,7 @@ class AnthropicClient(LLMClient):
         full_reasoning = ""
         full_signature = None
         tool_calls = []
-        
+
         for block in data.get("content", []):
             if block.get("type") == "text":
                 full_content += block.get("text", "")
@@ -1576,7 +1585,7 @@ class AnthropicClient(LLMClient):
         final_model = self.model
 
         client = await self._get_client()
-        
+
         try:
             async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
                 if resp.status_code >= 400:
@@ -1586,22 +1595,22 @@ class AnthropicClient(LLMClient):
                     raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
                 current_event = None
-                
+
                 async for line in resp.aiter_lines():
                     if not line.strip():
                         continue
-                        
+
                     if line.startswith("event:"):
                         current_event = line[len("event:"):].strip()
                         continue
-                        
+
                     if not line.startswith("data:"):
                         continue
-                        
+
                     data_str = line[len("data:"):].strip()
                     if data_str == "[DONE]":
                         break
-                        
+
                     try:
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
@@ -1614,7 +1623,7 @@ class AnthropicClient(LLMClient):
                             final_model = msg["model"]
                         if msg.get("usage"):
                             final_usage = msg["usage"]
-                            
+
                     elif current_event == "content_block_start":
                         block = data.get("content_block", {})
                         idx = data.get("index", 0)
@@ -1625,32 +1634,32 @@ class AnthropicClient(LLMClient):
                                 "type": "function",
                                 "function": {"name": block.get("name"), "arguments": ""}
                             })
-                            
+
                     elif current_event == "content_block_delta":
                         idx = data.get("index", 0)
                         delta = data.get("delta", {})
                         delta_type = delta.get("type")
-                        
+
                         if delta_type == "text_delta":
                             text = delta.get("text", "")
                             full_content += text
                             if on_chunk:
                                 await on_chunk(text)
-                                
+
                         elif delta_type == "thinking_delta":
                             thought = delta.get("thinking", "")
                             full_reasoning += thought
                             if on_thinking:
                                 await on_thinking(thought)
-                        
+
                         elif delta_type == "signature_delta":
                             full_signature = delta.get("signature")
-                                
+
                         elif delta_type == "input_json_delta":
                             if idx in tool_call_index_map:
                                 tc_idx = tool_call_index_map[idx]
                                 tool_calls_data[tc_idx]["function"]["arguments"] += delta.get("partial_json", "")
-                                
+
                     elif current_event == "message_delta":
                         delta = data.get("delta", {})
                         if delta.get("stop_reason"):
@@ -1658,7 +1667,7 @@ class AnthropicClient(LLMClient):
                         if data.get("usage"):
                             # message_delta usage is cumulative
                             final_usage = data["usage"]
-                            
+
                     elif current_event == "error":
                         error_info = data.get("error", {})
                         raise LLMError(f"Anthropic stream error ({error_info.get('type')}): {error_info.get('message')}")
@@ -1666,10 +1675,8 @@ class AnthropicClient(LLMClient):
                     elif current_event == "message_stop":
                         break
 
-        except (httpx.TransportError, httpx.ConnectTimeout) as e:
-            # TransportError covers NetworkError (ConnectError, ReadError) and
-            # ProtocolError (RemoteProtocolError) — all common with local vLLM.
-            raise LLMError(f"Connection failed: {type(e).__name__}: {e}")
+        except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+            raise LLMError(f"Connection failed: {e}")
 
         # Normalize stop reason to OpenAI style (optional but helpful for consistency)
         if last_finish_reason == "end_turn":
@@ -1691,7 +1698,6 @@ class AnthropicClient(LLMClient):
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:
             await self._client.aclose()
-
 
 # ============================================================================
 # Factory and Utilities

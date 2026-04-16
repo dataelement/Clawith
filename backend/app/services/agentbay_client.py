@@ -100,14 +100,36 @@ class AgentBayClient:
             self._browser_initialized = True
 
     async def browser_navigate(self, url: str, wait_for: str = "", screenshot: bool = False) -> dict:
-        """Navigate browser to URL using SDK."""
+        """Navigate browser to URL using SDK.
+
+        The AgentBay SDK default navigation timeout is ~60 s. We wrap the call
+        with a 40-second asyncio soft-timeout so callers receive an actionable
+        error quickly rather than hanging the whole agent loop. The underlying
+        SDK thread may continue briefly in the background but its result is
+        discarded — the browser will eventually settle on its own.
+        """
         if not self._session or self._image_type not in ("browser", "browser_latest"):
             await self.create_session("browser_latest")
 
         await self._ensure_browser_initialized()
 
-        # Navigate to URL
-        await asyncio.to_thread(self._session.browser.operator.navigate, url)
+        # Navigate to URL with a 40-second soft timeout.
+        # asyncio.wait_for cancels the coroutine wrapper; the blocking thread
+        # inside asyncio.to_thread keeps running until SDK returns, but we
+        # no longer block the agent loop waiting for it.
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._session.browser.operator.navigate, url),
+                timeout=40.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[AgentBay] navigate to {url!r} timed out after 40 s")
+            raise RuntimeError(
+                f"Navigation to '{url}' timed out (>40 s). "
+                "The browser may be busy or the page is unreachable. "
+                "Try calling agentbay_browser_screenshot to check the current "
+                "state, or retry the navigation."
+            )
 
         result = {"url": url, "success": True, "title": url}
 

@@ -49,3 +49,7 @@ class Tenant(Base):
     min_poll_interval_floor: Mapped[int] = mapped_column(Integer, default=5)
     max_webhook_rate_ceiling: Mapped[int] = mapped_column(Integer, default=5)
 
+    # A2A async communication (notify / task_delegate)
+    # When False, all agent-to-agent messages use synchronous consult mode
+    a2a_async_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+

@@ -372,8 +372,15 @@
       "cancel": "Cancel"
     },
     "chat": {
+      "sessionListTitle": "Session list",
+      "collapseSidebar": "Collapse session list",
       "mySessions": "My Sessions",
       "allUsers": "All Users",
+      "viewOtherUsersSessions": "View other users' sessions",
+      "otherUsersTab": "Other users",
+      "selectUserToView": "Select user",
+      "selectUserFirstHint": "Choose a user above to view their sessions with this agent (read-only).",
+      "noOtherUsersSessions": "No other users have sessions with this agent yet.",
       "newSession": "New Session",
       "noSessionsYet": "No sessions yet.",
       "clickToStart": "Click \"New Session\" to start.",
@@ -390,7 +397,9 @@
       "askAboutFile": "Ask about {{name}}...",
       "thinking": "Thinking...",
       "collapseSessions": "Collapse sessions",
-      "showSessions": "Show chat sessions"
+      "showSessions": "Show chat sessions",
+      "toolCallChain": "Tools Used",
+      "analysing": "Analysing"
     },
     "activityLog": {
       "title": "Activity Log",
@@ -453,6 +462,13 @@
         "webhookUrl": "Webhook URL",
         "configured": "Configured",
         "notConfigured": "Not configured",
+        "saveSuccess": "Channel configuration saved.",
+        "saveFailed": "Failed to save channel configuration.",
+        "disconnectSuccess": "Channel disconnected.",
+        "disconnectFailed": "Failed to disconnect channel.",
+        "websocketConnected": "Connected via WebSocket (No callback URL needed)",
+        "websocketDisconnected": "Configured for WebSocket, but currently disconnected",
+        "websocketDisconnectedHint": "Reconnect by saving the WeCom WebSocket configuration again.",
         "saveChannel": "Save Config",
         "syncHint": "Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders."
       },
@@ -902,6 +918,15 @@
       "invites": "Invitation Codes",
       "identity": "OA Management"
     },
+    "a2aAsync": {
+      "title": "Agent-to-Agent Async Communication",
+      "description": "Enable agents to communicate asynchronously with three modes: notify (one-way announcement), task_delegate (delegate work and get results back), and consult (synchronous question). When disabled, all agent-to-agent messages use synchronous consult mode — the same behavior as before this feature was introduced.",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "enabledHint": "Agents can use notify, task_delegate, and consult modes.",
+      "disabledHint": "All agent messages use synchronous consult mode.",
+      "enableWarning": "⚠️ You are about to enable the A2A Async Communication feature (Beta).\n\nThis feature allows agents to communicate asynchronously via notify and task_delegate modes.\n\nKnown potential issues:\n• Agent replies may contain internal technical terms (trigger names, focus items, etc.)\n• task_delegate callbacks may occasionally be delayed or dropped due to rate limiting\n• Token consumption will increase because each async message triggers a separate agent session\n• Agent loops may occur if triggers are not properly configured\n\nIf you encounter any issues, please return to this page and disable the toggle to restore stable synchronous behavior.\n\nAre you sure you want to enable this feature?"
+    },
     "invites": {
       "pageTitle": "Invitation Codes",
       "pageDesc": "Manage invitation codes for platform registration.",
@@ -1209,19 +1234,19 @@
         "feishu": {
           "step1": "Go to open.feishu.cn → log in → Developer Console → Create Enterprise Self-Built App",
           "step2": "Left sidebar → Credentials & Basic Info → copy App ID and App Secret, paste below and Setup",
-          "step3": "Left sidebar → Permissions & Scopes → click Bulk Import/Export Permissions → paste the permission JSON below → confirm import",
+          "step3": "Left sidebar → Permissions & Scopes → click Bulk Import/Export Permissions → paste the permission JSON below → confirm import. [IMPORTANT] Org sync uses user_id (employee_id) as the stable user identifier, which is required to correctly match org members with Feishu bot channel users across different apps (open_id is app-specific and cannot be used as a cross-app identifier). Therefore, contact:user.employee_id:readonly is a mandatory permission.",
           "step4": "[For SSO] Left sidebar → Add App Capabilities → add Web App (网页应用), and paste the SSO Login URL below into the Desktop and Mobile homepage fields",
           "step5": "[For SSO] Left sidebar → Security Settings → Add the Redirect URL below into 'Redirect URLs'",
           "step6": "[For SSO] Turn on the 'SSO Login' switch below. Team members can now log in via the SSO Login URL with one click.",
-          "step7": "Left sidebar → App Release → Create Version (set Availability to All Employees) → Release for Review → approve it in your admin console"
+          "step7": "[REQUIRED] Left sidebar → App Release → Create Version (set Availability to All Employees) → Release for Review → approve it in your admin console. Note: unlike DingTalk, Feishu permissions only take effect after publishing a new version and getting enterprise admin approval. Sync and SSO will not work until the app is published and approved."
         },
         "dingtalk": {
-          "step1": "Go to open.dingtalk.com → log in → Developer Console → Create Enterprise Internal App → fill in name",
-          "step2": "App Features → click Add next to Contacts",
-          "step3": "App Info → copy AppKey and AppSecret",
-          "step4": "Contacts Permission → enable reading permissions for Departments and Members",
-          "step5": "Paste AppKey and AppSecret below → click Save",
-          "step6": "If you need SSO via DingTalk: Turn on the 'SSO Login' switch below, then in DingTalk configure: Login & Sharing → Add the 'Redirect URL' below as the Callback Domain. Share the 'SSO Login URL' with your team."
+          "step1": "Go to open.dingtalk.com → log in → go to App Development → Create Internal Enterprise App → enter a name",
+          "step2": "Once the app is created, go to the app page → left sidebar 'Credentials & Basic Info' → copy AppKey and AppSecret, paste them below and save",
+          "step3": "Left sidebar 'Development Config' → 'Permission Management' → Under the 'Contacts Management' category, find each permission below and click 'Enable Now' (no approval required, takes effect immediately): ① Contacts Dept Read Permission (includes: Get Department List [qyapi_get_department_list], Get Department Details, Get All Parent Depts of a Dept); ② Member Info Read Permission (qyapi_get_member, Query User Details); ③ Get Department Member Details (qyapi_get_department_member, required to sync dept user list); ④ Employee Mobile Number (fieldMobile); ⑤ Email & Personal Info (fieldEmail)",
+          "step4": "On the same 'Permission Management' page → switch to the 'Contacts Permission Scope' tab → set it to 'All Employees' (or select specific departments, but ensure coverage of all members you want to sync)",
+          "step5": "Paste AppKey and AppSecret below → click Save Config → click 'Sync' to run the first sync",
+          "step6": "If you need DingTalk SSO: ① In Permission Management → Personal Permissions category, find 'Contacts Personal Info Read' (Contact.User.Read) → Enable Now (required to fetch user info on SSO login); ② Turn on the 'SSO Login' switch below; ③ In the DingTalk developer console → Development Config → Share Settings → Login Access → add the Callback URL below as the Callback Domain; ④ Share the SSO Login URL below with your team for one-click login"
         },
         "wecom": {
           "step1": "Log in to WeCom Admin Console → Management Tools → Address Book Sync",
@@ -1340,7 +1365,17 @@
       "botId": "Bot ID (Intelligent Robot)",
       "botSecret": "Bot Secret",
       "appKey": "App Key",
-      "appSecret": "App Secret"
+      "appSecret": "App Secret",
+      "wecomNotice": {
+        "title": "Prerequisites for WeCom Integration",
+        "syncTitle": "1. User Directory Sync",
+        "syncDesc": "Directory sync via the contacts secret works for fetching user IDs. However, fetching full user details (name, avatar, email) requires the self-built app's IP to be whitelisted in WeCom — a setting that must be configured by the WeCom enterprise admin.",
+        "ssoTitle": "2. SSO Login (Single Sign-On)",
+        "ssoDesc": "WeCom OAuth requires the callback domain to be ICP-filed with a business entity matching the WeCom enterprise's registration. The platform domain (clawith.ai) is a .ai TLD which cannot be ICP-filed in mainland China, making SSO unavailable on the current domain. Requires either an ICP-filed .com/.cn domain or WeCom ISV (service provider) registration.",
+        "messagingTitle": "3. Proactive 1-to-1 Messaging (AI-initiated)",
+        "messagingDesc": "Sending messages to individual users requires a valid WeCom API access token, which can only be obtained from a server IP that has been whitelisted in the self-built app's settings. Unlike Feishu, WeCom mandates IP-level restrictions on all API calls — there is no token-only authentication option.",
+        "footerText": "Due to the above constraints, WeCom integration currently cannot be easily set up by most users. We are actively exploring alternative approaches — including WeCom ISV (service provider) registration and lower-friction API options — or we may advocate for WeCom to relax these restrictions for SaaS platforms. Configuration will be re-enabled once a viable path is available."
+      }
     },
     "dangerZone": "️ Danger Zone",
     "deleteCompanyDesc": "Permanently delete this company and all its data, including agents, models, tools, and skills. This action cannot be undone.",
@@ -1456,7 +1491,8 @@
     "lightMode": "Light Mode",
     "darkMode": "Dark Mode",
     "collapseSidebar": "Collapse Sidebar",
-    "expandSidebar": "Expand Sidebar"
+    "expandSidebar": "Expand Sidebar",
+    "deleting": "Deleting..."
   },
   "openclaw": {
     "created": "OpenClaw Agent Created",

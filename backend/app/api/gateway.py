@@ -6,13 +6,12 @@ to poll for messages, report results, send messages, and send heartbeat pings.
 
 import asyncio
 import hashlib
-import secrets
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Header, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, Header, HTTPException, Depends
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, async_session
@@ -57,42 +56,6 @@ async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
     if not agent:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return agent
-
-
-# ─── Generate / Regenerate API Key ──────────────────────
-
-@router.post("/generate-key/{agent_id}")
-async def generate_api_key(
-    agent_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    # JWT auth for this endpoint (requires the agent creator)
-    current_user: "User" = Depends(None),  # placeholder, will use real dependency
-):
-    """Generate or regenerate an API key for an OpenClaw agent.
-
-    Called from the frontend by the agent creator.
-    """
-    from app.api.agents import get_current_user
-    raise HTTPException(status_code=501, detail="Use the /agents/{id}/api-key endpoint instead")
-
-
-@router.post("/agents/{agent_id}/api-key")
-async def generate_agent_api_key(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Generate or regenerate API key for an OpenClaw agent.
-
-    This is an internal endpoint called by the agents API.
-    """
-    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.agent_type == "openclaw"))
-    agent = result.scalar_one_or_none()
-    if not agent:
-        raise HTTPException(status_code=404, detail="OpenClaw agent not found")
-
-    # Generate a new key
-    raw_key = f"oc-{secrets.token_urlsafe(32)}"
-    agent.api_key_hash = _hash_key(raw_key)
-    await db.commit()
-
-    return {"api_key": raw_key, "message": "Save this key — it won't be shown again."}
 
 
 # ─── Poll for messages ──────────────────────────────────
@@ -343,7 +306,7 @@ async def _send_to_agent_background(
     """
     logger.info(f"[Gateway] _send_to_agent_background started: {source_agent_name} -> {target_agent_name}")
     try:
-        from app.api.websocket import call_llm
+        from app.services.llm import call_llm
         from app.models.llm import LLMModel
         from app.models.audit import ChatMessage
         from app.models.chat_session import ChatSession
@@ -413,7 +376,7 @@ async def _send_to_agent_background(
                 "--- Agent-to-Agent Communication Alert ---\n"
                 f"You are receiving a direct message from another digital employee ({source_agent_name}). "
                 "CRITICAL INSTRUCTION: Your direct text reply will automatically be delivered back to them. "
-                "DO NOT use the `send_agent_message` tool to reply to this conversation. Just reply naturally in text.\n"
+                "DO NOT use the `send_message_to_agent` tool to reply to this conversation. Just reply naturally in text.\n"
                 "If they are asking you to create or analyze a file, deliver the file using `send_file_to_agent` after writing it."
             )
 
@@ -465,6 +428,7 @@ async def _send_to_agent_background(
             role_description=target_role_description,
             agent_id=target_agent_id,
             user_id=target_creator_id,
+            session_id=conv_id,
             on_chunk=on_chunk,
         )
         final_reply = reply or "".join(collected)

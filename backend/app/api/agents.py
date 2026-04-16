@@ -773,8 +773,7 @@ async def generate_or_reset_api_key(
         raise HTTPException(status_code=400, detail="API keys are only available for OpenClaw agents")
 
     raw_key = f"oc-{secrets.token_urlsafe(32)}"
-    # Store in plaintext so frontend can retrieve it anytime to display and copy
-    agent.api_key_hash = raw_key
+    agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     await db.commit()
 
     return {"api_key": raw_key, "message": "Key configured successfully."}
