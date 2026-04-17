@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(psql *)",
+      "Bash(docker-compose *)",
+      "Bash(docker ps *)",
+      "Bash(ls *)",
+      "Bash(tail *)",
+      "Bash(lsof *)",
+      "Bash(curl *)",
+      "Bash(python3 *)",
+      "Bash(docker network *)",
+      "Bash(docker *)",
+      "Bash(sleep *)",
+      "Bash(find *)",
+      "Bash(xargs *)",
+      "Bash(lark-cli *)",
+      "Bash(npm run *)",
+      "Bash(sed *)"
+    ]
+  },
+  "$version": 3
+}

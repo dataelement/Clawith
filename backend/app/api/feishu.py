@@ -379,7 +379,29 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 from pathlib import Path as _PostPath
                 from app.config import get_settings as _post_gs
                 _post_settings = _post_gs()
-                _upload_dir = _PostPath(_post_settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
+                
+                # === USER ISOLATION: Check if user isolation is enabled ===
+                _use_user_workspace = False
+                _user_id_for_upload = None
+                if sender_open_id:
+                    try:
+                        from uuid import UUID as _UUID
+                        _user_uuid = _UUID(sender_open_id)
+                        _user_id_for_upload = _user_uuid
+                        async with _async_session() as _db:
+                            _agent_check = await _db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
+                            _agent_obj_check = _agent_check.scalar_one_or_none()
+                            if _agent_obj_check and getattr(_agent_obj_check, 'user_isolation_enabled', False):
+                                _use_user_workspace = True
+                    except Exception:
+                        pass
+                
+                # Determine upload directory
+                if _use_user_workspace and _user_id_for_upload:
+                    _upload_dir = _PostPath(_post_settings.AGENT_DATA_DIR) / str(agent_id) / "users" / str(_user_id_for_upload) / "files"
+                else:
+                    _upload_dir = _PostPath(_post_settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
+                
                 _upload_dir.mkdir(parents=True, exist_ok=True)
                 for _ik in _post_image_keys:
                     try:
@@ -435,6 +457,21 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 conv_id = f"feishu_group_{chat_id}"
             else:
                 conv_id = f"feishu_p2p_{sender_user_id_from_event or sender_open_id}"
+            
+            # Check Redis cache for user-selected new session
+            # Key format: feishu_session:{agent_id}:{user_id}
+            try:
+                import redis as _redis
+                _r = _redis.Redis(host='clawith-redis', port=6379, db=0, decode_responses=True)
+                _cache_key = f"feishu_session:{agent_id}:{platform_user_id if 'platform_user_id' in dir() else sender_open_id}"
+                _cached_session_id = _r.get(_cache_key)
+                if _cached_session_id:
+                    # User previously requested new session, use cached session's external_conv_id
+                    conv_id = _cached_session_id
+                    logger.info(f"[Feishu] Using cached session: {conv_id}")
+                _r.close()
+            except Exception as _e:
+                logger.debug(f"[Feishu] Redis cache check failed: {_e}")
 
             # Load recent conversation history via session (session UUID may already exist)
             from app.models.audit import ChatMessage
@@ -561,6 +598,30 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 extra_info=extra_info,
             )
             platform_user_id = platform_user.id
+
+            # ── Check for "new session" command ──
+            # User can send "/new" or "新建对话" to start a new session
+            _user_text_lower = user_text.strip().lower()
+            _should_create_new_session = _user_text_lower in ["/new", "/n", "新建对话", "新对话", "new session", "start new"]
+            
+            if _should_create_new_session:
+                # Create a new session with a fresh conv_id
+                import uuid as _uuid
+                new_conv_id = f"feishu_new_{_uuid.uuid4().hex[:8]}"
+                conv_id = new_conv_id
+                logger.info(f"[Feishu] User requested new session: {new_conv_id}")
+                
+                # Cache the new session ID to Redis for subsequent messages
+                # TTL: 24 hours (user has 24h to continue the new session)
+                try:
+                    import redis as _redis
+                    _r = _redis.Redis(host='clawith-redis', port=6379, db=0, decode_responses=True)
+                    _cache_key = f"feishu_session:{agent_id}:{platform_user_id}"
+                    _r.setex(_cache_key, 86400, new_conv_id)  # 24 hours TTL
+                    _r.close()
+                    logger.info(f"[Feishu] Cached new session: {_cache_key} -> {new_conv_id}")
+                except Exception as _e:
+                    logger.error(f"[Feishu] Redis cache write failed: {_e}")
 
             # ── Find-or-create a ChatSession via external_conv_id (DB-based, no cache needed) ──
             from datetime import datetime as _dt, timezone as _tz
@@ -1070,6 +1131,23 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             # Save assistant reply to history (use platform_user_id so messages stay in one session)
             db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
             _sess.last_message_at = _dt.now(_tz.utc)
+            
+            # If new session was created, inform the user
+            if _should_create_new_session:
+                # Send a follow-up message to notify about new session
+                try:
+                    import json as _j
+                    _welcome_msg = "✅ 已创建新对话！之前的聊天记录不会受影响。"
+                    await feishu_service.send_message(
+                        config.app_id, config.app_secret,
+                        chat_id if chat_type == "group" else sender_open_id,
+                        "text",
+                        _j.dumps({"text": _welcome_msg}),
+                        receive_id_type="chat_id" if chat_type == "group" else "open_id"
+                    )
+                except Exception as e:
+                    logger.error(f"[Feishu] Failed to send new session notification: {e}")
+            
             await db.commit()
 
     return {"code": 0, "msg": "ok"}
@@ -1118,19 +1196,12 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         logger.warning(f"[Feishu] No file_key in {msg_type} message")
         return
 
-    # Resolve workspace upload dir
-    settings = get_settings()
-    upload_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    save_path = upload_dir / filename
-
-    # Download the file
+    # Download the file first
+    file_bytes = None
     try:
         file_bytes = await feishu_service.download_message_resource(
             config.app_id, config.app_secret, message_id, file_key, res_type
         )
-        save_path.write_bytes(file_bytes)
-        logger.info(f"[Feishu] Saved {msg_type} to {save_path} ({len(file_bytes)} bytes)")
     except Exception as e:
         logger.error(f"[Feishu] Failed to download {msg_type}: {e}")
         err_tip = "抱歉，文件下载失败。可能原因：机器人缺少 `im:resource` 权限（文件读取）。\n请在飞书开放平台 → 权限管理 → 批量导入权限 JSON → 重新发布机器人版本后重试。"
@@ -1170,8 +1241,6 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
                     if _ud.get("code") == 0:
                         _user_info = _ud.get("data", {}).get("user", {})
                         sender_user_id_feishu = _user_info.get("user_id", "")
-                        # Feishu contact API returns 'avatar' as a dict
-                        # (keys: avatar_240, avatar_640, avatar_origin), NOT a plain URL.
                         _raw_avatar = _user_info.get("avatar")
                         if isinstance(_raw_avatar, dict):
                             _avatar_url = (
@@ -1194,7 +1263,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         except Exception:
             pass
 
-        # Resolve channel user via unified service (uses OrgMember + SSO patterns)
+        # Resolve channel user via unified service
         from app.services.channel_user_service import channel_user_service
         platform_user = await channel_user_service.resolve_channel_user(
             db=db,
@@ -1203,6 +1272,29 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
             external_user_id=sender_open_id,
             extra_info=extra_info,
         )
+
+        # === USER ISOLATION: Check if user isolation is enabled ===
+        use_user_workspace = False
+        user_id_for_upload = None
+        
+        if platform_user:
+            user_id_for_upload = str(platform_user.id)
+            if agent_obj and getattr(agent_obj, 'user_isolation_enabled', False):
+                use_user_workspace = True
+        
+        # Determine upload directory
+        settings = get_settings()
+        if use_user_workspace and user_id_for_upload:
+            upload_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "users" / str(user_id_for_upload) / "files"
+        else:
+            upload_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
+        
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        save_path = upload_dir / filename
+        
+        # Save the file
+        save_path.write_bytes(file_bytes)
+        logger.info(f"[Feishu] Saved {msg_type} to {save_path} ({len(file_bytes)} bytes)")
         platform_user_id = platform_user.id
 
         # Conv ID — prefer user_id for session continuity

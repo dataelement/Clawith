@@ -203,6 +203,7 @@
       "skills": "Skills",
       "relationships": "Relationships",
       "workspace": "Workspace",
+      "personal": "Personal Space",
       "chat": "Chat",
       "activityLog": "Activity Log",
       "approvals": "Approvals",
@@ -528,6 +529,12 @@
           "Pacific/Auckland": "Pacific/Auckland (New Zealand Time, UTC+12/+13)"
         }
       },
+      "userIsolation": {
+        "title": "🔒 Multi-User Isolation",
+        "label": "Enable Multi-User Isolation",
+        "desc": "When enabled, each user will have their own workspace. Files and personal memories are isolated between users. Shared resources (skills, soul, company knowledge) remain accessible to all users.",
+        "tip": "💡 Tip: Recommended for customer service bots or shared agents that interact with multiple users."
+      },
       "approvals": {
         "title": "Approvals",
         "pending": "{{count}} Pending",
@@ -814,7 +821,15 @@
       "department": "Department",
       "departmentDesc": "Only selected department members can use",
       "selfOnly": "Self Only",
-      "selfOnlyDesc": "Only the creator can use"
+      "selfOnlyDesc": "Only the creator can use",
+      "accessLevel": "Default Access Level",
+      "useLevel": "Use",
+      "useDesc": "Can use Task, Chat, Tools, Skills, Workspace",
+      "manageLevel": "Manage",
+      "manageDesc": "Full access including Settings, Mind, Relationships",
+      "userIsolationEnabled": "Enable Multi-User Isolation",
+      "userIsolationEnabledDesc": "When enabled, each user will have their own workspace. Files and personal memories are isolated between users. Shared resources (skills, soul, company knowledge) remain accessible to all users.",
+      "userIsolationEnabledTip": "Tip: Recommended for customer service bots or shared agents that interact with multiple users."
     },
     "step5": {
       "title": "Feishu Bot Configuration (Optional)",

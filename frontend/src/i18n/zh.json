@@ -210,6 +210,7 @@
       "skills": "技能",
       "relationships": "关系",
       "workspace": "工作区",
+      "personal": "个人空间",
       "chat": "聊天",
       "activityLog": "工作日志",
       "approvals": "审批",
@@ -510,6 +511,12 @@
         "override": "此数字员工的自定义时区",
         "inherited": "使用公司默认时区",
         "default": "↩ 公司默认"
+      },
+      "userIsolation": {
+        "title": "🔒 多用户隔离",
+        "label": "启用多用户隔离",
+        "desc": "启用后，每个用户将有独立的工作区。用户文件和个人记忆相互隔离，共享资源（技能、人格、公司知识）仍然对所有用户开放。",
+        "tip": "💡 提示：推荐用于客服机器人或与多用户交互的共享 Agent。"
       },
       "heartbeat": {
         "title": "心跳",
@@ -928,7 +935,10 @@
       "useLevel": "使用",
       "useDesc": "可以使用任务、聊天、工具、技能、工作区",
       "manageLevel": "管理",
-      "manageDesc": "完全访问权限，包括设置、心智、关系"
+      "manageDesc": "完全访问权限，包括设置、心智、关系",
+      "userIsolationEnabled": "启用多用户隔离",
+      "userIsolationEnabledDesc": "启用后，每个用户将有独立的工作区。用户文件和个人记忆相互隔离，共享资源（技能、人格、公司知识）仍然对所有用户开放。",
+      "userIsolationEnabledTip": "提示：推荐用于客服机器人或与多用户交互的共享 Agent。"
     },
     "step5": {
       "title": "渠道配置",
