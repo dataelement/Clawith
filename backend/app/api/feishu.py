@@ -25,10 +25,6 @@ router = APIRouter(tags=["feishu"])
 # The per-model request_timeout field takes precedence — see _get_llm_timeout().
 _LLM_TIMEOUT_SECONDS_DEFAULT = 180.0
 
-# Number of tool status lines to keep visible in the Feishu card.
-# Shows the last N non-running lines plus any active "running" entry.
-_TOOL_STATUS_KEEP_LINES = 20
-
 
 def _get_llm_timeout(model) -> float:
     """Get effective LLM timeout for the Feishu channel.
@@ -729,8 +725,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             _FLUSH_INTERVAL_CARDKIT = 0.5
             _FLUSH_INTERVAL_PATCH = 1.0
             _agent_name = agent_obj.name if agent_obj else "AI 回复"
-            _tool_status_running: dict[str, str] = {}
-            _tool_status_done: list[str] = []
             _patch_queue = _SerialPatchQueue()
             _heartbeat_task: asyncio.Task | None = None
             _llm_done = False
@@ -742,49 +736,12 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 answer_text: str,
                 thinking_text: str = "",
                 streaming: bool = False,
-                tool_status_lines: list[str] | None = None,
                 agent_name: str | None = None,
             ) -> dict:
-                """Build a Feishu interactive card for streaming replies.
-
-                Args:
-                    answer_text: Main reply text (may be partial during streaming).
-                    thinking_text: Reasoning/thinking content shown in a collapsed section.
-                    streaming: If True, appends a cursor glyph to indicate in-progress output.
-                    tool_status_lines: Override list for image streaming (which maintains its
-                        own done-list; pass None to use the default text-streaming state).
-                    agent_name: Override the default _agent_name (for image streaming context).
-                """
                 _name = agent_name if agent_name is not None else _agent_name
 
                 elements = []
 
-                # Tool status section.
-                # For the primary text-streaming path we use the split running/done dicts;
-                # callers may pass an explicit list (image streaming) as override.
-                if tool_status_lines is not None:
-                    # Caller-supplied override (image path): plain list, no split needed.
-                    if tool_status_lines:
-                        elements.append({
-                            "tag": "markdown",
-                            "content": "\n".join(tool_status_lines[-_TOOL_STATUS_KEEP_LINES:]),
-                        })
-                        elements.append({"tag": "hr"})
-                else:
-                    # Primary text-streaming path: show done history + any still-running tools.
-                    # _tool_status_running entries are removed when the tool completes,
-                    # so only genuinely in-flight tools appear here.
-                    done_visible = _tool_status_done[-_TOOL_STATUS_KEEP_LINES:]
-                    running_visible = list(_tool_status_running.values())
-                    all_visible = done_visible + running_visible
-                    if all_visible:
-                        elements.append({
-                            "tag": "markdown",
-                            "content": "\n".join(all_visible),
-                        })
-                        elements.append({"tag": "hr"})
-
-                # Thinking section: collapsed grey block
                 if thinking_text:
                     think_preview = thinking_text[:200].replace("\n", " ")
                     elements.append({
@@ -858,18 +815,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         return
                     accumulated = "".join(_stream_buffer)
                     if cardkit_card_id:
-                        # Build composite content: tool status lines + answer text.
-                        # This mirrors the IM Patch path where _build_card() includes the
-                        # tool status section, so CardKit users also see which tools are
-                        # running or completed during the LLM turn.
-                        done_visible = _tool_status_done[-_TOOL_STATUS_KEEP_LINES:]
-                        running_visible = list(_tool_status_running.values())
-                        all_tool_lines = done_visible + running_visible
-                        if all_tool_lines:
-                            tool_section = "\n".join(all_tool_lines)
-                            cardkit_text = f"{tool_section}\n---\n{accumulated}" if accumulated else tool_section
-                        else:
-                            cardkit_text = accumulated
+                        cardkit_text = accumulated
                         if cardkit_text != _last_flushed_text:
                             cardkit_sequence += 1
                             try:
@@ -888,7 +834,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                                 logger.warning(f"[Feishu] CardKit stream failed: {e}")
                     elif msg_id_for_patch:
                         card = _build_card(accumulated, "".join(_thinking_buffer), streaming=True)
-                        current_hash = hash(accumulated + "".join(_thinking_buffer) + str(_tool_status_done) + str(list(_tool_status_running.values())))
+                        current_hash = hash(accumulated + "".join(_thinking_buffer))
                         if reason == "heartbeat" and current_hash == _last_flushed_hash:
                             return
                         _last_flushed_hash = current_hash
@@ -906,30 +852,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     return
                 _thinking_buffer.append(text)
                 await _flush_stream("thinking")
-
-            async def _ws_on_tool_call(evt: dict):
-                """Receive tool call status events and update the card's progress section.
-
-                Uses the tool's call_id as the dict key so each tool shows only its
-                latest state.  When a tool completes the "running" entry is removed from
-                _tool_status_running and a "done" line is appended to _tool_status_done,
-                ensuring finished tools never linger as ⏳ in the card.
-                """
-                tool_name = evt.get("name") or "unknown_tool"
-                # Use call_id when available (unique per invocation); fall back to name.
-                call_id = evt.get("call_id") or tool_name
-                status = (evt.get("status") or "").lower()
-                if status == "running":
-                    # Register as in-flight; will be removed when "done" arrives.
-                    _tool_status_running[call_id] = f"⏳ Tool running: `{tool_name}`"
-                elif status == "done":
-                    # Remove from running dict so the ⏳ icon disappears immediately.
-                    _tool_status_running.pop(call_id, None)
-                    _tool_status_done.append(f"✅ Tool done: `{tool_name}`")
-                else:
-                    _tool_status_running.pop(call_id, None)
-                    _tool_status_done.append(f"ℹ️ Tool update: `{tool_name}` ({status or 'unknown'})")
-                await _flush_stream("tool")
 
             async def _heartbeat():
                 while not _llm_done:
@@ -950,7 +872,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     session_id=conv_id,
                     on_chunk=_ws_on_chunk,
                     on_thinking=_ws_on_thinking,
-                    on_tool_call=_ws_on_tool_call,
                 )
             finally:
                 _llm_done = True
