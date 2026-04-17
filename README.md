@@ -158,7 +158,21 @@ The first user to register automatically becomes the **platform admin**. Open th
 
 ### System Email and Password Reset
 
-Clawith can send platform-owned emails for password reset and optional broadcast delivery. Configure SMTP in `.env`:
+Clawith can send platform-owned emails for password reset and optional broadcast delivery.
+
+Primary configuration path:
+
+1. Open **Admin** → **Platform Settings** (`/admin/platform-settings`)
+2. Go to the **Platform** tab
+3. Fill **System Email Configuration** (From address/name, SMTP host/port, username, password, SSL/TLS, timeout)
+4. Click **Save**, then use **Send Test Email** to verify delivery
+
+Configuration priority:
+
+- First: values saved in Platform Settings (`system_email_platform`)
+- Fallback: SMTP values from `.env` (useful for local/dev bootstrap)
+
+`.env` fallback example:
 
 ```bash
 PUBLIC_BASE_URL=http://localhost:3008
