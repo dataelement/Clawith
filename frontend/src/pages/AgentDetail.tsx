@@ -16,11 +16,12 @@ import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi,
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
+import UserWorkspace from '../components/UserWorkspace';
 import { formatFileSize } from '../utils/formatFileSize';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 
-const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'personal', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
 // Format large token numbers with K/M suffixes
 const formatTokens = (n: number) => {
@@ -1435,6 +1436,7 @@ function AgentDetailInner() {
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
     const isAdmin = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin';
+    const isCreator = agent && currentUser && (agent.creator_id === currentUser.id);
     /** Chat sidebar: who may list all sessions & read others' threads (matches backend scope=all). */
     const canViewAllAgentChatSessions =
         currentUser?.role === 'platform_admin' ||
@@ -1797,6 +1799,7 @@ function AgentDetailInner() {
         max_triggers: 20,
         min_poll_interval_min: 5,
         webhook_rate_limit: 5,
+        user_isolation_enabled: true,  // === USER ISOLATION ===
     });
     const [settingsSaving, setSettingsSaving] = useState(false);
     const [settingsSaved, setSettingsSaved] = useState(false);
@@ -1816,6 +1819,7 @@ function AgentDetailInner() {
                 max_triggers: (agent as any).max_triggers ?? 20,
                 min_poll_interval_min: (agent as any).min_poll_interval_min ?? 5,
                 webhook_rate_limit: (agent as any).webhook_rate_limit ?? 5,
+                user_isolation_enabled: (agent as any).user_isolation_enabled ?? true,  // === USER ISOLATION ===
             });
             settingsInitRef.current = true;
         }
@@ -4054,6 +4058,17 @@ function AgentDetailInner() {
                 }
 
                 {
+                    activeTab === 'personal' && (
+                        <UserWorkspace
+                            agentId={id!}
+                            currentUserId={currentUser?.id || ''}
+                            isCreator={!!isCreator}
+                            isAdmin={!!isAdmin}
+                        />
+                    )
+                }
+
+                {
                     activeTab === 'chat' && (
                         <div
                             style={{
@@ -5002,7 +5017,8 @@ function AgentDetailInner() {
                             String(settingsForm.max_tokens_per_month) !== String(agent?.max_tokens_per_month || '') ||
                             settingsForm.max_triggers !== ((agent as any)?.max_triggers ?? 20) ||
                             settingsForm.min_poll_interval_min !== ((agent as any)?.min_poll_interval_min ?? 5) ||
-                            settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5)
+                            settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5) ||
+                            settingsForm.user_isolation_enabled !== ((agent as any)?.user_isolation_enabled ?? true)  // === USER ISOLATION ===
                         );
 
                         const handleSaveSettings = async () => {
@@ -5019,6 +5035,7 @@ function AgentDetailInner() {
                                     max_triggers: settingsForm.max_triggers,
                                     min_poll_interval_min: settingsForm.min_poll_interval_min,
                                     webhook_rate_limit: settingsForm.webhook_rate_limit,
+                                    user_isolation_enabled: settingsForm.user_isolation_enabled,  // === USER ISOLATION ===
                                 } as any);
                                 queryClient.invalidateQueries({ queryKey: ['agent', id] });
                                 settingsInitRef.current = false;
@@ -5258,6 +5275,40 @@ function AgentDetailInner() {
                                                         {isChinese ? '外部系统每分钟最多可调用的 Webhook 次数' : 'Max webhook calls per minute from external services'}
                                                     </div>
                                                 </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* === USER ISOLATION: Multi-user workspace isolation toggle === */}
+                                {(() => {
+                                    const isChinese = i18n.language?.startsWith('zh');
+                                    return (
+                                        <div className="card" style={{ marginBottom: '12px' }}>
+                                            <h4 style={{ marginBottom: '12px' }}>{isChinese ? '多用户隔离' : 'Multi-User Isolation'}</h4>
+                                            <label style={{
+                                                display: 'flex', alignItems: 'center', gap: '10px',
+                                                fontWeight: 600, fontSize: '14px', marginBottom: '8px',
+                                                cursor: 'pointer',
+                                            }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={settingsForm.user_isolation_enabled}
+                                                    onChange={(e) => setSettingsForm(f => ({ ...f, user_isolation_enabled: e.target.checked }))}
+                                                    style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                                                />
+                                                {isChinese ? '启用多用户隔离' : 'Enable Multi-User Isolation'}
+                                            </label>
+                                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                                {isChinese
+                                                    ? '启用后，每个用户将有独立的工作区。用户文件和个人记忆相互隔离，共享资源（技能、人格、公司知识）仍然对所有用户开放。'
+                                                    : 'When enabled, each user will have their own workspace. Files and personal memories are isolated between users. Shared resources (skills, soul, company knowledge) remain accessible to all users.'}
+                                            </p>
+                                            <div style={{
+                                                fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '8px',
+                                                padding: '8px', background: 'var(--accent-subtle)', borderRadius: '4px'
+                                            }}>
+                                                <strong>{isChinese ? '提示' : 'Tip'}:</strong> {isChinese ? '推荐用于客服机器人或与多用户交互的共享 Agent。' : 'Recommended for customer service bots or shared agents that interact with multiple users.'}
                                             </div>
                                         </div>
                                     );

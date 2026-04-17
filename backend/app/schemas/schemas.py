@@ -228,6 +228,8 @@ class AgentCreate(BaseModel):
     # Token limits
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None
+    # === USER ISOLATION: Enable user-specific workspace ===
+    user_isolation_enabled: bool = True
     # Skills to copy into agent workspace
     skill_ids: list[uuid.UUID] = []
 
@@ -270,6 +272,8 @@ class AgentOut(BaseModel):
     api_key_hash: str | None = None
     created_at: datetime
     last_active_at: datetime | None = None
+    # === USER ISOLATION ===
+    user_isolation_enabled: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -295,6 +299,8 @@ class AgentUpdate(BaseModel):
     heartbeat_active_hours: str | None = None
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
+    # === USER ISOLATION ===
+    user_isolation_enabled: bool | None = None
 
 
 class AgentStatusOut(BaseModel):

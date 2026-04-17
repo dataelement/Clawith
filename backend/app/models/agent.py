@@ -78,6 +78,10 @@ class Agent(Base):
     tokens_used_today: Mapped[int] = mapped_column(Integer, default=0)
     tokens_used_month: Mapped[int] = mapped_column(Integer, default=0)
     last_daily_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    
+    # === USER ISOLATION: Enable user-specific workspace ===
+    user_isolation_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False,
+        comment='Enable user-specific workspace isolation for multi-user scenarios')
     last_monthly_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tokens_used_total: Mapped[int] = mapped_column(Integer, default=0)
     context_window_size: Mapped[int] = mapped_column(Integer, default=100)

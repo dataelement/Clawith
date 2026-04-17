@@ -245,8 +245,9 @@ async def _process_tool_call(
         try:
             from app.services.vision_inject import try_inject_screenshot_vision
             from app.config import get_settings
-            ws_path = get_settings().get_agent_workspace_path(agent_id)
-            vision_content = try_inject_screenshot_vision(tool_name, str(result), ws_path)
+            from pathlib import Path
+            ws_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+            vision_content = try_inject_screenshot_vision(tool_name, str(result), str(ws_path))
             if vision_content:
                 tool_content = vision_content
                 logger.info(f"[LLM] Injected screenshot vision for {tool_name}")

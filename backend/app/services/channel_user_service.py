@@ -70,11 +70,23 @@ class ChannelUserService:
         Returns:
             Resolved User instance
         """
+        from app.models.channel_config import ChannelConfig
+
         tenant_id = agent.tenant_id
         extra_info = extra_info or {}
 
-        # Step 1: Ensure IdentityProvider exists
-        provider = await self._ensure_provider(db, channel_type, tenant_id)
+        # Get the app_id from channel_config for this agent
+        channel_config_result = await db.execute(
+            select(ChannelConfig).where(
+                ChannelConfig.agent_id == agent.id,
+                ChannelConfig.channel_type == channel_type,
+            )
+        )
+        channel_config = channel_config_result.scalar_one_or_none()
+        app_id = channel_config.app_id if channel_config else None
+
+        # Step 1: Ensure IdentityProvider exists (with app_id for precise matching)
+        provider = await self._ensure_provider(db, channel_type, tenant_id, app_id)
 
         # Step 2: Try to find OrgMember by external identity
         org_member = await self._find_org_member(
@@ -170,14 +182,25 @@ class ChannelUserService:
         return user
 
     async def _ensure_provider(
-        self, db: AsyncSession, provider_type: str, tenant_id: uuid.UUID | None
+        self, db: AsyncSession, provider_type: str, tenant_id: uuid.UUID | None, app_id: str | None = None
     ) -> IdentityProvider:
-        """Get or create IdentityProvider record."""
+        """Get or create IdentityProvider record.
+        
+        Args:
+            db: Database session
+            provider_type: Provider type (e.g., 'feishu', 'dingtalk')
+            tenant_id: Tenant ID for scoping
+            app_id: Optional app_id for precise matching (e.g., Feishu app_id)
+        """
         query = select(IdentityProvider).where(
             IdentityProvider.provider_type == provider_type
         )
         if tenant_id:
             query = query.where(IdentityProvider.tenant_id == tenant_id)
+        
+        # If app_id is provided, match precisely by app_id in config JSON
+        if app_id:
+            query = query.where(IdentityProvider.config["app_id"].astext == app_id)
 
         result = await db.execute(query)
         provider = result.scalar_one_or_none()
@@ -187,7 +210,7 @@ class ChannelUserService:
                 provider_type=provider_type,
                 name=provider_type.capitalize(),
                 is_active=True,
-                config={},
+                config={"app_id": app_id} if app_id else {},
                 tenant_id=tenant_id,
             )
             db.add(provider)

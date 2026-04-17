@@ -286,6 +286,7 @@ from app.api.tools import router as tools_router
 from app.api.plaza import router as plaza_router
 from app.api.skills import router as skills_router
 from app.api.users import router as users_router
+from app.api.user_workspaces import router as user_workspaces_router
 from app.api.chat_sessions import router as chat_sessions_router
 from app.api.slack import router as slack_router
 from app.api.discord_bot import router as discord_router
@@ -324,6 +325,7 @@ app.include_router(files_upload_router, prefix=settings.API_PREFIX)
 app.include_router(enterprise_kb_router, prefix=settings.API_PREFIX)
 app.include_router(skills_router, prefix=settings.API_PREFIX)
 app.include_router(users_router, prefix=settings.API_PREFIX)
+app.include_router(user_workspaces_router, prefix=settings.API_PREFIX)
 app.include_router(slack_router, prefix=settings.API_PREFIX)
 app.include_router(discord_router, prefix=settings.API_PREFIX)
 app.include_router(dingtalk_router, prefix=settings.API_PREFIX)
