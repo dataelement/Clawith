@@ -32,7 +32,7 @@ from app.models.channel_config import ChannelConfig
 from app.models.identity import IdentityProvider, SSOScanSession
 from app.models.user import User
 from app.services.activity_logger import log_activity
-from app.services.auth_provider import auth_provider_registry
+from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import channel_user_service
 from app.services.platform_service import platform_service
@@ -686,7 +686,7 @@ async def wecom_callback(
 
     # 2. Extract user info and login/register via RegistrationService
     try:
-        auth_provider = auth_provider_registry.get_provider(provider)
+        auth_provider = await auth_provider_registry.get_provider(db, "wecom", str(tenant_id) if tenant_id else None)
         
         token_data = await auth_provider.exchange_code_for_token(code)
         access_token_str = token_data.get("access_token")
