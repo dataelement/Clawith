@@ -5459,14 +5459,20 @@ function AgentDetailInner() {
                                     const isOwner = permData?.is_owner ?? false;
                                     const currentScope = permData?.scope_type || 'company';
                                     
-                                    // Get current user's actual access level from scope_names
+                                    // Get current user's actual access level
                                     let currentUserAccessLevel = 'use';
-                                    if (currentUser && permData?.scope_names) {
-                                        const currentUserPerm = permData.scope_names.find(
-                                            (s: any) => s.id === currentUser.id
-                                        );
-                                        if (currentUserPerm) {
-                                            currentUserAccessLevel = currentUserPerm.access_level || 'use';
+                                    if (currentUser) {
+                                        // For user_group scope, check scope_names for per-user access level
+                                        if (currentScope === 'user_group' && permData?.scope_names) {
+                                            const currentUserPerm = permData.scope_names.find(
+                                                (s: any) => s.id === currentUser.id
+                                            );
+                                            if (currentUserPerm) {
+                                                currentUserAccessLevel = currentUserPerm.access_level || 'use';
+                                            }
+                                        } else {
+                                            // For company/user scope, use the agent-level access_level
+                                            currentUserAccessLevel = permData?.access_level || 'use';
                                         }
                                     }
                                     

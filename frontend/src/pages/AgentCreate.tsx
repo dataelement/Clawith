@@ -121,7 +121,7 @@ export default function AgentCreate() {
             console.log('[AgentCreate] Fetching users, currentTenant:', currentTenant);
             return enterpriseApi.users(currentTenant || undefined);
         },
-        enabled: form.permission_scope_type === 'user',
+        enabled: form.permission_scope_type === 'user_group',
     });
 
     // Debug: log when permission scope changes
@@ -297,6 +297,7 @@ export default function AgentCreate() {
             fallback_model_id: agentType === 'native' ? (form.fallback_model_id || undefined) : undefined,
             template_id: form.template_id || undefined,
             permission_scope_type: form.permission_scope_type,
+            permission_access_level: form.permission_scope_type === 'company' ? form.permission_access_level : undefined,
             permission_scope_ids: scopeIds.length > 0 ? scopeIds : undefined,
             max_tokens_per_day: form.max_tokens_per_day ? Number(form.max_tokens_per_day) : undefined,
             max_tokens_per_month: form.max_tokens_per_month ? Number(form.max_tokens_per_month) : undefined,
