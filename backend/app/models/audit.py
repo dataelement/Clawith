@@ -57,6 +57,7 @@ class ChatMessage(Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     conversation_id: Mapped[str] = mapped_column(String(200), default="web", nullable=False)
+    external_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     # Participant identity (unified User/Agent identity)
     participant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=True)
     # Model thinking process
