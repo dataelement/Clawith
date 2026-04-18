@@ -67,6 +67,8 @@ Agent 可以在运行时**发现并安装新工具**（[Smithery](https://smithe
 - 2 核 CPU / 4 GB 内存 / 30 GB 磁盘（最低配置）
 - 可访问 LLM API
 
+> **Ubuntu/Debian 额外说明：** 如果使用系统 Python 3.12，请同时安装 `python3.12-venv`，否则 `bash setup.sh` 在创建后端虚拟环境时会失败。
+
 > **说明：** Clawith 不在本地运行任何 AI 模型——所有 LLM 推理均由外部 API 提供商处理（OpenAI、Anthropic 等）。本地部署本质上是一个标准 Web 应用 + Docker 编排。
 
 #### 各场景推荐配置

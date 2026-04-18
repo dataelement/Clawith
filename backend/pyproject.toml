@@ -2,7 +2,7 @@
 name = "clawith-backend"
 version = "0.1.0"
 description = "Clawith - Enterprise Digital Employee Platform Backend"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.115.0",
     "uvicorn[standard]>=0.30.0",
