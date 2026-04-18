@@ -1501,11 +1501,11 @@ async def _call_agent_llm(
         return f"⚠️ {agent.name} 未配置 LLM 模型，请在管理后台设置。"
 
     # Build conversation messages (without system prompt — call_llm adds it)
+    # NOTE: history is already truncated to ctx_size by the SQL .limit() in
+    # each caller, so no further slicing is needed here.
     messages: list[dict] = []
-    from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
-    ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
     if history:
-        messages.extend(history[-ctx_size:])
+        messages.extend(history)
     messages.append({"role": "user", "content": user_text})
 
     # Use actual user_id so the system prompt knows who it's chatting with
