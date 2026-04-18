@@ -420,7 +420,15 @@ async def get_agent_permissions(
 
     scope_type = perms[0].scope_type
     scope_ids = [str(p.scope_id) for p in perms if p.scope_id]
-    perm_access_level = perms[0].access_level or "use"
+    
+    # Determine access_level deterministically
+    if scope_type == "user_group":
+        # For user_group, check if all users have the same access level.
+        # If mixed, default to 'use' (least privilege) to prevent accidental over-permissioning.
+        levels = set(p.access_level or "use" for p in perms)
+        perm_access_level = levels.pop() if len(levels) == 1 else "use"
+    else:
+        perm_access_level = perms[0].access_level or "use"
 
     # Resolve names and access levels for display
     scope_names = []
@@ -455,11 +463,25 @@ async def update_agent_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     """Update agent permission scope (owner, admin, or users with manage access)."""
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    # Check admin status first to bypass strict check_agent_access for org_admins
+    is_admin = current_user.role in ("platform_admin", "org_admin")
+    
+    if is_admin:
+        # Admins can manage permissions for any agent in their tenant
+        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        agent = result.scalar_one_or_none()
+        if not agent:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        # Tenant isolation check for admins
+        if agent.tenant_id != current_user.tenant_id and current_user.role != "platform_admin":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
+        access_level = "manage"  # Admins implicitly have manage access
+    else:
+        # For non-admins, use standard access check
+        agent, access_level = await check_agent_access(db, current_user, agent_id)
     
     # Check if user has permission to modify
     is_owner = is_agent_creator(current_user, agent)
-    is_admin = current_user.role in ("platform_admin", "org_admin")
     has_manage_access = access_level == "manage"
     
     if not is_owner and not is_admin and not has_manage_access:
