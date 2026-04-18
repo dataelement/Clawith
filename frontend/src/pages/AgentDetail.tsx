@@ -6182,8 +6182,9 @@ function UserSelector({
                 background: 'var(--bg-elevated)',
             }}>
                 {(users as any[])
-                    // Filter out current user and creator (they already have manage permission)
-                    .filter((user: any) => user.id !== currentUser?.id && user.id !== creatorId)
+                    // Filter out creator (they already have manage permission and cannot be deselected)
+                    // Keep current user so they can include themselves in user_group scope
+                    .filter((user: any) => user.id !== creatorId)
                     .filter((user: any) => {
                         if (!searchKeyword.trim()) return true;
                         const keyword = searchKeyword.toLowerCase();
@@ -6263,7 +6264,7 @@ function UserSelector({
                         );
                     })}
                 {(users as any[])
-                    .filter((user: any) => user.id !== currentUser?.id && user.id !== creatorId)
+                    .filter((user: any) => user.id !== creatorId)
                     .filter((user: any) => {
                         if (!searchKeyword.trim()) return true;
                         const keyword = searchKeyword.toLowerCase();
