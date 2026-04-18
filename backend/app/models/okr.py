@@ -250,6 +250,9 @@ class OKRSettings(Base):
 
     # Master switch — all OKR functionality gates on this
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # First time OKR was enabled for this tenant. Once set, the OKR cadence is
+    # treated as locked so historical periods keep a stable reporting meaning.
+    first_enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Daily report collection (OKR Agent sends message to all members at daily_report_time)
     daily_report_enabled: Mapped[bool] = mapped_column(

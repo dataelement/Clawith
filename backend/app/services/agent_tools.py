@@ -10074,6 +10074,33 @@ async def _get_agent_owner_info(agent_id: uuid.UUID) -> tuple[str, str]:
     return "agent", str(agent_id)
 
 
+def _compute_okr_period_bounds(frequency: str, length_days: int | None):
+    """Return the current OKR period using the tenant's configured cadence."""
+    from datetime import date, timedelta
+
+    today = date.today()
+    if frequency == "monthly":
+        start = today.replace(day=1)
+        if today.month == 12:
+            end = today.replace(month=12, day=31)
+        else:
+            end = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+    elif frequency == "custom" and length_days:
+        epoch = date(1970, 1, 1)
+        days_since_epoch = (today - epoch).days
+        period_index = days_since_epoch // length_days
+        start = epoch + timedelta(days=period_index * length_days)
+        end = start + timedelta(days=length_days - 1)
+    else:
+        quarter = (today.month - 1) // 3 + 1
+        start = date(today.year, (quarter - 1) * 3 + 1, 1)
+        if quarter == 4:
+            end = date(today.year, 12, 31)
+        else:
+            end = date(today.year, quarter * 3 + 1, 1) - timedelta(days=1)
+    return start, end
+
+
 async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
     """Return the full OKR board for the current period as formatted text.
 
@@ -10119,14 +10146,10 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
                 ps = date.fromisoformat(period_start)
                 pe = date.fromisoformat(period_end)
             else:
-                # Simple quarterly computation
-                today = date.today()
-                q = (today.month - 1) // 3 + 1
-                ps = date(today.year, (q - 1) * 3 + 1, 1)
-                if q == 4:
-                    pe = date(today.year, 12, 31)
-                else:
-                    pe = date(today.year, q * 3 + 1, 1) - timedelta(days=1)
+                ps, pe = _compute_okr_period_bounds(
+                    settings.period_frequency,
+                    settings.period_length_days,
+                )
 
             # Fetch all active objectives
             obj_result = await db.execute(
@@ -10224,10 +10247,10 @@ async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
             if not settings or not settings.enabled:
                 return "OKR is not enabled for your organization."
 
-            today = date.today()
-            q = (today.month - 1) // 3 + 1
-            ps = date(today.year, (q - 1) * 3 + 1, 1)
-            pe = date(today.year, q * 3 + 1, 1) - timedelta(days=1) if q < 4 else date(today.year, 12, 31)
+            ps, pe = _compute_okr_period_bounds(
+                settings.period_frequency,
+                settings.period_length_days,
+            )
 
             obj_result = await db.execute(
                 _select(OKRObjective).where(

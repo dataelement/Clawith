@@ -208,6 +208,23 @@ At the `AgentDetail.tsx` page, the system battles extreme rendering pressure: ou
    Employs `react-markdown` executing ultimate filtration presentations. Imposing Copy buttons over code snippet blocks; demonstrating imagified placeholder renders mapped against localized hyperlinks.
 
 ---
+
+## Module 9: OKR Period Semantics
+
+The OKR module stores objectives with explicit `period_start` and `period_end` dates, while tenant-level cadence is configured in `OKRSettings.period_frequency`.
+
+- `OKRSettings.first_enabled_at` records the first time a tenant enables OKR. Once this field is set, the cadence is locked so quarterly and monthly histories cannot be mixed accidentally.
+- `/api/okr/periods` generates selectable periods from the first enabled period through the next period, rather than only showing a small window around the current date.
+- The OKR dashboard renders periods as a dropdown because historical period count grows over time.
+- Agent-side OKR tools must compute their default current period from the locked tenant cadence, not from a hard-coded quarterly assumption.
+
+### Changelog
+
+| Date | Change |
+| --- | --- |
+| 2026-04-18 | Locked OKR cadence after first enablement and expanded period selection from first enabled period to next period. |
+
+---
 **[The End] Architecture Document Completion.**
 
 > Clawith Architecture Document Engine Edition. 

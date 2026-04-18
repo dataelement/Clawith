@@ -1762,7 +1762,10 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
     });
     const updateSettings = useMutation({
         mutationFn: (data: any) => fetchJson('/okr/settings', { method: 'PUT', body: JSON.stringify(data) }),
-        onSuccess: () => qc.invalidateQueries({ queryKey: ['okr-settings'] })
+        onSuccess: () => qc.invalidateQueries({ queryKey: ['okr-settings'] }),
+        onError: (error: any) => {
+            alert(error?.message || (zh ? '保存失败，请重试' : 'Save failed, please retry'));
+        },
     });
 
     // Fetch members-without-okr to get okr_agent_id and company_okr_exists for the guidance card
@@ -1774,7 +1777,8 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
     });
 
     if (isLoading) return <div style={{ padding: '20px' }}>{t('common.loading', 'Loading...')}</div>;
-    const s = settings || { enabled: false, daily_report_enabled: false, daily_report_time: '18:00', weekly_report_enabled: false, weekly_report_day: 4, period_frequency: 'quarterly', period_length_days: null };
+    const s = settings || { enabled: false, first_enabled_at: null, daily_report_enabled: false, daily_report_time: '18:00', weekly_report_enabled: false, weekly_report_day: 4, period_frequency: 'quarterly', period_length_days: null, period_frequency_locked: false };
+    const periodFrequencyLocked = !!s.period_frequency_locked || !!s.first_enabled_at;
 
     // Primary source: /settings now embeds okr_agent_id directly.
     // Fallback to members-without-okr response for backward compat.
@@ -1964,12 +1968,20 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                             <select
                                 className="form-input"
                                 value={s.period_frequency}
+                                disabled={periodFrequencyLocked}
                                 onChange={(e) => updateSettings.mutate({ ...s, period_frequency: e.target.value })}
-                                style={{ maxWidth: '300px' }}
+                                style={{ maxWidth: '300px', opacity: periodFrequencyLocked ? 0.65 : 1 }}
                             >
                                 <option value="quarterly">{zh ? '按季度 (Quarterly)' : 'Quarterly'}</option>
                                 <option value="monthly">{zh ? '按月 (Monthly)' : 'Monthly'}</option>
                             </select>
+                            {periodFrequencyLocked && (
+                                <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+                                    {zh
+                                        ? 'OKR 周期在首次启用后会被锁定，以保证历史 OKR、报表和催办逻辑使用同一套口径。'
+                                        : 'The OKR cadence is locked after first enablement so history, reports, and nudges keep one consistent meaning.'}
+                                </div>
+                            )}
                         </div>
 
                         {/* Daily report */}

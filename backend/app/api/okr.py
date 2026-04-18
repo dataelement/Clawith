@@ -18,7 +18,7 @@ POST      /api/okr/trigger-member-outreach         (P4 onboarding: fire OKR Agen
 """
 
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
@@ -145,17 +145,64 @@ def _compute_current_period(
     return start, end
 
 
+def _compute_period_for_date(
+    frequency: str, length_days: int | None, target: date
+) -> tuple[date, date]:
+    """Compute the OKR period containing a specific date."""
+    if frequency == "monthly":
+        start = target.replace(day=1)
+        if target.month == 12:
+            end = target.replace(month=12, day=31)
+        else:
+            end = target.replace(month=target.month + 1, day=1) - timedelta(days=1)
+    elif frequency == "custom" and length_days:
+        epoch = date(1970, 1, 1)
+        days_since_epoch = (target - epoch).days
+        period_index = days_since_epoch // length_days
+        start = epoch + timedelta(days=period_index * length_days)
+        end = start + timedelta(days=length_days - 1)
+    else:
+        quarter = (target.month - 1) // 3 + 1
+        start = date(target.year, (quarter - 1) * 3 + 1, 1)
+        if quarter == 4:
+            end = date(target.year, 12, 31)
+        else:
+            end = date(target.year, quarter * 3 + 1, 1) - timedelta(days=1)
+    return start, end
+
+
+def _advance_period(
+    start: date, frequency: str, length_days: int | None, steps: int = 1
+) -> tuple[date, date]:
+    """Move a period start forward by a fixed number of OKR periods."""
+    if frequency == "monthly":
+        month_index = start.year * 12 + (start.month - 1) + steps
+        year = month_index // 12
+        month = month_index % 12 + 1
+        return _compute_period_for_date(frequency, length_days, date(year, month, 1))
+    if frequency == "custom" and length_days:
+        next_start = start + timedelta(days=length_days * steps)
+        return next_start, next_start + timedelta(days=length_days - 1)
+    quarter = (start.month - 1) // 3
+    quarter_index = start.year * 4 + quarter + steps
+    year = quarter_index // 4
+    next_quarter = quarter_index % 4 + 1
+    return _compute_period_for_date(frequency, length_days, date(year, (next_quarter - 1) * 3 + 1, 1))
+
+
 # ─── Pydantic schemas ─────────────────────────────────────────────────────────
 
 
 class OKRSettingsOut(BaseModel):
     enabled: bool
+    first_enabled_at: str | None = None
     daily_report_enabled: bool
     daily_report_time: str
     weekly_report_enabled: bool
     weekly_report_day: int
     period_frequency: str
     period_length_days: int | None = None
+    period_frequency_locked: bool = False
     # OKR Agent UUID for the chat-link button in the UI
     okr_agent_id: str | None = None
 
@@ -274,12 +321,14 @@ async def get_okr_settings(user=Depends(get_current_user)):
         await db.commit()
         return OKRSettingsOut(
             enabled=settings.enabled,
+            first_enabled_at=settings.first_enabled_at.isoformat() if settings.first_enabled_at else None,
             daily_report_enabled=settings.daily_report_enabled,
             daily_report_time=settings.daily_report_time,
             weekly_report_enabled=settings.weekly_report_enabled,
             weekly_report_day=settings.weekly_report_day,
             period_frequency=settings.period_frequency,
             period_length_days=settings.period_length_days,
+            period_frequency_locked=settings.first_enabled_at is not None,
             okr_agent_id=okr_agent_id_str,
         )
 
@@ -294,6 +343,19 @@ async def update_okr_settings(body: OKRSettingsUpdate, user=Depends(get_current_
 
     async with async_session() as db:
         settings = await _get_or_create_settings(db, user.tenant_id)
+        period_is_locked = settings.first_enabled_at is not None
+
+        if period_is_locked:
+            if body.period_frequency is not None and body.period_frequency != settings.period_frequency:
+                raise HTTPException(
+                    400,
+                    "OKR period frequency is locked after OKR is first enabled.",
+                )
+            if body.period_length_days is not None and body.period_length_days != settings.period_length_days:
+                raise HTTPException(
+                    400,
+                    "OKR period length is locked after OKR is first enabled.",
+                )
 
         if body.enabled is not None:
             settings.enabled = body.enabled
@@ -309,6 +371,9 @@ async def update_okr_settings(body: OKRSettingsUpdate, user=Depends(get_current_
             settings.period_frequency = body.period_frequency
         if body.period_length_days is not None:
             settings.period_length_days = body.period_length_days
+
+        if body.enabled is True and settings.first_enabled_at is None:
+            settings.first_enabled_at = datetime.now(timezone.utc)
 
         await db.commit()
 
@@ -329,12 +394,14 @@ async def update_okr_settings(body: OKRSettingsUpdate, user=Depends(get_current_
 
         return OKRSettingsOut(
             enabled=settings.enabled,
+            first_enabled_at=settings.first_enabled_at.isoformat() if settings.first_enabled_at else None,
             daily_report_enabled=settings.daily_report_enabled,
             daily_report_time=settings.daily_report_time,
             weekly_report_enabled=settings.weekly_report_enabled,
             weekly_report_day=settings.weekly_report_day,
             period_frequency=settings.period_frequency,
             period_length_days=settings.period_length_days,
+            period_frequency_locked=settings.first_enabled_at is not None,
             okr_agent_id=okr_agent_id_str,
         )
 
@@ -375,13 +442,32 @@ async def sync_okr_relationships(user=Depends(get_current_user)):
 
 @router.get("/periods", response_model=list[PeriodOut])
 async def list_periods(user=Depends(get_current_user)):
-    """Return an ordered list of OKR periods (past 2 + current + next 1).
+    """Return OKR periods from first enablement through the next period.
 
-    Periods are computed from the tenant's OKR settings frequency, not from
-    database rows, so they always exist even if they have no OKRs yet.
+    Periods are computed from the tenant's locked OKR cadence. Once OKR has
+    been enabled for a tenant, the first enabled period remains the start of
+    the selectable history even if OKR is later disabled and re-enabled.
     """
     async with async_session() as db:
         settings = await _get_or_create_settings(db, user.tenant_id)
+        first_enabled_at = settings.first_enabled_at
+        if first_enabled_at is None and settings.enabled:
+            earliest_result = await db.execute(
+                select(OKRObjective.period_start)
+                .where(OKRObjective.tenant_id == user.tenant_id)
+                .order_by(OKRObjective.period_start.asc())
+                .limit(1)
+            )
+            earliest_period_start = earliest_result.scalar_one_or_none()
+            if earliest_period_start:
+                first_enabled_at = datetime.combine(
+                    earliest_period_start,
+                    datetime.min.time(),
+                    tzinfo=timezone.utc,
+                )
+            else:
+                first_enabled_at = datetime.now(timezone.utc)
+            settings.first_enabled_at = first_enabled_at
         await db.commit()
 
     freq = settings.period_frequency
@@ -397,73 +483,19 @@ async def list_periods(user=Depends(get_current_user)):
             end = start + timedelta(days=(length or 90) - 1)
             return f"{start.isoformat()} – {end.isoformat()}"
 
-    def _quarter_start_end(year: int, quarter: int) -> tuple[date, date]:
-        """Return (start, end) for a given year and quarter (1-4)."""
-        start = date(year, (quarter - 1) * 3 + 1, 1)
-        if quarter == 4:
-            end = date(year, 12, 31)
-        else:
-            end = date(year, quarter * 3 + 1, 1) - timedelta(days=1)
-        return start, end
+    cur_start, _ = _compute_current_period(freq, length)
+    first_anchor = (first_enabled_at.date() if first_enabled_at else date.today())
+    start, _ = _compute_period_for_date(freq, length, first_anchor)
+    final_start, _ = _advance_period(cur_start, freq, length, 1)
 
-    def _month_start_end(year: int, month: int) -> tuple[date, date]:
-        """Return (start, end) for a given year and month."""
-        start = date(year, month, 1)
-        if month == 12:
-            end = date(year, 12, 31)
-        else:
-            end = date(year, month + 1, 1) - timedelta(days=1)
-        return start, end
-
-    # Generate 4 consecutive periods: [prev2, prev1, current, next1]
-    # by stepping forward from a known anchor 2 periods before current.
-    today = date.today()
     all_periods: list[tuple[date, date]] = []
-
-    if freq == "quarterly":
-        cur_q = (today.month - 1) // 3 + 1
-        cur_y = today.year
-        # Walk back 2 quarters, then generate 4
-        q, y = cur_q, cur_y
-        for _ in range(2):
-            q -= 1
-            if q < 1:
-                q = 4
-                y -= 1
-        for _ in range(4):
-            all_periods.append(_quarter_start_end(y, q))
-            q += 1
-            if q > 4:
-                q = 1
-                y += 1
-
-    elif freq == "monthly":
-        cur_m, cur_y = today.month, today.year
-        m, y = cur_m, cur_y
-        for _ in range(2):
-            m -= 1
-            if m < 1:
-                m = 12
-                y -= 1
-        for _ in range(4):
-            all_periods.append(_month_start_end(y, m))
-            m += 1
-            if m > 12:
-                m = 1
-                y += 1
-
-    else:
-        # Custom period length — anchor to epoch
-        epoch = date(1970, 1, 1)
-        days = length or 90
-        days_since = (today - epoch).days
-        cur_idx = days_since // days
-        for i in range(cur_idx - 2, cur_idx + 2):
-            s = epoch + timedelta(days=i * days)
-            e = s + timedelta(days=days - 1)
-            all_periods.append((s, e))
-
-    cur_start, cur_end = _compute_current_period(freq, length)
+    cursor_start = start
+    guard = 0
+    while cursor_start <= final_start and guard < 600:
+        period_start, period_end = _compute_period_for_date(freq, length, cursor_start)
+        all_periods.append((period_start, period_end))
+        cursor_start, _ = _advance_period(period_start, freq, length, 1)
+        guard += 1
 
     return [
         PeriodOut(

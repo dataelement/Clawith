@@ -22,12 +22,14 @@ import { useAuthStore } from '../stores';
 
 interface OKRSettings {
     enabled: boolean;
+    first_enabled_at?: string | null;
     daily_report_enabled: boolean;
     daily_report_time: string;
     weekly_report_enabled: boolean;
     weekly_report_day: number;
     period_frequency: string;
     period_length_days?: number;
+    period_frequency_locked?: boolean;
 }
 
 interface KeyResult {
@@ -813,11 +815,18 @@ export default function OKR() {
         enabled: !!settings?.enabled,
     });
 
-    // Auto-select current period
+    // Auto-select the current period, and keep the selected object fresh when
+    // the period list is reloaded after settings or time-boundary changes.
     useEffect(() => {
-        if (!selectedPeriod && periods.length > 0) {
+        if (periods.length === 0) return;
+        const selectedStillExists = selectedPeriod
+            ? periods.find(p => p.start === selectedPeriod.start && p.end === selectedPeriod.end)
+            : null;
+        if (!selectedPeriod || !selectedStillExists) {
             const current = periods.find(p => p.is_current) ?? periods[periods.length - 1];
             setSelectedPeriod(current);
+        } else if (selectedStillExists !== selectedPeriod) {
+            setSelectedPeriod(selectedStillExists);
         }
     }, [periods, selectedPeriod]);
 
@@ -908,6 +917,7 @@ export default function OKR() {
         }
         memberGroups[key].objs.push(obj);
     }
+    const periodOptions = [...periods].reverse();
 
     return (
         <div style={{ padding: '24px', maxWidth: 960, margin: '0 auto' }}>
@@ -953,29 +963,27 @@ export default function OKR() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
                     {/* Period Selector */}
                     {periods.length > 0 && (
-                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                            {periods.map(p => (
-                                <button
-                                    key={p.start}
-                                    onClick={() => setSelectedPeriod(p)}
-                                    style={{
-                                        padding: '5px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: 500,
-                                        border: '1px solid',
-                                        borderColor: selectedPeriod?.start === p.start ? 'var(--accent-primary)' : 'var(--border-subtle)',
-                                        background: selectedPeriod?.start === p.start ? 'var(--accent-primary)' : 'var(--bg-secondary)',
-                                        color: selectedPeriod?.start === p.start ? '#fff' : 'var(--text-secondary)',
-                                        cursor: 'pointer', transition: 'all 0.15s',
-                                    }}
-                                >
-                                    {p.label}
-                                    {p.is_current && (
-                                        <span style={{ marginLeft: '4px', opacity: 0.7, fontSize: '10px' }}>
-                                            {isChinese ? '(当前)' : '(now)'}
-                                        </span>
-                                    )}
-                                </button>
-                            ))}
-                        </div>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                                {isChinese ? '周期' : 'Period'}
+                            </span>
+                            <select
+                                className="form-input"
+                                value={selectedPeriod ? `${selectedPeriod.start}|${selectedPeriod.end}` : ''}
+                                onChange={(e) => {
+                                    const [start, end] = e.target.value.split('|');
+                                    const next = periods.find(p => p.start === start && p.end === end);
+                                    if (next) setSelectedPeriod(next);
+                                }}
+                                style={{ minWidth: 170, height: 34, padding: '5px 28px 5px 10px', fontSize: '12px' }}
+                            >
+                                {periodOptions.map(p => (
+                                    <option key={p.start} value={`${p.start}|${p.end}`}>
+                                        {p.label}{p.is_current ? (isChinese ? '（当前）' : ' (now)') : ''}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
                     )}
 
                     {/* Create Objective button */}
