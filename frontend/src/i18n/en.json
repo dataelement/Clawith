@@ -462,6 +462,13 @@
         "webhookUrl": "Webhook URL",
         "configured": "Configured",
         "notConfigured": "Not configured",
+        "saveSuccess": "Channel configuration saved.",
+        "saveFailed": "Failed to save channel configuration.",
+        "disconnectSuccess": "Channel disconnected.",
+        "disconnectFailed": "Failed to disconnect channel.",
+        "websocketConnected": "Connected via WebSocket (No callback URL needed)",
+        "websocketDisconnected": "Configured for WebSocket, but currently disconnected",
+        "websocketDisconnectedHint": "Reconnect by saving the WeCom WebSocket configuration again.",
         "saveChannel": "Save Config",
         "syncHint": "Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders."
       },

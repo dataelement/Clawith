@@ -19,7 +19,7 @@ class LLMModel(Base):
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True, index=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)  # anthropic, openai, deepseek, etc.
     model: Mapped[str] = mapped_column(String(100), nullable=False)  # claude-opus-4-6, gpt-4o, etc.
-    api_key_encrypted: Mapped[str] = mapped_column(String(500), nullable=False)
+    api_key_encrypted: Mapped[str] = mapped_column(String(1024), nullable=False)
     base_url: Mapped[str | None] = mapped_column(String(500))
     label: Mapped[str] = mapped_column(String(200), nullable=False)  # Display name
     max_tokens_per_day: Mapped[int | None] = mapped_column(Integer)

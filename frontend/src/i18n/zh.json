@@ -474,6 +474,13 @@
         "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
         "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})",
         "notConfigured": "未配置",
+        "saveSuccess": "渠道配置已保存。",
+        "saveFailed": "渠道配置保存失败。",
+        "disconnectSuccess": "渠道已断开。",
+        "disconnectFailed": "渠道断开失败。",
+        "websocketConnected": "已通过 WebSocket 连接（无需回调 URL）",
+        "websocketDisconnected": "已配置为 WebSocket，但当前未连接",
+        "websocketDisconnectedHint": "重新保存一次企业微信 WebSocket 配置即可重新连接。",
         "saveChannel": "保存配置",
         "syncHint": "在配置飞书机器人之前，请先在企业设置 → 组织架构中同步您的组织结构。这确保机器人能够识别消息发送者。"
       },

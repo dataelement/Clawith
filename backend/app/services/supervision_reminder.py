@@ -105,12 +105,13 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
     """
     from app.models.llm import LLMModel
     from app.services.agent_context import build_agent_context
-    from app.services.llm_utils import (
+    from app.services.llm import (
         get_provider_base_url,
         create_llm_client,
         LLMMessage,
-        LLMError,
         get_model_api_key,
+    )
+
     )
 
     model_id = target_agent.primary_model_id or target_agent.fallback_model_id

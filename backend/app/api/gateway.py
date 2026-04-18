@@ -306,7 +306,7 @@ async def _send_to_agent_background(
     """
     logger.info(f"[Gateway] _send_to_agent_background started: {source_agent_name} -> {target_agent_name}")
     try:
-        from app.api.websocket import call_llm
+        from app.services.llm import call_llm
         from app.models.llm import LLMModel
         from app.models.audit import ChatMessage
         from app.models.chat_session import ChatSession
@@ -428,6 +428,7 @@ async def _send_to_agent_background(
             role_description=target_role_description,
             agent_id=target_agent_id,
             user_id=target_creator_id,
+            session_id=conv_id,
             on_chunk=on_chunk,
         )
         final_reply = reply or "".join(collected)

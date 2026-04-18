@@ -146,6 +146,8 @@ def upgrade() -> None:
         BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM pg_indexes WHERE indexname = 'ix_users_tenant_email_unique'
+            ) AND EXISTS (
+                SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'email'
             ) THEN
                 CREATE UNIQUE INDEX ix_users_tenant_email_unique ON users(tenant_id, email) WHERE email IS NOT NULL;
             END IF;

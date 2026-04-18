@@ -31,10 +31,9 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
     try:
         from app.database import async_session
         from app.models.agent import Agent
-        from app.models.llm import LLMModel
 
         async with async_session() as db:
-            # Load agent + model
+            # Load agent
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
@@ -50,119 +49,24 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                 logger.info(f"Schedule {schedule_id}: agent {agent.name} has expired, skipping")
                 return
 
-            model_id = agent.primary_model_id or agent.fallback_model_id
-            if not model_id:
-                logger.warning(f"Schedule {schedule_id}: agent {agent.name} has no LLM model")
-                return
-
-            model_result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
-            model = model_result.scalar_one_or_none()
-            if not model:
-                logger.warning(f"Schedule {schedule_id}: LLM model {model_id} not found")
-                return
-
-            # Build context and call LLM
+            # Build context and call LLM with failover support
             from app.services.agent_context import build_agent_context
-            from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
-            from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
+            from app.services.llm import call_agent_llm_with_tools
 
             static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "")
+            system_prompt = f"{static_prompt}\n\n{dynamic_prompt}"
 
-            messages = [
-                LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),
-                LLMMessage(role="user", content=f"[自动调度任务] {instruction}"),
-            ]
+            user_prompt = f"[自动调度任务] {instruction}"
 
-            # Load tools dynamically from DB (respects per-agent config and MCP tools)
-            tools_for_llm = await get_agent_tools_for_llm(agent_id)
-
-            # Create unified LLM client
-            try:
-                client = create_llm_client(
-                    provider=model.provider,
-                    api_key=get_model_api_key(model),
-                    model=model.model,
-                    base_url=model.base_url,
-                    timeout=float(getattr(model, 'request_timeout', None) or 120.0),
-                )
-            except Exception as e:
-                logger.error(f"Schedule {schedule_id}: Failed to create LLM client: {e}")
-                return
-
-            # Tool-calling loop (max 50 rounds for scheduled tasks)
-            reply = ""
-            for round_i in range(50):
-                try:
-                    response = await client.complete(
-                        messages=messages,
-                        tools=tools_for_llm if tools_for_llm else None,
-                        temperature=model.temperature,
-                        max_tokens=get_max_tokens(model.provider, model.model, getattr(model, 'max_output_tokens', None)),
-                    )
-                except LLMError as e:
-                    logger.error(f"Schedule {schedule_id}: LLM error: {e}")
-                    reply = f"(LLM 错误: {e})"
-                    break
-                except Exception as e:
-                    logger.error(f"Schedule {schedule_id}: LLM call error: {e}")
-                    reply = f"(LLM 调用异常: {str(e)[:200]})"
-                    break
-
-                if response.tool_calls:
-                    # Add assistant message with tool calls
-                    messages.append(LLMMessage(
-                        role="assistant",
-                        content=response.content or None,
-                        tool_calls=[{
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": tc["function"],
-                        } for tc in response.tool_calls],
-                        reasoning_content=response.reasoning_content,
-                    ))
-
-                    # Tools that require arguments — if LLM sends empty args, skip and ask to retry
-                    _TOOLS_REQUIRING_ARGS = {
-                        "write_file", "read_file", "delete_file", "read_document",
-                        "send_message_to_agent", "send_feishu_message", "send_email",
-                        "web_search", "jina_search", "jina_read",
-                    }
-
-                    for tc in response.tool_calls:
-                        fn = tc["function"]
-                        tool_name = fn["name"]
-                        raw_args = fn.get("arguments", "{}")
-                        logger.info(f"[Scheduler] Raw arguments for {tool_name} (len={len(raw_args) if raw_args else 0}): {repr(raw_args[:300]) if raw_args else 'None'}")
-                        try:
-                            args = json.loads(raw_args) if raw_args else {}
-                        except json.JSONDecodeError as je:
-                            logger.warning(f"[Scheduler] JSON parse failed for {tool_name}: {je}. Raw: {repr(raw_args[:200])}")
-                            args = {}
-
-                        # Guard: if a tool that requires arguments received empty args,
-                        # return an error to LLM instead of executing
-                        if not args and tool_name in _TOOLS_REQUIRING_ARGS:
-                            logger.warning(f"[Scheduler] Empty arguments for {tool_name}, asking LLM to retry")
-                            messages.append(LLMMessage(
-                                role="tool",
-                                tool_call_id=tc["id"],
-                                content=f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments.",
-                            ))
-                            continue
-
-                        tool_result = await execute_tool(fn["name"], args, agent_id, agent.creator_id)
-                        messages.append(LLMMessage(
-                            role="tool",
-                            tool_call_id=tc["id"],
-                            content=str(tool_result),
-                        ))
-                else:
-                    reply = response.content or ""
-                    break
-            else:
-                reply = "(已达到最大工具调用轮数)"
-
-            await client.close()
+            # Call LLM with unified failover support
+            reply = await call_agent_llm_with_tools(
+                db=db,
+                agent_id=agent_id,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_rounds=50,
+                session_id=str(schedule_id),
+            )
 
             # Log activity
             from app.services.activity_logger import log_activity

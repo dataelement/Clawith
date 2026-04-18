@@ -110,19 +110,12 @@ class BaseAuthProvider(ABC):
         # 1. Try lookup via sso_service (which now uses OrgMember)
         provider_user_id = user_info.provider_union_id or user_info.provider_user_id
         user = await sso_service.resolve_user_identity(
-            db, provider_user_id, self.provider_type, tenant_id=tenant_id
+            db,
+            provider_user_id,
+            self.provider_type,
+            tenant_id=tenant_id,
+            identity_data=user_info.raw_data,
         )
-        
-        # Feishu: fallback to open_id if union_id lookup misses
-        if (
-            not user
-            and self.provider_type == "feishu"
-            and user_info.provider_union_id
-            and user_info.provider_user_id
-        ):
-            user = await sso_service.resolve_user_identity(
-                db, user_info.provider_user_id, self.provider_type, tenant_id=tenant_id
-            )
 
         is_new = False
         if not user:

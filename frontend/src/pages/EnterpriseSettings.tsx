@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi, skillApi } from '../services/api';
+import { useAuthStore } from '../stores';
 import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
@@ -1587,29 +1588,34 @@ const COMMON_TIMEZONES = [
 
 function CompanyTimezoneEditor() {
     const { t } = useTranslation();
-    const tenantId = localStorage.getItem('current_tenant_id') || '';
+    const user = useAuthStore((s) => s.user);
+    const tenantId = user?.tenant_id || localStorage.getItem('current_tenant_id') || '';
     const [timezone, setTimezone] = useState('UTC');
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [error, setError] = useState('');
 
     useEffect(() => {
         if (!tenantId) return;
         fetchJson<any>(`/tenants/${tenantId}`)
             .then(d => { if (d?.timezone) setTimezone(d.timezone); })
-            .catch(() => { });
+            .catch((e: any) => setError(e.message || 'Failed to load timezone'));
     }, [tenantId]);
 
     const handleSave = async (tz: string) => {
         if (!tenantId) return;
         setTimezone(tz);
         setSaving(true);
+        setError('');
         try {
             await fetchJson(`/tenants/${tenantId}`, {
                 method: 'PUT', body: JSON.stringify({ timezone: tz }),
             });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
-        } catch (e) { }
+        } catch (e: any) {
+            setError(e.message || 'Failed to save timezone');
+        }
         setSaving(false);
     };
 
@@ -1621,13 +1627,23 @@ function CompanyTimezoneEditor() {
                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                         {t('enterprise.timezone.description', 'Default timezone for all agents. Agents can override individually.')}
                     </div>
+                    {error && (
+                        <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                            ⚠ {error}
+                        </div>
+                    )}
+                    {!tenantId && (
+                        <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                            ⚠ {t('enterprise.timezone.noTenant', 'No company selected. Please refresh the page or contact support.')}
+                        </div>
+                    )}
                 </div>
                 <select
                     className="form-input"
                     value={timezone}
                     onChange={e => handleSave(e.target.value)}
                     style={{ width: '220px', fontSize: '13px' }}
-                    disabled={saving}
+                    disabled={saving || !tenantId}
                 >
                     {COMMON_TIMEZONES.map(tz => (
                         <option key={tz} value={tz}>{tz}</option>

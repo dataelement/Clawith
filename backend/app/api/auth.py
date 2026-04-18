@@ -714,7 +714,8 @@ async def update_me(
 
     for field, value in update_data.items():
         setattr(current_user, field, value)
-    await db.flush()
+    await db.commit()
+    await db.refresh(current_user)
 
     # Sync email/phone to OrgMember if changed
     if "email" in update_data or "primary_mobile" in update_data:
@@ -971,7 +972,13 @@ async def bind_identity(
         user_info = await auth_provider.get_user_info(access_token)
 
         # Check if identity is already linked to another user
-        existing_user = await sso_service.check_duplicate_identity(db, provider, user_info.provider_user_id)
+        lookup_provider_user_id = user_info.provider_union_id or user_info.provider_user_id
+        existing_user = await sso_service.check_duplicate_identity(
+            db,
+            provider,
+            lookup_provider_user_id,
+            identity_data=user_info.raw_data,
+        )
         if existing_user and existing_user.id != current_user.id:
             raise HTTPException(
                 status_code=409,
@@ -983,7 +990,7 @@ async def bind_identity(
             db,
             str(current_user.id),
             provider,
-            user_info.provider_user_id,
+            lookup_provider_user_id,
             user_info.raw_data,
         )
 

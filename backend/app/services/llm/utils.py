@@ -4,7 +4,7 @@ Centralizes provider URLs and provider-specific API parameters
 so they don't need to be duplicated across websocket.py, scheduler.py,
 task_executor.py, agent_tools.py, and feishu.py.
 
-This module also exports the unified LLM client classes from llm_client.py
+This module also exports the unified LLM client classes from client.py
 for convenient access.
 """
 
@@ -12,8 +12,8 @@ from app.core.security import decrypt_data
 from app.config import get_settings
 from app.models.llm import LLMModel
 
-# Re-export all client classes and functions from llm_client.py
-from app.services.llm_client import (
+# Re-export all client classes and functions from client.py
+from .client import (
     AnthropicClient,
     GeminiClient,
     LLMClient,
@@ -43,7 +43,7 @@ from app.services.llm_client import (
 # Keep ANTHROPIC_API_PROVIDERS for backward compatibility
 ANTHROPIC_API_PROVIDERS = {"anthropic"}
 
-# Keep the original PROVIDER_URLS reference (already exported from llm_client)
+# Keep the original PROVIDER_URLS reference (already exported from client)
 
 
 def get_model_api_key(model: LLMModel) -> str:
@@ -81,6 +81,7 @@ __all__ = [
     "get_tool_params",
     "get_provider_base_url",
     "get_max_tokens",
+    "get_model_api_key",
     # New client classes
     "LLMClient",
     "OpenAICompatibleClient",

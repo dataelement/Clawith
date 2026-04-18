@@ -27,7 +27,7 @@ from app.schemas.schemas import (
 )
 from app.services.autonomy_service import autonomy_service
 from app.services.enterprise_sync import enterprise_sync_service
-from app.services.llm_utils import get_provider_manifest, get_model_api_key
+from app.services.llm import get_provider_manifest, get_model_api_key, create_llm_client, LLMMessage
 from app.services.platform_service import platform_service
 from app.services.sso_service import sso_service
 
@@ -84,7 +84,6 @@ async def test_llm_model(
 ):
     """Test an LLM model configuration by making a simple API call."""
     import time
-    from app.services.llm_client import create_llm_client
 
     # Resolve API key: use provided key, or look up from stored model
     api_key = data.api_key if data.api_key and not data.api_key.startswith('****') else None
@@ -105,7 +104,6 @@ async def test_llm_model(
             base_url=data.base_url or None,
         )
         # Simple test: ask model to say "ok"
-        from app.services.llm_client import LLMMessage
         response = await client.complete(
             messages=[LLMMessage(role="user", content="Say 'ok' and nothing else.")],
             max_tokens=16,

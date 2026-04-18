@@ -267,7 +267,14 @@ class RegistrationService:
             tenant_id = tenant.id if tenant else None
 
         # Check if identity already exists
-        existing = await sso_service.resolve_user_identity(db, provider_user_id, provider_type, tenant_id=tenant_id)
+        lookup_provider_user_id = user_info.get("union_id") or user_info.get("unionId") or provider_user_id
+        existing = await sso_service.resolve_user_identity(
+            db,
+            lookup_provider_user_id,
+            provider_type,
+            tenant_id=tenant_id,
+            identity_data=user_info,
+        )
 
         if existing:
             # Identity already linked
@@ -279,7 +286,7 @@ class RegistrationService:
                 db,
                 str(existing_user.id),
                 provider_type,
-                provider_user_id,
+                lookup_provider_user_id,
                 user_info,
                 tenant_id=str(existing_user.tenant_id) if existing_user.tenant_id else tenant_id,
             )
@@ -360,8 +367,13 @@ class RegistrationService:
                 tenant_id = tenant.id if tenant else None
 
             # Try to find existing user by identity
+            lookup_provider_user_id = user_info_obj.provider_union_id or user_info_obj.provider_user_id
             existing_user = await sso_service.resolve_user_identity(
-                db, user_info_obj.provider_user_id, provider_type, tenant_id=tenant_id
+                db,
+                lookup_provider_user_id,
+                provider_type,
+                tenant_id=tenant_id,
+                identity_data=user_info,
             )
 
             if existing_user:
@@ -377,7 +389,7 @@ class RegistrationService:
                         db,
                         str(existing_by_email.id),
                         provider_type,
-                        user_info_obj.provider_user_id,
+                        lookup_provider_user_id,
                         user_info,
                         tenant_id=str(existing_by_email.tenant_id) if existing_by_email.tenant_id else tenant_id,
                     )
@@ -387,7 +399,7 @@ class RegistrationService:
             user, is_new = await self.handle_sso_registration(
                 db,
                 provider_type,
-                user_info_obj.provider_user_id,
+                lookup_provider_user_id,
                 user_info,
             )
 

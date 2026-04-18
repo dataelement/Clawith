@@ -58,7 +58,6 @@ load_env() {
     _db_hostpart=$(echo "$DATABASE_URL" | sed 's|.*://[^@]*@||' | sed 's|/.*||' | sed 's|?.*||')
     PG_HOST="${_db_hostpart%%:*}"
     PG_PORT="${_db_hostpart##*:}"
-    [ "$PG_PORT" = "$PG_HOST" ] && PG_PORT="5432"
     PG_PORT=${PG_PORT:-5432}
     export PG_HOST PG_PORT
 
