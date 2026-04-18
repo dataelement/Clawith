@@ -686,7 +686,9 @@ async def wecom_callback(
 
     # 2. Extract user info and login/register via RegistrationService
     try:
-        auth_provider = auth_provider_registry.get_provider(provider)
+        auth_provider = await auth_provider_registry.get_provider(db, "wecom", tenant_id)
+        if not auth_provider:
+            raise HTTPException(status_code=404, detail="WeCom provider not found in registry")
         
         token_data = await auth_provider.exchange_code_for_token(code)
         access_token_str = token_data.get("access_token")

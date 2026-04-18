@@ -517,6 +517,9 @@ async def update_agent_permissions(
                 # Per-user permissions: {user_id: access_level}
                 for sid in scope_ids:
                     user_access = user_permissions.get(str(sid), access_level)
+                    # Validate: only allow 'use' or 'manage', default to 'use' for safety
+                    if user_access not in ("use", "manage"):
+                        user_access = "use"
                     db.add(AgentPermission(agent_id=agent_id, scope_type="user_group", scope_id=uuid.UUID(sid), access_level=user_access))
             else:
                 # Legacy: all users share the same access level
