@@ -47,10 +47,11 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
         if perm.scope_type == "company":
             return agent, perm.access_level or "use"
         if perm.scope_type == "user" and perm.scope_id == user.id:
-            return agent, perm.access_level or "use"
-        if perm.scope_type == "private" and perm.scope_id == user.id:
-            # Private scope: only the specified user (creator) can access
+            # User scope: only the creator can access
             return agent, perm.access_level or "manage"
+        if perm.scope_type == "user_group" and perm.scope_id == user.id:
+            # User group scope: specific users can access
+            return agent, perm.access_level or "use"
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
 

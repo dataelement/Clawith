@@ -748,7 +748,13 @@ function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     return fetch(`/api${url}`, {
         ...options,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    }).then(r => r.json());
+    }).then(async r => {
+        if (!r.ok) {
+            const error = await r.json().catch(() => ({ detail: r.statusText }));
+            throw error;
+        }
+        return r.json();
+    });
 }
 
 // ── Pulse LED keyframe (shared with Chat.tsx, guarded by ID) ──────────────
@@ -2631,6 +2637,69 @@ function AgentDetailInner() {
         enabled: !!id && activeTab === 'settings',
     });
 
+    // Permission management state (moved to top level to avoid Rules of Hooks violation)
+    const [pendingScope, setPendingScope] = React.useState<string | null>(null);
+    const [pendingUserIds, setPendingUserIds] = React.useState<string[]>([]);
+    const [pendingAccessLevel, setPendingAccessLevel] = React.useState<string>('use');
+    const [isSavingPermissions, setIsSavingPermissions] = React.useState(false);
+    const [userPermissions, setUserPermissions] = React.useState<Record<string, string>>({});
+
+    // Initialize pending state from permData
+    React.useEffect(() => {
+        if (permData) {
+            setPendingScope(permData.scope_type || 'company');
+            setPendingUserIds(permData.scope_ids || []);
+            setPendingAccessLevel(permData.access_level || 'use');
+            
+            // Build user permissions map from scope_names
+            if (permData.scope_names && Array.isArray(permData.scope_names)) {
+                const perms: Record<string, string> = {};
+                permData.scope_names.forEach((s: any) => {
+                    perms[s.id] = s.access_level || 'use';
+                });
+                setUserPermissions(perms);
+            } else {
+                setUserPermissions({});
+            }
+        }
+    }, [permData]);
+
+    const handleSavePermissions = async () => {
+        // Validate user_group requires at least one user
+        if (pendingScope === 'user_group' && pendingUserIds.length === 0) {
+            alert(t('agent.settings.perm.selectAtLeastOneUser', 'Please select at least one user before saving'));
+            return;
+        }
+        
+        setIsSavingPermissions(true);
+        try {
+            const payload: any = { 
+                scope_type: pendingScope,
+                scope_ids: pendingScope === 'user_group' ? pendingUserIds : [],
+            };
+            
+            // For user_group, include per-user permissions
+            if (pendingScope === 'user_group') {
+                payload.user_permissions = userPermissions;
+            } else {
+                payload.access_level = pendingAccessLevel;
+            }
+            
+            await fetchAuth(`/agents/${id}/permissions`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
+            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+        } catch (e: any) {
+            console.error('Failed to update permissions', e);
+            alert(e.detail || e.message || t('common.error', 'Operation failed'));
+        } finally {
+            setIsSavingPermissions(false);
+        }
+    };
+
     // ─── Soul editor ─────────────────────────────────────
     const [soulEditing, setSoulEditing] = useState(false);
     const [soulDraft, setSoulDraft] = useState('');
@@ -2723,6 +2792,9 @@ function AgentDetailInner() {
     };
     const statusKey = computeStatusKey();
     const canManage = (agent as any).access_level === 'manage' || isAdmin;
+    
+    // Debug: log access level
+    console.log('[DEBUG] Agent access_level:', (agent as any).access_level, 'isAdmin:', isAdmin, 'canManage:', canManage, 'currentUser:', currentUser?.id);
 
     return (
         <>
@@ -4987,13 +5059,33 @@ function AgentDetailInner() {
                 {/* ── Settings Tab ── */}
                 {
                     activeTab === 'settings' && (agent as any)?.agent_type === 'openclaw' && (
-                        <OpenClawSettings agent={agent} agentId={id!} />
+                        // Check permissions for OpenClaw agents
+                        canManage ? (
+                            <OpenClawSettings agent={agent} agentId={id!} />
+                        ) : (
+                            <div style={{ 
+                                display: 'flex', 
+                                flexDirection: 'column', 
+                                alignItems: 'center', 
+                                justifyContent: 'center', 
+                                padding: '60px 20px',
+                                textAlign: 'center'
+                            }}>
+                                <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔒</div>
+                                <h3 style={{ margin: '0 0 8px 0', color: 'var(--text-primary)' }}>{t('agent.settings.accessDenied', 'Access Denied')}</h3>
+                                <p style={{ margin: 0, color: 'var(--text-tertiary)', maxWidth: '400px' }}>
+                                    {t('agent.settings.accessDeniedDesc', 'You do not have permission to view or modify this agent\'s settings. Please contact the agent creator or administrator.')}
+                                </p>
+                            </div>
+                        )
                     )
                 }
                 {
-                    activeTab === 'settings' && (agent as any)?.agent_type !== 'openclaw' && (() => {
-                        // Check if form has unsaved changes
-                        const hasChanges = (
+                    activeTab === 'settings' && (agent as any)?.agent_type !== 'openclaw' && (
+                        // Check permissions for native agents
+                        canManage ? (() => {
+                            // Check if form has unsaved changes
+                            const hasChanges = (
                             settingsForm.primary_model_id !== (agent?.primary_model_id || '') ||
                             settingsForm.fallback_model_id !== (agent?.fallback_model_id || '') ||
                             settingsForm.context_window_size !== (agent?.context_window_size ?? 100) ||
@@ -5360,47 +5452,26 @@ function AgentDetailInner() {
                                 {(() => {
                                     const scopeLabels: Record<string, string> = {
                                         company: '🏢 ' + t('agent.settings.perm.companyWide', 'Company-wide'),
-                                        user: '👥 ' + t('agent.settings.perm.specificUsers', 'Specific Users'),
-                                        private: '🔒 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
-                                    };
-
-                                    const handleScopeChange = async (newScope: string) => {
-                                        try {
-                                            await fetchAuth(`/agents/${id}/permissions`, {
-                                                method: 'PUT',
-                                                headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ 
-                                                    scope_type: newScope, 
-                                                    scope_ids: newScope === 'user' ? permData?.scope_ids || [] : [], 
-                                                    access_level: permData?.access_level || 'use' 
-                                                }),
-                                            });
-                                            queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
-                                            queryClient.invalidateQueries({ queryKey: ['agent', id] });
-                                        } catch (e) {
-                                            console.error('Failed to update permissions', e);
-                                        }
-                                    };
-
-                                    const handleAccessLevelChange = async (newLevel: string) => {
-                                        try {
-                                            await fetchAuth(`/agents/${id}/permissions`, {
-                                                method: 'PUT',
-                                                headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ scope_type: permData?.scope_type || 'company', scope_ids: permData?.scope_ids || [], access_level: newLevel }),
-                                            });
-                                            queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
-                                            queryClient.invalidateQueries({ queryKey: ['agent', id] });
-                                        } catch (e) {
-                                            console.error('Failed to update access level', e);
-                                        }
+                                        user: '🔒 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
+                                        user_group: '👥 ' + t('agent.settings.perm.specificUsers', 'Specific Users'),
                                     };
 
                                     const isOwner = permData?.is_owner ?? false;
                                     const currentScope = permData?.scope_type || 'company';
-                                    const currentAccessLevel = permData?.access_level || 'use';
+                                    
+                                    // Get current user's actual access level from scope_names
+                                    let currentUserAccessLevel = 'use';
+                                    if (currentUser && permData?.scope_names) {
+                                        const currentUserPerm = permData.scope_names.find(
+                                            (s: any) => s.id === currentUser.id
+                                        );
+                                        if (currentUserPerm) {
+                                            currentUserAccessLevel = currentUserPerm.access_level || 'use';
+                                        }
+                                    }
+                                    
                                     // Can manage permissions if owner OR has manage access level
-                                    const canManagePermissions = isOwner || currentAccessLevel === 'manage';
+                                    const canManagePermissions = isOwner || currentUserAccessLevel === 'manage' || isAdmin;
 
                                     return (
                                         <div className="card" style={{ marginBottom: '12px' }}>
@@ -5411,7 +5482,7 @@ function AgentDetailInner() {
 
                                             {/* Scope Selection */}
                                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-                                                {(['company', 'user', 'private'] as const).map((scope) => (
+                                                {(['company', 'user', 'user_group'] as const).map((scope) => (
                                                     <label
                                                         key={scope}
                                                         style={{
@@ -5421,30 +5492,31 @@ function AgentDetailInner() {
                                                             padding: '12px 14px',
                                                             borderRadius: '8px',
                                                             cursor: canManagePermissions ? 'pointer' : 'default',
-                                                            border: currentScope === scope
+                                                            border: pendingScope === scope
                                                                 ? '1px solid var(--accent-primary)'
                                                                 : '1px solid var(--border-subtle)',
-                                                            background: currentScope === scope
+                                                            background: pendingScope === scope
                                                                 ? 'rgba(99,102,241,0.06)'
                                                                 : 'transparent',
                                                             opacity: canManagePermissions ? 1 : 0.7,
                                                             transition: 'all 0.15s',
                                                         }}
+                                                        onClick={() => canManagePermissions && setPendingScope(scope)}
                                                     >
                                                         <input
                                                             type="radio"
                                                             name="perm_scope"
-                                                            checked={currentScope === scope}
+                                                            checked={pendingScope === scope}
                                                             disabled={!canManagePermissions}
-                                                            onChange={() => handleScopeChange(scope)}
-                                                            style={{ accentColor: 'var(--accent-primary)' }}
+                                                            onChange={() => {}} // Handled by label onClick
+                                                            style={{ accentColor: 'var(--accent-primary)', pointerEvents: 'none' }}
                                                         />
                                                         <div>
                                                             <div style={{ fontWeight: 500, fontSize: '13px' }}>{scopeLabels[scope]}</div>
                                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                                                                 {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
-                                                                {scope === 'user' && t('agent.settings.perm.specificUsersDesc', 'Only selected users can use this agent')}
-                                                                {scope === 'private' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
+                                                                {scope === 'user' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
+                                                                {scope === 'user_group' && t('agent.settings.perm.specificUsersDesc', 'Only selected users can use this agent')}
                                                             </div>
                                                         </div>
                                                     </label>
@@ -5452,8 +5524,8 @@ function AgentDetailInner() {
                                             </div>
 
                                             {/* Access Level for company scope */}
-                                            {currentScope === 'company' && canManagePermissions && (
-                                                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
+                                            {pendingScope === 'company' && canManagePermissions && (
+                                                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px', marginBottom: '16px' }}>
                                                     <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
                                                         {t('agent.settings.perm.defaultAccess', 'Default Access Level')}
                                                     </label>
@@ -5461,24 +5533,25 @@ function AgentDetailInner() {
                                                         {[{ val: 'use', label: '👁️ ' + t('agent.settings.perm.useAccess', 'Use'), desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
                                                         { val: 'manage', label: '⚙️ ' + t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') }].map(opt => (
                                                             <label key={opt.val}
+                                                                onClick={() => setPendingAccessLevel(opt.val)}
                                                                 style={{
                                                                     flex: 1,
                                                                     padding: '10px 12px',
                                                                     borderRadius: '8px',
                                                                     cursor: 'pointer',
-                                                                    border: currentAccessLevel === opt.val
+                                                                    border: pendingAccessLevel === opt.val
                                                                         ? '1px solid var(--accent-primary)'
                                                                         : '1px solid var(--border-subtle)',
-                                                                    background: currentAccessLevel === opt.val
+                                                                    background: pendingAccessLevel === opt.val
                                                                         ? 'rgba(99,102,241,0.06)'
                                                                         : 'transparent',
                                                                     transition: 'all 0.15s',
                                                                 }}
                                                             >
                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                                    <input type="radio" name="access_level" checked={currentAccessLevel === opt.val}
-                                                                        onChange={() => handleAccessLevelChange(opt.val)}
-                                                                        style={{ accentColor: 'var(--accent-primary)' }} />
+                                                                    <input type="radio" name="access_level" checked={pendingAccessLevel === opt.val}
+                                                                        onChange={() => {}}
+                                                                        style={{ accentColor: 'var(--accent-primary)', pointerEvents: 'none' }} />
                                                                     <span style={{ fontWeight: 500, fontSize: '13px' }}>{opt.label}</span>
                                                                 </div>
                                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', marginLeft: '20px' }}>{opt.desc}</div>
@@ -5489,28 +5562,124 @@ function AgentDetailInner() {
                                             )}
 
                                             {/* User Selection — for specific users scope */}
-                                            {currentScope === 'user' && canManagePermissions && (
+                                            {pendingScope === 'user_group' && canManagePermissions && (
                                                 <UserSelector 
                                                     agentId={id!} 
-                                                    selectedUserIds={permData?.scope_ids || []}
+                                                    selectedUserIds={pendingUserIds}
                                                     onUsersChange={(userIds) => {
-                                                        // This will be implemented in the next step
+                                                        setPendingUserIds(userIds);
+                                                    }}
+                                                    onUserPermissionChange={(userId, accessLevel) => {
+                                                        const newUserPermissions = { ...userPermissions, [userId]: accessLevel };
+                                                        setUserPermissions(newUserPermissions);
                                                     }}
                                                     creatorId={permData?.creator_id || agent?.creator_id}
-                                                    userPermissions={
-                                                        // Convert scope_names to { userId: accessLevel } map
-                                                        permData?.scope_names?.reduce((acc: Record<string, string>, s: any) => {
-                                                            acc[s.id] = s.access_level || 'use';
-                                                            return acc;
-                                                        }, {} as Record<string, string>)
-                                                    }
+                                                    userPermissions={userPermissions}
                                                 />
                                             )}
 
-                                            {currentScope !== 'company' && permData?.scope_names?.length > 0 && (
-                                                <div style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                                    <span style={{ fontWeight: 500 }}>{t('agent.settings.perm.currentAccess', 'Current access')}:</span>{' '}
-                                                    {permData.scope_names.map((s: any) => s.name).join(', ')}
+                                            {/* Current Access Display */}
+                                            {pendingScope === 'user_group' && permData?.scope_names && permData.scope_names.length > 0 && (
+                                                <div style={{ 
+                                                    marginTop: '12px', 
+                                                    paddingTop: '12px',
+                                                    borderTop: '1px solid var(--border-subtle)',
+                                                    fontSize: '12px'
+                                                }}>
+                                                    <div style={{ fontWeight: 500, marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                                                        {t('agent.settings.perm.currentAccess', 'Current access')}
+                                                    </div>
+                                                    {(() => {
+                                                        // Group users by access level
+                                                        const usersByLevel: Record<string, string[]> = {
+                                                            use: [],
+                                                            manage: []
+                                                        };
+                                                        permData.scope_names.forEach((s: any) => {
+                                                            const level = s.access_level || 'use';
+                                                            if (usersByLevel[level]) {
+                                                                usersByLevel[level].push(s.name);
+                                                            }
+                                                        });
+                                                        
+                                                        return (
+                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                                                {usersByLevel.manage.length > 0 && (
+                                                                    <div style={{ 
+                                                                        padding: '8px 10px',
+                                                                        background: 'rgba(99,102,241,0.06)',
+                                                                        borderRadius: '6px',
+                                                                        border: '1px solid rgba(99,102,241,0.15)'
+                                                                    }}>
+                                                                        <div style={{ 
+                                                                            fontWeight: 500, 
+                                                                            fontSize: '11px',
+                                                                            color: 'var(--accent-primary)',
+                                                                            marginBottom: '4px'
+                                                                        }}>
+                                                                            ⚙️ {t('agent.settings.perm.manageAccess', 'Manage')} ({usersByLevel.manage.length})
+                                                                        </div>
+                                                                        <div style={{ 
+                                                                            fontSize: '11px',
+                                                                            color: 'var(--text-secondary)',
+                                                                            lineHeight: '1.6'
+                                                                        }}>
+                                                                            {usersByLevel.manage.join(', ')}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                                {usersByLevel.use.length > 0 && (
+                                                                    <div style={{ 
+                                                                        padding: '8px 10px',
+                                                                        background: 'var(--bg-elevated)',
+                                                                        borderRadius: '6px',
+                                                                        border: '1px solid var(--border-subtle)'
+                                                                    }}>
+                                                                        <div style={{ 
+                                                                            fontWeight: 500, 
+                                                                            fontSize: '11px',
+                                                                            color: 'var(--text-tertiary)',
+                                                                            marginBottom: '4px'
+                                                                        }}>
+                                                                            👁️ {t('agent.settings.perm.useAccess', 'Use')} ({usersByLevel.use.length})
+                                                                        </div>
+                                                                        <div style={{ 
+                                                                            fontSize: '11px',
+                                                                            color: 'var(--text-secondary)',
+                                                                            lineHeight: '1.6'
+                                                                        }}>
+                                                                            {usersByLevel.use.join(', ')}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+                                            )}
+
+                                            {/* Save Button */}
+                                            {canManagePermissions && (
+                                                <div style={{ 
+                                                    marginTop: '16px', 
+                                                    paddingTop: '16px', 
+                                                    borderTop: '1px solid var(--border-subtle)',
+                                                    display: 'flex',
+                                                    justifyContent: 'flex-end'
+                                                }}>
+                                                    <button
+                                                        className="btn btn-primary"
+                                                        onClick={handleSavePermissions}
+                                                        disabled={isSavingPermissions}
+                                                        style={{
+                                                            padding: '8px 24px',
+                                                            fontSize: '13px',
+                                                            opacity: isSavingPermissions ? 0.6 : 1,
+                                                            cursor: isSavingPermissions ? 'not-allowed' : 'pointer'
+                                                        }}
+                                                    >
+                                                        {isSavingPermissions ? t('common.saving', 'Saving...') : t('common.save', 'Save Permissions')}
+                                                    </button>
                                                 </div>
                                             )}
 
@@ -5710,12 +5879,28 @@ function AgentDetailInner() {
                                             </div>
                                         )
                                     }
-                                </div >
-                            </div >
-                        )
-                    })()
-                }
-            </div >
+                                </div>
+                            </div>
+                        );
+                    })() : (
+                        // No permission - show access denied
+                        <div style={{ 
+                            display: 'flex', 
+                            flexDirection: 'column', 
+                            alignItems: 'center', 
+                            justifyContent: 'center', 
+                            padding: '60px 20px',
+                            textAlign: 'center'
+                        }}>
+                            <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔒</div>
+                            <h3 style={{ margin: '0 0 8px 0', color: 'var(--text-primary)' }}>{t('agent.settings.accessDenied', 'Access Denied')}</h3>
+                            <p style={{ margin: 0, color: 'var(--text-tertiary)', maxWidth: '400px' }}>
+                                {t('agent.settings.accessDeniedDesc', 'You do not have permission to view or modify this agent\'s settings. Please contact the agent creator or administrator.')}
+                            </p>
+                        </div>
+                    )
+                )}
+            </div>
 
             <PromptModal
                 open={!!promptModal}
@@ -5913,12 +6098,14 @@ function UserSelector({
     agentId, 
     selectedUserIds, 
     onUsersChange,
+    onUserPermissionChange,
     creatorId,
     userPermissions // Add per-user permissions: { userId: accessLevel }
 }: { 
     agentId: string; 
     selectedUserIds: string[];
     onUsersChange: (userIds: string[]) => void;
+    onUserPermissionChange?: (userId: string, accessLevel: string) => void;
     creatorId?: string;
     userPermissions?: Record<string, string>;
 }) {
@@ -5940,62 +6127,17 @@ function UserSelector({
         queryFn: () => enterpriseApi.users(currentTenant || undefined),
     });
 
-    const handleToggleUser = async (userId: string, checked: boolean) => {
+    const handleToggleUser = (userId: string, checked: boolean) => {
         const newSelectedIds = checked 
             ? [...selectedUserIds, userId]
             : selectedUserIds.filter(id => id !== userId);
         
-        // Preserve existing permissions or set default
-        const newUserPermissions = { ...userPermissions };
-        if (checked) {
-            newUserPermissions[userId] = newUserPermissions[userId] || 'use';
-        } else {
-            delete newUserPermissions[userId];
-        }
-        
-        setSaving(true);
-        try {
-            await fetchAuth(`/agents/${agentId}/permissions`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    scope_type: 'user', 
-                    scope_ids: newSelectedIds,
-                    user_permissions: newUserPermissions
-                }),
-            });
-            onUsersChange(newSelectedIds);
-            queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
-        } catch (e) {
-            console.error('Failed to update permissions', e);
-        } finally {
-            setSaving(false);
-        }
+        onUsersChange(newSelectedIds);
     };
 
-    const handleAccessLevelChange = async (userId: string, accessLevel: string) => {
-        // Cannot change creator's permission
-        if (userId === creatorId) {
-            return;
-        }
-        
-        setSaving(true);
-        try {
-            const newUserPermissions = { ...userPermissions, [userId]: accessLevel };
-            await fetchAuth(`/agents/${agentId}/permissions`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    scope_type: 'user', 
-                    scope_ids: selectedUserIds,
-                    user_permissions: newUserPermissions
-                }),
-            });
-            queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
-        } catch (e) {
-            console.error('Failed to update access level', e);
-        } finally {
-            setSaving(false);
+    const handleUserAccessLevelChange = (userId: string, accessLevel: string) => {
+        if (onUserPermissionChange) {
+            onUserPermissionChange(userId, accessLevel);
         }
     };
 
@@ -6061,14 +6203,13 @@ function UserSelector({
                                     border: isSelected ? '1px solid var(--accent-primary)' : '1px solid transparent',
                                     marginBottom: '4px',
                                     transition: 'all 0.15s',
-                                    opacity: saving ? 0.6 : 1,
                                 }}
                             >
                                 {/* Checkbox for selecting/deselecting user */}
                                 <input 
                                     type="checkbox"
                                     checked={isSelected}
-                                    disabled={saving || isCreator} // Cannot deselect creator
+                                    disabled={isCreator} // Cannot deselect creator
                                     onChange={(e) => handleToggleUser(user.id, e.target.checked)}
                                     style={{ accentColor: 'var(--accent-primary)', cursor: isCreator ? 'not-allowed' : 'pointer' }}
                                     title={isCreator ? t('agent.settings.perm.cannotChangeCreator', 'Cannot change creator permission') : ''}
@@ -6097,9 +6238,9 @@ function UserSelector({
                                 {isSelected && (
                                     <select
                                         className="input"
-                                        value={accessLevel}
-                                        disabled={saving || isCreator} // Cannot change creator's permission
-                                        onChange={(e) => handleAccessLevelChange(user.id, e.target.value)}
+                                        value={userPermissions[user.id] || 'use'}
+                                        disabled={isCreator}
+                                        onChange={(e) => handleUserAccessLevelChange(user.id, e.target.value)}
                                         style={{ 
                                             width: '100px', 
                                             fontSize: '12px',

@@ -169,7 +169,7 @@ async def list_agents(
         .where(
             (AgentPermission.scope_type == "company")
             | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
-            | ((AgentPermission.scope_type == "private") & (AgentPermission.scope_id == current_user.id))
+            | ((AgentPermission.scope_type == "user_group") & (AgentPermission.scope_id == current_user.id))
         )
     )
     permitted = select(Agent).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
@@ -276,28 +276,30 @@ async def create_agent(
 
     # Set permissions
     access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
-    if data.permission_scope_type not in ("company", "user", "private"):
+    if data.permission_scope_type not in ("company", "user", "user_group"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported permission_scope_type")
+    
+    # Validate user_group requires at least one user
+    if data.permission_scope_type == "user_group" and not data.permission_scope_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user_group scope requires at least one user")
+    
     if data.permission_scope_type == "company":
         db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level=access_level))
     elif data.permission_scope_type == "user":
+        # User: only creator can access
+        db.add(AgentPermission(agent_id=agent.id, scope_type="user", scope_id=current_user.id, access_level="manage"))
+    elif data.permission_scope_type == "user_group":
         if data.permission_scope_ids:
             # Check if we have per-user access levels
             if data.user_permissions and isinstance(data.user_permissions, dict):
                 # Per-user permissions: {user_id: access_level}
                 for scope_id in data.permission_scope_ids:
                     user_access = data.user_permissions.get(str(scope_id), access_level)
-                    db.add(AgentPermission(agent_id=agent.id, scope_type="user", scope_id=scope_id, access_level=user_access))
+                    db.add(AgentPermission(agent_id=agent.id, scope_type="user_group", scope_id=scope_id, access_level=user_access))
             else:
                 # Legacy: all users share the same access level
                 for scope_id in data.permission_scope_ids:
-                    db.add(AgentPermission(agent_id=agent.id, scope_type="user", scope_id=scope_id, access_level=access_level))
-        else:
-            # No users specified - fallback to private (creator only)
-            db.add(AgentPermission(agent_id=agent.id, scope_type="private", scope_id=current_user.id, access_level="manage"))
-    elif data.permission_scope_type == "private":
-        # Private: only creator can access
-        db.add(AgentPermission(agent_id=agent.id, scope_type="private", scope_id=current_user.id, access_level="manage"))
+                    db.add(AgentPermission(agent_id=agent.id, scope_type="user_group", scope_id=scope_id, access_level=access_level))
 
     await db.flush()
 
@@ -414,7 +416,7 @@ async def get_agent_permissions(
     perms = result.scalars().all()
 
     if not perms:
-        return {"scope_type": "private", "scope_ids": [], "access_level": "manage" if is_agent_creator(current_user, agent) else "use", "is_owner": is_agent_creator(current_user, agent)}
+        return {"scope_type": "user", "scope_ids": [], "access_level": "manage" if is_agent_creator(current_user, agent) else "use", "is_owner": is_agent_creator(current_user, agent)}
 
     scope_type = perms[0].scope_type
     scope_ids = [str(p.scope_id) for p in perms if p.scope_id]
@@ -422,7 +424,7 @@ async def get_agent_permissions(
 
     # Resolve names and access levels for display
     scope_names = []
-    if scope_type == "user":
+    if scope_type == "user_group":
         for perm in perms:
             if perm.scope_id:
                 sid = str(perm.scope_id)
@@ -468,8 +470,12 @@ async def update_agent_permissions(
     access_level = data.get("access_level", "use")
     if access_level not in ("use", "manage"):
         access_level = "use"
-    if scope_type not in ("company", "user", "private"):
+    if scope_type not in ("company", "user", "user_group"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported scope_type")
+    
+    # Validate user_group requires at least one user
+    if scope_type == "user_group" and not scope_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user_group scope requires at least one user")
 
     # Delete existing permissions
     from sqlalchemy import delete as sql_delete
@@ -479,6 +485,9 @@ async def update_agent_permissions(
     if scope_type == "company":
         db.add(AgentPermission(agent_id=agent_id, scope_type="company", access_level=access_level))
     elif scope_type == "user":
+        # User: only creator can access
+        db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=current_user.id, access_level="manage"))
+    elif scope_type == "user_group":
         if scope_ids:
             # Check if we have per-user access levels
             user_permissions = data.get('user_permissions', None)
@@ -486,17 +495,11 @@ async def update_agent_permissions(
                 # Per-user permissions: {user_id: access_level}
                 for sid in scope_ids:
                     user_access = user_permissions.get(str(sid), access_level)
-                    db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uuid.UUID(sid), access_level=user_access))
+                    db.add(AgentPermission(agent_id=agent_id, scope_type="user_group", scope_id=uuid.UUID(sid), access_level=user_access))
             else:
                 # Legacy: all users share the same access level
                 for sid in scope_ids:
-                    db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uuid.UUID(sid), access_level=access_level))
-        else:
-            # No users specified - fallback to private
-            db.add(AgentPermission(agent_id=agent_id, scope_type="private", scope_id=current_user.id, access_level="manage"))
-    elif scope_type == "private":
-        # Private: only creator can access
-        db.add(AgentPermission(agent_id=agent_id, scope_type="private", scope_id=current_user.id, access_level="manage"))
+                    db.add(AgentPermission(agent_id=agent_id, scope_type="user_group", scope_id=uuid.UUID(sid), access_level=access_level))
 
     await db.commit()
     return {"status": "ok"}

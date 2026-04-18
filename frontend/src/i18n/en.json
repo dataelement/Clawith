@@ -506,8 +506,16 @@
         "useAccess": "Use",
         "useAccessDesc": "Task, Chat, Tools, Skills, Workspace",
         "manageAccess": "Manage",
-        "manageAccessDesc": "Full access including Settings, Mind, Relationships"
+        "manageAccessDesc": "Full access including Settings, Mind, Relationships",
+        "selectAtLeastOneUser": "Please select at least one user before choosing \"Specific Users\" permission",
+        "userGroupAccessHint": "All selected users will have this access level",
+        "canUse": "Can Use",
+        "canManage": "Can Manage",
+        "creator": "(Creator)",
+        "cannotChangeCreator": "Cannot change creator permission"
       },
+      "accessDenied": "Access Denied",
+      "accessDeniedDesc": "You do not have permission to view or modify this agent's settings. Please contact the agent creator or administrator.",
       "timezone": {
         "label": "Timezone",
         "description": "Set the timezone for scheduled tasks and time-based triggers",

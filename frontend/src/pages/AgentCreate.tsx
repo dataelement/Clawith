@@ -851,8 +851,8 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
                             {[
                                 { value: 'company', label: t('wizard.step4.companyWide'), desc: t('wizard.step4.companyWideDesc') },
-                                { value: 'user', label: t('wizard.step4.specificUsers'), desc: t('wizard.step4.specificUsersDesc') },
-                                { value: 'private', label: t('wizard.step4.selfOnly'), desc: t('wizard.step4.selfOnlyDesc') },
+                                { value: 'user', label: t('wizard.step4.selfOnly'), desc: t('wizard.step4.selfOnlyDesc') },
+                                { value: 'user_group', label: t('wizard.step4.specificUsers'), desc: t('wizard.step4.specificUsersDesc') },
                             ].map((scope) => (
                                 <label key={scope.value} style={{
                                     display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',
@@ -901,7 +901,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                         )}
 
                         {/* User Selection — for specific users scope */}
-                        {form.permission_scope_type === 'user' && (
+                        {form.permission_scope_type === 'user_group' && (
                             <div>
                                 <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '10px' }}>
                                     {t('wizard.step4.selectUsers', 'Select Users')}

@@ -137,10 +137,10 @@ class AgentPermission(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
     scope_type: Mapped[str] = mapped_column(
-        Enum("company", "department", "user", "private", name="permission_scope_enum"),
+        Enum("company", "department", "user", "user_group", name="permission_scope_enum"),
         nullable=False,
     )
-    # scope_id: null for company, user_id for user/private scope
+    # scope_id: null for company, user_id for user/user_group scope
     scope_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     # access_level: 'use' = task/chat/tool/skill/workspace only, 'manage' = full access
     access_level: Mapped[str] = mapped_column(String(20), default="use", nullable=False)
