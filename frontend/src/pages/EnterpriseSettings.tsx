@@ -966,8 +966,10 @@ function ThemeColorPicker() {
     };
 
     return (
-        <div className="card" style={{ marginTop: '16px', marginBottom: '16px' }}>
-            <h4 style={{ marginBottom: '12px' }}>{t('enterprise.config.themeColor')}</h4>
+        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '10px' }}>
+                {t('enterprise.config.themeColor')}
+            </div>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
                 {PRESET_COLORS.map(c => (
                     <div
@@ -1545,6 +1547,9 @@ function CompanyNameEditor() {
 
     return (
         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '10px' }}>
+                {t('enterprise.companyName.title', 'Company Name')}
+            </div>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                 <input
                     className="form-input"
@@ -1645,16 +1650,16 @@ function CompanyTimezoneEditor() {
 
     return (
         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                {zh ? '公司所在国家或地区' : 'Company Country or Region'}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                {zh
+                    ? `用于自动设置公司默认时区和 OKR 休息日规则。当前时区：${timezone}`
+                    : `Used to set the company timezone and OKR non-workday rules. Current timezone: ${timezone}`}
+            </div>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '4px' }}>
-                        🌐 {zh ? '公司所在国家或地区' : 'Company Country or Region'}
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                        {zh
-                            ? `用于自动设置公司默认时区和 OKR 休息日规则。当前时区：${timezone}`
-                            : `Used to set the company timezone and OKR non-workday rules. Current timezone: ${timezone}`}
-                    </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
                     {error && (
                         <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
                             ⚠ {error}
@@ -1733,18 +1738,18 @@ function A2AAsyncToggle() {
 
     return (
         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                {zh ? 'Agent 异步协作（Beta）' : 'Agent Async Collaboration (Beta)'}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                {zh
+                    ? '开启后，数字员工之间可使用 notify / task_delegate 等异步协作模式。关闭后，Agent 间消息统一走同步 consult。'
+                    : 'When enabled, agents can use async notify and task_delegate modes. When disabled, agent-to-agent messaging falls back to synchronous consult.'}
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px' }}>
                 <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '4px' }}>
-                        {zh ? 'Agent 异步协作（Beta）' : 'Agent Async Collaboration (Beta)'}
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                        {zh
-                            ? '开启后，数字员工之间可使用 notify / task_delegate 等异步协作模式。关闭后，Agent 间消息统一走同步 consult。'
-                            : 'When enabled, agents can use async notify and task_delegate modes. When disabled, agent-to-agent messaging falls back to synchronous consult.'}
-                    </div>
                     {error && (
-                        <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--error)' }}>
                             {error}
                         </div>
                     )}
@@ -2898,23 +2903,15 @@ export default function EnterpriseSettings() {
                 {/* ── Company Management ── */}
                 {activeTab === 'info' && (
                     <div>
-
-                        {/* ── 0. Company Name ── */}
-                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyName.title', 'Company Name')}</h3>
                         <CompanyNameEditor key={`name-${selectedTenantId}`} />
-
-                        {/* ── 0.5. Company Timezone ── */}
                         <CompanyTimezoneEditor key={`tz-${selectedTenantId}`} />
-
-                        {/* ── 0.75. Agent Async Collaboration ── */}
-                        <A2AAsyncToggle key={`a2a-${selectedTenantId}`} />
-
-                        {/* ── 2. Company Intro ── */}
-                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyIntro.title', 'Company Intro')}</h3>
-                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                            {t('enterprise.companyIntro.description', 'Describe your company\'s mission, products, and culture. This information is included in every agent conversation as context.')}
-                        </p>
                         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                                {t('enterprise.companyIntro.title', 'Company Intro')}
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                {t('enterprise.companyIntro.description', 'Describe your company\'s mission, products, and culture. This information is included in every agent conversation as context.')}
+                            </div>
                             <textarea
                                 className="form-input"
                                 value={companyIntro}
@@ -2936,23 +2933,17 @@ export default function EnterpriseSettings() {
                                 </span>
                             </div>
                         </div>
-
-                        {/* ── 2. Company Knowledge Base ── */}
-                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.kb.title')}</h3>
-                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                            {t('enterprise.kb.description', 'Shared files accessible to all agents via enterprise_info/ directory.')}
-                        </p>
                         <div className="card" style={{ marginBottom: '24px', padding: '16px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                                {t('enterprise.kb.title')}
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                {t('enterprise.kb.description', 'Shared files accessible to all agents via enterprise_info/ directory.')}
+                            </div>
                             <EnterpriseKBBrowser onRefresh={() => setInfoRefresh((v: number) => v + 1)} refreshKey={infoRefresh} />
                         </div>
-
-
-
-                        {/* ── Theme Color ── */}
                         <ThemeColorPicker />
-
-                        {/* ── Broadcast ── */}
-                        <BroadcastSection />
+                        <A2AAsyncToggle key={`a2a-${selectedTenantId}`} />
 
                         {/* ── Danger Zone: Delete Company ── */}
                         <div style={{ marginTop: '32px', padding: '16px', border: '1px solid var(--status-error, #e53e3e)', borderRadius: '8px' }}>
