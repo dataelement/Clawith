@@ -2905,17 +2905,21 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
         return "Error: file_path is required"
 
     # Resolve file path within agent workspace
+    # Handle workspace/ prefix in rel_path
+    if rel_path.startswith("workspace/"):
+        rel_path = rel_path[len("workspace/"):]
+    
     # Check if ws is user-specific workspace (path contains /users/{uuid})
     import re as _re
     is_user_ws = bool(_re.search(r'/users/[0-9a-f-]{36}$', str(ws)))
-    
+
     if is_user_ws:
         # User workspace: files are in users/{user_id}/files/
         file_path = (ws / "files" / rel_path).resolve()
     else:
         # Agent workspace: use relative path
         file_path = (ws / rel_path).resolve()
-    
+
     ws_resolved = ws.resolve()
     if not str(file_path).startswith(str(ws_resolved)):
         file_path = (WORKSPACE_ROOT / str(agent_id) / rel_path).resolve()
@@ -3522,10 +3526,17 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
             return "Access denied for this path"
     # === USER ISOLATION: Support user-specific paths ===
     elif rel_path and rel_path.startswith("workspace/") and user_id:
-        # workspace/uploads/xxx → users/{user_id}/files/xxx
-        sub = rel_path[len("workspace/"):].lstrip("/")
-        file_path = (ws / "users" / str(user_id) / "files" / sub).resolve()
-        if not str(file_path).startswith(str(ws / "users" / str(user_id))):
+        # Check if ws is already user-specific
+        is_user_ws = str(ws).endswith(f"/users/{user_id}")
+        if is_user_ws:
+            # ws is users/{user_id}, so workspace/xxx → files/xxx
+            sub = rel_path[len("workspace/"):].lstrip("/")
+            file_path = (ws / "files" / sub).resolve()
+        else:
+            # ws is agent root, workspace/xxx → users/{user_id}/files/xxx
+            sub = rel_path[len("workspace/"):].lstrip("/")
+            file_path = (ws / "users" / str(user_id) / "files" / sub).resolve()
+        if not str(file_path).startswith(str(ws.resolve())):
             return "Access denied for this path"
     else:
         file_path = (ws / rel_path).resolve()

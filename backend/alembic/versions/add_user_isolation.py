@@ -1,8 +1,8 @@
 """add user_isolation_enabled to agents table
 
 Revision ID: add_user_isolation
-Revises: previous_revision
-Create Date: 2026-04-16
+Revises: d9cbd43b62e5
+Create Date: 2026-04-17
 
 """
 from alembic import op
@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = 'add_user_isolation'
-down_revision = None  # TODO: Set to previous revision
+down_revision = 'd9cbd43b62e5'
 branch_labels = None
 depends_on = None
 
