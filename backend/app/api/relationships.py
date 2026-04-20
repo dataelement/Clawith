@@ -110,11 +110,20 @@ async def save_relationships(
     """Replace all human relationships for this agent."""
     await check_agent_access(db, current_user, agent_id)
 
+    deduped_relationships: list[RelationshipIn] = []
+    seen_member_ids: set[str] = set()
+    for relationship in data.relationships:
+        member_id = str(uuid.UUID(relationship.member_id))
+        if member_id in seen_member_ids:
+            continue
+        seen_member_ids.add(member_id)
+        deduped_relationships.append(relationship)
+
     await db.execute(
         delete(AgentRelationship).where(AgentRelationship.agent_id == agent_id)
     )
 
-    for r in data.relationships:
+    for r in deduped_relationships:
         db.add(AgentRelationship(
             agent_id=agent_id,
             member_id=uuid.UUID(r.member_id),

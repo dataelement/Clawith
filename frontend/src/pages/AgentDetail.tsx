@@ -1151,6 +1151,9 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         queryKey: ['agent-relationship-candidates', agentId],
         queryFn: () => fetchAuth<any[]>(`/agents/${agentId}/relationships/agents/candidates`),
     });
+    const existingHumanRelationshipIds = new Set(
+        relationships.map((r: any) => r.member_id),
+    );
 
     useEffect(() => {
         if (!search || search.length < 1) { setSearchResults([]); return; }
@@ -1162,6 +1165,12 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
 
     const addRelationship = async () => {
         if (!adding) return;
+        if (existingHumanRelationshipIds.has(adding.id)) {
+            setAdding(null);
+            setSearch('');
+            setSearchResults([]);
+            return;
+        }
         const existing = relationships.map((r: any) => ({ member_id: r.member_id, relation: r.relation, description: r.description }));
         existing.push({ member_id: adding.id, relation, description });
         await fetchAuth(`/agents/${agentId}/relationships/`, { method: 'PUT', body: JSON.stringify({ relationships: existing }) });
@@ -1299,18 +1308,42 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                         <input className="input" placeholder={t("agent.detail.searchMembers")} value={search} onChange={e => setSearch(e.target.value)} style={{ fontSize: '13px' }} />
                         {searchResults.length > 0 && (
                             <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', marginTop: '4px', maxHeight: '200px', overflowY: 'auto', zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
-                                {searchResults.map((m: any) => (
-                                    <div key={m.id} style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', borderBottom: '1px solid var(--border-subtle)' }}
-                                        onClick={() => { setAdding(m); setSearch(''); setSearchResults([]); }}
-                                        onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-elevated)')}
-                                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                                {searchResults.map((m: any) => {
+                                    const isAlreadyAdded = existingHumanRelationshipIds.has(m.id);
+                                    return (
+                                    <div
+                                        key={m.id}
+                                        style={{
+                                            padding: '8px 12px',
+                                            cursor: isAlreadyAdded ? 'not-allowed' : 'pointer',
+                                            fontSize: '13px',
+                                            borderBottom: '1px solid var(--border-subtle)',
+                                            opacity: isAlreadyAdded ? 0.65 : 1,
+                                        }}
+                                        onClick={() => {
+                                            if (isAlreadyAdded) return;
+                                            setAdding(m); setSearch(''); setSearchResults([]);
+                                        }}
+                                        onMouseEnter={e => {
+                                            if (isAlreadyAdded) return;
+                                            e.currentTarget.style.background = 'var(--bg-elevated)';
+                                        }}
+                                        onMouseLeave={e => {
+                                            if (isAlreadyAdded) return;
+                                            e.currentTarget.style.background = 'transparent';
+                                        }}>
                                         <div style={{ fontWeight: 500 }}>{m.name}</div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                             {renderHumanMemberSourceBadge(m)}
                                             {m.department_path} · {m.email}
+                                            {isAlreadyAdded && (
+                                                <span style={{ marginLeft: '8px', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                                                    {t('agent.detail.alreadyAdded', 'Already added')}
+                                                </span>
+                                            )}
                                         </div>
                                     </div>
-                                ))}
+                                )})}
                             </div>
                         )}
                     </div>

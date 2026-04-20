@@ -256,6 +256,7 @@
       "searchMembers": "搜索组织架构成员...",
       "noRelationships": "暂无关系",
       "addRelationship": "添加关系",
+      "alreadyAdded": "已添加",
       "supervisor": "上级",
       "colleague": "同事",
       "subordinate": "下级",
