@@ -118,7 +118,7 @@ Cambiar contraseñas predeterminadas · Configurar `SECRET_KEY` / `JWT_SECRET_KE
 También puedes escanear el código QR a continuación para unirte a nuestra comunidad desde tu móvil:
 
 <p align="center">
-  <img src="assets/QR_Code.png" alt="Código QR de la Comunidad" width="200" />
+  <img src="assets/Clawith_QRcode.png" alt="Código QR de la Comunidad" width="200" />
 </p>
 
 ## ⭐ Star History
