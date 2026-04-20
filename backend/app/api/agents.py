@@ -253,6 +253,8 @@ async def create_agent(
         min_poll_interval_min=default_min_poll,
         webhook_rate_limit=default_webhook_rate,
         heartbeat_interval_minutes=default_heartbeat_interval,
+        # === USER ISOLATION ===
+        user_isolation_enabled=data.user_isolation_enabled if hasattr(data, 'user_isolation_enabled') else True,
     )
     if data.autonomy_policy:
         agent.autonomy_policy = data.autonomy_policy
@@ -532,6 +534,11 @@ async def update_agent(
                         "applied": update_data["webhook_rate_limit"],
                         "reason": "company_ceiling",
                     })
+    
+    # === USER ISOLATION: Handle user_isolation_enabled ===
+    if "user_isolation_enabled" in update_data:
+        # This field can be updated by creator or admin
+        agent.user_isolation_enabled = update_data["user_isolation_enabled"]
 
     for field, value in update_data.items():
         setattr(agent, field, value)

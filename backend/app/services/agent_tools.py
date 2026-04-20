@@ -33,7 +33,6 @@ from app.models.audit import ChatMessage, AuditLog
 from app.models.chat_session import ChatSession
 from app.models.channel_config import ChannelConfig
 from app.models.user import User as UserModel
-from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
 from app.config import get_settings
@@ -1946,12 +1945,21 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 
 # ─── Workspace initialization ──────────────────────────────────
 
-async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) -> Path:
-    """Initialize agent workspace with standard structure."""
+async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None, user_id: uuid.UUID | None = None) -> Path:
+    """Initialize agent workspace with standard structure.
+    
+    Args:
+        agent_id: Agent UUID
+        tenant_id: Optional tenant ID for enterprise_info
+        user_id: Optional user ID for user-isolated workspace
+    
+    Returns:
+        Path to workspace root (user workspace if user_id provided and isolation enabled, else agent workspace)
+    """
     ws = WORKSPACE_ROOT / str(agent_id)
     ws.mkdir(parents=True, exist_ok=True)
 
-    # Create standard directories
+    # Create standard directories (shared across all users)
     (ws / "skills").mkdir(exist_ok=True)
     (ws / "workspace").mkdir(exist_ok=True)
     (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
@@ -1982,7 +1990,6 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         # Try to load from DB
         try:
             async with async_session() as db:
-
                 r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 agent = r.scalar_one_or_none()
                 if agent and agent.role_description:
@@ -1994,6 +2001,39 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
                     (ws / "soul.md").write_text("# Personality\n\n_Describe your role and responsibilities._\n", encoding="utf-8")
         except Exception:
             (ws / "soul.md").write_text("# Personality\n\n_Describe your role and responsibilities._\n", encoding="utf-8")
+
+    # === USER ISOLATION: Create user-specific workspace ===
+    # Only if user_id is provided AND user isolation is enabled for this agent
+    if user_id:
+        # Check if user isolation is enabled for this agent
+        user_isolation_enabled = True  # Default to True
+        try:
+            async with async_session() as db:
+                r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                agent = r.scalar_one_or_none()
+                if agent and hasattr(agent, 'user_isolation_enabled'):
+                    user_isolation_enabled = agent.user_isolation_enabled
+        except Exception as e:
+            logger.warning(f"Failed to check user_isolation_enabled for agent {agent_id}: {e}")
+        
+        if user_isolation_enabled:
+            user_ws = ws / "users" / str(user_id)
+            user_ws.mkdir(parents=True, exist_ok=True)
+            
+            # Create user directories
+            (user_ws / "files").mkdir(exist_ok=True)
+            (user_ws / "sessions").mkdir(exist_ok=True)
+            
+            # Create user memory file
+            user_memory = user_ws / "memory.md"
+            if not user_memory.exists():
+                user_memory.write_text(
+                    f"# User Memory\n\n用户 ID: {user_id}\n\n_记录与这个 agent 的私人对话记忆。_\n",
+                    encoding="utf-8"
+                )
+            
+            # Return user workspace path
+            return user_ws
 
     # Always sync tasks from DB
     await _sync_tasks_to_file(agent_id, ws)
@@ -2125,7 +2165,8 @@ async def execute_tool(
     """
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
-    ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
+    # === USER ISOLATION: Pass user_id to get user-specific workspace ===
+    ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id, user_id=user_id)
 
     # ── Autonomy boundary check ──
     action_type = _TOOL_AUTONOMY_MAP.get(tool_name)
@@ -2170,20 +2211,20 @@ async def execute_tool(
 
     try:
         if tool_name == "list_files":
-            result = _list_files(ws, arguments.get("path", ""), tenant_id=_agent_tenant_id)
+            result = _list_files(ws, arguments.get("path", ""), tenant_id=_agent_tenant_id, user_id=user_id)
         elif tool_name == "read_file":
             path = arguments.get("path")
             if not path:
                 return "❌ Missing required argument 'path' for read_file"
             offset = int(arguments.get("offset", 0))
             limit = int(arguments.get("limit", 2000))
-            result = _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
+            result = _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit, user_id=user_id)
         elif tool_name == "read_document":
             path = arguments.get("path")
             if not path:
                 return "❌ Missing required argument 'path' for read_document"
             max_chars = min(int(arguments.get("max_chars", 8000)), 20000)
-            result = await _read_document(ws, path, max_chars=max_chars, tenant_id=_agent_tenant_id)
+            result = await _read_document(ws, path, max_chars=max_chars, tenant_id=_agent_tenant_id, user_id=user_id)
         elif tool_name == "write_file":
             path = arguments.get("path")
             content = arguments.get("content")
@@ -2191,7 +2232,7 @@ async def execute_tool(
                 return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
             if content is None:
                 return "❌ Missing required argument 'content' for write_file"
-            result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            result = _write_file(ws, path, content, tenant_id=_agent_tenant_id, user_id=user_id)
         elif tool_name == "delete_file":
             result = _delete_file(ws, arguments.get("path", ""))
         # --- Enhanced file management tools ---
@@ -2864,7 +2905,21 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
         return "Error: file_path is required"
 
     # Resolve file path within agent workspace
-    file_path = (ws / rel_path).resolve()
+    # Handle workspace/ prefix in rel_path
+    if rel_path.startswith("workspace/"):
+        rel_path = rel_path[len("workspace/"):]
+    
+    # Check if ws is user-specific workspace (path contains /users/{uuid})
+    import re as _re
+    is_user_ws = bool(_re.search(r'/users/[0-9a-f-]{36}$', str(ws)))
+
+    if is_user_ws:
+        # User workspace: files are in users/{user_id}/files/
+        file_path = (ws / "files" / rel_path).resolve()
+    else:
+        # Agent workspace: use relative path
+        file_path = (ws / rel_path).resolve()
+
     ws_resolved = ws.resolve()
     if not str(file_path).startswith(str(ws_resolved)):
         file_path = (WORKSPACE_ROOT / str(agent_id) / rel_path).resolve()
@@ -2913,7 +2968,7 @@ async def _send_file_to_recipient(
     agent_id: uuid.UUID, file_path: Path, member_name: str, message: str = ""
 ) -> str | None:
     """Resolve a recipient by name and send file via their reachable channel.
-    
+
     Checks Feishu and Slack channels configured for this agent.
     Returns a result string, or None if no channel found.
     """
@@ -2926,20 +2981,29 @@ async def _send_file_to_recipient(
         )
         configs = {c.channel_type: c for c in result.scalars().all()}
 
+    logger.info(f"[send_file_to_recipient] Trying to send '{file_path.name}' to '{member_name}'. Configs: {list(configs.keys())}")
+
     # --- Try Feishu ---
     feishu_config = configs.get("feishu")
     if feishu_config:
+        logger.info(f"[send_file_to_recipient] Trying Feishu...")
         feishu_result = await _send_file_via_feishu(agent_id, feishu_config, file_path, member_name, message)
         if feishu_result:
+            logger.info(f"[send_file_to_recipient] Feishu success: {feishu_result}")
             return feishu_result
+        logger.warning(f"[send_file_to_recipient] Feishu failed - recipient '{member_name}' not found")
 
     # --- Try Slack ---
     slack_config = configs.get("slack")
     if slack_config:
+        logger.info(f"[send_file_to_recipient] Trying Slack...")
         slack_result = await _send_file_via_slack(agent_id, slack_config, file_path, member_name, message)
         if slack_result:
+            logger.info(f"[send_file_to_recipient] Slack success: {slack_result}")
             return slack_result
+        logger.warning(f"[send_file_to_recipient] Slack failed - recipient '{member_name}' not found")
 
+    logger.error(f"[send_file_to_recipient] All channels failed for '{member_name}'")
     return None  # No channel could reach this recipient
 
 
@@ -3339,7 +3403,18 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
         return f"❌ Auto-recovery failed: {str(e)[:200]}"
 
 
-def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
+def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, user_id: uuid.UUID | None = None) -> str:
+    """List files in workspace or user's personal space.
+    
+    Args:
+        ws: Workspace root (may be user-specific if user isolation is enabled)
+        rel_path: Relative path to list
+        tenant_id: Optional tenant ID for enterprise_info
+        user_id: Optional user ID for user-specific paths
+    """
+    # === USER ISOLATION: Check if ws is already user-specific ===
+    is_user_ws = user_id and str(ws).endswith(f"users/{user_id}")
+    
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
@@ -3351,6 +3426,30 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
         target = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not str(target).startswith(str(enterprise_root)):
             return "Access denied for this path"
+    # === USER ISOLATION: Also check user's personal files directory ===
+    elif rel_path and rel_path.startswith("users/") and user_id:
+        # Allow accessing user's own files via users/{user_id}/files/ path
+        user_root = (ws / "users" / str(user_id)).resolve()
+        sub = rel_path[len("users/") + len(str(user_id)) + 1:].lstrip("/")
+        target = (user_root / sub).resolve() if sub else user_root
+        if not str(target).startswith(str(user_root)):
+            return "Access denied for this path"
+    # Also support workspace/uploads/ for backward compatibility
+    elif rel_path and rel_path.startswith("workspace/"):
+        sub = rel_path[len("workspace/"):].lstrip("/")
+        if user_id:
+            # For user isolation, workspace/uploads goes to user's files
+            target = (ws / "users" / str(user_id) / "files" / sub).resolve()
+        else:
+            target = (ws / "workspace" / sub).resolve()
+        if not str(target).startswith(str(ws.resolve())) and not (user_id and str(target).startswith(str(ws / "users" / str(user_id)))):
+            return "Access denied for this path"
+    # === USER ISOLATION: If user workspace and no path, show user's files ===
+    elif is_user_ws and not rel_path:
+        # User workspace root - show user's files directory
+        target = ws / "files"
+        if not target.exists():
+            return f"📂 users/{user_id}/: Empty directory (0 files, 0 folders)"
     else:
         target = (ws / rel_path) if rel_path else ws
         target = target.resolve()
@@ -3362,7 +3461,7 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
 
     items = []
     # If listing root, also show enterprise_info entry
-    if not rel_path:
+    if not rel_path and not is_user_ws:
         if tenant_id:
             enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
         else:
@@ -3386,16 +3485,22 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
                 size_str = f"{size_bytes}B"
             else:
                 size_str = f"{size_bytes/1024:.1f}KB"
-            items.append(f"  📄 {p.name} ({size_str})")
+            # If in user workspace, show path as workspace/filename
+            if is_user_ws:
+                items.append(f"  📄 workspace/{p.name} ({size_str})")
+            else:
+                items.append(f"  📄 {p.name} ({size_str})")
 
     if not items:
+        if is_user_ws:
+            return f"📂 workspace/: Empty directory (0 files, 0 folders)"
         return f"📂 {rel_path or 'root'}: Empty directory (0 files, 0 folders)"
 
-    header = f"📂 {rel_path or 'root'}: {dir_count} folder(s), {file_count} file(s)\n"
+    header = f"📂 {rel_path or 'workspace' if is_user_ws else 'root'}: {dir_count} folder(s), {file_count} file(s)\n"
     return header + "\n".join(items)
 
 
-def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: int = 0, limit: int = 2000) -> str:
+def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: int = 0, limit: int = 2000, user_id: uuid.UUID | None = None) -> str:
     """Read file contents with optional line range support.
 
     Args:
@@ -3404,6 +3509,7 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
         tenant_id: Optional tenant ID for enterprise_info
         offset: Starting line number (0-indexed)
         limit: Maximum number of lines to read
+        user_id: Optional user ID for user-specific paths
 
     Returns:
         File content with line numbers, or error message
@@ -3417,6 +3523,20 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
         sub = rel_path[len("enterprise_info"):].lstrip("/")
         file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not str(file_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+    # === USER ISOLATION: Support user-specific paths ===
+    elif rel_path and rel_path.startswith("workspace/") and user_id:
+        # Check if ws is already user-specific
+        is_user_ws = str(ws).endswith(f"/users/{user_id}")
+        if is_user_ws:
+            # ws is users/{user_id}, so workspace/xxx → files/xxx
+            sub = rel_path[len("workspace/"):].lstrip("/")
+            file_path = (ws / "files" / sub).resolve()
+        else:
+            # ws is agent root, workspace/xxx → users/{user_id}/files/xxx
+            sub = rel_path[len("workspace/"):].lstrip("/")
+            file_path = (ws / "users" / str(user_id) / "files" / sub).resolve()
+        if not str(file_path).startswith(str(ws.resolve())):
             return "Access denied for this path"
     else:
         file_path = (ws / rel_path).resolve()
@@ -3459,8 +3579,19 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
         return f"Read failed: {e}"
 
 
-async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
-    """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
+async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None, user_id: uuid.UUID | None = None) -> str:
+    """Read content from office documents (PDF, DOCX, XLSX, PPTX).
+
+    Args:
+        ws: Workspace root (may be user-specific if user isolation is enabled)
+        rel_path: Relative file path
+        max_chars: Maximum characters to return
+        tenant_id: Optional tenant ID for enterprise_info
+        user_id: Optional user ID for user-specific paths
+    """
+    # === USER ISOLATION: Check if ws is already user-specific ===
+    is_user_ws = user_id and str(ws).endswith(f"users/{user_id}")
+
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
@@ -3470,6 +3601,20 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
         sub = rel_path[len("enterprise_info"):].lstrip("/")
         file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not str(file_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+    # === USER ISOLATION: Support workspace/uploads/ path ===
+    elif rel_path and rel_path.startswith("workspace/"):
+        sub = rel_path[len("workspace/"):].lstrip("/")
+        if is_user_ws:
+            # ws is already users/{user_id}, so just append files/
+            file_path = (ws / "files" / sub).resolve()
+        elif user_id:
+            # ws is agent root, map to users/{user_id}/files/
+            file_path = (ws / "users" / str(user_id) / "files" / sub).resolve()
+        else:
+            # No user isolation, use shared workspace/uploads/
+            file_path = (ws / "workspace" / sub).resolve()
+        if not str(file_path).startswith(str(ws.resolve())):
             return "Access denied for this path"
     else:
         file_path = (ws / rel_path).resolve()
@@ -3586,7 +3731,16 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
         return f"Document read failed: {str(e)[:200]}"
 
 
-def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = None) -> str:
+def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = None, user_id: uuid.UUID | None = None) -> str:
+    """Write file to workspace.
+    
+    Args:
+        ws: Workspace root path (may be user-specific workspace)
+        rel_path: Relative file path
+        content: File content
+        tenant_id: Optional tenant ID for enterprise_info
+        user_id: Optional user ID for user-isolated workspace
+    """
     # Protect tasks.json from direct writes
     if rel_path.strip("/") == "tasks.json":
         return "tasks.json is read-only. Use manage_tasks tool to manage tasks."
@@ -3602,6 +3756,14 @@ def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = N
             return "Write failed: please provide a file path under enterprise_info/, e.g. enterprise_info/knowledge_base/report.md"
         file_path = (enterprise_root / sub).resolve()
         if not str(file_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+    # === USER ISOLATION: Redirect user files to user directory ===
+    elif rel_path and rel_path.startswith("workspace/") and user_id:
+        # User workspace files go to user-specific directory
+        user_root = (ws / "users" / str(user_id)).resolve()
+        sub = rel_path[len("workspace/"):].lstrip("/")
+        file_path = (user_root / sub).resolve()
+        if not str(file_path).startswith(str(user_root)):
             return "Access denied for this path"
     else:
         file_path = (ws / rel_path).resolve()

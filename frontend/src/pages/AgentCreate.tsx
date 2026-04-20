@@ -85,6 +85,7 @@ export default function AgentCreate() {
         max_tokens_per_day: '',
         max_tokens_per_month: '',
         skill_ids: [] as string[],
+        user_isolation_enabled: true,  // === USER ISOLATION ===
     });
     const [channelValues, setChannelValues] = useState<Record<string, string>>({});
 
@@ -265,6 +266,7 @@ export default function AgentCreate() {
             skill_ids: agentType === 'native' ? form.skill_ids : [],
             permission_access_level: form.permission_access_level,
             tenant_id: currentTenant || undefined,
+            user_isolation_enabled: form.user_isolation_enabled,  // === USER ISOLATION ===
         });
     };
 
@@ -497,6 +499,31 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                     </div>
                                 </label>
                             ))}
+                        </div>
+                    </div>
+                    
+                    {/* === USER ISOLATION: Multi-user workspace isolation toggle === */}
+                    <div className="form-group" style={{ marginTop: '16px' }}>
+                        <label style={{
+                            display: 'flex', alignItems: 'center', gap: '10px',
+                            fontWeight: 600, fontSize: '14px', marginBottom: '8px',
+                        }}>
+                            <input
+                                type="checkbox"
+                                checked={form.user_isolation_enabled}
+                                onChange={(e) => setForm({ ...form, user_isolation_enabled: e.target.checked })}
+                                style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                            />
+                            {t('agent.userIsolationEnabled', 'Enable Multi-User Isolation')}
+                        </label>
+                        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginLeft: '26px', marginTop: '4px' }}>
+                            {t('agent.userIsolationEnabledDesc', 'When enabled, each user will have their own workspace. Files and personal memories are isolated between users. Shared resources (skills, soul, company knowledge) remain accessible to all users.')}
+                        </p>
+                        <div style={{
+                            fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: '26px', marginTop: '8px',
+                            padding: '8px', background: 'var(--accent-subtle)', borderRadius: '4px'
+                        }}>
+                            <strong>{t('common.tip', 'Tip')}:</strong> {t('agent.userIsolationEnabledTip', 'Recommended for customer service bots or shared agents that interact with multiple users.')}
                         </div>
                     </div>
 
@@ -807,6 +834,31 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                 </div>
                             </div>
                         )}
+                        
+                        {/* === USER ISOLATION: Multi-user workspace isolation toggle === */}
+                        <div className="form-group" style={{ marginTop: '20px' }}>
+                            <label style={{
+                                display: 'flex', alignItems: 'center', gap: '10px',
+                                fontWeight: 600, fontSize: '14px', marginBottom: '8px',
+                            }}>
+                                <input
+                                    type="checkbox"
+                                    checked={form.user_isolation_enabled}
+                                    onChange={(e) => setForm({ ...form, user_isolation_enabled: e.target.checked })}
+                                    style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                                />
+                                {t('agent.userIsolationEnabled', 'Enable Multi-User Isolation')}
+                            </label>
+                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginLeft: '26px', marginTop: '4px' }}>
+                                {t('agent.userIsolationEnabledDesc', 'When enabled, each user will have their own workspace. Files and personal memories are isolated between users. Shared resources (skills, soul, company knowledge) remain accessible to all users.')}
+                            </p>
+                            <div style={{
+                                fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: '26px', marginTop: '8px',
+                                padding: '8px', background: 'var(--accent-subtle)', borderRadius: '4px'
+                            }}>
+                                <strong>{t('common.tip', 'Tip')}:</strong> {t('agent.userIsolationEnabledTip', 'Recommended for customer service bots or shared agents that interact with multiple users.')}
+                            </div>
+                        </div>
                     </div>
                 )}
 

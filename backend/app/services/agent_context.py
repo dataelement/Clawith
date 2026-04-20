@@ -145,29 +145,48 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
     lines.append("2. Follow the loaded instructions to complete the task.")
     lines.append("3. Do NOT guess what the skill contains — always read it first.")
     lines.append("4. Folder-based skills may contain auxiliary files (scripts/, references/, examples/). Use `list_files` on the skill folder to discover them.")
+    lines.append("5. **YOU CAN CREATE NEW SKILLS**: Use `write_file` to create new skill files in `skills/` directory (e.g., `skills/my-new-skill.md` or `skills/my-new-skill/SKILL.md`). You have full permission to create, modify, and delete skill files.")
 
     return "\n".join(lines)
 
 
-async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> tuple[str, str]:
+async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None, current_user_id: str | None = None) -> tuple[str, str]:
     """Build a rich system prompt incorporating agent's full context.
 
     Reads from workspace files:
-    - soul.md → personality
-    - memory.md → long-term memory
-    - skills/ → skill names + summaries
-    - relationships.md → relationship descriptions
+    - soul.md → personality (shared)
+    - memory.md → long-term memory (shared)
+    - users/{user_id}/memory.md → user-specific memory (if user isolation enabled)
+    - skills/ → skill names + summaries (shared)
+    - relationships.md → relationship descriptions (shared)
+    
+    Args:
+        agent_id: Agent UUID
+        agent_name: Agent name
+        role_description: Agent role description
+        current_user_name: Current user's display name
+        current_user_id: Current user's UUID (for user-specific memory)
     """
     ws_root = _agent_workspace(agent_id)
 
-    # --- Soul ---
+    # --- Soul (shared) ---
     soul = _read_file_safe(ws_root / "soul.md", 2000)
     # Strip markdown heading if present
     if soul.startswith("# "):
         soul = "\n".join(soul.split("\n")[1:]).strip()
 
     # --- Memory ---
-    memory = _read_file_safe(ws_root / "memory" / "memory.md", 2000) or _read_file_safe(ws_root / "memory.md", 2000)
+    # Priority: user-specific memory > shared memory
+    memory = ""
+    if current_user_id:
+        # Try user-specific memory first
+        user_memory_path = ws_root / "users" / current_user_id / "memory.md"
+        memory = _read_file_safe(user_memory_path, 2000)
+    
+    # Fall back to shared memory if no user-specific memory
+    if not memory:
+        memory = _read_file_safe(ws_root / "memory" / "memory.md", 2000) or _read_file_safe(ws_root / "memory.md", 2000)
+    
     if memory.startswith("# "):
         memory = "\n".join(memory.split("\n")[1:]).strip()
 
