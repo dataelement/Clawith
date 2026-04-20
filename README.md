@@ -239,7 +239,7 @@ Join our [Discord server](https://discord.gg/NRNHZkyDcG) to chat with the team, 
 You can also scan the QR code below to join our community on mobile:
 
 <p align="center">
-  <img src="assets/QR_Code.png" alt="Community QR Code" width="200" />
+  <img src="assets/Clawith_QRcode.png" alt="Community QR Code" width="200" />
 </p>
 
 ## ⭐ Star History

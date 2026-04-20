@@ -515,10 +515,15 @@ async def websocket_chat(
                         async def _on_failover(reason: str):
                             await websocket.send_json({"type": "info", "content": f"Primary model error, {reason}"})
 
+                        # To prevent tool call message pairs(assistant + tool) from being broken down.
+                        _truncated = conversation[-ctx_size:]
+                        while _truncated and _truncated[0].get("role") == "tool":
+                            _truncated.pop(0)
+
                         return await call_llm_with_failover(
                             primary_model=llm_model,
                             fallback_model=fallback_llm_model,
-                            messages=conversation[-ctx_size:],
+                            messages=_truncated,
                             agent_name=agent_name,
                             role_description=role_description,
                             agent_id=agent_id,
