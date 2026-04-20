@@ -12,6 +12,15 @@ depends_on = None
 
 def upgrade() -> None:
     conn = op.get_bind()
+    user_columns = {
+        row[0]
+        for row in conn.execute(sa.text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'users'
+        """)).fetchall()
+    }
+    has_username = "username" in user_columns
 
     # 1. Create participants table (idempotent)
     conn.execute(sa.text("""
@@ -30,12 +39,20 @@ def upgrade() -> None:
     """))
 
     # 2. Backfill: create Participant for every existing User
-    conn.execute(sa.text("""
-        INSERT INTO participants (id, type, ref_id, display_name, avatar_url)
-        SELECT gen_random_uuid(), 'user', id, COALESCE(display_name, username), avatar_url
-        FROM users
-        ON CONFLICT DO NOTHING
-    """))
+    if has_username:
+        conn.execute(sa.text("""
+            INSERT INTO participants (id, type, ref_id, display_name, avatar_url)
+            SELECT gen_random_uuid(), 'user', id, COALESCE(display_name, username, 'User'), avatar_url
+            FROM users
+            ON CONFLICT DO NOTHING
+        """))
+    else:
+        conn.execute(sa.text("""
+            INSERT INTO participants (id, type, ref_id, display_name, avatar_url)
+            SELECT gen_random_uuid(), 'user', id, COALESCE(display_name, 'User'), avatar_url
+            FROM users
+            ON CONFLICT DO NOTHING
+        """))
 
     # 3. Backfill: create Participant for every existing Agent
     conn.execute(sa.text("""

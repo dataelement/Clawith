@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.security import get_current_admin, get_current_user, require_role, encrypt_data
-from app.database import get_db
+from app.database import async_session, get_db
 from app.models.org import OrgDepartment, OrgMember
 from app.models.identity import IdentityProvider
 from app.models.user import User
@@ -76,11 +76,21 @@ class LLMTestRequest(BaseModel):
     model_id: str | None = None  # existing model ID to use stored API key
 
 
+async def _load_llm_test_api_key(model_id: str | None) -> str | None:
+    """Load the stored API key for llm-test using a short-lived independent session."""
+    if not model_id:
+        return None
+
+    async with async_session() as session:
+        result = await session.execute(select(LLMModel).where(LLMModel.id == model_id))
+        existing = result.scalar_one_or_none()
+        return get_model_api_key(existing) if existing else None
+
+
 @router.post("/llm-test")
 async def test_llm_model(
     data: LLMTestRequest,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
 ):
     """Test an LLM model configuration by making a simple API call."""
     import time
@@ -88,10 +98,7 @@ async def test_llm_model(
     # Resolve API key: use provided key, or look up from stored model
     api_key = data.api_key if data.api_key and not data.api_key.startswith('****') else None
     if not api_key and data.model_id:
-        result = await db.execute(select(LLMModel).where(LLMModel.id == data.model_id))
-        existing = result.scalar_one_or_none()
-        if existing:
-            api_key = get_model_api_key(existing)
+        api_key = await _load_llm_test_api_key(data.model_id)
     if not api_key:
         return {"success": False, "latency_ms": 0, "error": "API Key is required"}
 
