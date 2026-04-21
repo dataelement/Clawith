@@ -27,6 +27,52 @@ FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 FEISHU_SEND_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
 
+class FeishuAPIError(RuntimeError):
+    """Structured Feishu API error that preserves provider-returned details."""
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        http_status: int | None = None,
+        code: int | None = None,
+        msg: str = "",
+        log_id: str | None = None,
+        troubleshooter: str | None = None,
+        message_id: str | None = None,
+    ):
+        self.stage = stage
+        self.http_status = http_status
+        self.code = code
+        self.msg = msg or "Unknown Feishu error"
+        self.log_id = log_id
+        self.troubleshooter = troubleshooter
+        self.message_id = message_id
+
+        parts = [f"Feishu {stage} failed"]
+        if self.http_status is not None:
+            parts.append(f"HTTP {self.http_status}")
+        if self.code is not None:
+            parts.append(f"code={self.code}")
+        parts.append(f"msg={self.msg}")
+        if self.log_id:
+            parts.append(f"log_id={self.log_id}")
+        if self.troubleshooter:
+            parts.append(f"troubleshooter={self.troubleshooter}")
+        super().__init__(", ".join(parts))
+
+    @property
+    def user_message(self) -> str:
+        base = self.msg
+        if self.code is not None:
+            base = f"{base} (code {self.code})"
+        if self.troubleshooter:
+            return (
+                f"{base}\n"
+                f"{self.troubleshooter}"
+            )
+        return base
+
 
 class FeishuService:
     """Service for Feishu OAuth login and message API."""
@@ -63,12 +109,15 @@ class FeishuService:
             )
             raise RuntimeError(f"Feishu {stage} returned invalid JSON")
 
+        error_info = data.get("error") if isinstance(data, dict) else {}
+        log_id = error_info.get("log_id") if isinstance(error_info, dict) else None
+        troubleshooter = error_info.get("troubleshooter") if isinstance(error_info, dict) else None
+
         if resp.status_code >= 400:
             logger.warning(
                 f"[Feishu] {stage} HTTP failure "
                 f"(http_status={resp.status_code}, message_id={message_id}, body={str(data)[:300]})"
             )
-            raise RuntimeError(f"Feishu {stage} HTTP {resp.status_code}")
 
         code = data.get("code")
         msg = data.get("msg", "")
@@ -77,7 +126,15 @@ class FeishuService:
                 f"[Feishu] {stage} business failure "
                 f"(message_id={message_id}, code={code}, msg={msg})"
             )
-            raise RuntimeError(f"Feishu {stage} failed: code={code}, msg={msg}")
+            raise FeishuAPIError(
+                stage=stage,
+                http_status=resp.status_code,
+                code=code,
+                msg=msg,
+                log_id=log_id,
+                troubleshooter=troubleshooter,
+                message_id=message_id,
+            )
 
         return data
 

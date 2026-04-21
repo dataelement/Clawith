@@ -1093,6 +1093,7 @@ async def resend_verification(
     db: AsyncSession = Depends(get_db),
 ):
     """Resend email verification link."""
+    from app.config import get_settings
     from app.services.system_email_service import resolve_email_config_async
 
     # Always return success to prevent email enumeration
@@ -1100,6 +1101,7 @@ async def resend_verification(
         "ok": True,
         "message": "If an account with that email exists, a verification email has been sent.",
     }
+    settings = get_settings()
 
     # Check if email is configured (DB-only, no env fallback)
     email_config = await resolve_email_config_async(db)

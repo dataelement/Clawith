@@ -76,8 +76,8 @@ async def test_org_admin_can_list_all_sessions(monkeypatch):
         responses=[
             DummyResult([agent]),
             DummyResult([session]),
-            DummyResult(scalar_value=3),
-            DummyResult(scalar_value="Alice"),
+            DummyResult([(str(session.id), 3)]),
+            DummyResult([(owner_id, "Alice")]),
         ]
     )
 
@@ -97,6 +97,53 @@ async def test_org_admin_can_list_all_sessions(monkeypatch):
     assert sessions[0].id == str(session.id)
     assert sessions[0].user_id == str(owner_id)
     assert sessions[0].username == "Alice"
+
+
+@pytest.mark.asyncio
+async def test_creator_can_list_all_sessions(monkeypatch):
+    creator_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    other_user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    current_user = SimpleNamespace(id=creator_id, role="member")
+    agent = SimpleNamespace(id=agent_id, creator_id=creator_id)
+    session = SimpleNamespace(
+        id=uuid.uuid4(),
+        agent_id=agent_id,
+        user_id=other_user_id,
+        source_channel="web",
+        title="Customer follow-up",
+        created_at=now,
+        last_message_at=now,
+        peer_agent_id=None,
+        is_group=False,
+        group_name=None,
+    )
+    db = RecordingDB(
+        responses=[
+            DummyResult([agent]),
+            DummyResult([session]),
+            DummyResult([(str(session.id), 2)]),
+            DummyResult([(other_user_id, "Bob")]),
+        ]
+    )
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "manage"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
+
+    sessions = await chat_sessions_api.list_sessions(
+        agent_id=agent_id,
+        scope="all",
+        current_user=current_user,
+        db=db,
+    )
+
+    assert len(sessions) == 1
+    assert sessions[0].user_id == str(other_user_id)
+    assert sessions[0].username == "Bob"
 
 
 @pytest.mark.asyncio
@@ -130,6 +177,57 @@ async def test_org_admin_can_view_other_users_session_messages(monkeypatch):
 
     async def fake_check_agent_access(_db, _user, _agent_id):
         return SimpleNamespace(id=agent_id), "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
+
+    messages = await chat_sessions_api.get_session_messages(
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert messages == [
+        {
+            "role": "user",
+            "content": "hello",
+            "created_at": now.isoformat(),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_creator_can_view_other_users_session_messages(monkeypatch):
+    creator_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    other_user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    current_user = SimpleNamespace(id=creator_id, role="member")
+    agent = SimpleNamespace(id=agent_id, creator_id=creator_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        peer_agent_id=None,
+        user_id=other_user_id,
+        source_channel="web",
+    )
+    message = SimpleNamespace(
+        role="user",
+        content="hello",
+        created_at=now,
+        participant_id=None,
+    )
+    db = RecordingDB(
+        responses=[
+            DummyResult([session]),
+            DummyResult([message]),
+        ]
+    )
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "manage"
 
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
 

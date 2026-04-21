@@ -118,7 +118,7 @@ bash restart.sh   # サービス起動
 スマホで下のQRコードをスキャンしてコミュニティに参加することもできます：
 
 <p align="center">
-  <img src="assets/QR_Code.png" alt="コミュニティQRコード" width="200" />
+  <img src="assets/Clawith_QRcode.png" alt="コミュニティQRコード" width="200" />
 </p>
 
 ## ⭐ Star History
