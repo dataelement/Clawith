@@ -17,14 +17,24 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "chat_sessions",
-        sa.Column("is_primary", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-    )
-    op.add_column(
-        "chat_sessions",
-        sa.Column("last_read_at_by_user", sa.DateTime(timezone=True), nullable=True),
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    table_names = set(inspector.get_table_names())
+
+    if "chat_sessions" not in table_names:
+        return
+
+    chat_session_columns = {col["name"] for col in inspector.get_columns("chat_sessions")}
+    if "is_primary" not in chat_session_columns:
+        op.add_column(
+            "chat_sessions",
+            sa.Column("is_primary", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        )
+    if "last_read_at_by_user" not in chat_session_columns:
+        op.add_column(
+            "chat_sessions",
+            sa.Column("last_read_at_by_user", sa.DateTime(timezone=True), nullable=True),
+        )
 
     # Existing sessions should not suddenly light up as unread after upgrade.
     op.execute(
@@ -70,18 +80,35 @@ def upgrade() -> None:
         """
     )
 
-    op.create_index(
-        "uq_chat_sessions_primary_platform",
-        "chat_sessions",
-        ["agent_id", "user_id"],
-        unique=True,
-        postgresql_where=sa.text("is_primary = true AND source_channel = 'web' AND is_group = false"),
-    )
-    op.create_index("ix_chat_sessions_is_primary", "chat_sessions", ["is_primary"])
+    chat_session_indexes = {idx["name"] for idx in inspector.get_indexes("chat_sessions")}
+    if "uq_chat_sessions_primary_platform" not in chat_session_indexes:
+        op.create_index(
+            "uq_chat_sessions_primary_platform",
+            "chat_sessions",
+            ["agent_id", "user_id"],
+            unique=True,
+            postgresql_where=sa.text("is_primary = true AND source_channel = 'web' AND is_group = false"),
+        )
+    if "ix_chat_sessions_is_primary" not in chat_session_indexes:
+        op.create_index("ix_chat_sessions_is_primary", "chat_sessions", ["is_primary"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_chat_sessions_is_primary", table_name="chat_sessions")
-    op.drop_index("uq_chat_sessions_primary_platform", table_name="chat_sessions")
-    op.drop_column("chat_sessions", "last_read_at_by_user")
-    op.drop_column("chat_sessions", "is_primary")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    table_names = set(inspector.get_table_names())
+
+    if "chat_sessions" not in table_names:
+        return
+
+    chat_session_indexes = {idx["name"] for idx in inspector.get_indexes("chat_sessions")}
+    if "ix_chat_sessions_is_primary" in chat_session_indexes:
+        op.drop_index("ix_chat_sessions_is_primary", table_name="chat_sessions")
+    if "uq_chat_sessions_primary_platform" in chat_session_indexes:
+        op.drop_index("uq_chat_sessions_primary_platform", table_name="chat_sessions")
+
+    chat_session_columns = {col["name"] for col in inspector.get_columns("chat_sessions")}
+    if "last_read_at_by_user" in chat_session_columns:
+        op.drop_column("chat_sessions", "last_read_at_by_user")
+    if "is_primary" in chat_session_columns:
+        op.drop_column("chat_sessions", "is_primary")
