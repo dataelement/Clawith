@@ -188,19 +188,3 @@ async def _close_with_error(ws: WebSocket, message: str, code: int = 4000) -> No
         await ws.close(code=code)
     except Exception:
         pass
-
-
-# ── Admin helper ──────────────────────────────────────────────────────
-
-@router.get("/api/admin/bridge/status")
-async def bridge_status():
-    """Return currently-connected bridges (for ops visibility).
-
-    No auth enforcement here — keep behind existing admin-router auth
-    in a future iteration. V1 is local-first, so this is for debug only.
-    """
-    connected = dispatcher.list_connected()
-    return {
-        "count": len(connected),
-        "bridges": [dispatcher.get_bridge_info(a) for a in connected],
-    }

@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -794,7 +794,6 @@ async def generate_or_reset_api_key(
 @router.post("/{agent_id}/bridge-installer")
 async def download_bridge_installer(
     agent_id: uuid.UUID,
-    request: Request,
     platform: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -821,6 +820,25 @@ async def download_bridge_installer(
     if getattr(agent, "agent_type", "native") != "openclaw":
         raise HTTPException(status_code=400, detail="Bridge installer is only available for OpenClaw agents")
 
+    # Resolve server URL from configuration only. We deliberately do NOT fall
+    # back to the Host / X-Forwarded-Host header here: a malicious request
+    # could set those to an attacker-controlled hostname and the installer
+    # would bake it in, making the bridge dial home to the wrong server.
+    # Validate *before* mutating the DB so a misconfiguration doesn't leave
+    # the agent with a rotated key and no way to deliver the installer.
+    settings = get_settings()
+    http_base = (settings.PUBLIC_BASE_URL or "").strip().rstrip("/")
+    if not http_base:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "PUBLIC_BASE_URL is not configured on the server. Set it to the "
+                "externally-reachable URL (e.g. https://clawith.example.com) "
+                "before downloading a bridge installer."
+            ),
+        )
+    ws_url = derive_ws_url(http_base)
+
     # Regenerate the key (same pattern as /{agent_id}/api-key). This invalidates
     # any previously-downloaded installer.
     raw_key = f"oc-{secrets.token_urlsafe(32)}"
@@ -832,16 +850,6 @@ async def download_bridge_installer(
         agent.bridge_mode = "enabled"
 
     await db.commit()
-
-    # Resolve server URL. Prefer the configured PUBLIC_BASE_URL; fall back to
-    # the request's Host header (useful for dev / local testing).
-    settings = get_settings()
-    http_base = (settings.PUBLIC_BASE_URL or "").rstrip("/")
-    if not http_base:
-        forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-        forwarded_host = request.headers.get("x-forwarded-host", request.headers.get("host", f"{request.url.hostname}:{request.url.port or 80}"))
-        http_base = f"{forwarded_proto}://{forwarded_host}"
-    ws_url = derive_ws_url(http_base)
 
     try:
         payload, filename, content_type = render_installer(
