@@ -205,7 +205,11 @@ class UserUpdate(BaseModel):
 class AgentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100, description="Agent name, 2-100 characters")
     agent_type: str = "native"  # native | openclaw
-    bridge_adapter: str | None = None  # claude_code | openclaw | hermes (only for agent_type=openclaw)
+    bridge_adapter: str | None = Field(
+        default=None,
+        pattern="^(claude_code|openclaw|hermes)$",
+        description="claude_code | openclaw | hermes (only for agent_type=openclaw)",
+    )
     role_description: str = Field(default="", max_length=500, description="Role description, max 500 characters")
     bio: str | None = None
     welcome_message: str | None = None
