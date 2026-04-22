@@ -4,31 +4,75 @@ import json
 import httpx
 from loguru import logger
 
+from app.services.dingtalk_cache import TTLCache
+
+# DingTalk access_token expires_in 通常 7200s; 提前 200s 过期以留出刷新余量。
+_token_cache = TTLCache(default_ttl=7000)
+# user/get 返回结果 30 分钟内保持有效。
+_user_detail_cache = TTLCache(default_ttl=1800)
+
 
 async def get_dingtalk_access_token(app_id: str, app_secret: str) -> dict:
-    """Get DingTalk access_token using app_id and app_secret.
+    """Get DingTalk access_token, 带 TTL 缓存(single-flight)。"""
+    cache_key = f"token:{app_id}"
 
-    API: https://open.dingtalk.com/document/orgapp/obtain-access_token
-    """
-    url = "https://oapi.dingtalk.com/gettoken"
-    params = {
-        "appkey": app_id,
-        "appsecret": app_secret,
-    }
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            resp = await client.get(url, params=params)
-            data = resp.json()
-
-            if data.get("errcode") == 0:
-                return {"access_token": data.get("access_token"), "expires_in": data.get("expires_in")}
-            else:
+    async def _fetch() -> dict:
+        url = "https://oapi.dingtalk.com/gettoken"
+        params = {"appkey": app_id, "appsecret": app_secret}
+        async with httpx.AsyncClient(timeout=10) as client:
+            try:
+                resp = await client.get(url, params=params)
+                data = resp.json()
+                if data.get("errcode") == 0:
+                    return {
+                        "access_token": data.get("access_token"),
+                        "expires_in": data.get("expires_in"),
+                    }
                 logger.error(f"[DingTalk] Failed to get access_token: {data}")
                 return {"errcode": data.get("errcode"), "errmsg": data.get("errmsg")}
-        except Exception as e:
-            logger.error(f"[DingTalk] Network error getting access_token: {e}")
-            return {"errcode": -1, "errmsg": str(e)}
+            except Exception as e:
+                logger.error(f"[DingTalk] Network error getting access_token: {e}")
+                return {"errcode": -1, "errmsg": str(e)}
+
+    result = await _token_cache.get_or_set(cache_key, _fetch)
+    # 失败结果不保留: 下次调用能重新拉取
+    if not result.get("access_token"):
+        _token_cache.invalidate(cache_key)
+    return result
+
+
+async def get_dingtalk_user_detail(app_id: str, app_secret: str, userid: str) -> dict | None:
+    """Fetch user detail from DingTalk corp API, 带 30min 缓存。"""
+    cache_key = f"userdetail:{app_id}:{userid}"
+
+    async def _fetch() -> dict | None:
+        token_result = await get_dingtalk_access_token(app_id, app_secret)
+        access_token = token_result.get("access_token")
+        if not access_token:
+            return None
+        url = "https://oapi.dingtalk.com/topapi/v2/user/get"
+        async with httpx.AsyncClient(timeout=10) as client:
+            try:
+                resp = await client.post(
+                    url,
+                    params={"access_token": access_token},
+                    json={"userid": userid},
+                )
+                data = resp.json()
+                if data.get("errcode") == 0:
+                    return data.get("result", {})
+                logger.warning(
+                    f"[DingTalk] user/get failed for {userid}: {data.get('errmsg')}"
+                )
+                return None
+            except Exception as e:
+                logger.warning(f"[DingTalk] user/get error for {userid}: {e}")
+                return None
+
+    result = await _user_detail_cache.get_or_set(cache_key, _fetch)
+    if not result:
+        _user_detail_cache.invalidate(cache_key)
+    return result
 
 
 async def send_dingtalk_v1_robot_oto_message(

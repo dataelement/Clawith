@@ -98,6 +98,7 @@ class DingTalkStreamManager:
                         conversation_id = incoming.conversation_id or ""
                         conversation_type = incoming.conversation_type or "1"
                         session_webhook = incoming.session_webhook or ""
+                        message_id = incoming.message_id or ""
 
                         logger.info(
                             f"[DingTalk Stream] Message from [{incoming.sender_nick}]{sender_staff_id}: {user_text[:80]}"
@@ -107,7 +108,7 @@ class DingTalkStreamManager:
                         from app.api.dingtalk import process_dingtalk_message
 
                         if main_loop and main_loop.is_running():
-                            future = asyncio.run_coroutine_threadsafe(
+                            asyncio.run_coroutine_threadsafe(
                                 process_dingtalk_message(
                                     agent_id=agent_id,
                                     sender_staff_id=sender_staff_id,
@@ -115,16 +116,11 @@ class DingTalkStreamManager:
                                     conversation_id=conversation_id,
                                     conversation_type=conversation_type,
                                     session_webhook=session_webhook,
+                                    message_id=message_id,
                                 ),
                                 main_loop,
                             )
-                            # Wait for result (with timeout)
-                            try:
-                                future.result(timeout=120)
-                            except Exception as e:
-                                logger.error(f"[DingTalk Stream] LLM processing error: {e}")
-                                import traceback
-                                traceback.print_exc()
+                            # Fire-and-forget: ACK immediately, do not wait for LLM
                         else:
                             logger.warning("[DingTalk Stream] Main loop not available for dispatch")
 
