@@ -112,6 +112,7 @@ interface MemberWithoutOKR {
     avatar_url: string;
     channel: string | null;
     channel_user_id: string | null;
+    source_label?: string | null;
 }
 
 interface MembersWithoutOKRData {
@@ -1378,7 +1379,11 @@ function MembersWithoutOKRPanel({
                                 <div style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>
                                     {member.type === 'agent'
                                         ? 'AI Agent'
-                                        : (isChinese ? '平台成员' : 'Platform member')}
+                                        : (member.source_label
+                                            ? (member.source_label === 'Platform User'
+                                                ? (isChinese ? '平台成员' : 'Platform member')
+                                                : member.source_label)
+                                            : (isChinese ? '平台成员' : 'Platform member'))}
                                 </div>
                             </div>
                             <span style={{

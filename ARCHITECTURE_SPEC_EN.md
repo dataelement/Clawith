@@ -511,6 +511,7 @@ Answering those four questions correctly is usually enough to place new code in 
 
 | Date | Summary |
 | --- | --- |
+| 2026-04-21 | Clarified human messaging tool selection so platform-labeled relationships should use `send_platform_message`, channel-labeled relationships should use `send_channel_message`, and the runtime now transparently reroutes mistaken channel sends for platform-only users back onto the platform messaging path. |
 | 2026-04-20 | Strengthened workspace-writing guidance so agents should inspect existing folder structure before creating documents, prefer relevant subfolders instead of dumping files into `workspace/` root, and create a new topical folder when no suitable location exists. |
 | 2026-04-20 | Tightened trigger result routing so trigger replies no longer fan out to every active web session; user-originated results now land in their primary session, A2A results stay in their A2A session, pure reflection work stays in trigger/reflection sessions, and user-facing `send_platform_message` deliveries no longer get duplicated by an extra trigger recap in the same chat. |
 | 2026-04-20 | Renamed the first-party proactive messaging tool from `send_web_message` to `send_platform_message`, covering both web and app surfaces, and added startup seeder logic to rename legacy tool rows in place so existing agent assignments keep working. |

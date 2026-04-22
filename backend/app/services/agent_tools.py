@@ -483,9 +483,10 @@ AGENT_TOOLS = [
         "function": {
             "name": "send_channel_message",
             "description": (
-                "Send a message to a colleague via their configured channel (Feishu, DingTalk, WeCom). "
-                "Automatically detects the recipient's channel based on their org relationship. "
-                "Use this as the primary method to send messages to colleagues in your relationship network."
+                "Send a message to a colleague via their configured external channel "
+                "(Feishu, DingTalk, WeCom). Automatically detects the recipient's channel "
+                "based on their org relationship. Use this only for channel users. "
+                "For relationships labeled Platform User / 平台用户, use send_platform_message instead."
             ),
             "parameters": {
                 "type": "object",
@@ -4420,12 +4421,41 @@ async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
 
             # 2. Determine channel based on provider type
             if not provider_type:
+                # Platform-only relationships are stored as provider-less OrgMembers that
+                # still point at a platform User. In that case, transparently route to the
+                # platform message tool so model tool-choice mistakes do not break delivery.
+                if target_member.user_id:
+                    user_result = await db.execute(
+                        select(UserModel).where(UserModel.id == target_member.user_id)
+                    )
+                    platform_user = user_result.scalar_one_or_none()
+                    if platform_user:
+                        platform_identifier = (
+                            platform_user.display_name
+                            or platform_user.username
+                            or member_name
+                        )
+                        logger.info(
+                            "[ChannelMessage] %s is a platform user; rerouting send_channel_message -> send_platform_message",
+                            member_name,
+                        )
+                        return await _send_platform_message(
+                            agent_id,
+                            {
+                                "username": platform_identifier,
+                                "message": message_text,
+                            },
+                        )
+
                 # Fallback: check which channel configs exist and has user info
                 if target_member.external_id or target_member.open_id:
                     # Try Feishu as default
                     provider_type = "feishu"
                 else:
-                    return f"❌ {member_name} has no linked channel (no provider info)"
+                    return (
+                        f"❌ {member_name} has no linked channel. "
+                        "If they are a platform user, use send_platform_message instead."
+                    )
 
             logger.info(f"[ChannelMessage] Sending to {member_name} via {provider_type}")
 

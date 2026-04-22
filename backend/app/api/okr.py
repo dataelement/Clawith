@@ -27,6 +27,7 @@ from sqlalchemy import select, delete
 
 from app.api.auth import get_current_user
 from app.database import async_session
+from app.models.identity import IdentityProvider
 from app.models.okr import (
     CompanyReport,
     MemberDailyReport,
@@ -1376,8 +1377,10 @@ async def members_without_okr(user=Depends(get_current_user)):
                     OrgMember.user_id,
                     OrgMember.external_id,
                     OrgMember.avatar_url,
+                    IdentityProvider.name.label("provider_name"),
                 )
                 .join(AgentRelationship, AgentRelationship.member_id == OrgMember.id)
+                .outerjoin(IdentityProvider, OrgMember.provider_id == IdentityProvider.id)
                 .where(
                     AgentRelationship.agent_id == okr_agent_id_val,
                     OrgMember.status == "active",
@@ -1435,8 +1438,9 @@ async def members_without_okr(user=Depends(get_current_user)):
                             "type": "user",
                             "display_name": row.name or "",
                             "avatar_url": row.avatar_url or "",
-                            "channel": None,
+                            "channel": row.provider_name or None,
                             "channel_user_id": None,
+                            "source_label": row.provider_name or "Platform User",
                         })
                 else:
                     # Channel-only member (no platform account yet).
@@ -1448,8 +1452,9 @@ async def members_without_okr(user=Depends(get_current_user)):
                             "type": "user",
                             "display_name": row.name or "",
                             "avatar_url": row.avatar_url or "",
-                            "channel": None,
+                            "channel": row.provider_name or None,
                             "channel_user_id": None,
+                            "source_label": row.provider_name or "Platform User",
                         })
 
             # ── Agent members via AgentAgentRelationship ───────────────────────
@@ -1472,6 +1477,7 @@ async def members_without_okr(user=Depends(get_current_user)):
                         "avatar_url": row.avatar_url or "",
                         "channel": None,
                         "channel_user_id": None,
+                        "source_label": None,
                     })
 
         # Fallback: OKR Agent not seeded, OR no relationships yet (sync not done)
