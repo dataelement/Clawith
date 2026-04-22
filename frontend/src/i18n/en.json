@@ -724,6 +724,10 @@
       "title": "Runtime",
       "native": "Platform Hosted",
       "nativeDesc": "Full agent running on Clawith platform",
+      "local": "On My Machine",
+      "localDesc": "Connect an agent running on your own device",
+      "chooseLocal": "Choose your local agent",
+      "pickLocalHint": "Pick a local agent above to continue.",
       "claude_code": "Claude Code",
       "claude_codeDesc": "Bridge to local Claude Code CLI",
       "openclaw": "OpenClaw",
@@ -857,6 +861,7 @@
       "dailyLimit": "Daily limit"
     },
     "errors": {
+      "bridgeAdapterRequired": "Pick a local agent first.",
       "nameRequired": "Agent name is required",
       "nameTooShort": "Name must be at least 2 characters",
       "nameTooLong": "Name cannot exceed 100 characters",

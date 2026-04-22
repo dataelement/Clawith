@@ -805,6 +805,10 @@
       "title": "运行时",
       "native": "平台托管",
       "nativeDesc": "由 Clawith 平台托管的完整 agent",
+      "local": "本地 Agent",
+      "localDesc": "连接运行在你自己设备上的 Agent",
+      "chooseLocal": "选择你的本地 Agent",
+      "pickLocalHint": "请从上方选择一个本地 Agent 类型以继续。",
       "claude_code": "Claude Code",
       "claude_codeDesc": "桥接到本地 Claude Code CLI",
       "openclaw": "OpenClaw",
@@ -971,6 +975,7 @@
       "dailyLimit": "日限"
     },
     "errors": {
+      "bridgeAdapterRequired": "请先选择一个本地 Agent 类型",
       "nameRequired": "智能体名称不能为空",
       "nameTooShort": "名称至少需要 2 个字符",
       "nameTooLong": "名称不能超过 100 个字符",
