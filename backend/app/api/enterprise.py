@@ -257,10 +257,11 @@ async def update_llm_model(
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    # Block turning a static row INTO an OAuth-only provider via this form.
-    _reject_oauth_provider_via_static_form(data.provider)
-    # For rows already OAuth-provisioned, identity fields (provider / base_url /
-    # api_key) must stay intact — rotating those is a re-connect, not an edit.
+    # Guard against mis-routing between static and OAuth provisioning paths.
+    # Edit forms re-submit the current provider on every save, so we must
+    # distinguish "this row is already OAuth" (allow provider='codex-oauth' as
+    # an unchanged passthrough) from "this row is static but caller wants to
+    # switch to an OAuth-only slug" (reject — use the dedicated endpoints).
     if model.auth_type == "codex_oauth":
         if data.provider and data.provider != model.provider:
             raise HTTPException(
@@ -277,6 +278,10 @@ async def update_llm_model(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Codex OAuth models don't use an API key; rotate via re-connect.",
             )
+    else:
+        # Static row; block any attempt to convert it into an OAuth-only provider
+        # through this form.
+        _reject_oauth_provider_via_static_form(data.provider)
 
     try:
         if data.provider:

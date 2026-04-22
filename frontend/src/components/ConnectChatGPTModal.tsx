@@ -11,6 +11,10 @@ interface ConnectChatGPTModalProps {
     open: boolean;
     onClose: () => void;
     onCreated: (modelId: string) => void;
+    /** Tenant to provision the model under. Required for platform-admin sessions
+     *  managing a non-default tenant; when unset the backend falls back to the
+     *  caller's own tenant. */
+    tenantId?: string | null;
 }
 
 type FlowTab = 'oauth' | 'paste';
@@ -20,7 +24,7 @@ const DEFAULT_LABEL = 'Codex (ChatGPT subscription)';
 const POLL_INTERVAL_MS = 1500;
 const POLL_MAX_DURATION_MS = 5 * 60_000;
 
-export default function ConnectChatGPTModal({ open, onClose, onCreated }: ConnectChatGPTModalProps) {
+export default function ConnectChatGPTModal({ open, onClose, onCreated, tenantId }: ConnectChatGPTModalProps) {
     const { t } = useTranslation();
     const [tab, setTab] = useState<FlowTab>('oauth');
 
@@ -172,12 +176,15 @@ export default function ConnectChatGPTModal({ open, onClose, onCreated }: Connec
         setOauthStep('submitting');
         setOauthError(null);
         try {
-            const result = await codexOauthApi.complete({
-                state: oauthSession.state,
-                code: oauthCode,
-                label: label.trim(),
-                model,
-            });
+            const result = await codexOauthApi.complete(
+                {
+                    state: oauthSession.state,
+                    code: oauthCode,
+                    label: label.trim(),
+                    model,
+                },
+                tenantId,
+            );
             setOauthStep('done');
             onCreated(result.id);
             setTimeout(onClose, 600);
@@ -199,14 +206,17 @@ export default function ConnectChatGPTModal({ open, onClose, onCreated }: Connec
         }
         setPasteSubmitting(true);
         try {
-            const result = await codexOauthApi.pasteCreds({
-                access_token: accessToken.trim(),
-                refresh_token: refreshToken.trim(),
-                expires_in_seconds: Math.max(60, Number(expiresIn) || 3600),
-                account_id: accountId.trim() || null,
-                label: label.trim(),
-                model,
-            });
+            const result = await codexOauthApi.pasteCreds(
+                {
+                    access_token: accessToken.trim(),
+                    refresh_token: refreshToken.trim(),
+                    expires_in_seconds: Math.max(60, Number(expiresIn) || 3600),
+                    account_id: accountId.trim() || null,
+                    label: label.trim(),
+                    model,
+                },
+                tenantId,
+            );
             onCreated(result.id);
             setTimeout(onClose, 300);
         } catch (e: any) {

@@ -2073,6 +2073,7 @@ export default function EnterpriseSettings() {
                             open={showConnectChatGPT}
                             onClose={() => setShowConnectChatGPT(false)}
                             onCreated={() => qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] })}
+                            tenantId={selectedTenantId}
                         />
 
 

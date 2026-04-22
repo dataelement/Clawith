@@ -399,24 +399,30 @@ export const codexOauthApi = {
             `/llm-models/codex-oauth/poll?state=${encodeURIComponent(state)}`,
         ),
 
-    complete: (body: { state: string; code: string; label: string; model: string }) =>
-        request<CodexOauthModelResponse>('/llm-models/codex-oauth/complete', {
-            method: 'POST',
-            body: JSON.stringify(body),
-        }),
+    complete: (
+        body: { state: string; code: string; label: string; model: string },
+        tenantId?: string | null,
+    ) =>
+        request<CodexOauthModelResponse>(
+            `/llm-models/codex-oauth/complete${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
+            { method: 'POST', body: JSON.stringify(body) },
+        ),
 
-    pasteCreds: (body: {
-        access_token: string;
-        refresh_token: string;
-        expires_in_seconds: number;
-        account_id?: string | null;
-        label: string;
-        model: string;
-    }) =>
-        request<CodexOauthModelResponse>('/llm-models/codex-oauth/paste-creds', {
-            method: 'POST',
-            body: JSON.stringify(body),
-        }),
+    pasteCreds: (
+        body: {
+            access_token: string;
+            refresh_token: string;
+            expires_in_seconds: number;
+            account_id?: string | null;
+            label: string;
+            model: string;
+        },
+        tenantId?: string | null,
+    ) =>
+        request<CodexOauthModelResponse>(
+            `/llm-models/codex-oauth/paste-creds${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
+            { method: 'POST', body: JSON.stringify(body) },
+        ),
 };
 
 export const CODEX_OAUTH_MODELS = [
