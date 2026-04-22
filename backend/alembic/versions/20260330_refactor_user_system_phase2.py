@@ -61,13 +61,17 @@ def upgrade() -> None:
         op.create_foreign_key('fk_users_identity_id', 'users', 'identities', ['identity_id'], ['id'])
  
     # 5. Data migration (idempotent)
-    # Only migrate users that don't have an identity_id yet
-    result = conn.execute(sa.text("""
-        SELECT id, email, primary_mobile, username, password_hash, email_verified, is_active, role 
-        FROM users 
-        WHERE identity_id IS NULL
-    """))
-    users_data = result.fetchall()
+    # Only migrate users that don't have an identity_id yet AND if old columns exist
+    user_columns = [c['name'] for c in inspector.get_columns('users')]
+    if all(col in user_columns for col in ['email', 'primary_mobile', 'username']):
+        result = conn.execute(sa.text("""
+            SELECT id, email, primary_mobile, username, password_hash, email_verified, is_active, role 
+            FROM users 
+            WHERE identity_id IS NULL
+        """))
+        users_data = result.fetchall()
+    else:
+        users_data = []
     
     if users_data:
         # Load existing identities to match against
@@ -120,8 +124,11 @@ def upgrade() -> None:
             })
  
     # 6. Cleanup: Make username/email nullable and DROP redundant columns
-    op.alter_column('users', 'username', existing_type=sa.String(length=100), nullable=True)
-    op.alter_column('users', 'email', existing_type=sa.String(length=255), nullable=True)
+    current_columns = [c['name'] for c in inspector.get_columns('users')]
+    if 'username' in current_columns:
+        op.alter_column('users', 'username', existing_type=sa.String(length=100), nullable=True)
+    if 'email' in current_columns:
+        op.alter_column('users', 'email', existing_type=sa.String(length=255), nullable=True)
 
     # Physically drop redundant columns
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS username")

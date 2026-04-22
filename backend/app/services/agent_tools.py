@@ -449,8 +449,8 @@ AGENT_TOOLS = [
             "name": "send_feishu_message",
             "description": (
                 "Send a Feishu IM message to a colleague. "
-                "You can provide either the colleague's name (will auto-search their open_id) "
-                "or their open_id directly. "
+                "You can provide either the colleague's name "
+                "or their Feishu user_id directly. "
                 "To contact digital employees use send_message_to_agent instead."
             ),
             "parameters": {
@@ -463,10 +463,6 @@ AGENT_TOOLS = [
                     "user_id": {
                         "type": "string",
                         "description": "Recipient's Feishu user_id (preferred, tenant-stable). Get from feishu_user_search.",
-                    },
-                    "open_id": {
-                        "type": "string",
-                        "description": "Recipient's Feishu open_id (fallback, per-app). Use user_id instead when available.",
                     },
                     "message": {
                         "type": "string",
@@ -3929,67 +3925,43 @@ async def _manage_tasks(
 async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
     """Send a Feishu message to a person in the agent's relationship list."""
     member_name = (args.get("member_name") or "").strip()
-    direct_open_id = (args.get("open_id") or "").strip()
     direct_user_id = (args.get("user_id") or "").strip()
     message_text = (args.get("message") or "").strip()
 
     if not message_text:
         return "❌ Please provide message content"
-    if not member_name and not direct_open_id and not direct_user_id:
-        return "❌ Please provide member_name, user_id, or open_id"
+    if not member_name and not direct_user_id:
+        return "❌ Please provide member_name or user_id"
 
     try:
-        from app.services.feishu_service import feishu_service
+        from app.services.feishu_service import FeishuAPIError, feishu_service
         from sqlalchemy.orm import selectinload
 
         async with async_session() as db:
 
-            # ── Shortcut: if caller provided user_id or open_id directly ──
+            # ── Shortcut: if caller provided user_id directly ──
             config_result = await db.execute(
                 select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu")
             )
             config = config_result.scalar_one_or_none()
             if not config:
                 return "❌ This agent has no Feishu channel configured"
-            if (direct_user_id or direct_open_id) and not member_name:
-                import json as _j
-                # Prefer user_id over open_id
-                if direct_user_id:
+            if direct_user_id and not member_name:
+                try:
                     resp = await feishu_service.send_message(
                         config.app_id, config.app_secret,
                         receive_id=direct_user_id, msg_type="text",
-                        content=_j.dumps({"text": message_text}, ensure_ascii=False),
+                        content=json.dumps({"text": message_text}, ensure_ascii=False),
                         receive_id_type="user_id",
                     )
                     if resp.get("code") == 0:
                         # Save to history session
-                        await _save_outgoing_to_feishu_session(direct_user_id or direct_open_id)
+                        await _save_outgoing_to_feishu_session(direct_user_id)
                         return f"✅ 消息已发送（user_id: {direct_user_id}）"
-                    # Fallback to open_id if user_id fails
-                    logger.info(f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})")
-                    if direct_open_id:
-                        resp = await feishu_service.send_message(
-                            config.app_id, config.app_secret,
-                            receive_id=direct_open_id, msg_type="text",
-                            content=_j.dumps({"text": message_text}, ensure_ascii=False),
-                            receive_id_type="open_id",
-                        )
-                        if resp.get("code") == 0:
-                            await _save_outgoing_to_feishu_session(direct_open_id)
-                            return f"✅ 消息已发送（open_id: {direct_open_id}）"
                     return f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})"
-                else:
-                    resp = await feishu_service.send_message(
-                        config.app_id, config.app_secret,
-                        receive_id=direct_open_id, msg_type="text",
-                        content=_j.dumps({"text": message_text}, ensure_ascii=False),
-                        receive_id_type="open_id",
-                    )
-                    if resp.get("code") == 0:
-                        await _save_outgoing_to_feishu_session(direct_open_id)
-                        return f"✅ 消息已发送（open_id: {direct_open_id}）"
-                    logger.info(f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})")
-                    return f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})"
+                except FeishuAPIError as user_id_err:
+                    logger.info(f"❌ 发送失败(user_id): {user_id_err.msg}")
+                    return f"❌ 飞书发送失败：{user_id_err.user_message}"
 
             # Find the relationship member by name
             result = await db.execute(
@@ -4010,20 +3982,20 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 return f"❌ {member_name} 不是我的关系"
                 
             logger.info(f"target_member={target_member.external_id}, {target_member.open_id}, {target_member.email}, {target_member.phone}")
-            if not target_member.external_id and not target_member.open_id and not target_member.email and not target_member.phone:
-                logger.error(f"❌ {member_name} has no linked Feishu account (no user_id, open_id, email, or phone)")
-                return f"❌ {member_name} has no linked Feishu account (no user_id, open_id, email, or phone)"
+            if not target_member.external_id:
+                logger.error(f"❌ {member_name} has no linked Feishu user_id")
+                return f"❌ {member_name} 没有关联可用的飞书 user_id"
 
             content = json.dumps({"text": message_text}, ensure_ascii=False)
 
-            async def _try_send(app_id: str, app_secret: str, receive_id: str, id_type: str = "open_id") -> dict:
+            async def _try_send(app_id: str, app_secret: str, receive_id: str, id_type: str = "user_id") -> dict:
                 return await feishu_service.send_message(
                     app_id, app_secret,
                     receive_id=receive_id, msg_type="text",
                     content=content, receive_id_type=id_type,
                 )
 
-            async def _save_outgoing_to_feishu_session(open_id: str):
+            async def _save_outgoing_to_feishu_session(feishu_user_id: str):
                 """Save the outgoing message to the Feishu P2P chat session."""
                 try:
                     from datetime import datetime as _dt, timezone as _tz
@@ -4041,14 +4013,14 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     )
                     user_id = platform_user.id
 
-                    ext_conv_id = f"feishu_p2p_{open_id}"
+                    ext_conv_id = f"feishu_p2p_{feishu_user_id}"
                     sess = await find_or_create_channel_session(
                         db=db,
                         agent_id=agent_id,
                         user_id=user_id,
                         external_conv_id=ext_conv_id,
                         source_channel="feishu",
-                        first_message_title=f"[Agent → {member_name or open_id}]",
+                        first_message_title=f"[Agent → {member_name or feishu_user_id}]",
                     )
                     db.add(ChatMessage(
                         agent_id=agent_id,
@@ -4059,36 +4031,20 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     ))
                     sess.last_message_at = _dt.now(_tz.utc)
                     await db.commit()
-                    logger.info(f"[Feishu] Saved outgoing message to session {sess.id} (ID: {open_id})")
+                    logger.info(f"[Feishu] Saved outgoing message to session {sess.id} (user_id: {feishu_user_id})")
                 except Exception as e:
                     logger.error(f"[Feishu] Failed to save outgoing message to history: {e}")
 
-            # Step 1: Try using feishu_user_id (tenant-stable, works across apps)
-            if target_member.external_id:
+            try:
                 resp = await _try_send(config.app_id, config.app_secret, target_member.external_id, "user_id")
                 if resp.get("code") == 0:
-                    await _save_outgoing_to_feishu_session(target_member.external_id or target_member.open_id)
+                    await _save_outgoing_to_feishu_session(target_member.external_id)
                     return f"✅ Successfully sent message to {member_name}"
                 logger.info(f"❌ Failed to send message to {target_member.external_id} via Feishu (user_id): {resp}")
-                
-                # Fallback to open_id if user_id fails (e.g., due to missing employee_id:readonly permission)
-                if target_member.open_id:
-                    resp_open = await _try_send(config.app_id, config.app_secret, target_member.open_id, "open_id")
-                    if resp_open.get("code") == 0:
-                        await _save_outgoing_to_feishu_session(target_member.open_id)
-                        return f"✅ Successfully sent message to {member_name}"
-                    logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp_open}")
-                    return f"发送失败 (user_id: {resp.get('code')}, open_id: {resp_open.get('code')}): {resp_open.get('msg')}"
-                return f"发送失败 {resp}"
-            
-            # Step 2: If no external_id, try open_id directly
-            elif target_member.open_id:
-                resp = await _try_send(config.app_id, config.app_secret, target_member.open_id, "open_id")
-                if resp.get("code") == 0:
-                    await _save_outgoing_to_feishu_session(target_member.open_id)
-                    return f"✅ Successfully sent message to {member_name}"
-                logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp}")
-                return f"发送失败 {resp}"
+                return f"发送失败: {resp.get('msg')} (code {resp.get('code')})"
+            except FeishuAPIError as user_id_err:
+                logger.info(f"❌ Failed to send message to {target_member.external_id} via Feishu (user_id): {user_id_err}")
+                return f"❌ 飞书发送失败：{user_id_err.user_message}"
     except Exception as e:
         return f"❌ Message send error: {str(e)[:200]}"
 

@@ -20,16 +20,12 @@ from app.models.user import User
 router = APIRouter(prefix="/api/agents", tags=["chat-sessions"])
 
 
-def _is_admin_or_creator(user: User, agent: Agent) -> bool:
+def _can_view_all_agent_chat_sessions(user: User, agent: Agent) -> bool:
+    """Admins and the agent creator may list/view/delete other users' chat sessions."""
     return (
-        user.role in ("platform_admin", "org_admin")
+        user.role in ("platform_admin", "org_admin", "agent_admin")
         or str(agent.creator_id) == str(user.id)
     )
-
-
-def _can_view_all_agent_chat_sessions(user: User) -> bool:
-    """Only admin roles may list/view/delete other users' chat sessions."""
-    return user.role in ("platform_admin", "org_admin", "agent_admin")
 
 
 class SessionOut(BaseModel):
@@ -78,7 +74,7 @@ async def list_sessions(
     await check_agent_access(db, current_user, agent_id)
 
     if scope == "all":
-        if not _can_view_all_agent_chat_sessions(current_user):
+        if not _can_view_all_agent_chat_sessions(current_user, agent):
             raise HTTPException(status_code=403, detail="Not authorized to view all sessions")
 
         # Fetch all sessions (including agent-to-agent where this agent is peer)
@@ -271,8 +267,8 @@ async def rename_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Rename a session. Owner, or org/platform admin (others' sessions)."""
-    await check_agent_access(db, current_user, agent_id)
+    """Rename a session. Owner, agent creator, or admin may rename others' sessions."""
+    agent, _ = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
     )
@@ -280,7 +276,7 @@ async def rename_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user):
+    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user, agent):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     session.title = body.title
@@ -295,8 +291,8 @@ async def delete_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a chat session and its messages. Owner, or org/platform admin (others' sessions)."""
-    await check_agent_access(db, current_user, agent_id)
+    """Delete a chat session and its messages. Owner, agent creator, or admin may delete others' sessions."""
+    agent, _ = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
     )
@@ -304,7 +300,7 @@ async def delete_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user):
+    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user, agent):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     # Delete associated messages first
@@ -323,7 +319,7 @@ async def get_session_messages(
     db: AsyncSession = Depends(get_db),
 ):
     """Get chat messages for a specific session."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _ = await check_agent_access(db, current_user, agent_id)
     # Allow looking up sessions where agent_id OR peer_agent_id matches
     result = await db.execute(
         select(ChatSession).where(
@@ -335,8 +331,8 @@ async def get_session_messages(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Permission: session owner, or any user with manage access to the viewed agent.
-    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user):
+    # Permission: session owner, agent creator, or admin.
+    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user, agent):
         raise HTTPException(status_code=403, detail="Not authorized to view this session")
 
     # Query messages by conversation_id only (agent-to-agent uses session_agent_id)
