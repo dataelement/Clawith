@@ -839,17 +839,12 @@ async def download_bridge_installer(
         )
     ws_url = derive_ws_url(http_base)
 
-    # Regenerate the key (same pattern as /{agent_id}/api-key). This invalidates
-    # any previously-downloaded installer.
+    # Generate a candidate key but DO NOT persist it yet. If the installer
+    # build fails downstream (e.g. bundled Windows exe missing → 503), we
+    # must not have invalidated the bridge's currently-working token —
+    # otherwise the user is left with a dead bridge AND no usable
+    # installer, and the only recovery is an admin manual reset.
     raw_key = f"oc-{secrets.token_urlsafe(32)}"
-    agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-
-    # Auto-enable bridge_mode if currently disabled — the user is clearly trying
-    # to set up a bridge, so the disabled mode would just reject their connection.
-    if getattr(agent, "bridge_mode", "disabled") == "disabled":
-        agent.bridge_mode = "enabled"
-
-    await db.commit()
 
     try:
         payload, filename, content_type = render_installer(
@@ -861,7 +856,16 @@ async def download_bridge_installer(
         )
     except FileNotFoundError as e:
         # Bundled Windows exe missing — operator needs to build & drop it in.
+        # Key is still the old one; existing bridges stay connected.
         raise HTTPException(status_code=503, detail=str(e)) from e
+
+    # Build succeeded — now it's safe to rotate the key and enable bridge mode.
+    agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    if getattr(agent, "bridge_mode", "disabled") == "disabled":
+        # Auto-enable bridge_mode if currently disabled — the user is clearly
+        # trying to set up a bridge, so the disabled mode would just reject it.
+        agent.bridge_mode = "enabled"
+    await db.commit()
 
     # Audit log (best-effort)
     try:

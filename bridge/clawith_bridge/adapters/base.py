@@ -200,26 +200,46 @@ class SubprocessAdapter(BaseAdapter):
             for r in readers:
                 r.cancel()
             watcher.cancel()
-            try:
-                await proc.wait()
-            except Exception:
-                pass
+            # If we exited the loop because of timeout (or any other
+            # break above), the child may still be running. Without an
+            # explicit terminate here, `proc.wait()` would block past
+            # timeout_s and the session slot stays held until some
+            # outer cancel fires. Bound the wait with terminate→kill.
+            await self._terminate_proc(proc)
 
-    async def cancel(self, session_id: str, reason: str) -> None:
-        proc = self._procs.get(session_id)
-        if proc is None or proc.returncode is not None:
+    async def _terminate_proc(self, proc: asyncio.subprocess.Process) -> None:
+        """Ensure `proc` has exited. Idempotent; safe if proc already exited."""
+        if proc.returncode is not None:
             return
         try:
             proc.terminate()
         except ProcessLookupError:
             return
+        except Exception:
+            pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=self.KILL_GRACE_SEC)
+            return
         except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+            pass
+        except Exception:
+            return
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        except Exception:
+            pass
+        try:
+            await proc.wait()
+        except Exception:
+            pass
+
+    async def cancel(self, session_id: str, reason: str) -> None:
+        proc = self._procs.get(session_id)
+        if proc is None:
+            return
+        await self._terminate_proc(proc)
 
     async def _cleanup(self, session_id: str) -> None:
         self._procs.pop(session_id, None)
