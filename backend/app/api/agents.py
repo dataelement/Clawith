@@ -790,6 +790,21 @@ async def generate_or_reset_api_key(
     agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     await db.commit()
 
+    # Revoke any currently-attached bridge. `/ws/bridge` authenticates only
+    # at the initial upgrade, so rotating the hash alone doesn't unseat a
+    # bridge that's already holding a socket — it would keep running sessions
+    # with the old key until it disconnects on its own. Kick it now so the
+    # operator has to re-auth with the new key. detach_bridge is idempotent
+    # (no-ops when no bridge is attached).
+    from app.services.local_agent.session_dispatcher import dispatcher as _bridge_dispatcher
+    try:
+        await _bridge_dispatcher.detach_bridge(
+            str(agent.id), close_ws=True, reason="api_key_rotated",
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort eviction; don't fail rotation
+        from loguru import logger as _logger
+        _logger.warning(f"[rotate] bridge eviction failed for {agent.id}: {e}")
+
     return {"api_key": raw_key, "message": "Key configured successfully."}
 
 

@@ -142,14 +142,41 @@ class SessionDispatcher:
             pass
         return True
 
-    async def detach_bridge(self, agent_id: str) -> None:
+    async def detach_bridge(
+        self,
+        agent_id: str,
+        close_ws: bool = False,
+        reason: str = "",
+    ) -> None:
+        """Remove a bridge from the registry and fail its in-flight sessions.
+
+        `close_ws=True` additionally closes the bridge's WebSocket from the
+        server side. This is used for server-initiated eviction — notably API
+        key rotation, which must revoke the bridge's authenticated socket
+        because auth is checked only at the initial `/ws/bridge` upgrade.
+        The default (False) preserves the prior behavior, where detach runs
+        from the bridge's own read-loop `finally` after the socket is already
+        closing.
+        """
         bridge = self._bridges.pop(agent_id, None)
         if not bridge:
             return
+        if close_ws:
+            # code 4001 matches the "auth failed" class used at upgrade; the
+            # bridge treats it as a terminal credential problem rather than a
+            # transient network blip. `reason` is cropped to the 123-byte WS
+            # limit by starlette, but trim here to keep logs readable.
+            try:
+                await bridge.ws.close(
+                    code=4001,
+                    reason=(reason or "bridge detached by server")[:120],
+                )
+            except Exception as e:
+                logger.debug(f"[Dispatcher] ws.close during detach failed: {e}")
         abandoned = list(bridge.sessions.values())
         logger.info(
             f"[Dispatcher] Bridge detached: agent={agent_id} "
-            f"sessions_abandoned={len(abandoned)}"
+            f"sessions_abandoned={len(abandoned)} reason={reason!r}"
         )
         # Fail all pending sessions for this bridge.
         for session in abandoned:
