@@ -292,6 +292,7 @@ async def create_agent(
     # For OpenClaw agents: skip file system and container setup, generate API key
     if agent.agent_type == "openclaw":
         raw_key = f"oc-{secrets.token_urlsafe(32)}"
+        agent.api_key = raw_key
         agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         agent.status = "idle"
         agent.bridge_mode = "enabled"
@@ -785,6 +786,7 @@ async def generate_or_reset_api_key(
         raise HTTPException(status_code=400, detail="API keys are only available for OpenClaw agents")
 
     raw_key = f"oc-{secrets.token_urlsafe(32)}"
+    agent.api_key = raw_key
     agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     await db.commit()
 
@@ -798,12 +800,17 @@ async def download_bridge_installer(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a fresh API key and return a platform-specific bridge installer script.
+    """Return a platform-specific bridge installer script for this agent.
 
-    Each download regenerates the agent's API key; previously-issued installers
-    (and any bridges still using the old key) will stop working. This is by
-    design — the key is the only secret in the installer, and short-lived
-    secrets limit blast radius if a user accidentally shares the file.
+    Download is idempotent against the API key: the agent's stored plaintext
+    key is baked into the installer and reused across downloads, so the user
+    can re-download the installer (for a different runtime, a different
+    platform, another machine) without rotating the key and kicking the
+    currently-running bridge offline.
+
+    Legacy agents (created before the api_key column existed) mint and
+    persist a key on their first download — a one-time upgrade. Explicit
+    rotation is the separate POST /agents/{id}/api-key endpoint.
     """
     from app.services.local_agent.installer_templates import (
         derive_ws_url,
@@ -839,12 +846,24 @@ async def download_bridge_installer(
         )
     ws_url = derive_ws_url(http_base)
 
-    # Generate a candidate key but DO NOT persist it yet. If the installer
-    # build fails downstream (e.g. bundled Windows exe missing → 503), we
-    # must not have invalidated the bridge's currently-working token —
-    # otherwise the user is left with a dead bridge AND no usable
-    # installer, and the only recovery is an admin manual reset.
-    raw_key = f"oc-{secrets.token_urlsafe(32)}"
+    # Reuse the existing plaintext key if the agent has one — download is
+    # idempotent in that case (no rotation, no disconnection of the
+    # currently-running bridge). For legacy agents with only api_key_hash
+    # stored, mint a new key and dual-write on successful build; this is a
+    # one-time opportunistic upgrade.
+    #
+    # Either way, DO NOT persist anything until the installer build succeeds.
+    # If it fails (e.g. bundled Windows exe missing → 503), we must not have
+    # invalidated the bridge's currently-working token — otherwise the user
+    # is left with a dead bridge AND no usable installer, and the only
+    # recovery is an admin manual reset.
+    existing_plaintext = getattr(agent, "api_key", None)
+    if existing_plaintext:
+        raw_key = existing_plaintext
+        needs_persist = False
+    else:
+        raw_key = f"oc-{secrets.token_urlsafe(32)}"
+        needs_persist = True
 
     try:
         payload, filename, content_type = render_installer(
@@ -859,13 +878,20 @@ async def download_bridge_installer(
         # Key is still the old one; existing bridges stay connected.
         raise HTTPException(status_code=503, detail=str(e)) from e
 
-    # Build succeeded — now it's safe to rotate the key and enable bridge mode.
-    agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    # Build succeeded — persist the key if we minted one (legacy upgrade),
+    # and enable bridge mode if not already.
+    mutated = False
+    if needs_persist:
+        agent.api_key = raw_key
+        agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        mutated = True
     if getattr(agent, "bridge_mode", "disabled") == "disabled":
         # Auto-enable bridge_mode if currently disabled — the user is clearly
         # trying to set up a bridge, so the disabled mode would just reject it.
         agent.bridge_mode = "enabled"
-    await db.commit()
+        mutated = True
+    if mutated:
+        await db.commit()
 
     # Audit log (best-effort)
     try:
@@ -873,12 +899,17 @@ async def download_bridge_installer(
         await log_activity(
             agent_id=agent.id,
             action_type="bridge_installer_download",
-            summary=f"Bridge 安装器已下载 ({platform})，API Key 已重新生成",
+            summary=(
+                f"Bridge 安装器已下载 ({platform})，API Key 首次生成"
+                if needs_persist
+                else f"Bridge 安装器已下载 ({platform})"
+            ),
             detail={
                 "platform": platform,
                 "user_id": str(current_user.id),
                 "server_url": ws_url,
                 "filename": filename,
+                "key_rotated": needs_persist,
             },
         )
     except Exception:  # noqa: BLE001

@@ -44,6 +44,11 @@ class Agent(Base):
     bridge_adapter: Mapped[str | None] = mapped_column(String(32))
     # API key hash for OpenClaw gateway authentication
     api_key_hash: Mapped[str | None] = mapped_column(String(128))
+    # Plaintext API key stored alongside the hash so installer downloads
+    # can reuse it without rotating — rotation is an explicit action.
+    # See gateway._get_agent_by_key for the dual-path auth that falls back
+    # to api_key_hash for legacy agents where this column is still NULL.
+    api_key: Mapped[str | None] = mapped_column(String(128))
     # Last time OpenClaw polled the gateway (online status indicator)
     openclaw_last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

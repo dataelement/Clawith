@@ -444,15 +444,15 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                         })}
                     </div>
 
-                    {/* Warning about key regeneration */}
+                    {/* Hint: download is idempotent — does NOT rotate the key */}
                     <div style={{
                         padding: '10px 12px', borderRadius: '6px',
-                        background: 'rgba(255,180,50,0.08)', border: '1px solid rgba(255,180,50,0.25)',
+                        background: 'rgba(99,102,241,0.04)', border: '1px solid var(--border-subtle)',
                         fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px',
                     }}>
                         {isChinese
-                            ? '⚠ 每次下载都会重新生成 API Key，已在运行的 bridge 会断开。需要重新分发安装器给多台机器时请一次性配置完。'
-                            : '⚠ Each download regenerates the API Key; any running bridge will disconnect. Set up all machines from a single download.'}
+                            ? '下载不会重置 API Key，已在运行的 bridge 保持在线。要撤销旧 Key 请用上方的"重新生成 API Key"。'
+                            : 'Downloading does NOT rotate the API Key — any running bridge stays online. Use "Regenerate API Key" above to revoke the old key.'}
                     </div>
 
                     {/* Download action */}
@@ -473,7 +473,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                             background: 'rgba(99,102,241,0.04)', border: '1px solid var(--border-subtle)',
                         }}>
                             <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
-                                {isChinese ? '确认下载并重新生成 API Key？' : 'Confirm download and regenerate API Key?'}
+                                {isChinese ? '确认下载安装器？' : 'Confirm download?'}
                             </div>
                             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
                                 <button
