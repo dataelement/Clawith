@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { enterpriseApi, skillApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import PromptModal from '../components/PromptModal';
+import ConnectChatGPTModal from '../components/ConnectChatGPTModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
@@ -1954,6 +1955,7 @@ export default function EnterpriseSettings() {
         enabled: activeTab === 'llm',
     });
     const [showAddModel, setShowAddModel] = useState(false);
+    const [showConnectChatGPT, setShowConnectChatGPT] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
     const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, request_timeout: '' as string, temperature: '' as string });
     const { data: providerSpecs = [] } = useQuery({
@@ -2048,7 +2050,10 @@ export default function EnterpriseSettings() {
                 {/* ── LLM Model Pool ── */}
                 {activeTab === 'llm' && (
                     <div>
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginBottom: '16px' }}>
+                            <button className="btn btn-secondary" onClick={() => setShowConnectChatGPT(true)}>
+                                {t('enterprise.llm.codex.connectButton')}
+                            </button>
                             <button className="btn btn-primary" onClick={() => {
                                 setEditingModelId(null);
                                 const defaultSpec = providerOptions[0];
@@ -2064,6 +2069,12 @@ export default function EnterpriseSettings() {
                                 setShowAddModel(true);
                             }}>+ {t('enterprise.llm.addModel')}</button>
                         </div>
+                        <ConnectChatGPTModal
+                            open={showConnectChatGPT}
+                            onClose={() => setShowConnectChatGPT(false)}
+                            onCreated={() => qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] })}
+                        />
+
 
                         {/* Add Model form — only shown at top when adding new */}
                         {showAddModel && !editingModelId && (

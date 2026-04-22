@@ -1027,7 +1027,43 @@
       "vision": "Vision",
       "temperature": "Temperature",
       "temperaturePlaceholder": "e.g. 0.7 or 1.0 (Leave empty for default)",
-      "temperatureDesc": "Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0"
+      "temperatureDesc": "Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0",
+      "codex": {
+        "connectButton": "Connect ChatGPT",
+        "title": "Connect ChatGPT (Codex Subscription)",
+        "subtitle": "Use your ChatGPT Plus/Pro subscription to power Clawith agents — no OpenAI API key needed. Tokens are refreshed automatically.",
+        "label": "Label",
+        "model": "Model",
+        "tabs": {
+          "oauth": "Browser login",
+          "paste": "Paste tokens"
+        },
+        "oauth": {
+          "idleHint": "Open the OpenAI login page in a new tab. After you authorize, the browser will redirect to localhost:1455 and this page will capture the code automatically.",
+          "startButton": "Start ChatGPT login",
+          "waitingLoopback": "A browser tab is opening. Sign in, authorize Codex, then return here — we'll detect the callback automatically.",
+          "waitingManual": "A browser tab is opening. Local callback port 1455 isn't available, so after authorization paste the full redirect URL below.",
+          "manualPasteLabel": "Paste the redirect URL (localhost:1455/auth/callback?code=...&state=...)",
+          "submitManual": "Use this URL",
+          "codeReceived": "Authorization code received. Pick a label and model, then create.",
+          "createButton": "Create model",
+          "creating": "Creating...",
+          "done": "Created. You can select this model when configuring an agent."
+        },
+        "paste": {
+          "hint": "Run `codex login` on your local machine, then open ~/.codex/auth.json and paste the values below. Clawith will manage token refresh from here.",
+          "expiresHint": "how long the access token is still valid",
+          "accountIdOptional": "Account ID (optional — auto-detected from access_token if blank)"
+        },
+        "errors": {
+          "pollTimeout": "Timed out waiting for the browser callback. Start the flow again or switch to Paste tokens.",
+          "sessionExpired": "OAuth session expired. Start the flow again.",
+          "stateMismatch": "State mismatch — the URL doesn't belong to this login session.",
+          "manualUrlInvalid": "Couldn't parse a code + state from that URL.",
+          "tokensRequired": "access_token and refresh_token are both required.",
+          "labelRequired": "Label is required."
+        }
+      }
     },
     "tools": {
       "title": "Global Tool Management",
