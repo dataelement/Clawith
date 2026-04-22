@@ -720,6 +720,25 @@
     }
   },
   "wizard": {
+    "runtime": {
+      "title": "Runtime",
+      "native": "Platform Hosted",
+      "nativeDesc": "Full agent running on Clawith platform",
+      "claude_code": "Claude Code",
+      "claude_codeDesc": "Bridge to local Claude Code CLI",
+      "openclaw": "OpenClaw",
+      "openclawDesc": "Bridge to local OpenClaw daemon",
+      "hermes": "Hermes",
+      "hermesDesc": "Bridge to local Hermes agent"
+    },
+    "bridge": {
+      "titleClaudeCode": "Link Claude Code Agent",
+      "titleOpenclaw": "Link OpenClaw Agent",
+      "titleHermes": "Link Hermes Agent",
+      "descClaudeCode": "Give your agent a name. Download the installer and run it on the machine where your Claude Code CLI is installed.",
+      "descOpenclaw": "Give your agent a name. Download the installer and run it on the machine where your OpenClaw daemon runs.",
+      "descHermes": "Give your agent a name. Download the installer and run it on the machine where your Hermes agent runs."
+    },
     "steps": {
       "basicInfo": "Basic Info",
       "personality": "Personality",

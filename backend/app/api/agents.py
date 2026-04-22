@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -241,6 +241,11 @@ async def create_agent(
         creator_id=current_user.id,
         tenant_id=target_tenant_id,
         agent_type=data.agent_type or "native",
+        bridge_adapter=(
+            (data.bridge_adapter or "claude_code")
+            if (data.agent_type or "native") == "openclaw"
+            else None
+        ),
         primary_model_id=data.primary_model_id,
         fallback_model_id=data.fallback_model_id,
         max_tokens_per_day=data.max_tokens_per_day,
@@ -289,6 +294,7 @@ async def create_agent(
         raw_key = f"oc-{secrets.token_urlsafe(32)}"
         agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         agent.status = "idle"
+        agent.bridge_mode = "enabled"
         await db.commit()
         out = AgentOut.model_validate(agent).model_dump()
         out["api_key"] = raw_key  # Return once on creation
@@ -777,6 +783,98 @@ async def generate_or_reset_api_key(
     await db.commit()
 
     return {"api_key": raw_key, "message": "Key configured successfully."}
+
+
+@router.post("/{agent_id}/bridge-installer")
+async def download_bridge_installer(
+    agent_id: uuid.UUID,
+    request: Request,
+    platform: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a fresh API key and return a platform-specific bridge installer script.
+
+    Each download regenerates the agent's API key; previously-issued installers
+    (and any bridges still using the old key) will stop working. This is by
+    design — the key is the only secret in the installer, and short-lived
+    secrets limit blast radius if a user accidentally shares the file.
+    """
+    from app.services.local_agent.installer_templates import (
+        derive_ws_url,
+        render_installer,
+    )
+    from app.config import get_settings
+
+    if platform not in ("windows", "macos", "linux"):
+        raise HTTPException(status_code=400, detail="platform must be windows, macos, or linux")
+
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if not is_agent_creator(current_user, agent) and current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator or admin can download bridge installers")
+    if getattr(agent, "agent_type", "native") != "openclaw":
+        raise HTTPException(status_code=400, detail="Bridge installer is only available for OpenClaw agents")
+
+    # Regenerate the key (same pattern as /{agent_id}/api-key). This invalidates
+    # any previously-downloaded installer.
+    raw_key = f"oc-{secrets.token_urlsafe(32)}"
+    agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+    # Auto-enable bridge_mode if currently disabled — the user is clearly trying
+    # to set up a bridge, so the disabled mode would just reject their connection.
+    if getattr(agent, "bridge_mode", "disabled") == "disabled":
+        agent.bridge_mode = "enabled"
+
+    await db.commit()
+
+    # Resolve server URL. Prefer the configured PUBLIC_BASE_URL; fall back to
+    # the request's Host header (useful for dev / local testing).
+    settings = get_settings()
+    http_base = (settings.PUBLIC_BASE_URL or "").rstrip("/")
+    if not http_base:
+        forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        forwarded_host = request.headers.get("x-forwarded-host", request.headers.get("host", f"{request.url.hostname}:{request.url.port or 80}"))
+        http_base = f"{forwarded_proto}://{forwarded_host}"
+    ws_url = derive_ws_url(http_base)
+
+    try:
+        payload, filename, content_type = render_installer(
+            platform=platform,  # type: ignore[arg-type]
+            server_url=ws_url,
+            api_key=raw_key,
+            agent_name=agent.name or str(agent.id),
+            adapter=getattr(agent, "bridge_adapter", None) or "claude_code",
+        )
+    except FileNotFoundError as e:
+        # Bundled Windows exe missing — operator needs to build & drop it in.
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    # Audit log (best-effort)
+    try:
+        from app.services.activity_logger import log_activity
+        await log_activity(
+            agent_id=agent.id,
+            action_type="bridge_installer_download",
+            summary=f"Bridge 安装器已下载 ({platform})，API Key 已重新生成",
+            detail={
+                "platform": platform,
+                "user_id": str(current_user.id),
+                "server_url": ws_url,
+                "filename": filename,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return Response(
+        content=payload,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Clawith-Server": ws_url,
+            "X-Clawith-Filename": filename,
+        },
+    )
 
 
 @router.get("/{agent_id}/gateway-messages")

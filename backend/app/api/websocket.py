@@ -143,6 +143,7 @@ async def websocket_chat(
     # Verify access and load agent + model
     agent_name = ""
     agent_type = ""  # Track agent type for OpenClaw routing
+    bridge_mode = "disabled"  # Track bridge_mode for local-agent session routing
     role_description = ""
     welcome_message = ""
     llm_model = None
@@ -169,6 +170,8 @@ async def websocket_chat(
                 return
             agent_name = agent.name
             agent_type = agent.agent_type or ""
+            bridge_mode = getattr(agent, "bridge_mode", "disabled") or "disabled"
+            bridge_adapter = (getattr(agent, "bridge_adapter", None) or "claude_code")
             role_description = agent.role_description or ""
             welcome_message = agent.welcome_message or ""
             ctx_size = agent.context_window_size or 100
@@ -408,8 +411,148 @@ async def websocket_chat(
                 await db.commit()
             logger.info("[WS] User message saved")
 
-            # ── OpenClaw routing: insert into gateway_messages instead of LLM ──
+            # ── OpenClaw routing: prefer bridge session, fall back to gateway queue ──
             if agent_type == "openclaw":
+                from app.services.local_agent.session_dispatcher import (
+                    dispatcher as _la_dispatcher,
+                    EVENT_QUEUE_SENTINEL as _LA_SENTINEL,
+                    BridgeDisconnected as _LA_Disconnected,
+                )
+                _bridge_connected = _la_dispatcher.has_bridge(str(agent_id))
+                _use_bridge = bridge_mode in ("enabled", "auto") and _bridge_connected
+
+                if _use_bridge:
+                    import asyncio as _aio_br
+                    _ls_id = f"{conv_id}:{uuid.uuid4().hex[:8]}"
+                    # The agent has a chosen runtime (bridge_adapter). Require
+                    # the bridge to actually advertise it — if it doesn't, the
+                    # user's installed TOML doesn't match the agent's intent,
+                    # and silently falling back would run the wrong runtime.
+                    _binfo = _la_dispatcher.get_bridge_info(str(agent_id)) or {}
+                    _available = list(_binfo.get("adapters") or [])
+                    if bridge_adapter not in _available:
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": (
+                                f"Selected runtime '{bridge_adapter}' is not available on the "
+                                f"connected bridge (it advertises: {_available or 'none'}). "
+                                f"Reinstall the bridge installer for this agent, or enable "
+                                f"[{bridge_adapter}] in ~/.clawith-bridge.toml and restart the bridge."
+                            ),
+                        })
+                        continue
+                    _adapter = bridge_adapter
+                    logger.info(f"[WS] OpenClaw: dispatching via bridge session={_ls_id} adapter={_adapter}")
+                    try:
+                        _events_q, _fut = await _la_dispatcher.start_session(
+                            agent_id=str(agent_id),
+                            session_id=_ls_id,
+                            adapter=_adapter,
+                            prompt=content,
+                            params={},
+                            cwd=None,
+                            env={},
+                            timeout_s=1800,
+                        )
+                    except Exception as _e:
+                        logger.exception(f"[WS] OpenClaw bridge start_session failed: {_e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": f"Failed to dispatch to OpenClaw bridge: {_e}",
+                        })
+                        continue
+
+                    async def _bridge_drain():
+                        while True:
+                            item = await _events_q.get()
+                            if item is _LA_SENTINEL:
+                                return
+                            kind = item.get("kind")
+                            payload = item.get("payload") or {}
+                            msg = {"bridge_session_id": _ls_id, "adapter": _adapter}
+                            if kind in ("stdout_chunk", "assistant_text"):
+                                msg.update({"type": "chunk", "content": payload.get("text") or payload.get("content") or ""})
+                            elif kind == "thinking":
+                                msg.update({"type": "thinking", "content": payload.get("text") or ""})
+                            elif kind in ("tool_call_start", "tool_call_result"):
+                                msg.update({
+                                    "type": "tool_call",
+                                    "name": payload.get("name") or "",
+                                    "args": payload.get("args"),
+                                    "status": "running" if kind == "tool_call_start" else "done",
+                                    "result": payload.get("result", ""),
+                                })
+                            elif kind == "status":
+                                msg.update({"type": "status", **payload})
+                            elif kind == "file_change":
+                                msg.update({"type": "file_change", **payload})
+                            else:
+                                msg.update({"type": "bridge_event", "kind": kind, "payload": payload})
+                            try:
+                                await websocket.send_json(msg)
+                            except Exception:
+                                return
+
+                    _drain_task = _aio_br.create_task(_bridge_drain())
+                    _final_text = ""
+                    _session_ok = False
+                    _session_err: str | None = None
+                    try:
+                        # Await the returned future directly — avoids a race with
+                        # session.done popping the session from bridge.sessions.
+                        _final_text = await _aio_br.wait_for(_fut, timeout=1800)
+                        _session_ok = True
+                    except _LA_Disconnected as _e:
+                        _session_err = f"本地 agent bridge 中途断开: {_e}"
+                        logger.warning(f"[WS] OpenClaw bridge disconnected mid-session: {_e}")
+                    except _aio_br.TimeoutError:
+                        _session_err = "本地 agent session 超时 (>1800s)"
+                        try:
+                            await _la_dispatcher.cancel_session(str(agent_id), _ls_id, reason="timeout")
+                        except Exception:
+                            pass
+                    except Exception as _e:
+                        logger.exception(f"[WS] OpenClaw bridge session failed: {_e}")
+                        _session_err = f"本地 agent session 失败: {_e}"
+                    finally:
+                        try:
+                            await _aio_br.wait_for(_drain_task, timeout=2)
+                        except Exception:
+                            _drain_task.cancel()
+
+                    # Persist + emit done. Error path still emits `done` so the
+                    # chat history records the turn and the frontend surfaces
+                    # the pending session-error block instead of a silent drop.
+                    _persist_text = _final_text if _session_ok else ""
+                    async with async_session() as _db:
+                        _ai_msg = ChatMessage(
+                            agent_id=agent_id,
+                            user_id=user_id,
+                            role="assistant",
+                            content=_persist_text or (f"[session error] {_session_err}" if _session_err else ""),
+                            conversation_id=conv_id,
+                        )
+                        _db.add(_ai_msg)
+                        await _db.commit()
+                    _done_payload: dict = {
+                        "type": "done",
+                        "role": "assistant",
+                        "content": _persist_text,
+                    }
+                    if _session_err:
+                        _done_payload["session_error"] = _session_err
+                    await websocket.send_json(_done_payload)
+                    continue
+
+                # bridge_mode=enabled but no bridge connected → reject instead of queueing
+                if bridge_mode == "enabled" and not _bridge_connected:
+                    await websocket.send_json({
+                        "type": "error",
+                        "content": "Local agent bridge is not connected. Start `clawith-bridge` on the operator machine and retry.",
+                    })
+                    continue
+
+                # Legacy path (bridge_mode=disabled, or auto with no bridge): queue for polling
                 from app.models.gateway_message import GatewayMessage as GwMsg
                 async with async_session() as db:
                     gw_msg = GwMsg(
@@ -421,7 +564,7 @@ async def websocket_chat(
                     )
                     db.add(gw_msg)
                     await db.commit()
-                logger.info("[WS] OpenClaw: message queued for gateway poll")
+                logger.info("[WS] OpenClaw: message queued for gateway poll (bridge_mode=%s, bridge_connected=%s)", bridge_mode, _bridge_connected)
                 await websocket.send_json({
                     "type": "done",
                     "role": "assistant",

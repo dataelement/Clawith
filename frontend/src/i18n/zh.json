@@ -801,6 +801,25 @@
     }
   },
   "wizard": {
+    "runtime": {
+      "title": "运行时",
+      "native": "平台托管",
+      "nativeDesc": "由 Clawith 平台托管的完整 agent",
+      "claude_code": "Claude Code",
+      "claude_codeDesc": "桥接到本地 Claude Code CLI",
+      "openclaw": "OpenClaw",
+      "openclawDesc": "桥接到本地 OpenClaw daemon",
+      "hermes": "Hermes",
+      "hermesDesc": "桥接到本地 Hermes agent"
+    },
+    "bridge": {
+      "titleClaudeCode": "接入 Claude Code Agent",
+      "titleOpenclaw": "接入 OpenClaw Agent",
+      "titleHermes": "接入 Hermes Agent",
+      "descClaudeCode": "给 agent 命名。下载安装器，在已安装 Claude Code CLI 的机器上运行。",
+      "descOpenclaw": "给 agent 命名。下载安装器，在运行 OpenClaw daemon 的机器上运行。",
+      "descHermes": "给 agent 命名。下载安装器，在运行 Hermes agent 的机器上运行。"
+    },
     "steps": {
       "basicInfo": "基本信息",
       "personality": "人格设定",

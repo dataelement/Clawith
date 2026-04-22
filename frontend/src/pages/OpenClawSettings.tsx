@@ -106,6 +106,84 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     const currentScope = permData?.scope_type || 'company';
     const currentAccessLevel = permData?.access_level || 'use';
 
+    // ─── Bridge mode state ──────────────────────────────
+    const currentBridgeMode: 'disabled' | 'enabled' | 'auto' =
+        (agent?.bridge_mode as any) || 'disabled';
+    const [bridgeSaving, setBridgeSaving] = useState<string | null>(null);
+
+    const handleBridgeModeChange = async (newMode: 'disabled' | 'enabled' | 'auto') => {
+        if (newMode === currentBridgeMode) return;
+        setBridgeSaving(newMode);
+        try {
+            await agentApi.update(agentId, { bridge_mode: newMode } as any);
+            queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+        } catch (e) {
+            console.error('Failed to update bridge_mode', e);
+        } finally {
+            setBridgeSaving(null);
+        }
+    };
+
+    // ─── Bridge installer download ──────────────────────
+    const detectedPlatform: 'windows' | 'macos' | 'linux' = (() => {
+        const p = (typeof navigator !== 'undefined' ? navigator.platform || '' : '').toLowerCase();
+        const ua = (typeof navigator !== 'undefined' ? navigator.userAgent || '' : '').toLowerCase();
+        if (p.startsWith('win') || ua.includes('windows')) return 'windows';
+        if (p.startsWith('mac') || ua.includes('mac os')) return 'macos';
+        return 'linux';
+    })();
+    const [installerPlatform, setInstallerPlatform] = useState<'windows' | 'macos' | 'linux'>(detectedPlatform);
+    const [installerDownloading, setInstallerDownloading] = useState(false);
+    const [installerConfirm, setInstallerConfirm] = useState(false);
+    const [installerError, setInstallerError] = useState<string>('');
+    const [installerDownloaded, setInstallerDownloaded] = useState(false);
+
+    const handleDownloadInstaller = async () => {
+        setInstallerDownloading(true);
+        setInstallerError('');
+        try {
+            const token = localStorage.getItem('token');
+            const resp = await fetch(`/api/agents/${agentId}/bridge-installer?platform=${installerPlatform}`, {
+                method: 'POST',
+                headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            });
+            if (!resp.ok) {
+                const errText = await resp.text().catch(() => '');
+                throw new Error(errText || `HTTP ${resp.status}`);
+            }
+            const blob = await resp.blob();
+            const filename = resp.headers.get('X-Clawith-Filename')
+                || (installerPlatform === 'windows' ? 'clawith-bridge-setup.exe' : 'install-clawith-bridge.sh');
+
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            setInstallerDownloaded(true);
+            setInstallerConfirm(false);
+            // Agent's api_key_hash + bridge_mode may have changed server-side
+            queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+            // Clear previously-shown plaintext key (it's now invalid)
+            setApiKey(null);
+        } catch (e: any) {
+            console.error('Failed to download installer', e);
+            setInstallerError(e?.message || 'Download failed');
+        } finally {
+            setInstallerDownloading(false);
+        }
+    };
+
+    const runCommand = installerPlatform === 'windows'
+        ? (isChinese
+            ? '双击 clawith-bridge-setup.exe 即可安装'
+            : 'Double-click clawith-bridge-setup.exe to install')
+        : 'bash install-clawith-bridge.sh';
+
     return (
         <div>
             <h3 style={{ marginBottom: '16px' }}>{t('agent.settings.title')}</h3>
@@ -225,6 +303,250 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                     </div>
                 )}
             </div>
+
+            {/* ── Bridge Mode ── */}
+            <div className="card" style={{ marginBottom: '12px' }}>
+                <h4 style={{ marginBottom: '4px' }}>
+                    {isChinese ? '本地 Bridge 连接模式' : 'Local Bridge Mode'}
+                </h4>
+                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                    {isChinese
+                        ? 'Bridge 是跑在你本机的小程序，把 Claude Code 等本地工具接入 Clawith。'
+                        : 'The bridge is a small program running on your machine that connects local tools like Claude Code to Clawith.'}
+                </p>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {([
+                        {
+                            val: 'enabled' as const,
+                            label: isChinese ? '启用（推荐）' : 'Enabled (recommended)',
+                            desc: isChinese
+                                ? '通过 Bridge 实时流式执行。Bridge 未连接时消息会失败。'
+                                : 'Stream execution via bridge. Messages fail if bridge is not connected.',
+                        },
+                        {
+                            val: 'auto' as const,
+                            label: isChinese ? '自动回落' : 'Auto fallback',
+                            desc: isChinese
+                                ? '优先 Bridge；未连接时回落到旧版 Gateway 轮询（~5 分钟延迟）。'
+                                : 'Prefer bridge; fall back to legacy gateway polling (~5 min delay) when offline.',
+                        },
+                        {
+                            val: 'disabled' as const,
+                            label: isChinese ? '禁用（兼容旧版）' : 'Disabled (legacy)',
+                            desc: isChinese
+                                ? '只走 Gateway 轮询。Bridge 连接会被拒绝。'
+                                : 'Use gateway polling only. Bridge connections will be rejected.',
+                        },
+                    ]).map(opt => {
+                        const selected = currentBridgeMode === opt.val;
+                        const isSaving = bridgeSaving === opt.val;
+                        return (
+                            <label
+                                key={opt.val}
+                                style={{
+                                    display: 'flex', alignItems: 'flex-start', gap: '10px',
+                                    padding: '12px 14px', borderRadius: '8px',
+                                    cursor: isOwner && !bridgeSaving ? 'pointer' : 'default',
+                                    border: selected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                                    background: selected ? 'rgba(99,102,241,0.06)' : 'transparent',
+                                    opacity: isOwner ? 1 : 0.7,
+                                    transition: 'all 0.15s',
+                                }}
+                            >
+                                <input
+                                    type="radio"
+                                    name="bridge_mode_oc"
+                                    checked={selected}
+                                    disabled={!isOwner || !!bridgeSaving}
+                                    onChange={() => handleBridgeModeChange(opt.val)}
+                                    style={{ accentColor: 'var(--accent-primary)', marginTop: '2px' }}
+                                />
+                                <div style={{ flex: 1 }}>
+                                    <div style={{ fontWeight: 500, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        {opt.label}
+                                        {isSaving && (
+                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                {isChinese ? '保存中…' : 'Saving…'}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                        {opt.desc}
+                                    </div>
+                                </div>
+                            </label>
+                        );
+                    })}
+                </div>
+
+                {!isOwner && (
+                    <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                        {isChinese ? '只有创建者或管理员可以修改此设置' : 'Only the creator or admin can change this setting'}
+                    </div>
+                )}
+            </div>
+
+            {/* ── Install Bridge ── */}
+            {isOwner && (
+                <div className="card" style={{ marginBottom: '12px' }}>
+                    <h4 style={{ marginBottom: '4px' }}>
+                        {isChinese ? '一键安装 Bridge' : 'One-click Bridge Install'}
+                    </h4>
+                    <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                        {isChinese
+                            ? '下载预配置好 API Key 的安装包，在你本机运行即可完成安装 + 自启 + 连接。Windows 无需 Python。'
+                            : 'Download a pre-configured installer. Run it on your local machine to install + autostart + connect. No Python required on Windows.'}
+                    </p>
+
+                    {/* Runtime (readonly) */}
+                    {(() => {
+                        const a = (agent as any)?.bridge_adapter || 'claude_code';
+                        const label = a === 'claude_code' ? 'Claude Code' : a === 'hermes' ? 'Hermes' : 'OpenClaw';
+                        return (
+                            <div style={{
+                                marginBottom: '12px', padding: '10px 12px', borderRadius: '6px',
+                                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                                fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px',
+                            }}>
+                                <span style={{ color: 'var(--text-tertiary)' }}>{isChinese ? '运行时：' : 'Runtime:'}</span>
+                                <span style={{ fontWeight: 600 }}>{label}</span>
+                                <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
+                                    {isChinese
+                                        ? `安装器会启用 [${a}] adapter`
+                                        : `installer will enable [${a}] adapter`}
+                                </span>
+                            </div>
+                        );
+                    })()}
+
+                    {/* Platform selector */}
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                        {([
+                            { val: 'windows' as const, label: 'Windows' },
+                            { val: 'macos' as const, label: 'macOS' },
+                            { val: 'linux' as const, label: 'Linux' },
+                        ]).map(opt => {
+                            const selected = installerPlatform === opt.val;
+                            return (
+                                <label
+                                    key={opt.val}
+                                    style={{
+                                        flex: 1, padding: '10px 12px', borderRadius: '8px',
+                                        cursor: 'pointer', textAlign: 'center',
+                                        border: selected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                                        background: selected ? 'rgba(99,102,241,0.06)' : 'transparent',
+                                        transition: 'all 0.15s', fontSize: '13px', fontWeight: 500,
+                                    }}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="bridge_installer_platform"
+                                        checked={selected}
+                                        onChange={() => setInstallerPlatform(opt.val)}
+                                        style={{ display: 'none' }}
+                                    />
+                                    {opt.label}
+                                </label>
+                            );
+                        })}
+                    </div>
+
+                    {/* Warning about key regeneration */}
+                    <div style={{
+                        padding: '10px 12px', borderRadius: '6px',
+                        background: 'rgba(255,180,50,0.08)', border: '1px solid rgba(255,180,50,0.25)',
+                        fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px',
+                    }}>
+                        {isChinese
+                            ? '⚠ 每次下载都会重新生成 API Key，已在运行的 bridge 会断开。需要重新分发安装器给多台机器时请一次性配置完。'
+                            : '⚠ Each download regenerates the API Key; any running bridge will disconnect. Set up all machines from a single download.'}
+                    </div>
+
+                    {/* Download action */}
+                    {!installerConfirm ? (
+                        <button
+                            className="btn btn-primary"
+                            onClick={() => setInstallerConfirm(true)}
+                            disabled={installerDownloading}
+                            style={{ padding: '8px 20px', fontSize: '13px' }}
+                        >
+                            {isChinese
+                                ? `下载 ${installerPlatform === 'windows' ? 'Windows' : installerPlatform === 'macos' ? 'macOS' : 'Linux'} 安装器`
+                                : `Download ${installerPlatform === 'windows' ? 'Windows' : installerPlatform === 'macos' ? 'macOS' : 'Linux'} Installer`}
+                        </button>
+                    ) : (
+                        <div style={{
+                            padding: '12px 14px', borderRadius: '8px',
+                            background: 'rgba(99,102,241,0.04)', border: '1px solid var(--border-subtle)',
+                        }}>
+                            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
+                                {isChinese ? '确认下载并重新生成 API Key？' : 'Confirm download and regenerate API Key?'}
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                <button
+                                    className="btn btn-secondary"
+                                    onClick={() => setInstallerConfirm(false)}
+                                    disabled={installerDownloading}
+                                    style={{ padding: '5px 14px', fontSize: '12px' }}
+                                >
+                                    {isChinese ? '取消' : 'Cancel'}
+                                </button>
+                                <button
+                                    className="btn btn-primary"
+                                    onClick={handleDownloadInstaller}
+                                    disabled={installerDownloading}
+                                    style={{ padding: '5px 14px', fontSize: '12px' }}
+                                >
+                                    {installerDownloading
+                                        ? (isChinese ? '生成中…' : 'Generating…')
+                                        : (isChinese ? '下载' : 'Download')}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {installerError && (
+                        <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--error)' }}>
+                            {installerError}
+                        </div>
+                    )}
+
+                    {/* Post-download instructions */}
+                    {installerDownloaded && (
+                        <div style={{
+                            marginTop: '14px', padding: '12px 14px', borderRadius: '8px',
+                            background: 'rgba(50,200,100,0.06)', border: '1px solid rgba(50,200,100,0.2)',
+                        }}>
+                            <div style={{ fontSize: '12px', fontWeight: 500, marginBottom: '8px', color: 'var(--text-primary)' }}>
+                                {isChinese ? '✓ 已下载。在本机运行：' : '✓ Downloaded. Run it on your machine:'}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <code style={{
+                                    flex: 1, padding: '6px 10px', borderRadius: '6px',
+                                    background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                                    fontSize: '12px', fontFamily: 'monospace',
+                                    wordBreak: 'break-all', color: 'var(--text-primary)',
+                                }}>
+                                    {runCommand}
+                                </code>
+                                <LinearCopyButton
+                                    className="btn btn-secondary"
+                                    textToCopy={runCommand}
+                                    label={isChinese ? '复制' : 'Copy'}
+                                    copiedLabel={isChinese ? '已复制' : 'Copied'}
+                                    style={{ padding: '4px 12px', fontSize: '12px', whiteSpace: 'nowrap', minWidth: '60px' }}
+                                />
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '10px', lineHeight: 1.6 }}>
+                                {isChinese
+                                    ? <>前置：先装 <code>claude</code> CLI 并登录（<code>npm install -g @anthropic-ai/claude-code</code> 然后 <code>claude login</code>）。</>
+                                    : <>Prereq: install <code>claude</code> CLI and login first (<code>npm install -g @anthropic-ai/claude-code</code> then <code>claude login</code>).</>}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* ── Permissions ── */}
             <div className="card" style={{ marginBottom: '12px' }}>

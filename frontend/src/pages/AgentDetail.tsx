@@ -2090,8 +2090,12 @@ function AgentDetailInner() {
             } else if (d.type === 'trigger_notification') {
                 setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: d.content })]);
                 fetchMySessions(true, agentId);
-            } else {
+            } else if (d.role && d.content) {
                 setChatMessages(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
+            } else {
+                // Unknown event with no role/content — control frames (rate_limit_event,
+                // ping, bridge status/file_change/bridge_event). Drop to avoid phantoms.
+                console.debug('[stream] skip unknown event', d.type, d);
             }
         };
     };
@@ -2815,13 +2819,17 @@ function AgentDetailInner() {
                                 {(agent as any).is_expired && (
                                     <span style={{ background: 'var(--error)', color: '#fff', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>Expired</span>
                                 )}
-                                {(agent as any).agent_type === 'openclaw' && (
-                                    <span style={{
-                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
-                                        letterSpacing: '0.5px',
-                                    }}>OpenClaw · Lab</span>
-                                )}
+                                {(agent as any).agent_type === 'openclaw' && (() => {
+                                    const a = (agent as any).bridge_adapter || 'claude_code';
+                                    const label = a === 'claude_code' ? 'Claude Code' : a === 'hermes' ? 'Hermes' : 'OpenClaw';
+                                    return (
+                                        <span style={{
+                                            fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                            background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
+                                            letterSpacing: '0.5px',
+                                        }}>Bridge · {label} · Lab</span>
+                                    );
+                                })()}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                         Expires: {new Date((agent as any).expires_at).toLocaleString()}
