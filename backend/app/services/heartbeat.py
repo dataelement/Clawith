@@ -169,6 +169,10 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             model_temperature = model.temperature
             model_max_output_tokens = getattr(model, 'max_output_tokens', None)
             model_request_timeout = getattr(model, 'request_timeout', None)
+            model_auth_type = getattr(model, 'auth_type', 'static')
+            # Keep a reference to the detached model row for OAuth-backed calls (CodexOAuthClient
+            # opens its own session via session_factory on demand, so the detached instance is fine).
+            cached_model = model
 
             # Read HEARTBEAT.md if it exists, otherwise use default
             from pathlib import Path
@@ -255,17 +259,30 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         full_instruction = heartbeat_instruction + recent_context + inbox_context
 
         # Call LLM with tools using unified client
-        from app.services.llm import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
+        from app.services.llm import (
+            create_llm_client,
+            get_llm_client_for_model,
+            get_max_tokens,
+            LLMMessage,
+            LLMError,
+            get_model_api_key,
+        )
         from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
 
         try:
-            client = create_llm_client(
-                provider=model_provider,
-                api_key=model_api_key,
-                model=model_model,
-                base_url=model_base_url,
-                timeout=float(model_request_timeout or 120.0),
-            )
+            if model_auth_type == "codex_oauth":
+                client = get_llm_client_for_model(
+                    cached_model,
+                    timeout=float(model_request_timeout or 120.0),
+                )
+            else:
+                client = create_llm_client(
+                    provider=model_provider,
+                    api_key=model_api_key,
+                    model=model_model,
+                    base_url=model_base_url,
+                    timeout=float(model_request_timeout or 120.0),
+                )
         except Exception as e:
             logger.error(f"Failed to create LLM client: {e}")
             return

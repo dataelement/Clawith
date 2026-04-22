@@ -27,7 +27,7 @@ from app.services.token_tracker import record_token_usage, extract_usage_tokens,
 
 from .client import LLMError
 from .failover import classify_error, FailoverErrorType
-from .utils import LLMMessage, create_llm_client, get_max_tokens, get_model_api_key
+from .utils import LLMMessage, create_llm_client, get_llm_client_for_model, get_max_tokens, get_model_api_key
 
 if TYPE_CHECKING:
     from app.models.agent import Agent
@@ -329,13 +329,7 @@ async def call_llm(
 
     # Create the unified LLM client
     try:
-        client = create_llm_client(
-            provider=model.provider,
-            api_key=get_model_api_key(model),
-            model=model.model,
-            base_url=model.base_url,
-            timeout=_get_model_timeout(model),
-        )
+        client = get_llm_client_for_model(model, timeout=_get_model_timeout(model))
     except Exception as e:
         return f"[Error] Failed to create LLM client: {e}"
 
@@ -692,13 +686,7 @@ async def call_agent_llm_with_tools(
         _accumulated_tokens = 0
         tool_executed = False
         try:
-            client = create_llm_client(
-                provider=model.provider,
-                api_key=get_model_api_key(model),
-                model=model.model,
-                base_url=model.base_url,
-                timeout=_get_model_timeout(model),
-            )
+            client = get_llm_client_for_model(model, timeout=_get_model_timeout(model))
 
             max_tokens = get_max_tokens(
                 model.provider, model.model,

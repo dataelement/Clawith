@@ -5089,6 +5089,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 create_llm_client,
                 LLMMessage,
                 get_model_api_key,
+                get_llm_client_for_model,
                 LLMError,
             )
             from app.services.agent_tools import get_agent_tools_for_llm, execute_tool
@@ -5109,11 +5110,8 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
 
-            llm_client = create_llm_client(
-                provider=target_model.provider,
-                api_key=get_model_api_key(target_model),
-                model=target_model.model,
-                base_url=base_url,
+            llm_client = get_llm_client_for_model(
+                target_model,
                 timeout=float(getattr(target_model, 'request_timeout', None) or 120.0),
             )
             _A2A_RETRYABLE_MARKERS = (

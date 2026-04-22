@@ -108,6 +108,7 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
     from app.services.llm import (
         get_provider_base_url,
         create_llm_client,
+        get_llm_client_for_model,
         LLMMessage,
         get_model_api_key,
     )
@@ -137,11 +138,8 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
         LLMMessage(role="user", content=message),
     ]
 
-    client = create_llm_client(
-        provider=model.provider,
-        api_key=get_model_api_key(model),
-        model=model.model,
-        base_url=base_url,
+    client = get_llm_client_for_model(
+        model,
         timeout=float(getattr(model, 'request_timeout', None) or 60.0),
     )
     try:

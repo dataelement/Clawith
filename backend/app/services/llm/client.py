@@ -889,6 +889,127 @@ class OpenAIResponsesClient(LLMClient):
 
 
 # ============================================================================
+# Codex OAuth Client (ChatGPT Plus/Pro Subscription)
+# ============================================================================
+
+class CodexOAuthClient(OpenAIResponsesClient):
+    """OAuth-authenticated client for Codex via chatgpt.com/backend-api.
+
+    Uses the ChatGPT subscription OAuth flow (see app.services.llm.codex_oauth)
+    instead of a static API key. Token lifecycle (expiry check + refresh) is
+    handled against the llm_models row identified by `model_id`.
+    """
+
+    DEFAULT_BASE_URL = "https://chatgpt.com/backend-api"
+
+    def __init__(
+        self,
+        model_id: Any,
+        session_factory: Any,
+        model: str,
+        timeout: float = 120.0,
+        supports_tool_choice: bool = True,
+    ):
+        super().__init__(
+            api_key="",
+            base_url=self.DEFAULT_BASE_URL,
+            model=model,
+            timeout=timeout,
+            supports_tool_choice=supports_tool_choice,
+        )
+        self.model_id = model_id
+        self.session_factory = session_factory
+        self.account_id: str | None = None
+
+    def _get_headers(self) -> dict[str, str]:
+        from .codex_oauth import ORIGINATOR, OPENAI_BETA
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            "OpenAI-Beta": OPENAI_BETA,
+            "originator": ORIGINATOR,
+        }
+        if self.account_id:
+            headers["chatgpt-account-id"] = self.account_id
+        return headers
+
+    async def _ensure_fresh_token(self) -> None:
+        """Load access token from DB; refresh if near expiry, persisting the new tokens."""
+        from sqlalchemy import select
+        from app.config import get_settings
+        from app.core.security import decrypt_data, encrypt_data
+        from app.models.llm import LLMModel
+        from .codex_oauth import is_near_expiry, refresh_token
+
+        settings = get_settings()
+        async with self.session_factory() as session:
+            stmt = select(LLMModel).where(LLMModel.id == self.model_id).with_for_update()
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                raise LLMError(f"Codex OAuth model {self.model_id} not found")
+            if row.auth_type != "codex_oauth" or not row.oauth_refresh_token_encrypted:
+                raise LLMError(
+                    f"Model {self.model_id} is not configured for Codex OAuth"
+                )
+
+            expires_at = row.oauth_expires_at
+            needs_refresh = expires_at is None or is_near_expiry(expires_at)
+
+            if needs_refresh:
+                refresh_plain = decrypt_data(row.oauth_refresh_token_encrypted, settings.SECRET_KEY)
+                bundle = await refresh_token(refresh_plain)
+                row.oauth_access_token_encrypted = encrypt_data(bundle.access_token, settings.SECRET_KEY)
+                row.oauth_refresh_token_encrypted = encrypt_data(bundle.refresh_token, settings.SECRET_KEY)
+                row.oauth_expires_at = bundle.expires_at
+                if bundle.account_id:
+                    row.oauth_account_id = bundle.account_id
+                await session.commit()
+                self.api_key = bundle.access_token
+                self.account_id = bundle.account_id or row.oauth_account_id
+            else:
+                self.api_key = decrypt_data(row.oauth_access_token_encrypted or "", settings.SECRET_KEY)
+                self.account_id = row.oauth_account_id
+
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        await self._ensure_fresh_token()
+        return await super().complete(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        on_chunk: ChunkCallback | None = None,
+        on_thinking: ThinkingCallback | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        await self._ensure_fresh_token()
+        return await super().stream(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            on_chunk=on_chunk,
+            on_thinking=on_thinking,
+            **kwargs,
+        )
+
+
+# ============================================================================
 # Gemini Native Client
 # ============================================================================
 
@@ -1709,7 +1830,7 @@ class ProviderSpec:
 
     provider: str
     display_name: str
-    protocol: Literal["openai_compatible", "anthropic", "openai_responses", "gemini"]
+    protocol: Literal["openai_compatible", "anthropic", "openai_responses", "gemini", "codex_oauth"]
     default_base_url: str | None
     supports_tool_choice: bool = True
     default_max_tokens: int = 4096
@@ -1845,6 +1966,19 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url=None,
         default_max_tokens=4096,
     ),
+    "codex-oauth": ProviderSpec(
+        provider="codex-oauth",
+        display_name="OpenAI Codex (ChatGPT Subscription)",
+        protocol="codex_oauth",
+        default_base_url="https://chatgpt.com/backend-api",
+        supports_tool_choice=True,
+        default_max_tokens=16384,
+        model_max_tokens={
+            "gpt-5.1-codex": 16384,
+            "gpt-5.2-codex": 16384,
+            "gpt-5.1-codex-max": 32768,
+        },
+    ),
 }
 
 
@@ -1881,6 +2015,8 @@ PROVIDER_CLIENTS: dict[str, type[LLMClient]] = {
     spec.provider: (
         AnthropicClient
         if spec.protocol == "anthropic"
+        else CodexOAuthClient
+        if spec.protocol == "codex_oauth"
         else OpenAIResponsesClient
         if spec.protocol == "openai_responses"
         else GeminiClient
@@ -1959,6 +2095,9 @@ def create_llm_client(
     model: str,
     base_url: str | None = None,
     timeout: float = 120.0,
+    *,
+    model_id: Any = None,
+    session_factory: Any = None,
 ) -> LLMClient:
     """Create an LLM client for the given provider.
 
@@ -1968,12 +2107,14 @@ def create_llm_client(
         model: Model name
         base_url: Optional custom base URL
         timeout: Request timeout in seconds
+        model_id: Required for codex_oauth protocol; identifies the llm_models row
+        session_factory: Required for codex_oauth protocol; async session factory for token refresh
 
     Returns:
         An instance of the appropriate LLMClient subclass
 
     Raises:
-        ValueError: If provider is not supported
+        ValueError: If provider is not supported or required OAuth context is missing.
     """
     normalized_provider = normalize_provider(provider)
     spec = get_provider_spec(normalized_provider)
@@ -1988,6 +2129,19 @@ def create_llm_client(
             base_url=final_base_url,
             model=model,
             timeout=timeout,
+        )
+    elif spec and spec.protocol == "codex_oauth":
+        if model_id is None or session_factory is None:
+            raise ValueError(
+                "codex_oauth provider requires model_id and session_factory; "
+                "use get_llm_client_for_model(model) instead."
+            )
+        return CodexOAuthClient(
+            model_id=model_id,
+            session_factory=session_factory,
+            model=model,
+            timeout=timeout,
+            supports_tool_choice=spec.supports_tool_choice,
         )
     elif spec and spec.protocol == "openai_responses":
         return OpenAIResponsesClient(

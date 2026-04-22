@@ -55,6 +55,13 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       # Password reset token lifetime in minutes (default: 30)
       PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
+      # Bind the Codex OAuth loopback listener on 0.0.0.0 inside the container
+      # so that the mapped host port (1455) can reach it from the browser.
+      CODEX_OAUTH_LOOPBACK_HOST: 0.0.0.0
+    ports:
+      # Loopback port for Codex OAuth flow — OpenAI redirects the user's browser
+      # to http://localhost:1455/auth/callback, which must reach this container.
+      - "1455:1455"
     volumes:
       - ./backend:/app
       - ./backend/agent_data:/data/agents
