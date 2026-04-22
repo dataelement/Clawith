@@ -2,16 +2,64 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
-from app.models.user import User
+from app.models.user import User, Identity
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+# ─── User Search (for team member selector) ─────────────
+
+
+@router.get("/search")
+async def search_tenant_users(
+    q: str = "",
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search users in the same tenant by name or email. Available to all authenticated users."""
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="User has no tenant")
+
+    stmt = (
+        select(User)
+        .join(Identity, User.identity_id == Identity.id)
+        .where(
+            User.tenant_id == current_user.tenant_id,
+            User.is_active.is_(True),
+            User.id != current_user.id,
+        )
+    )
+
+    if q and q.strip():
+        pattern = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                User.display_name.ilike(pattern),
+                Identity.email.ilike(pattern),
+                Identity.username.ilike(pattern),
+            )
+        )
+
+    stmt = stmt.order_by(User.display_name).limit(50)
+    result = await db.execute(stmt)
+    users = result.scalars().all()
+
+    return [
+        {
+            "id": str(u.id),
+            "display_name": u.display_name or "",
+            "avatar_url": u.avatar_url,
+            "email": u.email or "",
+        }
+        for u in users
+    ]
 
 
 class UserQuotaUpdate(BaseModel):
