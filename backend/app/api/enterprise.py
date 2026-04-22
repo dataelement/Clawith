@@ -151,6 +151,27 @@ async def list_llm_models(
     return models
 
 
+_OAUTH_ONLY_PROVIDERS = {"codex-oauth"}
+
+
+def _reject_oauth_provider_via_static_form(provider: str | None) -> None:
+    """Block creating/updating OAuth-backed providers through the static API-key form.
+
+    These providers require OAuth tokens (not an API key) and must be provisioned
+    through their dedicated flow so both provider and auth_type stay consistent.
+    """
+    if provider and provider.strip().lower() in _OAUTH_ONLY_PROVIDERS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Provider '{provider}' cannot be created or updated via the "
+                "static form. Use POST /api/llm-models/codex-oauth/start for the "
+                "full OAuth flow, or POST /api/llm-models/codex-oauth/paste-creds "
+                "to import existing tokens."
+            ),
+        )
+
+
 @router.post("/llm-models", response_model=LLMModelOut, status_code=status.HTTP_201_CREATED)
 async def add_llm_model(
     data: LLMModelCreate,
@@ -159,6 +180,7 @@ async def add_llm_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Add a new LLM model to the tenant's pool (admin)."""
+    _reject_oauth_provider_via_static_form(data.provider)
     tid = tenant_id or (str(current_user.tenant_id) if current_user.tenant_id else None)
     model = LLMModel(
         provider=data.provider,
@@ -234,6 +256,27 @@ async def update_llm_model(
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
+
+    # Block turning a static row INTO an OAuth-only provider via this form.
+    _reject_oauth_provider_via_static_form(data.provider)
+    # For rows already OAuth-provisioned, identity fields (provider / base_url /
+    # api_key) must stay intact — rotating those is a re-connect, not an edit.
+    if model.auth_type == "codex_oauth":
+        if data.provider and data.provider != model.provider:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot change provider on a Codex OAuth model — re-connect instead.",
+            )
+        if hasattr(data, "base_url") and data.base_url is not None and data.base_url != model.base_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot change base_url on a Codex OAuth model.",
+            )
+        if data.api_key and data.api_key.strip() and not data.api_key.startswith("****"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Codex OAuth models don't use an API key; rotate via re-connect.",
+            )
 
     try:
         if data.provider:

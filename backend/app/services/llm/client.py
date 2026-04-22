@@ -1994,9 +1994,18 @@ def get_provider_spec(provider: str) -> ProviderSpec | None:
 
 
 def get_provider_manifest() -> list[dict[str, Any]]:
-    """List supported providers and capabilities for UI/config discovery."""
+    """List supported providers and capabilities for UI/config discovery.
+
+    Providers whose protocol requires out-of-band provisioning (e.g. an OAuth
+    flow) are intentionally hidden here so the generic "Add Model" form can't
+    create inconsistent rows. They are reachable through their dedicated
+    endpoints instead.
+    """
+    hidden_protocols = {"codex_oauth"}
     out: list[dict[str, Any]] = []
     for spec in PROVIDER_REGISTRY.values():
+        if spec.protocol in hidden_protocols:
+            continue
         out.append({
             "provider": spec.provider,
             "display_name": spec.display_name,

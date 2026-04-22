@@ -26,6 +26,7 @@ from __future__ import annotations
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -237,10 +238,32 @@ def _reject_non_codex_model(model: str) -> None:
         )
 
 
+def _resolve_tenant_id(tenant_id_override: str | None, current_user: Any) -> UUID | None:
+    """Resolve the target tenant for a new LLM model row.
+
+    Mirrors the override semantics of `add_llm_model` in enterprise.py so a
+    platform admin managing another tenant can create OAuth models on that
+    tenant's behalf. Falls back to the caller's own tenant.
+    """
+    raw = tenant_id_override or (
+        str(current_user.tenant_id) if getattr(current_user, "tenant_id", None) else None
+    )
+    if not raw:
+        return None
+    try:
+        return UUID(raw)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid tenant_id: {raw!r}",
+        ) from e
+
+
 async def _insert_oauth_model(
     db: AsyncSession,
     *,
     current_user: Any,
+    tenant_id_override: str | None,
     label: str,
     model: str,
     access_token: str,
@@ -250,7 +273,7 @@ async def _insert_oauth_model(
 ) -> LLMModel:
     settings = get_settings()
     row = LLMModel(
-        tenant_id=getattr(current_user, "tenant_id", None),
+        tenant_id=_resolve_tenant_id(tenant_id_override, current_user),
         provider="codex-oauth",
         model=model,
         label=label,
@@ -305,10 +328,16 @@ async def poll_oauth(
 @router.post("/complete", response_model=ModelCreatedResponse)
 async def complete_oauth(
     req: CompleteRequest,
+    tenant_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: Any = Depends(get_current_admin),
 ) -> ModelCreatedResponse:
-    """Exchange the authorization code for tokens and persist the model."""
+    """Exchange the authorization code for tokens and persist the model.
+
+    `tenant_id` (query) is optional and matches the semantics of
+    `POST /enterprise/llm-models`: a platform admin can provision the model
+    on behalf of another tenant. Without it, the caller's own tenant is used.
+    """
     _reject_non_codex_model(req.model)
 
     entry = _consume_session(req.state)
@@ -330,6 +359,7 @@ async def complete_oauth(
     row = await _insert_oauth_model(
         db,
         current_user=current_user,
+        tenant_id_override=tenant_id,
         label=req.label,
         model=req.model,
         access_token=bundle.access_token,
@@ -349,16 +379,21 @@ async def complete_oauth(
 @router.post("/paste-creds", response_model=ModelCreatedResponse)
 async def paste_credentials(
     req: PasteCredsRequest,
+    tenant_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: Any = Depends(get_current_admin),
 ) -> ModelCreatedResponse:
-    """Mode B fallback: import tokens directly (e.g. from ~/.codex/auth.json)."""
+    """Mode B fallback: import tokens directly (e.g. from ~/.codex/auth.json).
+
+    `tenant_id` (query) — same override semantics as `/complete`.
+    """
     _reject_non_codex_model(req.model)
     expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=max(0, req.expires_in_seconds))
     account_id = req.account_id or decode_account_id(req.access_token)
     row = await _insert_oauth_model(
         db,
         current_user=current_user,
+        tenant_id_override=tenant_id,
         label=req.label,
         model=req.model,
         access_token=req.access_token,
