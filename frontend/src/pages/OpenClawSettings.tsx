@@ -399,26 +399,8 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                             : 'Download a pre-configured installer. Run it on your local machine to install + autostart + connect. No Python required on Windows.'}
                     </p>
 
-                    {/* Runtime (readonly) */}
-                    {(() => {
-                        const a = (agent as any)?.bridge_adapter || 'claude_code';
-                        const label = a === 'claude_code' ? 'Claude Code' : a === 'hermes' ? 'Hermes' : 'OpenClaw';
-                        return (
-                            <div style={{
-                                marginBottom: '12px', padding: '10px 12px', borderRadius: '6px',
-                                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-                                fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px',
-                            }}>
-                                <span style={{ color: 'var(--text-tertiary)' }}>{isChinese ? '运行时：' : 'Runtime:'}</span>
-                                <span style={{ fontWeight: 600 }}>{label}</span>
-                                <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
-                                    {isChinese
-                                        ? `安装器会启用 [${a}] adapter`
-                                        : `installer will enable [${a}] adapter`}
-                                </span>
-                            </div>
-                        );
-                    })()}
+                    {/* Runtime selector (editable) */}
+                    <RuntimeSelector agent={agent} agentId={agentId} isChinese={isChinese} />
 
                     {/* Platform selector */}
                     <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
@@ -708,6 +690,108 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                         >
                             {isChinese ? '删除此 Agent' : 'Delete this Agent'}
                         </button>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// RuntimeSelector
+//
+// Lets the creator/admin change bridge_adapter after agent creation.
+// When it changes, the already-installed bridge keeps advertising the
+// old adapter until the user reinstalls — we surface that clearly
+// instead of silently drifting.
+// ────────────────────────────────────────────────────────────────
+interface RuntimeSelectorProps {
+    agent: any;
+    agentId: string;
+    isChinese: boolean;
+}
+
+function RuntimeSelector({ agent, agentId, isChinese }: RuntimeSelectorProps) {
+    const qc = useQueryClient();
+    const current: 'claude_code' | 'openclaw' | 'hermes' =
+        (agent?.bridge_adapter as any) || 'claude_code';
+    const [saving, setSaving] = useState<string | null>(null);
+    const [justChanged, setJustChanged] = useState(false);
+
+    const OPTIONS: { value: 'claude_code' | 'openclaw' | 'hermes'; label: string }[] = [
+        { value: 'claude_code', label: 'Claude Code' },
+        { value: 'openclaw', label: 'OpenClaw' },
+        { value: 'hermes', label: 'Hermes' },
+    ];
+
+    const onSelect = async (next: 'claude_code' | 'openclaw' | 'hermes') => {
+        if (next === current || saving) return;
+        setSaving(next);
+        try {
+            await agentApi.update(agentId, { bridge_adapter: next } as any);
+            await qc.invalidateQueries({ queryKey: ['agent', agentId] });
+            setJustChanged(true);
+        } catch (e) {
+            console.error('Failed to update runtime', e);
+            alert(isChinese ? '切换 runtime 失败，请稍后重试' : 'Failed to change runtime, please retry');
+        } finally {
+            setSaving(null);
+        }
+    };
+
+    return (
+        <div style={{ marginBottom: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                    {isChinese ? '运行时' : 'Runtime'}
+                </span>
+                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                    {isChinese ? '（创建后可切换）' : '(changeable after creation)'}
+                </span>
+            </div>
+            <div style={{ display: 'flex', gap: '6px' }}>
+                {OPTIONS.map(opt => {
+                    const selected = current === opt.value;
+                    const isLoading = saving === opt.value;
+                    return (
+                        <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => onSelect(opt.value)}
+                            disabled={!!saving}
+                            style={{
+                                flex: 1, padding: '8px 10px', borderRadius: '6px',
+                                cursor: saving ? 'not-allowed' : 'pointer',
+                                border: selected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                                background: selected ? 'rgba(99,102,241,0.08)' : 'transparent',
+                                fontSize: '12px', fontWeight: selected ? 600 : 500,
+                                opacity: saving && !selected && !isLoading ? 0.5 : 1,
+                            }}
+                        >
+                            {isLoading ? (isChinese ? '切换中…' : 'Saving…') : opt.label}
+                        </button>
+                    );
+                })}
+            </div>
+            {justChanged && (
+                <div style={{
+                    marginTop: '8px', padding: '10px 12px', borderRadius: '6px',
+                    background: 'rgba(255,180,50,0.10)', border: '1px solid rgba(255,180,50,0.30)',
+                    fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.55,
+                }}>
+                    {isChinese ? (
+                        <>
+                            已切换到 <strong>{OPTIONS.find(o => o.value === current)?.label}</strong>。
+                            之前安装过的 bridge 仍然只启用旧 runtime，请 <strong>重新下载安装器</strong> 并在本机运行，
+                            或在 <code>~/.clawith-bridge.toml</code> 里把 <code>[{current}]</code> 下的 <code>enabled</code> 改成 <code>true</code> 后重启 bridge。
+                        </>
+                    ) : (
+                        <>
+                            Switched to <strong>{OPTIONS.find(o => o.value === current)?.label}</strong>.
+                            Your already-installed bridge still only enables the old runtime —
+                            <strong> redownload the installer</strong> below and run it again on your local machine,
+                            or edit <code>~/.clawith-bridge.toml</code> to set <code>enabled = true</code> under <code>[{current}]</code> and restart the bridge.
+                        </>
                     )}
                 </div>
             )}

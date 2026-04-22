@@ -299,6 +299,7 @@ class AgentUpdate(BaseModel):
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
     bridge_mode: str | None = Field(default=None, pattern="^(disabled|enabled|auto)$")
+    bridge_adapter: str | None = Field(default=None, pattern="^(claude_code|openclaw|hermes)$")
 
 
 class AgentStatusOut(BaseModel):

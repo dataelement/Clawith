@@ -483,6 +483,12 @@ async def update_agent(
 
     update_data = data.model_dump(exclude_unset=True)
 
+    # bridge_adapter: only meaningful for bridge-style agents. Silently
+    # drop the field for native agents instead of erroring, so generic
+    # bulk-update flows don't have to know the agent type.
+    if "bridge_adapter" in update_data and getattr(agent, "agent_type", "native") != "openclaw":
+        update_data.pop("bridge_adapter", None)
+
     # expires_at: admin only
     if "expires_at" in update_data:
         if not is_admin:
