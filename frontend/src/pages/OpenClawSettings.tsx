@@ -74,6 +74,16 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
         enabled: !!agentId,
     });
 
+    // Live bridge status — used to detect adapter mismatch (agent expects
+    // one runtime, installed bridge advertises another).
+    const { data: bridgeStatus } = useQuery({
+        queryKey: ['bridge-status', agentId],
+        queryFn: () => agentApi.bridgeStatus(agentId),
+        enabled: !!agentId,
+        refetchInterval: 5000,
+        refetchIntervalInBackground: false,
+    });
+
     const handleScopeChange = async (newScope: string) => {
         try {
             await fetchAuth(`/agents/${agentId}/permissions`, {
@@ -400,7 +410,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                     </p>
 
                     {/* Runtime selector (editable) */}
-                    <RuntimeSelector agent={agent} agentId={agentId} isChinese={isChinese} />
+                    <RuntimeSelector agent={agent} agentId={agentId} isChinese={isChinese} bridgeStatus={bridgeStatus} />
 
                     {/* Platform selector */}
                     <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
@@ -709,9 +719,16 @@ interface RuntimeSelectorProps {
     agent: any;
     agentId: string;
     isChinese: boolean;
+    bridgeStatus?: { connected: boolean; applicable: boolean; adapters?: string[] };
 }
 
-function RuntimeSelector({ agent, agentId, isChinese }: RuntimeSelectorProps) {
+const ADAPTER_LABELS: Record<string, string> = {
+    claude_code: 'Claude Code',
+    openclaw: 'OpenClaw',
+    hermes: 'Hermes',
+};
+
+function RuntimeSelector({ agent, agentId, isChinese, bridgeStatus }: RuntimeSelectorProps) {
     const qc = useQueryClient();
     const current: 'claude_code' | 'openclaw' | 'hermes' =
         (agent?.bridge_adapter as any) || 'claude_code';
@@ -719,10 +736,17 @@ function RuntimeSelector({ agent, agentId, isChinese }: RuntimeSelectorProps) {
     const [justChanged, setJustChanged] = useState(false);
 
     const OPTIONS: { value: 'claude_code' | 'openclaw' | 'hermes'; label: string }[] = [
-        { value: 'claude_code', label: 'Claude Code' },
-        { value: 'openclaw', label: 'OpenClaw' },
-        { value: 'hermes', label: 'Hermes' },
+        { value: 'claude_code', label: ADAPTER_LABELS.claude_code },
+        { value: 'openclaw', label: ADAPTER_LABELS.openclaw },
+        { value: 'hermes', label: ADAPTER_LABELS.hermes },
     ];
+
+    // Live mismatch: bridge is connected but its TOML enables different adapters
+    // than what the agent expects. Auto-clears once the user reinstalls/reconfigures
+    // and the next poll reports the right adapter.
+    const liveAdapters: string[] = Array.isArray(bridgeStatus?.adapters) ? bridgeStatus!.adapters! : [];
+    const liveMismatch = !!(bridgeStatus?.connected && liveAdapters.length > 0 && !liveAdapters.includes(current));
+    const bridgeIsOn = !!bridgeStatus?.connected;
 
     const onSelect = async (next: 'claude_code' | 'openclaw' | 'hermes') => {
         if (next === current || saving) return;
@@ -773,7 +797,31 @@ function RuntimeSelector({ agent, agentId, isChinese }: RuntimeSelectorProps) {
                     );
                 })}
             </div>
-            {justChanged && (
+            {liveMismatch && (
+                <div style={{
+                    marginTop: '8px', padding: '10px 12px', borderRadius: '6px',
+                    background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.35)',
+                    fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.55,
+                }}>
+                    {isChinese ? (
+                        <>
+                            ⚠️ <strong>Runtime 不匹配</strong>：Agent 期望 <strong>{ADAPTER_LABELS[current]}</strong>，
+                            但本机 bridge 实际启用的是 <strong>{liveAdapters.map(a => ADAPTER_LABELS[a] || a).join(' / ')}</strong>。
+                            此时发消息会报 runtime 不可用。请 <strong>重新下载下方的安装器</strong> 并在本机运行，
+                            或编辑 <code>~/.clawith-bridge.toml</code> 把 <code>[{current}]</code> 下的 <code>enabled</code> 改成 <code>true</code>（同时把其他 runtime 的 <code>enabled</code> 改成 <code>false</code>）后重启 bridge。
+                        </>
+                    ) : (
+                        <>
+                            ⚠️ <strong>Runtime mismatch</strong>: this agent expects <strong>{ADAPTER_LABELS[current]}</strong>,
+                            but the bridge installed on your machine is advertising <strong>{liveAdapters.map(a => ADAPTER_LABELS[a] || a).join(' / ')}</strong>.
+                            Chatting will fail with "runtime not available". <strong>Redownload the installer</strong> below and run it again,
+                            or edit <code>~/.clawith-bridge.toml</code> to set <code>enabled = true</code> under <code>[{current}]</code>
+                            (and <code>false</code> for the others) and restart the bridge.
+                        </>
+                    )}
+                </div>
+            )}
+            {!liveMismatch && justChanged && !bridgeIsOn && (
                 <div style={{
                     marginTop: '8px', padding: '10px 12px', borderRadius: '6px',
                     background: 'rgba(255,180,50,0.10)', border: '1px solid rgba(255,180,50,0.30)',
@@ -781,16 +829,16 @@ function RuntimeSelector({ agent, agentId, isChinese }: RuntimeSelectorProps) {
                 }}>
                     {isChinese ? (
                         <>
-                            已切换到 <strong>{OPTIONS.find(o => o.value === current)?.label}</strong>。
-                            之前安装过的 bridge 仍然只启用旧 runtime，请 <strong>重新下载安装器</strong> 并在本机运行，
-                            或在 <code>~/.clawith-bridge.toml</code> 里把 <code>[{current}]</code> 下的 <code>enabled</code> 改成 <code>true</code> 后重启 bridge。
+                            已切换到 <strong>{ADAPTER_LABELS[current]}</strong>。Bridge 当前离线，
+                            无法验证它是否已启用新 runtime。请 <strong>重新下载下方的安装器</strong> 并在本机运行，
+                            或编辑 <code>~/.clawith-bridge.toml</code> 把 <code>[{current}]</code> 下的 <code>enabled</code> 改成 <code>true</code> 后重启 bridge。
                         </>
                     ) : (
                         <>
-                            Switched to <strong>{OPTIONS.find(o => o.value === current)?.label}</strong>.
-                            Your already-installed bridge still only enables the old runtime —
-                            <strong> redownload the installer</strong> below and run it again on your local machine,
-                            or edit <code>~/.clawith-bridge.toml</code> to set <code>enabled = true</code> under <code>[{current}]</code> and restart the bridge.
+                            Switched to <strong>{ADAPTER_LABELS[current]}</strong>. The bridge is offline right now,
+                            so we can't verify it has the new runtime enabled. <strong>Redownload the installer</strong> below
+                            and run it again, or edit <code>~/.clawith-bridge.toml</code> to set <code>enabled = true</code> under
+                            <code>[{current}]</code> and restart the bridge.
                         </>
                     )}
                 </div>

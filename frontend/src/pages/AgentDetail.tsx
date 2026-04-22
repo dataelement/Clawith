@@ -2837,12 +2837,24 @@ function AgentDetailInner() {
                                     const connected = !!bridgeStatus?.connected;
                                     // undefined while first request in flight → show neutral badge, no dot
                                     const loading = bridgeStatus === undefined;
-                                    const dotColor = loading ? 'transparent' : connected ? '#22c55e' : '#ef4444';
+                                    const liveAdapters: string[] = Array.isArray(bridgeStatus?.adapters) ? bridgeStatus!.adapters! : [];
+                                    const mismatch = connected && liveAdapters.length > 0 && !liveAdapters.includes(a);
+                                    // green = online+match, yellow = online+mismatch, red = offline, transparent = loading
+                                    const dotColor = loading
+                                        ? 'transparent'
+                                        : !connected
+                                            ? '#ef4444'
+                                            : mismatch
+                                                ? '#f59e0b'
+                                                : '#22c55e';
                                     const title = loading
                                         ? ''
-                                        : connected
-                                            ? `Bridge online (v${bridgeStatus?.bridge_version || '?'})${bridgeStatus?.active_sessions ? `, ${bridgeStatus.active_sessions} active session(s)` : ''}`
-                                            : 'Bridge offline — install or start the bridge on your local machine';
+                                        : !connected
+                                            ? 'Bridge offline — install or start the bridge on your local machine'
+                                            : mismatch
+                                                ? `Runtime mismatch: agent expects ${label}, bridge advertises ${liveAdapters.join(', ')}. Redownload installer from Settings.`
+                                                : `Bridge online (v${bridgeStatus?.bridge_version || '?'})${bridgeStatus?.active_sessions ? `, ${bridgeStatus.active_sessions} active session(s)` : ''}`;
+                                    const glow = connected && !mismatch ? '0 0 4px rgba(34,197,94,0.9)' : mismatch ? '0 0 4px rgba(245,158,11,0.9)' : undefined;
                                     return (
                                         <span
                                             title={title}
@@ -2855,7 +2867,7 @@ function AgentDetailInner() {
                                             <span style={{
                                                 width: '6px', height: '6px', borderRadius: '50%',
                                                 background: dotColor,
-                                                boxShadow: connected ? '0 0 4px rgba(34,197,94,0.9)' : undefined,
+                                                boxShadow: glow,
                                             }} />
                                             Bridge · {label} · Lab
                                         </span>
