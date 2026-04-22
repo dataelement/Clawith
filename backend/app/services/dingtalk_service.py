@@ -31,6 +31,38 @@ async def get_dingtalk_access_token(app_id: str, app_secret: str) -> dict:
             return {"errcode": -1, "errmsg": str(e)}
 
 
+async def get_dingtalk_user_detail(app_id: str, app_secret: str, userid: str) -> dict | None:
+    """Fetch user detail from DingTalk corp API by userid (staff_id).
+
+    Returns dict with mobile, email, org_email, unionid, name, etc.
+    Returns None on failure.
+
+    API: https://open.dingtalk.com/document/orgapp/query-user-details
+    """
+    token_result = await get_dingtalk_access_token(app_id, app_secret)
+    access_token = token_result.get("access_token")
+    if not access_token:
+        return None
+
+    url = "https://oapi.dingtalk.com/topapi/v2/user/get"
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.post(
+                url,
+                params={"access_token": access_token},
+                json={"userid": userid},
+            )
+            data = resp.json()
+            if data.get("errcode") == 0:
+                return data.get("result", {})
+            else:
+                logger.warning(f"[DingTalk] user/get failed for {userid}: {data.get('errmsg')}")
+                return None
+        except Exception as e:
+            logger.warning(f"[DingTalk] user/get error for {userid}: {e}")
+            return None
+
+
 async def send_dingtalk_v1_robot_oto_message(
     app_id: str,
     app_secret: str,
