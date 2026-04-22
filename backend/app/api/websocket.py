@@ -397,7 +397,7 @@ async def websocket_chat(
                 _sess = _sess_r.scalar_one_or_none()
                 if _sess:
                     _sess.last_message_at = _now
-                    if not history_messages and _sess.title.startswith("Session "):
+                    if not history_messages and (_sess.title.startswith("Session ") or _sess.title == "New Session"):
                         # Use display_content for title (avoids raw base64/markers)
                         title_src = display_content if display_content else content
                         # Clean up common prefixes from image/file messages
