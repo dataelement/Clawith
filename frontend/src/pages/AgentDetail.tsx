@@ -1334,6 +1334,18 @@ function AgentDetailInner() {
         enabled: !!id,
     });
 
+    // Live bridge status — only meaningful for bridge-style (agent_type=openclaw) agents.
+    // Polls while the user has the page open so the badge flips within a few seconds
+    // of the bridge connecting or dropping.
+    const isBridgeAgent = (agent as any)?.agent_type === 'openclaw';
+    const { data: bridgeStatus } = useQuery({
+        queryKey: ['bridge-status', id],
+        queryFn: () => agentApi.bridgeStatus(id!),
+        enabled: !!id && isBridgeAgent,
+        refetchInterval: isBridgeAgent ? 5000 : false,
+        refetchIntervalInBackground: false,
+    });
+
     // ── Aware tab data: triggers ──
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
         queryKey: ['triggers', id],
@@ -2822,12 +2834,31 @@ function AgentDetailInner() {
                                 {(agent as any).agent_type === 'openclaw' && (() => {
                                     const a = (agent as any).bridge_adapter || 'claude_code';
                                     const label = a === 'claude_code' ? 'Claude Code' : a === 'hermes' ? 'Hermes' : 'OpenClaw';
+                                    const connected = !!bridgeStatus?.connected;
+                                    // undefined while first request in flight → show neutral badge, no dot
+                                    const loading = bridgeStatus === undefined;
+                                    const dotColor = loading ? 'transparent' : connected ? '#22c55e' : '#ef4444';
+                                    const title = loading
+                                        ? ''
+                                        : connected
+                                            ? `Bridge online (v${bridgeStatus?.bridge_version || '?'})${bridgeStatus?.active_sessions ? `, ${bridgeStatus.active_sessions} active session(s)` : ''}`
+                                            : 'Bridge offline — install or start the bridge on your local machine';
                                     return (
-                                        <span style={{
-                                            fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                            background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
-                                            letterSpacing: '0.5px',
-                                        }}>Bridge · {label} · Lab</span>
+                                        <span
+                                            title={title}
+                                            style={{
+                                                fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
+                                                letterSpacing: '0.5px', display: 'inline-flex', alignItems: 'center', gap: '5px',
+                                            }}
+                                        >
+                                            <span style={{
+                                                width: '6px', height: '6px', borderRadius: '50%',
+                                                background: dotColor,
+                                                boxShadow: connected ? '0 0 4px rgba(34,197,94,0.9)' : undefined,
+                                            }} />
+                                            Bridge · {label} · Lab
+                                        </span>
                                     );
                                 })()}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (

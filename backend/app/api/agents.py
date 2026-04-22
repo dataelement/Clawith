@@ -877,6 +877,38 @@ async def download_bridge_installer(
     )
 
 
+@router.get("/{agent_id}/bridge-status")
+async def get_bridge_status(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return live bridge connection status for this agent.
+
+    Used by the AgentDetail page to show an online/offline badge so
+    users don't have to discover bridge-offline state by failing to
+    chat. In-memory only (session_dispatcher._bridges), so correct
+    for the single-process backend; a Redis presence map would be
+    needed for multi-worker deploys.
+    """
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if getattr(agent, "agent_type", "native") != "openclaw":
+        return {"connected": False, "applicable": False}
+
+    from app.services.local_agent.session_dispatcher import dispatcher
+    info = dispatcher.get_bridge_info(str(agent_id))
+    if info is None:
+        return {"connected": False, "applicable": True}
+    return {
+        "connected": True,
+        "applicable": True,
+        "bridge_version": info.get("bridge_version"),
+        "adapters": info.get("adapters") or [],
+        "connected_at": info.get("connected_at"),
+        "active_sessions": len(info.get("active_sessions") or []),
+    }
+
+
 @router.get("/{agent_id}/gateway-messages")
 async def list_gateway_messages(
     agent_id: uuid.UUID,
