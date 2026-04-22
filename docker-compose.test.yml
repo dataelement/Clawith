@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    networks:
+      - clawith_codex_net
+    environment:
+      POSTGRES_USER: clawith
+      POSTGRES_PASSWORD: clawith
+      POSTGRES_DB: clawith
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U clawith" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - clawith_codex_net
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
+        CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
+    restart: unless-stopped
+    command: ["/bin/bash", "/app/entrypoint.sh"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
+      REDIS_URL: redis://redis:6379/0
+      AGENT_DATA_DIR: /data/agents
+      AGENT_TEMPLATE_DIR: /app/agent_template
+      SECRET_KEY: codex-test-secret-key-do-not-use-in-prod
+      JWT_SECRET_KEY: codex-test-jwt-secret-do-not-use-in-prod
+      CORS_ORIGINS: '["*"]'
+      DOCKER_NETWORK: clawith_codex_net
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3009}
+      CODEX_OAUTH_LOOPBACK_HOST: 0.0.0.0
+    ports:
+      - "1455:1455"
+    volumes:
+      - ./backend:/app
+      - ./backend/agent_data:/data/agents
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - clawith_codex_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "3009:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    networks:
+      - clawith_codex_net
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  clawith_codex_net:
+    name: clawith_codex_network
