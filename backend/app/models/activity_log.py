@@ -22,6 +22,7 @@ class AgentActivityLog(Base):
             "chat_reply", "tool_call", "feishu_msg_sent", "agent_msg_sent",
             "web_msg_sent", "task_created", "task_updated", "file_written", "error",
             "schedule_run", "heartbeat", "plaza_post",
+            "bridge_attached", "bridge_detached",
             name="activity_action_enum",
             create_constraint=False,
         ),
