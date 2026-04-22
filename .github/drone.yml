@@ -1,0 +1,149 @@
+# ============================================================
+# Clawith CI/CD Pipeline
+# 基于 Drone CI 的自动化构建和部署配置 (私有服务器环境)
+# ============================================================
+
+kind: pipeline
+type: docker
+name: clawith-private-cicd
+
+# 配置工作区，用于跨步骤共享文件
+workspace:
+  path: /drone/src
+
+# 禁用默认克隆，使用自定义克隆步骤
+clone:
+  disable: true
+
+steps:
+  # --------------------------------------------------------
+  # Step 1: 代码克隆
+  # 使用浅克隆加速代码拉取
+  # --------------------------------------------------------
+  - name: clone
+    image: alpine/git
+    pull: if-not-exists
+    environment:
+      http_proxy:
+        from_secret: PROXY
+      https_proxy:
+        from_secret: PROXY
+    commands:
+      - git config --global core.compression 0
+      - git config --global http.postBuffer 524288000
+      - git clone https://github.com/dataelement/Clawith.git .
+      - git checkout $DRONE_COMMIT
+
+  # --------------------------------------------------------
+  # Step 2: 构建 Docker 镜像并保存
+  # 构建后端和前端应用镜像并保存为本地文件
+  # --------------------------------------------------------
+  - name: build-and-save
+    image: docker:24.0.6
+    pull: if-not-exists
+    privileged: true
+    volumes:
+      - name: docker-socket
+        path: /var/run/docker.sock
+      - name: docker-cache
+        path: /var/cache/docker
+    environment:
+      http_proxy:
+        from_secret: PROXY
+      https_proxy:
+        from_secret: PROXY
+      # 如果需要可以加 no_proxy
+      # 镜像配置
+      BACKEND_IMAGE: clawith-backend
+      FRONTEND_IMAGE: clawith-frontend
+      IMAGE_TAG: private
+    commands:
+      - echo "========================================"
+      - echo "🚀 开始构建 Docker 镜像"
+      - echo "事件： $DRONE_BUILD_EVENT"
+      - echo "目标分支： $DRONE_BRANCH"
+      - echo "来源分支： $DRONE_SOURCE_BRANCH"
+      - echo "提交： $DRONE_COMMIT_SHORT"
+      - echo "作者： $DRONE_COMMIT_AUTHOR"
+      - echo "========================================"
+      # 构建后端镜像
+      - docker build -t $BACKEND_IMAGE:$IMAGE_TAG -f backend/Dockerfile ./backend
+      # 构建前端镜像
+      - docker build -t $FRONTEND_IMAGE:$IMAGE_TAG -f frontend/Dockerfile ./frontend
+      # 保存镜像为 tar 文件
+      - docker save -o clawith-backend-private.tar $BACKEND_IMAGE:$IMAGE_TAG
+      - docker save -o clawith-frontend-private.tar $FRONTEND_IMAGE:$IMAGE_TAG
+      # 设置文件权限，确保可以被其他步骤读取
+      - chmod 644 clawith-backend-private.tar clawith-frontend-private.tar
+      - ls -la *.tar
+
+  # --------------------------------------------------------
+  # Step 3: 传输镜像文件到私有服务器
+  # --------------------------------------------------------
+  - name: scp-image
+    image: appleboy/drone-scp
+    pull: if-not-exists
+    settings:
+      host:
+        from_secret: PRIVATE_SERVER_IP  # 在 Drone Secret 中配置私有服务器 IP，或直接写死
+      username: root
+      password:
+        from_secret: sshpwd
+      port: 22
+      command_timeout: 10m
+      target: /opt/server/clawith-private/
+      source:
+        - clawith-backend-private.tar
+        - clawith-frontend-private.tar
+      rm: false
+
+  # --------------------------------------------------------
+  # Step 4: 部署到私有服务器环境
+  # 在目标服务器上加载镜像并启动服务
+  # --------------------------------------------------------
+  - name: deploy-to-private
+    image: appleboy/drone-ssh
+    pull: if-not-exists
+    settings:
+      host:
+        from_secret: PRIVATE_SERVER_IP
+      username: root
+      password:
+        from_secret: sshpwd
+      script:
+        - echo "========================================"
+        - echo "🔄 开始部署到私有服务器环境"
+        - echo "========================================"
+        - DEPLOY_DIR=/opt/server/clawith-private
+        # 进入部署目录
+        - cd $DEPLOY_DIR || exit 1
+        # 加载镜像
+        - echo "📦 加载 Docker 镜像"
+        - docker load -i clawith-backend-private.tar
+        - docker load -i clawith-frontend-private.tar
+        # 清理传输的镜像文件
+        - rm -f clawith-backend-private.tar clawith-frontend-private.tar
+        # 重启服务 (假设目标服务器的 docker-compose.yml 已经配置好引用相关的镜像，或默认使用构建的 image 名称)
+        - echo "🚀 启动服务"
+        - docker compose up -d --force-recreate --no-deps backend frontend
+        # 等待后端服务启动并从日志中验证是否成功
+        - echo "⏳ 正在等待后端服务启动并验证日志..."
+        - timeout 60s bash -c 'until docker compose logs --tail=100 backend | grep -q "Application startup complete"; do sleep 3; done' || (echo "❌ 后端启动失败或超时，打印最近日志：" && docker compose logs --tail=50 backend && exit 1)
+        - docker compose ps
+        # 清理旧镜像
+        - docker image prune -af --filter "until=168h"
+        - echo "✅ 部署完成"
+
+trigger:
+  branch:
+    - main
+    - release
+    - feat-devops
+  event:
+    - push
+    - pull_request
+
+volumes:
+- name: docker-socket # 使用宿主机的docker
+  host: 
+    path: /var/run/docker.sock

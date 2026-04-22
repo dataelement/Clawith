@@ -1,0 +1,93 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * 1'  # Runs weekly on Mondays at 2 AM UTC
+
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner in repo mode
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Trivy vulnerability scanner in image mode for backend
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'backend'
+          format: 'table'
+          scan-type: 'image'
+          security-checks: 'vuln,config,secret'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Run Trivy vulnerability scanner in image mode for frontend
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'frontend'
+          format: 'table'
+          scan-type: 'image'
+          security-checks: 'vuln,config,secret'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  docker-scan:
+    name: Docker Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image for backend
+        run: |
+          docker build -t clawith-backend:${{ github.sha }} ./backend
+
+      - name: Build Docker image for frontend
+        run: |
+          docker build -t clawith-frontend:${{ github.sha }} ./frontend
+
+      - name: Run Trivy vulnerability scanner on backend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'clawith-backend:${{ github.sha }}'
+          format: 'table'
+          scan-type: 'image'
+          security-checks: 'vuln'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Run Trivy vulnerability scanner on frontend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'clawith-frontend:${{ github.sha }}'
+          format: 'table'
+          scan-type: 'image'
+          security-checks: 'vuln'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'

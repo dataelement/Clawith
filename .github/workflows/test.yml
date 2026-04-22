@@ -1,0 +1,115 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main, develop ]
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.11, 3.12]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install Poetry
+      run: |
+        pip install poetry
+        poetry --version
+
+    - name: Cache Poetry virtualenv
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pypoetry/virtualenvs
+        key: ${{ runner.os }}-poetry-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+
+    - name: Install dependencies
+      run: |
+        cd backend
+        poetry install --with dev
+
+    - name: Lint with Ruff
+      run: |
+        cd backend
+        poetry run ruff check .
+
+    - name: Format check with Ruff
+      run: |
+        cd backend
+        poetry run ruff format --check .
+
+    - name: Run backend tests
+      run: |
+        cd backend
+        poetry run pytest tests/ -v --cov=app --cov-report=xml
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./backend/coverage.xml
+        flags: backend
+        name: codecov-backend
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install frontend dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Run frontend unit and service tests
+      run: |
+        cd frontend
+        npm run test:run
+
+  frontend-e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install frontend dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Install Playwright browsers
+      run: |
+        cd frontend
+        npx playwright install --with-deps
+
+    - name: Run frontend e2e tests
+      run: |
+        cd frontend
+        npm run test:e2e

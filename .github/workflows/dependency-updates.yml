@@ -1,0 +1,47 @@
+name: Dependency Updates
+
+on:
+  schedule:
+    - cron: '0 3 1 * *'  # Runs monthly on the 1st at 3 AM UTC
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  update-deps:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry --version
+
+      - name: Update backend dependencies
+        run: |
+          cd backend
+          poetry update
+          poetry lock --no-update
+
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update backend dependencies"
+          branch: dependabot/updates
+          create_branch: true
+          file_pattern: 'backend/**'
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: dependabot/updates
+          title: "Update Dependencies"
+          body: "Automated dependency updates for backend"
+          assignees: ${{ github.actor }}
