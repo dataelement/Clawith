@@ -31,3 +31,7 @@ include = ["clawith_bridge*"]
 
 [tool.setuptools.package-data]
 clawith_bridge = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

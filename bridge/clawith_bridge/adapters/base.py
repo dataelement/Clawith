@@ -321,8 +321,11 @@ class DaemonAdapter(BaseAdapter):
         try:
             task_id = await self.start_session_request(prompt, params, cwd)
         except Exception as e:
+            # Surface as an event (for visibility) AND re-raise so the session
+            # manager emits session.error (non-zero exit) rather than a silent
+            # session.done with empty final_text. See test_base_daemon_error_surfacing.
             yield SessionEvent(kind="stderr_chunk", payload={"text": f"daemon start failed: {e}"})
-            return
+            raise
         self._tasks[session_id] = task_id
         final_accum: list[str] = []
         try:
