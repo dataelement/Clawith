@@ -85,3 +85,34 @@ def test_canonical_is_always_valid_json_even_on_failure():
         _, canonical, _ = canonicalize_tool_arguments(raw or "")
         # Must not raise
         json.loads(canonical)
+
+
+def test_trailing_comma_inside_string_value_is_not_stripped():
+    """Regression: regex-based stripping would silently corrupt
+    `{"a": "hello,}", "b": 1,}` by eating the comma inside the string value.
+    The string-aware walker must preserve string content exactly."""
+    raw = '{"a": "hello,}", "b": 1,}'
+    parsed, canonical, method = canonicalize_tool_arguments(raw)
+    assert parsed == {"a": "hello,}", "b": 1}
+    assert method == "trailing_comma"
+    import json
+    assert json.loads(canonical) == parsed
+
+
+def test_trailing_comma_inside_escaped_string_not_stripped():
+    """Escaped quote inside a string must not end the string prematurely."""
+    raw = '{"a": "he said \\"hi,}\\"", "b": 1,}'
+    parsed, canonical, method = canonicalize_tool_arguments(raw)
+    assert parsed == {"a": 'he said "hi,}"', "b": 1}
+    assert method == "trailing_comma"
+
+
+def test_non_dict_top_level_is_coerced_with_explicit_method():
+    """A top-level array or scalar is not a valid tool_call args object.
+    Must be coerced to {} AND reported as non_dict_coerced (not "clean")
+    so observability can flag the data-loss event."""
+    for raw in ['[1, 2, 3]', '"just a string"', '42', 'null']:
+        parsed, canonical, method = canonicalize_tool_arguments(raw)
+        assert parsed == {}
+        assert canonical == "{}"
+        assert method == "non_dict_coerced", f"raw={raw!r} got method={method}"
