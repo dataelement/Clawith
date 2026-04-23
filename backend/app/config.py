@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     SANDBOX_DEFAULT_TIMEOUT: int = 30
     SANDBOX_MAX_TIMEOUT: int = 60
 
+    # Tool loop runner (RFC-001 Step A)
+    TOOL_LOOP_V2: bool = False
+    TOOL_LOOP_DEFAULT_MAX_ROUNDS: int = 50
+
     model_config = {
         "env_file": [".env", "../.env"],
         "env_file_encoding": "utf-8",
