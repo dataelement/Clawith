@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback, Component, Er
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { createPortal } from 'react-dom';
 
 import ConfirmModal from '../components/ConfirmModal';
 import type { FileBrowserApi } from '../components/FileBrowser';
@@ -12,7 +13,7 @@ import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import AgentCredentials from '../components/AgentCredentials';
-import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
+import { activityApi, agentApi, channelApi, chatSessionApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
@@ -1448,6 +1449,11 @@ function AgentDetailInner() {
     const [historyMsgs, setHistoryMsgs] = useState<any[]>([]);
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
+    const [showContextBudgetPopover, setShowContextBudgetPopover] = useState(false);
+    const contextBudgetTriggerRef = useRef<HTMLButtonElement>(null);
+    const contextBudgetPopoverRef = useRef<HTMLDivElement>(null);
+    const [contextBudgetPopoverPos, setContextBudgetPopoverPos] = useState({ top: 0, left: 0 });
+    const contextBudgetCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [agentExpired, setAgentExpired] = useState(false);
     // Websocket chat state (for 'me' conversation)
     const token = useAuthStore((s) => s.token);
@@ -1472,6 +1478,17 @@ function AgentDetailInner() {
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
+
+    const {
+        data: sessionContextBudget,
+        isFetching: sessionContextBudgetFetching,
+        refetch: refetchSessionContextBudget,
+    } = useQuery({
+        queryKey: ['agent-detail-chat-context-budget', id, activeSession?.id],
+        queryFn: () => chatSessionApi.contextBudget(id!, String(activeSession?.id)),
+        enabled: !!id && activeTab === 'chat' && !!activeSession?.id,
+        refetchInterval: activeTab === 'chat' && activeSession?.id ? 15000 : false,
+    });
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
 
@@ -1808,6 +1825,60 @@ function AgentDetailInner() {
     const chatInputRef = useRef<HTMLTextAreaElement>(null);
     const chatInputAreaRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const usageRatioRaw = sessionContextBudget?.usage_ratio ?? 0;
+    const usageRatio = Number.isFinite(usageRatioRaw) ? Math.max(usageRatioRaw, 0) : 0;
+    const usageRatioClamped = Math.min(usageRatio, 1);
+    const usagePercent = Math.round(usageRatio * 1000) / 10;
+    const contextRingColor = usageRatio >= 1
+        ? 'var(--error)'
+        : usageRatio >= 0.8
+            ? 'var(--warning)'
+            : usageRatio >= 0.6
+                ? 'var(--info)'
+                : 'var(--text-secondary)';
+    const contextRingRadius = 8;
+    const contextRingCircumference = 2 * Math.PI * contextRingRadius;
+    const contextRingOffset = contextRingCircumference * (1 - usageRatioClamped);
+    const formatBudgetCount = (value: number | undefined) => (typeof value === 'number' ? value.toLocaleString() : '—');
+    const clearContextBudgetCloseTimer = useCallback(() => {
+        if (contextBudgetCloseTimerRef.current) {
+            clearTimeout(contextBudgetCloseTimerRef.current);
+            contextBudgetCloseTimerRef.current = null;
+        }
+    }, []);
+    const updateContextBudgetPopoverPosition = useCallback(() => {
+        const rect = contextBudgetTriggerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setContextBudgetPopoverPos({
+            top: Math.max(8, rect.top - 10),
+            left: Math.min(window.innerWidth - 12, rect.right),
+        });
+    }, []);
+    const openContextBudgetPopover = useCallback(() => {
+        clearContextBudgetCloseTimer();
+        updateContextBudgetPopoverPosition();
+        setShowContextBudgetPopover(true);
+    }, [clearContextBudgetCloseTimer, updateContextBudgetPopoverPosition]);
+    const scheduleCloseContextBudgetPopover = useCallback(() => {
+        clearContextBudgetCloseTimer();
+        contextBudgetCloseTimerRef.current = setTimeout(() => {
+            setShowContextBudgetPopover(false);
+            contextBudgetCloseTimerRef.current = null;
+        }, 90);
+    }, [clearContextBudgetCloseTimer]);
+
+    useEffect(() => {
+        if (!showContextBudgetPopover) return;
+        const handleMove = () => updateContextBudgetPopoverPosition();
+        window.addEventListener('resize', handleMove);
+        window.addEventListener('scroll', handleMove, true);
+        return () => {
+            window.removeEventListener('resize', handleMove);
+            window.removeEventListener('scroll', handleMove, true);
+        };
+    }, [showContextBudgetPopover, updateContextBudgetPopoverPosition]);
+
+    useEffect(() => () => clearContextBudgetCloseTimer(), [clearContextBudgetCloseTimer]);
 
     // Settings form local state
     const [settingsForm, setSettingsForm] = useState({
@@ -2094,6 +2165,7 @@ function AgentDetailInner() {
                     return [...prev, parseChatMsg({ role: d.role, content: d.content, timestamp: new Date().toISOString() })];
                 });
                 fetchMySessions(true, agentId);
+                refetchSessionContextBudget();
             } else if (d.type === 'error' || d.type === 'quota_exceeded') {
                 const msg = d.content || d.detail || d.message || 'Request denied';
                 setChatMessages(prev => {
@@ -4619,7 +4691,7 @@ function AgentDetailInner() {
                                             </div>
                                         ) : null}
                                         <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
-                                            <div className="chat-composer">
+                                            <div className="chat-composer" style={{ position: 'relative' }}>
                                             {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
                                                 <div className="chat-composer-attachments">
                                                     {chatUploadDrafts.map((draft) => (
@@ -4676,7 +4748,7 @@ function AgentDetailInner() {
                                                     ))}
                                                 </div>
                                             )}
-                                            <div className="chat-composer-input-block">
+                                            <div className="chat-composer-input-block" style={{ paddingRight: '40px' }}>
                                                 <textarea
                                                     ref={chatInputRef}
                                                     className="chat-input"
@@ -4743,6 +4815,111 @@ function AgentDetailInner() {
                                                     </button>
                                                 )}
                                             </div>
+                                            <div
+                                                style={{ position: 'absolute', top: '8px', right: '8px', zIndex: 5 }}
+                                                onMouseEnter={openContextBudgetPopover}
+                                                onMouseLeave={scheduleCloseContextBudgetPopover}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    ref={contextBudgetTriggerRef}
+                                                    className="chat-composer-btn"
+                                                    aria-label={t('agent.chat.contextBudget.aria')}
+                                                    style={{
+                                                        cursor: activeSession?.id ? 'pointer' : 'default',
+                                                        opacity: activeSession?.id ? 1 : 0.55,
+                                                        border: '1px solid var(--border-subtle)',
+                                                        borderRadius: '6px',
+                                                    }}
+                                                >
+                                                    <svg width="16" height="16" viewBox="0 0 20 20" role="presentation">
+                                                        <circle
+                                                            cx="10"
+                                                            cy="10"
+                                                            r={contextRingRadius}
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            strokeOpacity="0.3"
+                                                            strokeWidth="2.2"
+                                                        />
+                                                        <circle
+                                                            cx="10"
+                                                            cy="10"
+                                                            r={contextRingRadius}
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            strokeWidth="2.2"
+                                                            strokeLinecap="round"
+                                                            strokeDasharray={`${contextRingCircumference} ${contextRingCircumference}`}
+                                                            strokeDashoffset={contextRingOffset}
+                                                            transform="rotate(-90 10 10)"
+                                                            style={{ transition: 'stroke-dashoffset 180ms ease' }}
+                                                        />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                            {showContextBudgetPopover && typeof document !== 'undefined' && createPortal(
+                                                <div
+                                                    ref={contextBudgetPopoverRef}
+                                                    onMouseEnter={openContextBudgetPopover}
+                                                    onMouseLeave={scheduleCloseContextBudgetPopover}
+                                                    style={{
+                                                        position: 'fixed',
+                                                        top: contextBudgetPopoverPos.top,
+                                                        left: contextBudgetPopoverPos.left,
+                                                        transform: 'translate(-100%, -100%)',
+                                                        minWidth: '292px',
+                                                        border: '1px solid var(--border-default)',
+                                                        borderRadius: '12px',
+                                                        padding: '12px',
+                                                        background: 'var(--bg-elevated)',
+                                                        boxShadow: 'var(--shadow-md)',
+                                                        zIndex: 2000,
+                                                    }}
+                                                >
+                                                    <div style={{
+                                                        position: 'absolute',
+                                                        right: '12px',
+                                                        bottom: '-6px',
+                                                        width: '10px',
+                                                        height: '10px',
+                                                        borderRight: '1px solid var(--border-default)',
+                                                        borderBottom: '1px solid var(--border-default)',
+                                                        background: 'var(--bg-elevated)',
+                                                        transform: 'rotate(45deg)',
+                                                    }} />
+                                                    <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                        <span>{t('agent.chat.contextBudget.title')}</span>
+                                                        <span style={{ color: contextRingColor, fontWeight: 700 }}>{usagePercent.toFixed(1)}%</span>
+                                                    </div>
+                                                    <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(127,127,127,0.18)', overflow: 'hidden', marginBottom: '10px' }}>
+                                                        <div style={{ height: '100%', width: `${Math.min(usageRatio, 1.2) * 100}%`, borderRadius: '999px', background: contextRingColor }} />
+                                                    </div>
+                                                    {!activeSession?.id ? (
+                                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                            {t('agent.chat.contextBudget.unavailable')}
+                                                        </div>
+                                                    ) : sessionContextBudgetFetching && !sessionContextBudget ? (
+                                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                            {t('agent.chat.contextBudget.loading')}
+                                                        </div>
+                                                    ) : (
+                                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: '6px', columnGap: '10px', fontSize: '12px' }}>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.windowSize')}</span>
+                                                            <span>{formatBudgetCount(sessionContextBudget?.window_size_messages)}</span>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.sessionMessages')}</span>
+                                                            <span>{formatBudgetCount(sessionContextBudget?.session_messages_total)}</span>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.estimatedTokens')}</span>
+                                                            <span>{formatBudgetCount(sessionContextBudget?.estimated_tokens_current_window)}</span>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.budgetTokens')}</span>
+                                                            <span>{formatBudgetCount(sessionContextBudget?.budget_tokens)}</span>
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.usageRatio')}</span>
+                                                            <span style={{ color: contextRingColor, fontWeight: 700 }}>{usagePercent.toFixed(1)}%</span>
+                                                        </div>
+                                                    )}
+                                                </div>,
+                                                document.body
+                                            )}
                                         </div>
                                         </div>
                                     </div>

@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
-import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
+import { agentApi, chatSessionApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { formatFileSize } from '../utils/formatFileSize';
 import { useAuthStore } from '../stores';
@@ -279,6 +279,7 @@ export default function Chat() {
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [livePanelVisible, setLivePanelVisible] = useState(false);
     const [wsSessionId, setWsSessionId] = useState<string>('');
+    const [showBudgetPopover, setShowBudgetPopover] = useState(false);
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -298,6 +299,26 @@ export default function Chat() {
         queryKey: ['llm-models'],
         queryFn: () => enterpriseApi.llmModels(),
         enabled: !!agent?.primary_model_id,
+    });
+
+    const { data: mineSessions = [], refetch: refetchMineSessions } = useQuery({
+        queryKey: ['chat-sessions-mine', id],
+        queryFn: () => chatSessionApi.listMine(id!),
+        enabled: !!id && !!token,
+        refetchInterval: 15000,
+    });
+
+    const activeSessionId = mineSessions[0]?.id;
+
+    const {
+        data: contextBudget,
+        isFetching: contextBudgetFetching,
+        refetch: refetchContextBudget,
+    } = useQuery({
+        queryKey: ['chat-context-budget', id, activeSessionId],
+        queryFn: () => chatSessionApi.contextBudget(id!, activeSessionId!),
+        enabled: !!id && !!token && !!activeSessionId,
+        refetchInterval: 15000,
     });
 
     const supportsVision = !!agent?.primary_model_id && llmModels.some(
@@ -590,6 +611,8 @@ export default function Chat() {
                         }
                         return updated;
                     });
+                    refetchMineSessions();
+                    refetchContextBudget();
                 } else {
                     // Legacy format: {role, content}
                     setMessages(prev => [...prev, { role: data.role, content: data.content }]);
@@ -721,6 +744,21 @@ export default function Chat() {
     };
 
     const hasLiveData = !!(liveState.desktop || liveState.browser || liveState.code);
+    const usageRatioRaw = contextBudget?.usage_ratio ?? 0;
+    const usageRatio = Number.isFinite(usageRatioRaw) ? Math.max(usageRatioRaw, 0) : 0;
+    const usageRatioClamped = Math.min(usageRatio, 1);
+    const usagePercent = Math.round(usageRatio * 1000) / 10;
+    const ringColor = usageRatio >= 1
+        ? 'var(--error)'
+        : usageRatio >= 0.8
+            ? 'var(--warning)'
+            : usageRatio >= 0.6
+                ? 'var(--info)'
+                : 'var(--text-secondary)';
+    const ringRadius = 8;
+    const ringCircumference = 2 * Math.PI * ringRadius;
+    const ringOffset = ringCircumference * (1 - usageRatioClamped);
+    const formatCount = (value: number | undefined) => (typeof value === 'number' ? value.toLocaleString() : '—');
 
     // ── Drag-and-drop file upload ──
     const handleDroppedFiles = useCallback(async (files: File[]) => {
@@ -777,6 +815,91 @@ export default function Chat() {
                             <span style={{ color: 'var(--text-tertiary)' }}>{connected ? t('agent.chat.connected') : t('agent.chat.disconnected')}</span>
                         </div>
                     </div>
+                </div>
+                <div
+                    style={{ position: 'relative' }}
+                    onMouseEnter={() => setShowBudgetPopover(true)}
+                    onMouseLeave={() => setShowBudgetPopover(false)}
+                >
+                    <button
+                        type="button"
+                        aria-label={t('agent.chat.contextBudget.aria')}
+                        style={{
+                            width: '30px',
+                            height: '30px',
+                            borderRadius: '999px',
+                            border: '1px solid var(--border-default)',
+                            background: 'var(--bg-elevated)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: 0,
+                            transition: 'all 120ms ease',
+                        }}
+                    >
+                        <svg width="20" height="20" viewBox="0 0 20 20" role="presentation">
+                            <circle
+                                cx="10"
+                                cy="10"
+                                r={ringRadius}
+                                fill="none"
+                                stroke="var(--border-default)"
+                                strokeWidth="3"
+                            />
+                            <circle
+                                cx="10"
+                                cy="10"
+                                r={ringRadius}
+                                fill="none"
+                                stroke={ringColor}
+                                strokeWidth="3"
+                                strokeLinecap="round"
+                                strokeDasharray={`${ringCircumference} ${ringCircumference}`}
+                                strokeDashoffset={ringOffset}
+                                transform="rotate(-90 10 10)"
+                            />
+                        </svg>
+                    </button>
+                    {showBudgetPopover && (
+                        <div style={{
+                            position: 'absolute',
+                            top: 'calc(100% + 8px)',
+                            right: 0,
+                            minWidth: '260px',
+                            border: '1px solid var(--border-default)',
+                            borderRadius: '10px',
+                            padding: '10px 12px',
+                            background: 'var(--bg-elevated)',
+                            boxShadow: 'var(--shadow-md)',
+                            zIndex: 20,
+                        }}>
+                            <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '8px' }}>
+                                {t('agent.chat.contextBudget.title')}
+                            </div>
+                            {!activeSessionId ? (
+                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                    {t('agent.chat.contextBudget.unavailable')}
+                                </div>
+                            ) : contextBudgetFetching && !contextBudget ? (
+                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                    {t('agent.chat.contextBudget.loading')}
+                                </div>
+                            ) : (
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: '6px', columnGap: '10px', fontSize: '12px' }}>
+                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.windowSize')}</span>
+                                    <span>{formatCount(contextBudget?.window_size_messages)}</span>
+                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.sessionMessages')}</span>
+                                    <span>{formatCount(contextBudget?.session_messages_total)}</span>
+                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.estimatedTokens')}</span>
+                                    <span>{formatCount(contextBudget?.estimated_tokens_current_window)}</span>
+                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.budgetTokens')}</span>
+                                    <span>{formatCount(contextBudget?.budget_tokens)}</span>
+                                    <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.chat.contextBudget.usageRatio')}</span>
+                                    <span style={{ color: ringColor, fontWeight: 600 }}>{usagePercent.toFixed(1)}%</span>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
 

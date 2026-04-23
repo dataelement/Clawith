@@ -258,6 +258,28 @@ export const agentApi = {
         request<any[]>(`/agents/${id}/gateway-messages`),
 };
 
+export interface ChatSessionSummary {
+    id: string;
+    title: string;
+    last_message_at?: string | null;
+}
+
+export interface SessionContextBudget {
+    window_size_messages: number;
+    session_messages_total: number;
+    estimated_tokens_current_window: number;
+    budget_tokens: number;
+    usage_ratio: number;
+}
+
+export const chatSessionApi = {
+    listMine: (agentId: string) =>
+        request<ChatSessionSummary[]>(`/agents/${agentId}/sessions?scope=mine`),
+
+    contextBudget: (agentId: string, sessionId: string) =>
+        request<SessionContextBudget>(`/agents/${agentId}/sessions/${sessionId}/context-budget`),
+};
+
 // ─── Tasks ────────────────────────────────────────────
 export const taskApi = {
     list: (agentId: string, status?: string, type?: string) => {

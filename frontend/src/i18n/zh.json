@@ -406,7 +406,18 @@
       "collapseSessions": "折叠会话列表",
       "showSessions": "显示聊天会话",
       "toolCallChain": "使用工具",
-      "analysing": "分析中"
+      "analysing": "分析中",
+      "contextBudget": {
+        "aria": "查看上下文窗口信息",
+        "title": "上下文窗口信息",
+        "windowSize": "窗口消息条数",
+        "sessionMessages": "会话总消息条数",
+        "estimatedTokens": "窗口估算 Token",
+        "budgetTokens": "预算 Token",
+        "usageRatio": "使用率",
+        "loading": "加载中...",
+        "unavailable": "暂无会话数据"
+      }
     },
     "activityLog": {
       "title": "工作日志",
