@@ -1609,7 +1609,75 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ─── Local-agent session tools (bridge-dispatched) ─────────────
+    # Only exposed when the agent has bridge_mode in {"enabled","auto"}.
+    {
+        "type": "function",
+        "function": {
+            "name": "run_claude_code_session",
+            "description": (
+                "Dispatch a coding task to a Claude Code CLI running on the operator's "
+                "local machine via the connected bridge. Streams the session in real time "
+                "and returns the final assistant response. Use for tasks that need to read/"
+                "edit files on the operator's workstation or run shell commands locally."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "The task or instruction for the local Claude Code session."},
+                    "cwd": {"type": "string", "description": "Optional working directory on the operator's machine."},
+                    "timeout_s": {"type": "integer", "description": "Maximum session duration in seconds (default 1800)."},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_hermes_session",
+            "description": (
+                "Dispatch a task to a local Hermes daemon via the connected bridge. "
+                "Streams execution events and returns the final response."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "The task to send to the local Hermes daemon."},
+                    "params": {"type": "object", "description": "Optional Hermes-specific parameters."},
+                    "timeout_s": {"type": "integer", "description": "Maximum session duration in seconds (default 1800)."},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_openclaw_session",
+            "description": (
+                "Dispatch a task to a local OpenClaw instance via the connected bridge. "
+                "Streams events and returns the final response."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "The task to send to the local OpenClaw agent."},
+                    "params": {"type": "object", "description": "Optional OpenClaw-specific parameters."},
+                    "timeout_s": {"type": "integer", "description": "Maximum session duration in seconds (default 1800)."},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
 ]
+
+
+_LOCAL_AGENT_TOOL_NAMES = {
+    "run_claude_code_session",
+    "run_hermes_session",
+    "run_openclaw_session",
+}
 
 
 # Core tools that should always be available to agents regardless of
@@ -1847,6 +1915,20 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     has_any_channel = await _agent_has_any_channel(agent_id)
     _always_tools = _always_core_tools + (_feishu_tools if has_feishu else []) + (_channel_tools if has_any_channel else [])
 
+    # Expose local-agent session tools only when the agent opted into bridge routing.
+    # The dispatch layer will return a helpful error if no bridge is currently connected.
+    try:
+        from app.models.agent import Agent as _AgForBridge
+        async with async_session() as _bdb:
+            _br = await _bdb.execute(select(_AgForBridge.bridge_mode).where(_AgForBridge.id == agent_id))
+            _bridge_mode = _br.scalar_one_or_none() or "disabled"
+        if _bridge_mode in ("enabled", "auto"):
+            _always_tools = _always_tools + [
+                t for t in AGENT_TOOLS if t["function"]["name"] in _LOCAL_AGENT_TOOL_NAMES
+            ]
+    except Exception:
+        pass
+
     # Check tenant-level a2a_async_enabled flag
     _a2a_async = False
     try:
@@ -2037,7 +2119,152 @@ _TOOL_AUTONOMY_MAP = {
     "web_search": "web_search",
     "execute_code": "execute_code",
     "execute_code_e2b": "execute_code",
+    "run_claude_code_session": "invoke_local_agent",
+    "run_hermes_session": "invoke_local_agent",
+    "run_openclaw_session": "invoke_local_agent",
 }
+
+
+# ── Local-agent session tools ────────────────────────────────────
+# Map tool name → adapter name used by the bridge protocol.
+_LOCAL_AGENT_TOOLS: dict[str, str] = {
+    "run_claude_code_session": "claude_code",
+    "run_hermes_session": "hermes",
+    "run_openclaw_session": "openclaw",
+}
+
+
+def _is_local_agent_tool(tool_name: str) -> bool:
+    return tool_name in _LOCAL_AGENT_TOOLS
+
+
+async def _invoke_local_agent_session(
+    tool_name: str,
+    arguments: dict,
+    agent_id: uuid.UUID,
+    session_id: str,
+) -> str:
+    """Dispatch a local-agent session via the bridge and return the final text.
+
+    Streams session events to the chat WebSocket (if any) while blocking
+    on the session's completion Future. Returns a string suitable for the
+    LLM tool-loop to append as the tool result.
+    """
+    from app.services.local_agent.session_dispatcher import (
+        BridgeDisconnected,
+        BridgeUnavailable,
+        EVENT_QUEUE_SENTINEL,
+        SessionRejected,
+        dispatcher,
+    )
+
+    adapter = _LOCAL_AGENT_TOOLS[tool_name]
+
+    if not dispatcher.has_bridge(str(agent_id)):
+        return (
+            f"❌ No local-agent bridge is currently connected for this agent. "
+            f"Ask the operator to start `clawith-bridge` on their machine with adapter={adapter}, "
+            f"or retry later."
+        )
+
+    prompt = arguments.get("prompt") or arguments.get("task") or ""
+    if not prompt:
+        return "❌ Missing required argument 'prompt' for local-agent session."
+
+    params = arguments.get("params") or {}
+    cwd = arguments.get("cwd")
+    env = arguments.get("env") or {}
+    timeout_s = int(arguments.get("timeout_s") or 1800)
+
+    # Use a fresh session_id per invocation so concurrent tool calls don't clash.
+    # Prefix with the chat session_id for traceability.
+    ls_id = f"{session_id or 'nosess'}:{uuid.uuid4().hex[:8]}"
+
+    try:
+        events_queue, future = await dispatcher.start_session(
+            agent_id=str(agent_id),
+            session_id=ls_id,
+            adapter=adapter,
+            prompt=prompt,
+            params=params,
+            cwd=cwd,
+            env=env,
+            timeout_s=timeout_s,
+        )
+    except BridgeUnavailable as e:
+        return f"❌ Bridge unavailable: {e}"
+    except SessionRejected as e:
+        return f"❌ Session rejected by bridge: {e}"
+    except Exception as e:
+        logger.exception(f"[LocalAgent] start_session failed: {e}")
+        return f"❌ Failed to start local-agent session: {e}"
+
+    # Try to import the chat WS manager lazily — events are fanned out to any
+    # chat WebSocket open on this (agent_id, session_id). In trigger / headless
+    # contexts there's no WS, so these calls are no-ops.
+    try:
+        from app.api.websocket import manager as _chat_manager
+    except Exception:
+        _chat_manager = None
+
+    async def _drain_events() -> None:
+        while True:
+            item = await events_queue.get()
+            if item is EVENT_QUEUE_SENTINEL:
+                return
+            kind = item.get("kind")
+            payload = item.get("payload") or {}
+            if _chat_manager and session_id:
+                try:
+                    # Translate bridge event kinds into existing chat WS frame
+                    # types so the frontend can render without changes.
+                    msg: dict = {"bridge_session_id": ls_id, "adapter": adapter}
+                    if kind in ("stdout_chunk", "assistant_text"):
+                        msg.update({"type": "chunk", "content": payload.get("text") or payload.get("content") or ""})
+                    elif kind == "thinking":
+                        msg.update({"type": "thinking", "content": payload.get("text") or ""})
+                    elif kind in ("tool_call_start", "tool_call_result"):
+                        msg.update({
+                            "type": "tool_call",
+                            "name": payload.get("name") or "",
+                            "args": payload.get("args"),
+                            "status": "running" if kind == "tool_call_start" else "done",
+                            "result": payload.get("result", ""),
+                        })
+                    elif kind == "status":
+                        msg.update({"type": "status", **payload})
+                    elif kind == "file_change":
+                        msg.update({"type": "file_change", **payload})
+                    else:
+                        msg.update({"type": "bridge_event", "kind": kind, "payload": payload})
+                    await _chat_manager.send_to_session(str(agent_id), session_id, msg)
+                except Exception as _e:
+                    logger.debug(f"[LocalAgent] event fan-out suppressed: {_e}")
+
+    drain_task = asyncio.create_task(_drain_events())
+
+    try:
+        # Await the future directly to avoid a race where the session is
+        # popped from bridge.sessions as soon as session.done arrives.
+        final_text = await asyncio.wait_for(future, timeout=timeout_s)
+    except BridgeDisconnected as e:
+        return f"❌ Local-agent bridge disconnected mid-session: {e}"
+    except asyncio.TimeoutError:
+        try:
+            await dispatcher.cancel_session(str(agent_id), ls_id, reason="timeout")
+        except Exception:
+            pass
+        return f"❌ Local-agent session timed out after {timeout_s}s"
+    except Exception as e:
+        logger.exception(f"[LocalAgent] session failed: {e}")
+        return f"❌ Local-agent session failed: {e}"
+    finally:
+        try:
+            await asyncio.wait_for(drain_task, timeout=2)
+        except Exception:
+            drain_task.cancel()
+
+    return final_text or "(local agent produced no final text)"
 
 
 async def _get_agent_tenant_id(agent_id: uuid.UUID) -> str | None:
@@ -2163,6 +2390,10 @@ async def execute_tool(
                 "(Take Control mode). Please wait for them to finish before retrying "
                 "browser/computer operations."
             )
+
+    # ── Local-agent session dispatch (bridge-backed) ──
+    if _is_local_agent_tool(tool_name):
+        return await _invoke_local_agent_session(tool_name, arguments, agent_id, session_id)
 
     try:
         if tool_name == "list_files":

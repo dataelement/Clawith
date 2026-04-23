@@ -205,6 +205,11 @@ class UserUpdate(BaseModel):
 class AgentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100, description="Agent name, 2-100 characters")
     agent_type: str = "native"  # native | openclaw
+    bridge_adapter: str | None = Field(
+        default=None,
+        pattern="^(claude_code|openclaw|hermes)$",
+        description="claude_code | openclaw | hermes (only for agent_type=openclaw)",
+    )
     role_description: str = Field(default="", max_length=500, description="Role description, max 500 characters")
     bio: str | None = None
     welcome_message: str | None = None
@@ -265,7 +270,9 @@ class AgentOut(BaseModel):
     llm_calls_today: int = 0
     max_llm_calls_per_day: int = 100
     agent_type: str = "native"
+    bridge_adapter: str | None = None
     openclaw_last_seen: datetime | None = None
+    bridge_mode: str = "disabled"
     has_api_key: bool = False
     api_key_hash: str | None = None
     created_at: datetime
@@ -295,6 +302,8 @@ class AgentUpdate(BaseModel):
     heartbeat_active_hours: str | None = None
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
+    bridge_mode: str | None = Field(default=None, pattern="^(disabled|enabled|auto)$")
+    bridge_adapter: str | None = Field(default=None, pattern="^(claude_code|openclaw|hermes)$")
 
 
 class AgentStatusOut(BaseModel):

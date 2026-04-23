@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clawith-bridge"
+version = "0.1.0"
+description = "Reverse-WS local agent session bridge for Clawith"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Clawith" }]
+dependencies = [
+    "websockets>=12.0",
+    "httpx>=0.27",
+    "pydantic>=2.5",
+    "loguru>=0.7",
+    "tomli>=2.0;python_version<'3.11'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+build = ["pyinstaller>=6.0"]
+
+[project.scripts]
+clawith-bridge = "clawith_bridge.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["clawith_bridge*"]
+
+[tool.setuptools.package-data]
+clawith_bridge = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

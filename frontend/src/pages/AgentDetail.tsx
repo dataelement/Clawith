@@ -1334,6 +1334,18 @@ function AgentDetailInner() {
         enabled: !!id,
     });
 
+    // Live bridge status — only meaningful for bridge-style (agent_type=openclaw) agents.
+    // Polls while the user has the page open so the badge flips within a few seconds
+    // of the bridge connecting or dropping.
+    const isBridgeAgent = (agent as any)?.agent_type === 'openclaw';
+    const { data: bridgeStatus } = useQuery({
+        queryKey: ['bridge-status', id],
+        queryFn: () => agentApi.bridgeStatus(id!),
+        enabled: !!id && isBridgeAgent,
+        refetchInterval: isBridgeAgent ? 5000 : false,
+        refetchIntervalInBackground: false,
+    });
+
     // ── Aware tab data: triggers ──
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
         queryKey: ['triggers', id],
@@ -2090,8 +2102,12 @@ function AgentDetailInner() {
             } else if (d.type === 'trigger_notification') {
                 setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: d.content })]);
                 fetchMySessions(true, agentId);
-            } else {
+            } else if (d.role && d.content) {
                 setChatMessages(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
+            } else {
+                // Unknown event with no role/content — control frames (rate_limit_event,
+                // ping, bridge status/file_change/bridge_event). Drop to avoid phantoms.
+                console.debug('[stream] skip unknown event', d.type, d);
             }
         };
     };
@@ -2815,13 +2831,48 @@ function AgentDetailInner() {
                                 {(agent as any).is_expired && (
                                     <span style={{ background: 'var(--error)', color: '#fff', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>Expired</span>
                                 )}
-                                {(agent as any).agent_type === 'openclaw' && (
-                                    <span style={{
-                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
-                                        letterSpacing: '0.5px',
-                                    }}>OpenClaw · Lab</span>
-                                )}
+                                {(agent as any).agent_type === 'openclaw' && (() => {
+                                    const a = (agent as any).bridge_adapter || 'claude_code';
+                                    const label = a === 'claude_code' ? 'Claude Code' : a === 'hermes' ? 'Hermes' : 'OpenClaw';
+                                    const connected = !!bridgeStatus?.connected;
+                                    // undefined while first request in flight → show neutral badge, no dot
+                                    const loading = bridgeStatus === undefined;
+                                    const liveAdapters: string[] = Array.isArray(bridgeStatus?.adapters) ? bridgeStatus!.adapters! : [];
+                                    const mismatch = connected && liveAdapters.length > 0 && !liveAdapters.includes(a);
+                                    // green = online+match, yellow = online+mismatch, red = offline, transparent = loading
+                                    const dotColor = loading
+                                        ? 'transparent'
+                                        : !connected
+                                            ? '#ef4444'
+                                            : mismatch
+                                                ? '#f59e0b'
+                                                : '#22c55e';
+                                    const title = loading
+                                        ? ''
+                                        : !connected
+                                            ? 'Bridge offline — install or start the bridge on your local machine'
+                                            : mismatch
+                                                ? `Runtime mismatch: agent expects ${label}, bridge advertises ${liveAdapters.join(', ')}. Redownload installer from Settings.`
+                                                : `Bridge online (v${bridgeStatus?.bridge_version || '?'})${bridgeStatus?.active_sessions ? `, ${bridgeStatus.active_sessions} active session(s)` : ''}`;
+                                    const glow = connected && !mismatch ? '0 0 4px rgba(34,197,94,0.9)' : mismatch ? '0 0 4px rgba(245,158,11,0.9)' : undefined;
+                                    return (
+                                        <span
+                                            title={title}
+                                            style={{
+                                                fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
+                                                letterSpacing: '0.5px', display: 'inline-flex', alignItems: 'center', gap: '5px',
+                                            }}
+                                        >
+                                            <span style={{
+                                                width: '6px', height: '6px', borderRadius: '50%',
+                                                background: dotColor,
+                                                boxShadow: glow,
+                                            }} />
+                                            Bridge · {label} · Lab
+                                        </span>
+                                    );
+                                })()}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                         Expires: {new Date((agent as any).expires_at).toLocaleString()}

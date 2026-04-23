@@ -66,6 +66,7 @@ export default function AgentCreate() {
     const [error, setError] = useState('');
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
     const [agentType, setAgentType] = useState<'native' | 'openclaw'>('native');
+    const [bridgeAdapter, setBridgeAdapter] = useState<'' | 'claude_code' | 'openclaw' | 'hermes'>('');
     // Clear field error when user edits a field
     const clearFieldError = (field: string) => setFieldErrors(prev => { const n = { ...prev }; delete n[field]; return n; });
     const [createdApiKey, setCreatedApiKey] = useState('');
@@ -247,12 +248,17 @@ export default function AgentCreate() {
 
     const handleFinish = () => {
         setError('');
+        if (agentType === 'openclaw' && !bridgeAdapter) {
+            setError(t('wizard.errors.bridgeAdapterRequired', '请先选择一个本地 Agent 类型'));
+            return;
+        }
         if (step === 0 || agentType === 'openclaw') {
             if (!validateStep0()) return;
         }
         createMutation.mutate({
             name: form.name,
             agent_type: agentType,
+            bridge_adapter: agentType === 'openclaw' && bridgeAdapter ? bridgeAdapter : undefined,
             role_description: form.role_description,
             personality: agentType === 'native' ? form.personality : undefined,
             boundaries: agentType === 'native' ? form.boundaries : undefined,
@@ -398,37 +404,98 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
         );
     }
 
-    // ── Type Selector (shared between both modes) ──
+    // ── Runtime Selector: two-tier ──
+    // Tier 1: Platform Hosted (native) vs On My Machine (openclaw bridge).
+    // Tier 2 (only when On My Machine is selected): Claude Code / OpenClaw / Hermes.
+    const topLevelCards = [
+        {
+            key: 'platform' as const,
+            active: agentType === 'native',
+            onClick: () => { setAgentType('native'); setStep(0); },
+            title: t('wizard.runtime.native', 'Platform Hosted'),
+            desc: t('wizard.runtime.nativeDesc', 'Full agent running on Clawith platform'),
+        },
+        {
+            key: 'local' as const,
+            active: agentType === 'openclaw',
+            onClick: () => { setAgentType('openclaw'); setStep(0); },
+            title: t('wizard.runtime.local', 'On My Machine'),
+            desc: t('wizard.runtime.localDesc', 'Connect an agent running on your own device'),
+        },
+    ];
+    const localRuntimeCards = [
+        {
+            key: 'claude_code' as const,
+            active: bridgeAdapter === 'claude_code',
+            onClick: () => { setBridgeAdapter('claude_code'); setStep(0); },
+            title: t('wizard.runtime.claude_code', 'Claude Code'),
+            desc: t('wizard.runtime.claude_codeDesc', 'Bridge to local Claude Code CLI'),
+        },
+        {
+            key: 'openclaw' as const,
+            active: bridgeAdapter === 'openclaw',
+            onClick: () => { setBridgeAdapter('openclaw'); setStep(0); },
+            title: t('wizard.runtime.openclaw', 'OpenClaw'),
+            desc: t('wizard.runtime.openclawDesc', 'Bridge to local OpenClaw daemon'),
+        },
+        {
+            key: 'hermes' as const,
+            active: bridgeAdapter === 'hermes',
+            onClick: () => { setBridgeAdapter('hermes'); setStep(0); },
+            title: t('wizard.runtime.hermes', 'Hermes'),
+            desc: t('wizard.runtime.hermesDesc', 'Bridge to local Hermes agent'),
+        },
+    ];
     const typeSelector = (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', maxWidth: '640px', marginBottom: '24px' }}>
-            <div
-                onClick={() => { setAgentType('native'); setStep(0); }}
-                style={{
-                    padding: '16px', borderRadius: '8px', cursor: 'pointer',
-                    border: `1.5px solid ${agentType === 'native' ? 'var(--accent-primary)' : 'var(--border-default)'}`,
-                    background: agentType === 'native' ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
-                }}
-            >
-                <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{t('openclaw.nativeTitle', 'Platform Hosted')}</div>
-                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('openclaw.nativeDesc', 'Full agent running on Clawith platform')}</div>
+        <div>
+            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                {t('wizard.runtime.title', 'Runtime')}
             </div>
-            <div
-                onClick={() => { setAgentType('openclaw'); setStep(0); }}
-                style={{
-                    padding: '16px', borderRadius: '8px', cursor: 'pointer', position: 'relative',
-                    border: `1.5px solid ${agentType === 'openclaw' ? 'var(--accent-primary)' : 'var(--border-default)'}`,
-                    background: agentType === 'openclaw' ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
-                }}
-            >
-                <span style={{
-                    position: 'absolute', top: '8px', right: '8px',
-                    fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
-                    letterSpacing: '0.5px',
-                }}>Lab</span>
-                <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{t('openclaw.openclawTitle', 'Link OpenClaw')}</div>
-                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('openclaw.openclawDesc', 'Connect your existing OpenClaw agent')}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px', maxWidth: '640px', marginBottom: agentType === 'openclaw' ? '16px' : '24px' }}>
+                {topLevelCards.map((card) => (
+                    <div
+                        key={card.key}
+                        onClick={card.onClick}
+                        style={{
+                            padding: '14px', borderRadius: '8px', cursor: 'pointer', position: 'relative',
+                            border: `1.5px solid ${card.active ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                            background: card.active ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+                        }}
+                    >
+                        <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{card.title}</div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{card.desc}</div>
+                    </div>
+                ))}
             </div>
+            {agentType === 'openclaw' && (
+                <div style={{ marginBottom: '24px' }}>
+                    <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                        {t('wizard.runtime.chooseLocal', 'Choose your local agent')}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', maxWidth: '880px' }}>
+                        {localRuntimeCards.map((card) => (
+                            <div
+                                key={card.key}
+                                onClick={card.onClick}
+                                style={{
+                                    padding: '14px', borderRadius: '8px', cursor: 'pointer', position: 'relative',
+                                    border: `1.5px solid ${card.active ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                                    background: card.active ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+                                }}
+                            >
+                                <span style={{
+                                    position: 'absolute', top: '8px', right: '8px',
+                                    fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
+                                    letterSpacing: '0.5px',
+                                }}>Lab</span>
+                                <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{card.title}</div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{card.desc}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
         </div>
     );
 
@@ -448,16 +515,30 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                     </div>
                 )}
 
-                <div className="card" style={{ maxWidth: '640px' }}>
+                {!bridgeAdapter && (
+                    <div style={{ maxWidth: '640px', padding: '14px', background: 'var(--bg-elevated)', borderRadius: '8px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        {t('wizard.runtime.pickLocalHint', '请从上方选择一个本地 Agent 类型以继续。')}
+                    </div>
+                )}
+
+                {bridgeAdapter && <div className="card" style={{ maxWidth: '640px' }}>
                     <h3 style={{ marginBottom: '6px', fontWeight: 600, fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        {t('openclaw.basicTitle', 'Link OpenClaw Agent')}
+                        {bridgeAdapter === 'claude_code'
+                            ? t('wizard.bridge.titleClaudeCode', 'Link Claude Code Agent')
+                            : bridgeAdapter === 'hermes'
+                                ? t('wizard.bridge.titleHermes', 'Link Hermes Agent')
+                                : t('wizard.bridge.titleOpenclaw', 'Link OpenClaw Agent')}
                         <span style={{
                             fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
                             background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
                         }}>Lab</span>
                     </h3>
                     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px' }}>
-                        {t('openclaw.basicDesc', 'Give your OpenClaw agent a name and description. The LLM model, personality, and skills are configured on your OpenClaw instance.')}
+                        {bridgeAdapter === 'claude_code'
+                            ? t('wizard.bridge.descClaudeCode', 'Give your agent a name. Download the installer and run it on the machine where your Claude Code CLI is installed.')
+                            : bridgeAdapter === 'hermes'
+                                ? t('wizard.bridge.descHermes', 'Give your agent a name. Download the installer and run it on the machine where your Hermes agent runs.')
+                                : t('wizard.bridge.descOpenclaw', 'Give your agent a name. Download the installer and run it on the machine where your OpenClaw daemon runs.')}
                     </p>
 
                     <div className="form-group">
@@ -508,7 +589,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                             {createMutation.isPending ? t('common.loading') : t('openclaw.createBtn', 'Link Agent')}
                         </button>
                     </div>
-                </div>
+                </div>}
             </div>
         );
     }

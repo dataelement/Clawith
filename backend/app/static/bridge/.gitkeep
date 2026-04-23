@@ -1,0 +1,8 @@
+# Place clawith-bridge.exe here after building it with:
+#   cd bridge/
+#   python -m venv .venv-build && .venv-build\Scripts\activate
+#   pip install -e . pyinstaller
+#   pyinstaller clawith-bridge.spec --clean
+#   cp dist/clawith-bridge.exe ../backend/app/static/bridge/
+#
+# The exe is gitignored (see root .gitignore).

@@ -256,6 +256,16 @@ export const agentApi = {
 
     gatewayMessages: (id: string) =>
         request<any[]>(`/agents/${id}/gateway-messages`),
+
+    bridgeStatus: (id: string) =>
+        request<{
+            connected: boolean;
+            applicable: boolean;
+            bridge_version?: string;
+            adapters?: string[];
+            connected_at?: string;
+            active_sessions?: number;
+        }>(`/agents/${id}/bridge-status`),
 };
 
 // ─── Tasks ────────────────────────────────────────────

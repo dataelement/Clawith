@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -241,6 +241,11 @@ async def create_agent(
         creator_id=current_user.id,
         tenant_id=target_tenant_id,
         agent_type=data.agent_type or "native",
+        bridge_adapter=(
+            (data.bridge_adapter or "claude_code")
+            if (data.agent_type or "native") == "openclaw"
+            else None
+        ),
         primary_model_id=data.primary_model_id,
         fallback_model_id=data.fallback_model_id,
         max_tokens_per_day=data.max_tokens_per_day,
@@ -287,8 +292,10 @@ async def create_agent(
     # For OpenClaw agents: skip file system and container setup, generate API key
     if agent.agent_type == "openclaw":
         raw_key = f"oc-{secrets.token_urlsafe(32)}"
+        agent.api_key = raw_key
         agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         agent.status = "idle"
+        agent.bridge_mode = "enabled"
         await db.commit()
         out = AgentOut.model_validate(agent).model_dump()
         out["api_key"] = raw_key  # Return once on creation
@@ -476,6 +483,12 @@ async def update_agent(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator or admin can update agent settings")
 
     update_data = data.model_dump(exclude_unset=True)
+
+    # bridge_adapter: only meaningful for bridge-style agents. Silently
+    # drop the field for native agents instead of erroring, so generic
+    # bulk-update flows don't have to know the agent type.
+    if "bridge_adapter" in update_data and getattr(agent, "agent_type", "native") != "openclaw":
+        update_data.pop("bridge_adapter", None)
 
     # expires_at: admin only
     if "expires_at" in update_data:
@@ -773,10 +786,191 @@ async def generate_or_reset_api_key(
         raise HTTPException(status_code=400, detail="API keys are only available for OpenClaw agents")
 
     raw_key = f"oc-{secrets.token_urlsafe(32)}"
+    agent.api_key = raw_key
     agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     await db.commit()
 
+    # Revoke any currently-attached bridge. `/ws/bridge` authenticates only
+    # at the initial upgrade, so rotating the hash alone doesn't unseat a
+    # bridge that's already holding a socket — it would keep running sessions
+    # with the old key until it disconnects on its own. Kick it now so the
+    # operator has to re-auth with the new key. detach_bridge is idempotent
+    # (no-ops when no bridge is attached).
+    from app.services.local_agent.session_dispatcher import dispatcher as _bridge_dispatcher
+    try:
+        await _bridge_dispatcher.detach_bridge(
+            str(agent.id), close_ws=True, reason="api_key_rotated",
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort eviction; don't fail rotation
+        from loguru import logger as _logger
+        _logger.warning(f"[rotate] bridge eviction failed for {agent.id}: {e}")
+
     return {"api_key": raw_key, "message": "Key configured successfully."}
+
+
+@router.post("/{agent_id}/bridge-installer")
+async def download_bridge_installer(
+    agent_id: uuid.UUID,
+    platform: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a platform-specific bridge installer script for this agent.
+
+    Download is idempotent against the API key: the agent's stored plaintext
+    key is baked into the installer and reused across downloads, so the user
+    can re-download the installer (for a different runtime, a different
+    platform, another machine) without rotating the key and kicking the
+    currently-running bridge offline.
+
+    Legacy agents (created before the api_key column existed) mint and
+    persist a key on their first download — a one-time upgrade. Explicit
+    rotation is the separate POST /agents/{id}/api-key endpoint.
+    """
+    from app.services.local_agent.installer_templates import (
+        derive_ws_url,
+        render_installer,
+    )
+    from app.config import get_settings
+
+    if platform not in ("windows", "macos", "linux"):
+        raise HTTPException(status_code=400, detail="platform must be windows, macos, or linux")
+
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if not is_agent_creator(current_user, agent) and current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator or admin can download bridge installers")
+    if getattr(agent, "agent_type", "native") != "openclaw":
+        raise HTTPException(status_code=400, detail="Bridge installer is only available for OpenClaw agents")
+
+    # Resolve server URL from configuration only. We deliberately do NOT fall
+    # back to the Host / X-Forwarded-Host header here: a malicious request
+    # could set those to an attacker-controlled hostname and the installer
+    # would bake it in, making the bridge dial home to the wrong server.
+    # Validate *before* mutating the DB so a misconfiguration doesn't leave
+    # the agent with a rotated key and no way to deliver the installer.
+    settings = get_settings()
+    http_base = (settings.PUBLIC_BASE_URL or "").strip().rstrip("/")
+    if not http_base:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "PUBLIC_BASE_URL is not configured on the server. Set it to the "
+                "externally-reachable URL (e.g. https://clawith.example.com) "
+                "before downloading a bridge installer."
+            ),
+        )
+    ws_url = derive_ws_url(http_base)
+
+    # Reuse the existing plaintext key if the agent has one — download is
+    # idempotent in that case (no rotation, no disconnection of the
+    # currently-running bridge). For legacy agents with only api_key_hash
+    # stored, mint a new key and dual-write on successful build; this is a
+    # one-time opportunistic upgrade.
+    #
+    # Either way, DO NOT persist anything until the installer build succeeds.
+    # If it fails (e.g. bundled Windows exe missing → 503), we must not have
+    # invalidated the bridge's currently-working token — otherwise the user
+    # is left with a dead bridge AND no usable installer, and the only
+    # recovery is an admin manual reset.
+    existing_plaintext = getattr(agent, "api_key", None)
+    if existing_plaintext:
+        raw_key = existing_plaintext
+        needs_persist = False
+    else:
+        raw_key = f"oc-{secrets.token_urlsafe(32)}"
+        needs_persist = True
+
+    try:
+        payload, filename, content_type = render_installer(
+            platform=platform,  # type: ignore[arg-type]
+            server_url=ws_url,
+            api_key=raw_key,
+            agent_name=agent.name or str(agent.id),
+            adapter=getattr(agent, "bridge_adapter", None) or "claude_code",
+        )
+    except FileNotFoundError as e:
+        # Bundled Windows exe missing — operator needs to build & drop it in.
+        # Key is still the old one; existing bridges stay connected.
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    # Build succeeded — persist the key if we minted one (legacy upgrade),
+    # and enable bridge mode if not already.
+    mutated = False
+    if needs_persist:
+        agent.api_key = raw_key
+        agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        mutated = True
+    if getattr(agent, "bridge_mode", "disabled") == "disabled":
+        # Auto-enable bridge_mode if currently disabled — the user is clearly
+        # trying to set up a bridge, so the disabled mode would just reject it.
+        agent.bridge_mode = "enabled"
+        mutated = True
+    if mutated:
+        await db.commit()
+
+    # Audit log (best-effort)
+    try:
+        from app.services.activity_logger import log_activity
+        await log_activity(
+            agent_id=agent.id,
+            action_type="bridge_installer_download",
+            summary=(
+                f"Bridge 安装器已下载 ({platform})，API Key 首次生成"
+                if needs_persist
+                else f"Bridge 安装器已下载 ({platform})"
+            ),
+            detail={
+                "platform": platform,
+                "user_id": str(current_user.id),
+                "server_url": ws_url,
+                "filename": filename,
+                "key_rotated": needs_persist,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return Response(
+        content=payload,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Clawith-Server": ws_url,
+            "X-Clawith-Filename": filename,
+        },
+    )
+
+
+@router.get("/{agent_id}/bridge-status")
+async def get_bridge_status(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return live bridge connection status for this agent.
+
+    Used by the AgentDetail page to show an online/offline badge so
+    users don't have to discover bridge-offline state by failing to
+    chat. In-memory only (session_dispatcher._bridges), so correct
+    for the single-process backend; a Redis presence map would be
+    needed for multi-worker deploys.
+    """
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if getattr(agent, "agent_type", "native") != "openclaw":
+        return {"connected": False, "applicable": False}
+
+    from app.services.local_agent.session_dispatcher import dispatcher
+    info = dispatcher.get_bridge_info(str(agent_id))
+    if info is None:
+        return {"connected": False, "applicable": True}
+    return {
+        "connected": True,
+        "applicable": True,
+        "bridge_version": info.get("bridge_version"),
+        "adapters": info.get("adapters") or [],
+        "connected_at": info.get("connected_at"),
+        "active_sessions": len(info.get("active_sessions") or []),
+    }
 
 
 @router.get("/{agent_id}/gateway-messages")

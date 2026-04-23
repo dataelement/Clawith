@@ -45,6 +45,22 @@ interface ToolCall {
     result?: string;
 }
 
+interface DiffFile {
+    path: string;
+    '+'?: number;
+    '-'?: number;
+    status?: string;
+}
+
+interface DiffSummary {
+    files_changed: number;
+    insertions: number;
+    deletions: number;
+    files: DiffFile[];
+    note?: string;
+    warning?: string;
+}
+
 interface Message {
     role: 'user' | 'assistant';
     content: string;
@@ -54,6 +70,10 @@ interface Message {
     imageUrl?: string;
     timestamp?: string;
     _isToolGroup?: boolean;
+    diffSummary?: DiffSummary;
+    bridgeAdapter?: string;  // e.g. "claude_code", "hermes", "openclaw"
+    fileChanges?: Array<{ path: string; kind: string }>;
+    sessionError?: string;   // set when the bridge session failed mid-way
 }
 
 // CSS keyframe for the pulse/breathing LED — injected once into <head>
@@ -70,6 +90,112 @@ if (typeof document !== 'undefined' && !document.getElementById(PULSE_STYLE_ID))
     `;
     document.head.appendChild(s);
 }
+
+function DiffSummaryBlock({ summary, adapter }: { summary: DiffSummary; adapter?: string }) {
+    const [expanded, setExpanded] = useState(false);
+    const files = summary.files || [];
+    const totalIns = summary.insertions || 0;
+    const totalDel = summary.deletions || 0;
+    const n = summary.files_changed ?? files.length;
+    if (!n) return null;
+    return (
+        <div style={{
+            marginTop: '8px',
+            fontSize: '12px',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '8px',
+            background: 'rgba(99, 102, 241, 0.04)',
+        }}>
+            <button
+                type="button"
+                onClick={() => setExpanded(v => !v)}
+                style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    width: '100%', padding: '8px 12px',
+                    background: 'transparent', border: 'none', cursor: 'pointer',
+                    color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 500,
+                }}
+            >
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>📂</span>
+                    <span>{adapter ? `${adapter} session` : 'Session'} changed {n} file{n === 1 ? '' : 's'}</span>
+                    {totalIns > 0 && <span style={{ color: '#22c55e' }}>+{totalIns}</span>}
+                    {totalDel > 0 && <span style={{ color: '#ef4444' }}>-{totalDel}</span>}
+                </span>
+                <span style={{ opacity: 0.6, fontSize: '11px' }}>{expanded ? '▾' : '▸'}</span>
+            </button>
+            {expanded && (
+                <div style={{ padding: '0 12px 8px', maxHeight: '220px', overflow: 'auto' }}>
+                    {files.slice(0, 200).map((f, idx) => (
+                        <div key={`${f.path}-${idx}`} style={{
+                            display: 'flex', justifyContent: 'space-between', gap: '12px',
+                            padding: '2px 0',
+                            color: 'var(--text-secondary)',
+                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                            fontSize: '11px',
+                        }}>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {f.status ? <span style={{ opacity: 0.5, marginRight: 4 }}>[{f.status}]</span> : null}
+                                {f.path}
+                            </span>
+                            <span style={{ flexShrink: 0 }}>
+                                {(f['+'] ?? 0) > 0 && <span style={{ color: '#22c55e' }}>+{f['+']} </span>}
+                                {(f['-'] ?? 0) > 0 && <span style={{ color: '#ef4444' }}>-{f['-']}</span>}
+                            </span>
+                        </div>
+                    ))}
+                    {(summary.note || summary.warning) && (
+                        <div style={{ marginTop: 4, fontSize: '10px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                            {summary.note || summary.warning}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+
+function SessionErrorBlock({ message }: { message: string }) {
+    if (!message) return null;
+    return (
+        <div style={{
+            marginTop: '8px', padding: '8px 12px',
+            fontSize: '12px',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            borderRadius: 8,
+            background: 'rgba(239, 68, 68, 0.06)',
+            color: '#b91c1c',
+            display: 'flex', alignItems: 'flex-start', gap: 6,
+        }}>
+            <span>⚠️</span>
+            <span style={{ flex: 1, wordBreak: 'break-word' }}>{message}</span>
+        </div>
+    );
+}
+
+
+function FileChangesBlock({ changes }: { changes: Array<{ path: string; kind: string }> }) {
+    if (!changes || changes.length === 0) return null;
+    return (
+        <div style={{
+            marginTop: '6px', fontSize: '11px', color: 'var(--text-tertiary)',
+            display: 'flex', flexWrap: 'wrap', gap: '4px',
+        }}>
+            {changes.slice(0, 8).map((c, i) => (
+                <span key={i} style={{
+                    padding: '2px 6px', borderRadius: 4,
+                    background: 'rgba(0,0,0,0.06)',
+                    fontFamily: 'ui-monospace, monospace',
+                }}>
+                    {c.kind === 'created' ? '+' : c.kind === 'deleted' ? '-' : '~'} {c.path}
+                </span>
+            ))}
+            {changes.length > 8 && <span>+{changes.length - 8} more</span>}
+        </div>
+    );
+}
+
 
 function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
     const { t } = useTranslation();
@@ -287,6 +413,10 @@ export default function Chat() {
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
+    const pendingDiffSummary = useRef<DiffSummary | null>(null);
+    const pendingBridgeAdapter = useRef<string | null>(null);
+    const pendingFileChanges = useRef<Array<{ path: string; kind: string }>>([]);
+    const pendingSessionError = useRef<string | null>(null);
 
     const { data: agent } = useQuery({
         queryKey: ['agent', id],
@@ -572,27 +702,82 @@ export default function Chat() {
                             setLivePanelVisible(true);
                         }
                     }
+                } else if (data.type === 'status') {
+                    // Bridge session lifecycle markers. We care most about
+                    // state=done which carries diff_summary and stats —
+                    // stash it so the next 'done' / final text can render it.
+                    if (data.adapter) pendingBridgeAdapter.current = data.adapter;
+                    if (data.state === 'done' && data.diff_summary) {
+                        pendingDiffSummary.current = data.diff_summary as DiffSummary;
+                    }
+                    if (data.state === 'error' && data.error) {
+                        console.warn('[bridge-session error]', data.error);
+                        pendingSessionError.current = String(data.error);
+                    }
+                } else if (data.type === 'file_change') {
+                    if (data.path) {
+                        pendingFileChanges.current.push({
+                            path: String(data.path),
+                            kind: String(data.kind || data.status || 'changed'),
+                        });
+                    }
+                } else if (data.type === 'bridge_event') {
+                    // Forward-compat: log unknown bridge event kinds without
+                    // crashing the UI. New kinds the server adds will show up
+                    // here until we add explicit handling.
+                    console.debug('[bridge-event]', data.kind, data.payload);
                 } else if (data.type === 'done') {
                     // Final response — replace streaming message with final + tool calls
                     const toolCalls = pendingToolCalls.current.length > 0 ? [...pendingToolCalls.current] : undefined;
                     const thinking = thinkingContent.current || undefined;
+                    const diffSummary = pendingDiffSummary.current || undefined;
+                    const bridgeAdapter = pendingBridgeAdapter.current || undefined;
+                    const fileChanges = pendingFileChanges.current.length > 0 ? [...pendingFileChanges.current] : undefined;
+                    const sessionError = (data.session_error as string | undefined) || pendingSessionError.current || undefined;
                     pendingToolCalls.current = [];
                     streamContent.current = '';
                     thinkingContent.current = '';
+                    pendingDiffSummary.current = null;
+                    pendingBridgeAdapter.current = null;
+                    pendingFileChanges.current = [];
+                    pendingSessionError.current = null;
                     setStreaming(false);
                     setMessages(prev => {
                         const updated = [...prev];
                         // Replace the last streaming assistant message
                         if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
-                            updated[updated.length - 1] = { role: 'assistant', content: data.content, toolCalls, thinking };
+                            updated[updated.length - 1] = {
+                                role: 'assistant',
+                                content: data.content,
+                                toolCalls,
+                                thinking,
+                                diffSummary,
+                                bridgeAdapter,
+                                fileChanges,
+                                sessionError,
+                            };
                         } else {
-                            updated.push({ role: 'assistant', content: data.content, toolCalls, thinking });
+                            updated.push({
+                                role: 'assistant',
+                                content: data.content,
+                                toolCalls,
+                                thinking,
+                                diffSummary,
+                                bridgeAdapter,
+                                fileChanges,
+                                sessionError,
+                            });
                         }
                         return updated;
                     });
-                } else {
+                } else if (data.role && data.content) {
                     // Legacy format: {role, content}
                     setMessages(prev => [...prev, { role: data.role, content: data.content }]);
+                } else {
+                    // Unknown event with no role/content — e.g. Anthropic SDK
+                    // control frames (rate_limit_event, ping, message_start).
+                    // Dropping them prevents phantom user messages in the UI.
+                    console.debug('[stream] skip unknown event', data.type, data);
                 }
             };
         };
@@ -867,6 +1052,15 @@ export default function Chat() {
                                     )
                                 ) : (
                                     <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                                )}
+                                {msg.role === 'assistant' && msg.fileChanges && msg.fileChanges.length > 0 && (
+                                    <FileChangesBlock changes={msg.fileChanges} />
+                                )}
+                                {msg.role === 'assistant' && msg.diffSummary && (
+                                    <DiffSummaryBlock summary={msg.diffSummary} adapter={msg.bridgeAdapter} />
+                                )}
+                                {msg.role === 'assistant' && msg.sessionError && (
+                                    <SessionErrorBlock message={msg.sessionError} />
                                 )}
                                 {msg.timestamp && (
                                     <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.7 }}>

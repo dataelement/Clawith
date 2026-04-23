@@ -801,6 +801,29 @@
     }
   },
   "wizard": {
+    "runtime": {
+      "title": "运行时",
+      "native": "平台托管",
+      "nativeDesc": "由 Clawith 平台托管的完整 agent",
+      "local": "本地 Agent",
+      "localDesc": "连接运行在你自己设备上的 Agent",
+      "chooseLocal": "选择你的本地 Agent",
+      "pickLocalHint": "请从上方选择一个本地 Agent 类型以继续。",
+      "claude_code": "Claude Code",
+      "claude_codeDesc": "桥接到本地 Claude Code CLI",
+      "openclaw": "OpenClaw",
+      "openclawDesc": "桥接到本地 OpenClaw daemon",
+      "hermes": "Hermes",
+      "hermesDesc": "桥接到本地 Hermes agent"
+    },
+    "bridge": {
+      "titleClaudeCode": "接入 Claude Code Agent",
+      "titleOpenclaw": "接入 OpenClaw Agent",
+      "titleHermes": "接入 Hermes Agent",
+      "descClaudeCode": "给 agent 命名。下载安装器，在已安装 Claude Code CLI 的机器上运行。",
+      "descOpenclaw": "给 agent 命名。下载安装器，在运行 OpenClaw daemon 的机器上运行。",
+      "descHermes": "给 agent 命名。下载安装器，在运行 Hermes agent 的机器上运行。"
+    },
     "steps": {
       "basicInfo": "基本信息",
       "personality": "人格设定",
@@ -952,6 +975,7 @@
       "dailyLimit": "日限"
     },
     "errors": {
+      "bridgeAdapterRequired": "请先选择一个本地 Agent 类型",
       "nameRequired": "智能体名称不能为空",
       "nameTooShort": "名称至少需要 2 个字符",
       "nameTooLong": "名称不能超过 100 个字符",

@@ -1,0 +1,10 @@
+# PyInstaller build artifacts
+dist/
+build/
+*.spec.bak
+.venv-build/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
