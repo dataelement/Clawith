@@ -737,7 +737,7 @@
     "credentials": {
       "title": "凭据",
       "add": "添加",
-      "description": "存储网站的登录凭据和 Cookie。当数字员工通过 AgentBay 打开浏览器时，Cookie 会自动注入。",
+      "description": "存储网站的会话 Cookie。当数字员工通过 AgentBay 打开浏览器时，Cookie 会自动注入。",
       "empty": "未配置凭据",
       "loading": "加载中...",
       "error": "加载凭据失败",
@@ -788,13 +788,6 @@
           "social": "社交",
           "api_key": "API 密钥"
         },
-        "username": "用户名",
-        "usernamePlaceholder": "登录用户名或邮箱",
-        "password": "密码",
-        "passwordHint": "（留空则保持当前密码）",
-        "passwordPlaceholder": "登录密码",
-        "loginUrl": "登录 URL",
-        "loginUrlPlaceholder": "https://example.com/login",
         "cookies": "Cookie JSON",
         "cookiesHint": "（留空则保持当前 Cookie）",
         "cookiesPlaceholder": "[\n  { \"name\": \"session\", \"value\": \"abc123\", \"domain\": \".example.com\", \"path\": \"/\" }\n]",

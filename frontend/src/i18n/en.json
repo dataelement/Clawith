@@ -655,7 +655,7 @@
     "credentials": {
       "title": "Credentials",
       "add": "Add",
-      "description": "Store login credentials and cookies for websites. Cookies are automatically injected when the agent opens a browser via AgentBay.",
+      "description": "Store website session cookies. Cookies are automatically injected when the agent opens a browser via AgentBay.",
       "empty": "No credentials configured",
       "loading": "Loading...",
       "error": "Failed to load credentials",
@@ -706,13 +706,6 @@
           "social": "Social",
           "api_key": "API Key"
         },
-        "username": "Username",
-        "usernamePlaceholder": "Login username or email",
-        "password": "Password",
-        "passwordHint": "(leave empty to keep current)",
-        "passwordPlaceholder": "Login password",
-        "loginUrl": "Login URL",
-        "loginUrlPlaceholder": "https://example.com/login",
         "cookies": "Cookies JSON",
         "cookiesHint": "(leave empty to keep current)",
         "cookiesPlaceholder": "[\n  { \"name\": \"session\", \"value\": \"abc123\", \"domain\": \".example.com\", \"path\": \"/\" }\n]",

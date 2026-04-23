@@ -212,8 +212,8 @@ async def get_agent_relationship_candidates(
     if not source_agent.tenant_id:
         return []
 
-    result = await db.execute(
-        select(Agent)
+    agent_ids = (
+        select(Agent.id)
         .join(AgentPermission, AgentPermission.agent_id == Agent.id)
         .where(
             Agent.tenant_id == source_agent.tenant_id,
@@ -221,6 +221,10 @@ async def get_agent_relationship_candidates(
             AgentPermission.scope_type == "company",
         )
         .distinct()
+    )
+    result = await db.execute(
+        select(Agent)
+        .where(Agent.id.in_(agent_ids))
         .order_by(Agent.created_at.desc())
     )
     agents = result.scalars().all()

@@ -1,6 +1,8 @@
 """Clawith Backend — FastAPI Application Entry Point."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
+import shutil
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +15,34 @@ from app.core.middleware import TraceIdMiddleware
 from app.schemas.schemas import HealthResponse
 
 settings = get_settings()
+
+
+def _log_bwrap_startup_status() -> None:
+    """Emit a startup diagnostic for bubblewrap availability.
+
+    We only warn when bwrap is missing so deployments can still start in
+    degraded mode. The subprocess sandbox will fall back to the hardened local
+    execution path in that case.
+    """
+    in_container = Path("/.dockerenv").exists()
+    bwrap_path = shutil.which("bwrap")
+
+    if bwrap_path:
+        location = "container" if in_container else "host"
+        logger.info(f"[startup] bubblewrap detected at {bwrap_path} ({location})")
+        return
+
+    if in_container:
+        logger.warning(
+            "[startup] bubblewrap (bwrap) is not installed in the backend container. "
+            "The service will still start, but execute_code will run without bwrap filesystem isolation."
+        )
+        return
+
+    logger.warning(
+        "[startup] bubblewrap (bwrap) is not installed on the host. "
+        "The service will still start, but execute_code will run without bwrap filesystem isolation."
+    )
 
 
 async def _start_ss_local() -> None:
@@ -71,6 +101,7 @@ async def lifespan(app: FastAPI):
     configure_logging()
     intercept_standard_logging()
     logger.info("[startup] Logging configured")
+    _log_bwrap_startup_status()
 
     # Warn about default JWT secrets in production
     if "change-me" in settings.SECRET_KEY.lower() or "change-me" in settings.JWT_SECRET_KEY.lower():

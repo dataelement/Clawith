@@ -60,6 +60,10 @@ services:
       - ./backend/agent_data:/data/agents
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
     networks:
       - clawith_dev
     depends_on:

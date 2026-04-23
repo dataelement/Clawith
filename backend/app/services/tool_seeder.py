@@ -1829,6 +1829,30 @@ BUILTIN_TOOLS = [
         "config_schema": {},
     },
     {
+        "name": "feishu_doc_search",
+        "display_name": "Feishu Doc Search",
+        "description": "Search Feishu cloud documents by keyword using the official document search API. Useful when a wiki or knowledge base has too many files to browse manually.",
+        "category": "feishu",
+        "icon": "🔎",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keyword, e.g. '恩菲' or '客户周报'"},
+                "docs_types": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["doc", "docx", "sheet", "bitable", "file", "folder", "mindnote", "slides"]},
+                    "description": "Optional file type filter.",
+                },
+                "count": {"type": "integer", "description": "Number of results to return (default 10, max 50)."},
+                "offset": {"type": "integer", "description": "Result offset for pagination (default 0)."},
+            },
+            "required": ["query"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
         "name": "feishu_doc_read",
         "display_name": "Feishu Doc Read",
         "description": "Read the text content of a Feishu document (Docx). Provide the document token from its URL.",

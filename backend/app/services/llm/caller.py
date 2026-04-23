@@ -224,6 +224,7 @@ async def _process_tool_call(
         try:
             await on_tool_call({
                 "name": tool_name,
+                "call_id": tc.get("id", ""),
                 "args": args,
                 "status": "running",
                 "reasoning_content": full_reasoning_content
@@ -260,6 +261,7 @@ async def _process_tool_call(
         try:
             await on_tool_call({
                 "name": tool_name,
+                "call_id": tc.get("id", ""),
                 "args": args,
                 "status": "done",
                 "result": result,

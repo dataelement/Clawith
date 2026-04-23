@@ -94,7 +94,7 @@ Primary models:
   - Platform sessions now distinguish a long-lived primary thread (`is_primary=true`) from temporary side-topic threads.
   - Platform-user unread state is tracked per session via `last_read_at_by_user`.
 - `ChatMessage` (stored in `audit.py`): the durable event log for user messages, assistant replies, tool calls, and runtime outputs.
-- `AgentCredential`: encrypted per-agent credential storage used by integrations such as AgentBay Take Control cookie export.
+- `AgentCredential`: encrypted per-agent session-cookie storage used by integrations such as AgentBay Take Control cookie export and browser-state reinjection, without persisting third-party usernames or passwords.
 
 The messaging layer is deliberately more general than ordinary user/assistant chat, because the same persistence path supports web UI, IM channels, A2A, and trigger-driven reflection sessions.
 

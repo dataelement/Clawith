@@ -154,6 +154,10 @@ class BaseAuthProvider(ABC):
             tenant_id=tenant_id,
         )
 
+        # SSO users should also appear as Web members for tenant-side user management.
+        from app.services.registration_service import registration_service
+        await registration_service.ensure_web_org_member(db, user)
+
         return user, is_new
 
     async def _ensure_provider(self, db: AsyncSession, tenant_id: str | None = None) -> IdentityProvider:

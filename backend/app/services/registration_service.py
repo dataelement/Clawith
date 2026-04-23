@@ -463,35 +463,9 @@ class RegistrationService:
             return
 
         from app.models.org import OrgMember
-        
-        member = None
-
-        # Prefer email match
-        if user.email:
-            result = await db.execute(
-                select(OrgMember).where(
-                    OrgMember.email == user.email,
-                    OrgMember.tenant_id == user.tenant_id,
-                    OrgMember.user_id == None
-                )
-            )
-            member = result.scalar_one_or_none()
-
-        # Fallback to phone match
-        if not member and user.primary_mobile:
-            result = await db.execute(
-                select(OrgMember).where(
-                    OrgMember.phone == user.primary_mobile,
-                    OrgMember.tenant_id == user.tenant_id,
-                    OrgMember.user_id == None
-                )
-            )
-            member = result.scalar_one_or_none()
-        
+        member = await self._find_unbound_org_member_by_contact(db, user)
         if member:
             member.user_id = user.id
-            
-            # Sync email/phone both ways (prefer user if provided)
             if user.email and member.email != user.email:
                 member.email = user.email
             elif not user.email and member.email:
@@ -501,22 +475,127 @@ class RegistrationService:
                 member.phone = user.primary_mobile
             elif not user.primary_mobile and member.phone:
                 user.primary_mobile = member.phone
-            
             await db.flush()
+
+            from app.services.okr_agent_hook import hook_new_org_member
+            await hook_new_org_member(db, member.id, user.tenant_id)
+
+        await self.ensure_web_org_member(db, user)
+
+    async def _find_unbound_org_member_by_contact(
+        self,
+        db: AsyncSession,
+        user: User,
+    ):
+        from app.models.org import OrgMember
+
+        if user.email:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.email == user.email,
+                    OrgMember.tenant_id == user.tenant_id,
+                    OrgMember.user_id == None,
+                ).limit(1)
+            )
+            member = result.scalar_one_or_none()
+            if member:
+                return member
+
+        if user.primary_mobile:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.phone == user.primary_mobile,
+                    OrgMember.tenant_id == user.tenant_id,
+                    OrgMember.user_id == None,
+                ).limit(1)
+            )
+            member = result.scalar_one_or_none()
+            if member:
+                return member
+
+        return None
+
+    async def ensure_web_org_member(self, db: AsyncSession, user: User):
+        """Ensure the user has a dedicated Web OrgMember record in their tenant."""
+        if not user.tenant_id:
+            return None
+
+        from app.models.org import OrgMember
+
+        web_provider = await self.ensure_identity_provider(
+            db,
+            "web",
+            user.tenant_id,
+            name="Web",
+        )
+
+        result = await db.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == user.id,
+                OrgMember.tenant_id == user.tenant_id,
+                OrgMember.provider_id == web_provider.id,
+            ).limit(1)
+        )
+        member = result.scalar_one_or_none()
+
+        if not member and user.email:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.email == user.email,
+                    OrgMember.tenant_id == user.tenant_id,
+                    OrgMember.provider_id == web_provider.id,
+                    OrgMember.user_id == None,
+                ).limit(1)
+            )
+            member = result.scalar_one_or_none()
+
+        if not member and user.primary_mobile:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.phone == user.primary_mobile,
+                    OrgMember.tenant_id == user.tenant_id,
+                    OrgMember.provider_id == web_provider.id,
+                    OrgMember.user_id == None,
+                ).limit(1)
+            )
+            member = result.scalar_one_or_none()
+
+        created = False
+        linked_existing = False
+        if member:
+            linked_existing = member.user_id is None
+            member.user_id = user.id
         else:
             member = OrgMember(
                 name=user.display_name or "User",
                 email=user.email,
                 phone=user.primary_mobile,
+                provider_id=web_provider.id,
+                title="Web User",
                 tenant_id=user.tenant_id,
                 user_id=user.id,
-                status="active"
+                status="active",
             )
             db.add(member)
-            await db.flush()
+            created = True
 
-        from app.services.okr_agent_hook import hook_new_org_member
-        await hook_new_org_member(db, member.id, user.tenant_id)
+        desired_name = user.display_name or member.name or "User"
+        if desired_name and member.name != desired_name:
+            member.name = desired_name
+        if member.email != user.email:
+            member.email = user.email
+        if member.phone != user.primary_mobile:
+            member.phone = user.primary_mobile
+        if member.title != "Web User":
+            member.title = "Web User"
+
+        await db.flush()
+
+        if created or linked_existing:
+            from app.services.okr_agent_hook import hook_new_org_member
+            await hook_new_org_member(db, member.id, user.tenant_id)
+
+        return member
 
     async def sync_org_member_contact_from_user(
         self,
@@ -531,21 +610,24 @@ class RegistrationService:
             return
 
         from app.models.org import OrgMember
+        web_provider = await self.ensure_identity_provider(db, "web", user.tenant_id, name="Web")
 
         result = await db.execute(
             select(OrgMember).where(
                 OrgMember.user_id == user.id,
                 OrgMember.tenant_id == user.tenant_id,
+                OrgMember.provider_id == web_provider.id,
             )
         )
-        member = result.scalar_one_or_none()
-        if not member:
+        members = result.scalars().all()
+        if not members:
             return
 
-        if sync_email and member.email != user.email:
-            member.email = user.email
-        if sync_phone and member.phone != user.primary_mobile:
-            member.phone = user.primary_mobile
+        for member in members:
+            if sync_email and member.email != user.email:
+                member.email = user.email
+            if sync_phone and member.phone != user.primary_mobile:
+                member.phone = user.primary_mobile
 
         await db.flush()
 

@@ -1,7 +1,7 @@
 """Ensure channel_type_enum contains all channel values used by the app.
 
 Revision ID: add_channel_enum_values
-Revises: add_okr_first_enabled_at
+Revises: merge_workspace_and_okr
 Create Date: 2026-04-18
 """
 from typing import Sequence, Union
@@ -10,7 +10,7 @@ from alembic import op
 
 
 revision: str = "add_channel_enum_values"
-down_revision: Union[str, Sequence[str], None] = "add_okr_first_enabled_at"
+down_revision: Union[str, Sequence[str], None] = "merge_workspace_and_okr"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
