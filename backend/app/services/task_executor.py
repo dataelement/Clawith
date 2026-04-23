@@ -20,6 +20,9 @@ from app.models.task import Task, TaskLog
 
 settings = get_settings()
 
+LLM_CALL_MAX_RETRIES = 3
+LLM_CALL_RETRY_BASE_DELAY = 5.0
+
 
 async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     """Execute a task using the agent's configured LLM with full context.
@@ -95,22 +98,62 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
             user_prompt += f"\n任务描述: {task_description}"
         user_prompt += "\n\n请认真完成此任务，给出详细的执行结果。"
 
-    # Step 4: Call LLM with unified failover support
-    from app.services.llm import call_agent_llm_with_tools
-    
     try:
         logger.info(f"[TaskExec] Calling LLM with tools for task: {task_title}")
-        
-        async with async_session() as db:
-            reply = await call_agent_llm_with_tools(
-                db=db,
-                agent_id=agent_id,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                max_rounds=50,
-                session_id=str(task_id),
+
+        if settings.TOOL_LOOP_V2:
+            from app.services.tool_loop_runner import (
+                FLAGS_TRIGGERED_TASK,
+                InProcessTaskAbortSource,
+                RunContext,
+                RunStatus,
+                TaskLogSink,
+                ToolLoopRunner,
+                translate_to_task_failure,
             )
-            
+            from app.services.llm_utils import LLMMessage
+
+            async with async_session() as db:
+                agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+                agent = agent_result.scalar_one_or_none()
+                if not agent:
+                    await _log_error(task_id, "数字员工未找到")
+                    if task_type == 'supervision':
+                        await _restore_supervision_status(task_id)
+                    return
+
+            runner = ToolLoopRunner()
+            result = await runner.run(
+                RunContext(
+                    session=None,
+                    agent=agent,
+                    caller="executor",
+                    abort_source=InProcessTaskAbortSource(task_id),
+                    round_log_sink=TaskLogSink(task_id),
+                ),
+                [
+                    LLMMessage(role="system", content=system_prompt),
+                    LLMMessage(role="user", content=user_prompt),
+                ],
+                FLAGS_TRIGGERED_TASK,
+            )
+            if result.status != RunStatus.COMPLETED:
+                await translate_to_task_failure(result, task_id=task_id, task_type=task_type)
+                return
+            reply = result.final_text
+        else:
+            from app.services.llm import call_agent_llm_with_tools
+
+            async with async_session() as db:
+                reply = await call_agent_llm_with_tools(
+                    db=db,
+                    agent_id=agent_id,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    max_rounds=50,
+                    session_id=str(task_id),
+                )
+
         logger.info(f"[TaskExec] LLM reply: {reply[:80]}")
     except Exception as e:
         error_msg = str(e) or repr(e)
