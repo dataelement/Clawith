@@ -22,6 +22,10 @@ interface Project {
     tags: Tag[];
     agents: AgentInProject[];
     agent_count: number;
+    task_count: number;
+    task_completed_count: number;
+    task_open_count: number;
+    completion_ratio: number;
 }
 
 // ─── API helpers ─────────────────────────────────────────────────────────────
@@ -146,6 +150,7 @@ function ProjectCard({ project, statusLabel, onClick }: { project: Project; stat
         if (!iso) return null;
         return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
     };
+    const completionPercent = Math.round((project.completion_ratio || 0) * 100);
 
     return (
         <div onClick={onClick} style={{
@@ -192,6 +197,21 @@ function ProjectCard({ project, statusLabel, onClick }: { project: Project; stat
                         </span>
                     ))}
                     {project.tags.length > 3 && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>+{project.tags.length - 3}</span>}
+                </div>
+            )}
+
+            {project.task_count > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('project.overview.progress')}</span>
+                        <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{completionPercent}%</span>
+                    </div>
+                    <div style={{ height: 6, borderRadius: 999, background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+                        <div style={{ width: `${completionPercent}%`, height: '100%', background: 'var(--primary)' }} />
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-tertiary)' }}>
+                        {project.task_completed_count}/{project.task_count} {t('project.overview.progressLabel')}
+                    </div>
                 </div>
             )}
 
@@ -244,7 +264,7 @@ export default function ProjectsList() {
     const [loading, setLoading] = useState(true);
 
     const [q, setQ] = useState('');
-    const [statusFilter, setStatusFilter] = useState('active');
+    const [statusFilter, setStatusFilter] = useState('all');
     const [folderFilter, setFolderFilter] = useState<string | null>(null);
     const [tagFilter, setTagFilter] = useState<string | null>(null);
 

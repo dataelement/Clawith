@@ -1880,6 +1880,8 @@
     },
     "tabs": {
       "overview": "概览",
+      "tasks": "交付物",
+      "decisions": "决策",
       "agents": "参与 Agent",
       "settings": "设置"
     },
@@ -1894,11 +1896,112 @@
       "targetDate": "预期完成",
       "createdAt": "创建时间",
       "status": "状态",
-      "collabMode": "协作模式"
+      "collabMode": "协作模式",
+      "progress": "进度",
+      "progressLabel": "个交付物已完成",
+      "openDeliverables": "未完成交付物",
+      "noOpenDeliverables": "当前没有未完成交付物",
+      "recentActivity": "最近动态"
+    },
+    "tasks": {
+      "summaryLabel": "个交付物",
+      "filters": {
+        "all": "全部"
+      },
+      "addTask": "新建交付物",
+      "editTask": "编辑交付物",
+      "saveNew": "创建交付物",
+      "saveEdit": "保存交付物",
+      "empty": "还没有交付物",
+      "taskTitle": "交付物标题",
+      "taskTitlePlaceholder": "例如：完成官网首屏文案",
+      "titleRequired": "请填写交付物标题",
+      "goal": "目标",
+      "goalPlaceholder": "这个交付物要达成什么结果？",
+      "acceptance": "验收标准",
+      "acceptancePlaceholder": "怎样才算这个交付物完成？",
+      "dueDate": "截止日期",
+      "priority": "优先级",
+      "status": "状态",
+      "assignees": "负责人",
+      "noAssignableAgents": "先把 Agent 加入项目，才能分派交付物",
+      "noneAssigned": "未分派",
+      "noGoal": "暂无目标说明",
+      "noAcceptance": "暂无验收标准",
+      "deleteTask": "删除交付物",
+      "confirmDelete": "确认删除这个交付物？",
+      "moveUp": "上移",
+      "moveDown": "下移",
+      "priorityOptions": {
+        "low": "低",
+        "normal": "普通",
+        "high": "高",
+        "urgent": "紧急"
+      },
+      "statusOptions": {
+        "todo": "待办",
+        "doing": "进行中",
+        "review": "待验收",
+        "done": "已完成",
+        "cancelled": "已取消"
+      }
+    },
+    "activities": {
+      "system": "系统",
+      "empty": "暂无动态",
+      "events": {
+        "projectCreated": "{{actor}} 创建了项目",
+        "projectUpdated": "{{actor}} 更新了项目信息",
+        "projectTagsUpdated": "{{actor}} 更新了项目标签",
+        "projectTransitioned": "{{actor}} 将项目状态从 {{from}} 改为 {{to}}",
+        "projectOverdue": "项目已超过预期完成时间",
+        "agentAdded": "{{actor}} 将 {{agent}} 以 {{role}} 身份加入项目",
+        "agentRoleChanged": "{{actor}} 将 {{agent}} 的角色从 {{from}} 改为 {{to}}",
+        "agentRemoved": "{{actor}} 将 {{agent}} 移出了项目",
+        "agentA2AGranted": "{{actor}} 为 {{source}} 和 {{target}} 开通了 A2A 协作",
+        "taskCreated": "{{actor}} 创建了交付物 {{title}}",
+        "taskUpdated": "{{actor}} 更新了交付物 {{title}}",
+        "taskDeleted": "{{actor}} 删除了交付物 {{title}}",
+        "taskReordered": "{{actor}} 调整了交付物顺序",
+        "decisionCreated": "{{actor}} 记录了决策 {{title}}",
+        "decisionUpdated": "{{actor}} 更新了决策 {{title}}",
+        "decisionDeleted": "{{actor}} 删除了决策 {{title}}"
+      }
+    },
+    "chatBanner": {
+      "label": "当前处于项目模式",
+      "workingIn": "🎯 当前正在项目中工作：{{name}}",
+      "clear": "清除",
+      "unavailable": "项目上下文不可用"
+    },
+    "decisions": {
+      "addDecision": "新增决策",
+      "editDecision": "编辑决策",
+      "saveNew": "保存决策",
+      "saveEdit": "更新决策",
+      "empty": "还没有记录任何决策",
+      "title": "决策标题",
+      "titlePlaceholder": "例如：由 Designer Agent 负责最终视觉评审",
+      "titleRequired": "请填写决策标题",
+      "content": "说明",
+      "contentPlaceholder": "记录决策内容、原因、约束和后续动作。",
+      "noContent": "暂无说明",
+      "deleteDecision": "删除决策",
+      "confirmDelete": "确认删除这条决策？"
+    },
+    "conversations": {
+      "newConversation": "新建对话",
+      "startConversation": "开始对话",
+      "chooseAgent": "选择由哪个 Agent 来开启这次项目对话。",
+      "noAgents": "先把 Agent 加入项目，才能开始项目对话。"
     },
     "agents": {
       "empty": "还没有 Agent 加入此项目",
       "addAgent": "添加 Agent",
+      "searchPlaceholder": "搜索 Agent...",
+      "noAvailableAgents": "没有可添加的 Agent",
+      "roleLabel": "角色",
+      "workWithAgent": "带着项目去协作",
       "removeAgent": "移出项目",
       "changeRole": "修改角色",
       "a2aMatrix": "A2A 通信授权",
@@ -1916,6 +2019,7 @@
       "folderPlaceholder": "例如：2026H1",
       "targetDate": "预期完成时间",
       "collabMode": "协作模式",
+      "statusActions": "状态流转",
       "dangerZone": "危险操作",
       "archiveProject": "归档项目",
       "archiveDesc": "归档后项目变为只读，可以删除",
@@ -1930,6 +2034,7 @@
       "complete": "完成",
       "archive": "归档",
       "confirmComplete": "确认标记为完成？",
+      "confirmForceComplete": "项目里还有 {{count}} 个未完成交付物，仍然强制完成吗？",
       "confirmArchive": "确认归档此项目？归档后将变为只读。"
     },
     "tags": {

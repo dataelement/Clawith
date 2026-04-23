@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
-import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
-import { IconPaperclip, IconSend } from '@tabler/icons-react';
+import { agentApi, enterpriseApi, fetchJson, uploadFileWithProgress } from '../services/api';
+import { IconPaperclip, IconSend, IconX } from '@tabler/icons-react';
 import { formatFileSize } from '../utils/formatFileSize';
 import { useAuthStore } from '../stores';
 import { useDropZone } from '../hooks/useDropZone';
@@ -54,6 +54,12 @@ interface Message {
     imageUrl?: string;
     timestamp?: string;
     _isToolGroup?: boolean;
+}
+
+interface ActiveProjectContext {
+    id: string;
+    name: string;
+    status: string;
 }
 
 // CSS keyframe for the pulse/breathing LED — injected once into <head>
@@ -263,6 +269,7 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
 export default function Chat() {
     const { t } = useTranslation();
     const { id } = useParams<{ id: string }>();
+    const [searchParams, setSearchParams] = useSearchParams();
     const token = useAuthStore((s) => s.token);
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
@@ -275,6 +282,8 @@ export default function Chat() {
     } | null>(null);
     const [streaming, setStreaming] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
+    const [activeProject, setActiveProject] = useState<ActiveProjectContext | null>(null);
+    const [activeProjectLoading, setActiveProjectLoading] = useState(false);
     const [attachedFile, setAttachedFile] = useState<{ name: string; text: string; path?: string; imageUrl?: string } | null>(null);
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [livePanelVisible, setLivePanelVisible] = useState(false);
@@ -287,6 +296,8 @@ export default function Chat() {
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
+    const activeProjectId = searchParams.get('active_project') || '';
+    const activeSessionId = searchParams.get('session_id') || '';
 
     const { data: agent } = useQuery({
         queryKey: ['agent', id],
@@ -303,6 +314,37 @@ export default function Chat() {
     const supportsVision = !!agent?.primary_model_id && llmModels.some(
         (m: any) => m.id === agent.primary_model_id && m.supports_vision
     );
+
+    useEffect(() => {
+        if (!activeProjectId) {
+            setActiveProject(null);
+            setActiveProjectLoading(false);
+            return;
+        }
+
+        let cancelled = false;
+        setActiveProjectLoading(true);
+        fetchJson<ActiveProjectContext>(`/projects/${activeProjectId}`)
+            .then((project) => {
+                if (!cancelled) {
+                    setActiveProject({
+                        id: project.id,
+                        name: project.name,
+                        status: project.status,
+                    });
+                }
+            })
+            .catch(() => {
+                if (!cancelled) setActiveProject(null);
+            })
+            .finally(() => {
+                if (!cancelled) setActiveProjectLoading(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [activeProjectId]);
 
     const parseMessage = (msg: Message): Message => {
         if (msg.role !== 'user') return msg;
@@ -325,10 +367,15 @@ export default function Chat() {
         return msg;
     };
 
-    // Load chat history on mount
+    // Load chat history on mount or when a specific session is selected
     useEffect(() => {
         if (!id || !token) return;
-        fetch(`/api/chat/${id}/history`, {
+        const historyUrl = activeSessionId
+            ? `/api/agents/${id}/sessions/${activeSessionId}/messages`
+            : `/api/chat/${id}/history`;
+
+        setMessages([]);
+        fetch(historyUrl, {
             headers: { Authorization: `Bearer ${token}` },
         })
             .then(r => r.json())
@@ -369,7 +416,7 @@ export default function Chat() {
                 }
             })
             .catch(() => { /* ignore */ });
-    }, [id, token]);
+    }, [id, token, activeSessionId]);
 
     useEffect(() => {
         if (!id || !token) return;
@@ -379,7 +426,8 @@ export default function Chat() {
         const connect = () => {
             if (cancelled) return;
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/chat/${id}?token=${token}`;
+            const sessionParam = activeSessionId ? `&session_id=${encodeURIComponent(activeSessionId)}` : '';
+            const wsUrl = `${protocol}//${window.location.host}/ws/chat/${id}?token=${token}${sessionParam}`;
             const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
@@ -577,7 +625,7 @@ export default function Chat() {
                 wsRef.current = null;
             }
         };
-    }, [id, token]);
+    }, [id, token, activeSessionId]);
 
     // Auto-focus input when connection is established
     useEffect(() => {
@@ -674,7 +722,12 @@ export default function Chat() {
             imageUrl: attachedFile?.imageUrl,
             timestamp: new Date().toISOString(),
         }]);
-        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '' }));
+        wsRef.current.send(JSON.stringify({
+            content: contentForLLM,
+            display_content: userMsg,
+            file_name: attachedFile?.name || '',
+            active_project_id: activeProjectId || undefined,
+        }));
         setInput('');
         setAttachedFile(null);
     };
@@ -734,6 +787,13 @@ export default function Chat() {
         disabled: !connected || !!uploadProgress || isWaiting || streaming,
     });
 
+    const clearProjectContext = () => {
+        const next = new URLSearchParams(searchParams);
+        next.delete('active_project');
+        setSearchParams(next, { replace: true });
+        setActiveProject(null);
+    };
+
     return (
         <div>
             <div className="page-header">
@@ -750,6 +810,55 @@ export default function Chat() {
                     </div>
                 </div>
             </div>
+
+            {activeProjectId && (
+                <div
+                    style={{
+                        margin: '0 0 16px',
+                        padding: '10px 14px',
+                        borderRadius: 12,
+                        border: '1px solid rgba(59,130,246,0.22)',
+                        background: 'linear-gradient(135deg, rgba(59,130,246,0.10), rgba(14,165,233,0.06))',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 12,
+                    }}
+                >
+                    <div>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--primary)', marginBottom: 3 }}>
+                            {t('project.chatBanner.label', 'Working in project mode')}
+                        </div>
+                        <div style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 600 }}>
+                            {activeProjectLoading
+                                ? `🎯 ${t('common.loading', 'Loading...')}`
+                                : activeProject?.name
+                                    ? t('project.chatBanner.workingIn', { name: activeProject.name })
+                                    : t('project.chatBanner.unavailable', 'Project context unavailable')}
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={clearProjectContext}
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '7px 10px',
+                            borderRadius: 999,
+                            border: '1px solid var(--border-subtle)',
+                            background: 'var(--bg-primary)',
+                            color: 'var(--text-secondary)',
+                            cursor: 'pointer',
+                            fontSize: 12,
+                            fontWeight: 500,
+                        }}
+                    >
+                        <IconX size={14} stroke={1.8} />
+                        {t('project.chatBanner.clear', 'Clear')}
+                    </button>
+                </div>
+            )}
 
             <div className={`chat-container ${hasLiveData ? 'chat-with-live-panel' : ''}`} {...chatDropProps} style={{ position: 'relative' }}>
                 {/* Drop overlay */}

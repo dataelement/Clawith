@@ -1755,6 +1755,8 @@
     },
     "tabs": {
       "overview": "Overview",
+      "tasks": "Deliverables",
+      "decisions": "Decisions",
       "agents": "Agents",
       "settings": "Settings"
     },
@@ -1769,11 +1771,112 @@
       "targetDate": "Target Date",
       "createdAt": "Created",
       "status": "Status",
-      "collabMode": "Collaboration Mode"
+      "collabMode": "Collaboration Mode",
+      "progress": "Progress",
+      "progressLabel": "deliverables complete",
+      "openDeliverables": "Open Deliverables",
+      "noOpenDeliverables": "No open deliverables",
+      "recentActivity": "Recent Activity"
+    },
+    "tasks": {
+      "summaryLabel": "deliverables",
+      "filters": {
+        "all": "All"
+      },
+      "addTask": "New Deliverable",
+      "editTask": "Edit Deliverable",
+      "saveNew": "Create Deliverable",
+      "saveEdit": "Save Deliverable",
+      "empty": "No deliverables yet",
+      "taskTitle": "Deliverable Title",
+      "taskTitlePlaceholder": "e.g. Publish launch page copy",
+      "titleRequired": "Deliverable title is required",
+      "goal": "Goal",
+      "goalPlaceholder": "What outcome should this deliverable achieve?",
+      "acceptance": "Acceptance Criteria",
+      "acceptancePlaceholder": "How will we know this deliverable is done?",
+      "dueDate": "Due Date",
+      "priority": "Priority",
+      "status": "Status",
+      "assignees": "Assignees",
+      "noAssignableAgents": "Add agents to this project before assigning work",
+      "noneAssigned": "Unassigned",
+      "noGoal": "No goal provided",
+      "noAcceptance": "No acceptance criteria yet",
+      "deleteTask": "Delete Deliverable",
+      "confirmDelete": "Delete this deliverable?",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "priorityOptions": {
+        "low": "Low",
+        "normal": "Normal",
+        "high": "High",
+        "urgent": "Urgent"
+      },
+      "statusOptions": {
+        "todo": "Todo",
+        "doing": "Doing",
+        "review": "Review",
+        "done": "Done",
+        "cancelled": "Cancelled"
+      }
+    },
+    "activities": {
+      "system": "System",
+      "empty": "No activity yet",
+      "events": {
+        "projectCreated": "{{actor}} created the project",
+        "projectUpdated": "{{actor}} updated the project details",
+        "projectTagsUpdated": "{{actor}} updated project tags",
+        "projectTransitioned": "{{actor}} changed project status from {{from}} to {{to}}",
+        "projectOverdue": "The target completion date has passed",
+        "agentAdded": "{{actor}} added {{agent}} as {{role}}",
+        "agentRoleChanged": "{{actor}} changed {{agent}} from {{from}} to {{to}}",
+        "agentRemoved": "{{actor}} removed {{agent}}",
+        "agentA2AGranted": "{{actor}} granted A2A between {{source}} and {{target}}",
+        "taskCreated": "{{actor}} created deliverable {{title}}",
+        "taskUpdated": "{{actor}} updated deliverable {{title}}",
+        "taskDeleted": "{{actor}} deleted deliverable {{title}}",
+        "taskReordered": "{{actor}} reordered deliverables",
+        "decisionCreated": "{{actor}} recorded decision {{title}}",
+        "decisionUpdated": "{{actor}} updated decision {{title}}",
+        "decisionDeleted": "{{actor}} removed decision {{title}}"
+      }
+    },
+    "chatBanner": {
+      "label": "Working in project mode",
+      "workingIn": "🎯 Working in: {{name}}",
+      "clear": "Clear",
+      "unavailable": "Project context unavailable"
+    },
+    "decisions": {
+      "addDecision": "New Decision",
+      "editDecision": "Edit Decision",
+      "saveNew": "Save Decision",
+      "saveEdit": "Update Decision",
+      "empty": "No decisions recorded yet",
+      "title": "Decision",
+      "titlePlaceholder": "e.g. Use Designer Agent as the review owner",
+      "titleRequired": "Decision title is required",
+      "content": "Notes",
+      "contentPlaceholder": "Capture the decision, rationale, constraints, and follow-ups.",
+      "noContent": "No notes yet",
+      "deleteDecision": "Delete Decision",
+      "confirmDelete": "Delete this decision?"
+    },
+    "conversations": {
+      "newConversation": "New Conversation",
+      "startConversation": "Start Conversation",
+      "chooseAgent": "Choose which agent should start this project conversation.",
+      "noAgents": "Add an agent to this project before starting a conversation."
     },
     "agents": {
       "empty": "No agents in this project yet",
       "addAgent": "Add Agent",
+      "searchPlaceholder": "Search agents...",
+      "noAvailableAgents": "No agents available",
+      "roleLabel": "Role",
+      "workWithAgent": "Work with Agent",
       "removeAgent": "Remove from project",
       "changeRole": "Change role",
       "a2aMatrix": "A2A Communication",
@@ -1791,6 +1894,7 @@
       "folderPlaceholder": "e.g. 2026H1",
       "targetDate": "Target Completion Date",
       "collabMode": "Collaboration Mode",
+      "statusActions": "Status Actions",
       "dangerZone": "Danger Zone",
       "archiveProject": "Archive Project",
       "archiveDesc": "Archived projects are read-only and can be deleted",
@@ -1805,6 +1909,7 @@
       "complete": "Complete",
       "archive": "Archive",
       "confirmComplete": "Mark project as completed?",
+      "confirmForceComplete": "This project still has {{count}} incomplete deliverable(s). Force complete anyway?",
       "confirmArchive": "Archive this project? It will become read-only."
     },
     "tags": {

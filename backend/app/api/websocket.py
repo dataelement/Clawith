@@ -121,6 +121,7 @@ async def call_llm(
     on_tool_call=None,
     on_thinking=None,
     supports_vision=False,
+    project_prompt: str | None = None,
 ) -> str:
     """Call LLM via unified client with function-calling tool loop.
 
@@ -164,6 +165,8 @@ async def call_llm(
         except Exception:
             pass
     static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
+    if project_prompt:
+        static_prompt = f"{static_prompt}\n\n{project_prompt.strip()}"
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
@@ -451,6 +454,7 @@ async def websocket_chat(
     llm_model = None
     fallback_llm_model = None
     history_messages = []
+    user_tenant_id = None
 
     try:
         async with async_session() as db:
@@ -462,6 +466,7 @@ async def websocket_chat(
                 await websocket.send_json({"type": "error", "content": "User not found"})
                 await websocket.close(code=4001)
                 return
+            user_tenant_id = user.tenant_id
 
             logger.info(f"[WS] Checking agent access for {agent_id}")
             agent, _ = await check_agent_access(db, user, agent_id)
@@ -654,6 +659,7 @@ async def websocket_chat(
             content = data.get("content", "")
             display_content = data.get("display_content", "")  # User-facing display text
             file_name = data.get("file_name", "")  # Original file name for attachment display
+            active_project_id_raw = data.get("active_project_id")
             logger.info(f"[WS] Received: {content[:50]}")
 
             if not content:
@@ -674,6 +680,26 @@ async def websocket_chat(
             except AgentExpired as ae:
                 await websocket.send_json({"type": "done", "role": "assistant", "content": f"⚠️ {ae.message}"})
                 continue
+
+            project_prompt = None
+            if active_project_id_raw and user_tenant_id:
+                try:
+                    active_project_id = uuid.UUID(str(active_project_id_raw))
+                except (TypeError, ValueError):
+                    logger.warning(f"[WS] Ignoring invalid active_project_id: {active_project_id_raw}")
+                else:
+                    try:
+                        from app.services.project_service import get_project_brief_prompt as _get_project_brief_prompt
+
+                        async with async_session() as _project_db:
+                            project_prompt = await _get_project_brief_prompt(
+                                _project_db,
+                                project_id=active_project_id,
+                                tenant_id=user_tenant_id,
+                                agent_id=agent_id,
+                            )
+                    except Exception as exc:
+                        logger.warning(f"[WS] Failed to load project prompt for {active_project_id}: {exc}")
 
             # Add user message to conversation (full LLM context)
             conversation.append({"role": "user", "content": content})
@@ -836,6 +862,7 @@ async def websocket_chat(
                         on_tool_call=tool_call_to_ws,
                         on_thinking=thinking_to_ws,
                         supports_vision=getattr(llm_model, 'supports_vision', False),
+                        project_prompt=project_prompt,
                     ))
 
                     # Listen for abort while LLM is running
@@ -919,6 +946,7 @@ async def websocket_chat(
                                 on_tool_call=tool_call_to_ws,
                                 on_thinking=thinking_to_ws,
                                 supports_vision=getattr(fallback_llm_model, 'supports_vision', False),
+                                project_prompt=project_prompt,
                             )
                             logger.info(f"[WS] Fallback LLM response: {assistant_response[:80]}")
                         except Exception as e2:

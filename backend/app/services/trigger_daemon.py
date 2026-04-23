@@ -375,12 +375,15 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
     Creates a Reflection Session and calls the LLM.
     """
     from app.api.websocket import call_llm
-    from app.services.agent_context import build_agent_context
     from app.models.llm import LLMModel
     from app.models.audit import ChatMessage
     from app.models.chat_session import ChatSession
     from app.models.participant import Participant
     from app.services.audit_logger import write_audit_log
+    from app.services.project_service import (
+        get_project_prompt_from_focus_ref,
+        normalize_project_focus_ref,
+    )
 
     try:
         async with async_session() as db:
@@ -406,10 +409,13 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             # Build trigger context
             context_parts = []
             trigger_names = []
+            project_prompt_parts: list[str] = []
+            seen_project_focus_refs: set[str] = set()
             for t in triggers:
+                normalized_focus_ref = normalize_project_focus_ref(t.focus_ref)
                 part = f"触发器：{t.name} ({t.type})\n原因：{t.reason}"
-                if t.focus_ref:
-                    part += f"\n关联 Focus：{t.focus_ref}"
+                if normalized_focus_ref:
+                    part += f"\n关联 Focus：{normalized_focus_ref}"
                 # Include matched message for on_message triggers
                 cfg = t.config or {}
                 if t.type == "on_message" and cfg.get("_matched_message"):
@@ -423,12 +429,23 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 context_parts.append(part)
                 trigger_names.append(t.name)
 
+                if normalized_focus_ref and normalized_focus_ref not in seen_project_focus_refs:
+                    prompt = await get_project_prompt_from_focus_ref(
+                        db,
+                        focus_ref=normalized_focus_ref,
+                        agent_id=agent_id,
+                    )
+                    if prompt:
+                        project_prompt_parts.append(prompt)
+                        seen_project_focus_refs.add(normalized_focus_ref)
+
             trigger_context = (
                 "===== 本次唤醒上下文 =====\n"
                 f"唤醒来源：trigger（{'多个触发器同时触发' if len(triggers) > 1 else '触发器触发'}）\n\n"
                 + "\n---\n".join(context_parts)
                 + "\n==========================="
             )
+            project_prompt = "\n\n---\n\n".join(project_prompt_parts) if project_prompt_parts else None
 
             # Create Reflection Session
             title = f"🤖 内心独白：{', '.join(trigger_names)}"
@@ -509,6 +526,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             user_id=agent.creator_id,
             on_chunk=on_chunk,
             on_tool_call=on_tool_call,
+            project_prompt=project_prompt,
         )
 
         # Save assistant reply to Reflection session

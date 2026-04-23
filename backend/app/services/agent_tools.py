@@ -5315,12 +5315,13 @@ VALID_TRIGGER_TYPES = {"cron", "once", "interval", "poll", "on_message", "webhoo
 async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     """Create a new trigger for the agent."""
     from app.models.trigger import AgentTrigger
+    from app.services.project_service import normalize_project_focus_ref
 
     name = arguments.get("name", "").strip()
     ttype = arguments.get("type", "").strip()
     config = arguments.get("config", {})
     reason = arguments.get("reason", "").strip()
-    focus_ref = arguments.get("focus_ref", "") or arguments.get("agenda_ref", "")  # backward compat
+    focus_ref = normalize_project_focus_ref(arguments.get("focus_ref", "") or arguments.get("agenda_ref", ""))  # backward compat
 
     if not name:
         return "❌ Missing required argument 'name'"

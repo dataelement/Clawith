@@ -18,6 +18,8 @@ FRONTEND_DIR="$ROOT/frontend"
 
 BACKEND_PORT=8008
 FRONTEND_PORT=3008
+BACKEND_HOST="::"
+FRONTEND_HOST="::"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 BACKEND_LOG="$LOG_DIR/backend.log"
 BACKEND_PID="$PID_DIR/backend.pid"
@@ -100,7 +102,9 @@ cleanup() {
 wait_for_port() {
     local port=$1 name=$2 max=${3:-10}
     for i in $(seq 1 "$max"); do
-        if curl -s -o /dev/null -m 1 "http://localhost:$port" 2>/dev/null; then
+        if curl -g -s -o /dev/null -m 1 "http://127.0.0.1:$port" 2>/dev/null \
+            || curl -g -s -o /dev/null -m 1 "http://[::1]:$port" 2>/dev/null \
+            || curl -g -s -o /dev/null -m 1 "http://localhost:$port" 2>/dev/null; then
             echo -e "  ${GREEN}✅ $name ready (${i}s)${NC}"
             return 0
         fi
@@ -184,9 +188,11 @@ start_backend() {
     nohup env PYTHONUNBUFFERED=1 \
         PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}" \
         DATABASE_URL="$DATABASE_URL" \
-        .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $BACKEND_PORT \
-        > "$BACKEND_LOG" 2>&1 &
-    echo $! > "$BACKEND_PID"
+        .venv/bin/uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" \
+        < /dev/null > "$BACKEND_LOG" 2>&1 &
+    local backend_pid=$!
+    echo "$backend_pid" > "$BACKEND_PID"
+    disown "$backend_pid" 2>/dev/null || true
     wait_for_port $BACKEND_PORT "Backend" 10
 }
 
@@ -196,9 +202,11 @@ start_backend() {
 start_frontend() {
     echo -e "${YELLOW}🚀 Starting frontend...${NC}"
     cd "$FRONTEND_DIR"
-    nohup node_modules/.bin/vite --host 0.0.0.0 --port $FRONTEND_PORT \
-        > "$FRONTEND_LOG" 2>&1 &
-    echo $! > "$FRONTEND_PID"
+    nohup node_modules/.bin/vite --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" \
+        < /dev/null > "$FRONTEND_LOG" 2>&1 &
+    local frontend_pid=$!
+    echo "$frontend_pid" > "$FRONTEND_PID"
+    disown "$frontend_pid" 2>/dev/null || true
     wait_for_port $FRONTEND_PORT "Frontend" 8
 }
 
@@ -207,12 +215,18 @@ start_frontend() {
 # ═══════════════════════════════════════════════════════
 verify_proxy() {
     echo -e "${YELLOW}🔍 Verifying API proxy...${NC}"
-    HEALTH=$(curl -s -m 3 http://localhost:$FRONTEND_PORT/api/health 2>/dev/null || echo "FAIL")
+    HEALTH=$(curl -g -s -m 3 "http://127.0.0.1:$FRONTEND_PORT/api/health" 2>/dev/null \
+        || curl -g -s -m 3 "http://[::1]:$FRONTEND_PORT/api/health" 2>/dev/null \
+        || curl -g -s -m 3 "http://localhost:$FRONTEND_PORT/api/health" 2>/dev/null \
+        || echo "FAIL")
     if echo "$HEALTH" | grep -q "ok"; then
         echo -e "  ${GREEN}✅ Proxy working${NC}"
     else
         echo -e "  ${YELLOW}⚠️  Proxy may need a moment, backend direct check:${NC}"
-        curl -s http://localhost:$BACKEND_PORT/api/health && echo ""
+        curl -g -s "http://127.0.0.1:$BACKEND_PORT/api/health" 2>/dev/null \
+            || curl -g -s "http://[::1]:$BACKEND_PORT/api/health" 2>/dev/null \
+            || curl -g -s "http://localhost:$BACKEND_PORT/api/health" 2>/dev/null
+        echo ""
     fi
 }
 
