@@ -45,6 +45,17 @@ router = APIRouter(prefix="/api/okr", tags=["okr"])
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 
+def _is_okr_admin(user) -> bool:
+    return getattr(user, "role", None) in ("org_admin", "platform_admin")
+
+
+def _dashboard_write_forbidden() -> HTTPException:
+    return HTTPException(
+        403,
+        "Only org admins can modify OKRs in the dashboard. Members should use OKR Agent to manage their own OKRs.",
+    )
+
+
 async def _sync_okr_agent_relationships(db, tenant_id: uuid.UUID, okr_agent_id: uuid.UUID) -> None:
     """Auto-connect the OKR Agent to all active org members and company-visible agents.
 
@@ -808,6 +819,9 @@ async def create_objective(body: ObjectiveCreate, user=Depends(get_current_user)
     """Create a new Objective."""
     from app.models.org import OrgMember
 
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         resolved_owner_id: uuid.UUID | None = None
 
@@ -876,6 +890,9 @@ async def update_objective(
     user=Depends(get_current_user),
 ):
     """Update an Objective's title, description or status."""
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRObjective).where(
@@ -905,6 +922,9 @@ async def delete_objective(
     user=Depends(get_current_user),
 ):
     """Soft delete an Objective (set status to archived)."""
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRObjective).where(
@@ -961,6 +981,9 @@ async def create_key_result(
     user=Depends(get_current_user),
 ):
     """Create a new Key Result under the specified Objective."""
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         # Verify objective belongs to this tenant
         obj_result = await db.execute(
@@ -996,6 +1019,9 @@ async def update_key_result(
     When current_value changes, an OKRProgressLog entry is created
     automatically to maintain the complete progress history.
     """
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRKeyResult, OKRObjective)
@@ -1051,6 +1077,9 @@ async def update_kr_progress_endpoint(
     Used by the update_kr_progress agent tool and the OKR Agent.
     Records an OKRProgressLog entry with the provided note.
     """
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRKeyResult, OKRObjective)
@@ -1103,6 +1132,10 @@ async def delete_key_result(
 ):
     """Hard delete a key result."""
     from app.models.okr import OKRProgressLog
+
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRKeyResult, OKRObjective)

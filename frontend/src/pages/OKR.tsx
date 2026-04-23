@@ -1102,7 +1102,7 @@ export default function OKR() {
                     )}
 
                     {/* Create Objective button */}
-                    {selectedPeriod && !creating && (
+                    {isAdmin && selectedPeriod && !creating && (
                         <button
                             id="create-objective-btn"
                             onClick={() => setCreating(true)}
@@ -1156,8 +1156,12 @@ export default function OKR() {
                             color: 'var(--text-tertiary)', fontSize: '13px',
                         }}>
                             {isChinese
-                                ? '当前周期暂无 OKR。点击右上角「新建目标」或联系 OKR Agent 来设定目标。'
-                                : 'No OKRs for this period yet. Click "New Objective" or ask the OKR Agent.'}
+                                ? (isAdmin
+                                    ? '当前周期暂无 OKR。点击右上角「新建目标」或联系 OKR Agent 来设定目标。'
+                                    : '当前周期暂无 OKR。请联系 OKR Agent 来设定目标。')
+                                : (isAdmin
+                                    ? 'No OKRs for this period yet. Click "New Objective" or ask the OKR Agent.'
+                                    : 'No OKRs for this period yet. Please ask the OKR Agent to set them up.')}
                         </div>
                     )}
 
@@ -1246,7 +1250,7 @@ export default function OKR() {
                                                     obj={obj}
                                                     isChinese={isChinese}
                                                     ownerLabel={group.label}
-                                                    canEdit={true}
+                                                    canEdit={!!isAdmin}
                                                     onInvalidate={invalidateObjectives}
                                                     onDelete={async (id) => {
                                                         await fetchJson(`/okr/objectives/${id}`, { method: 'DELETE' });

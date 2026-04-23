@@ -2546,9 +2546,9 @@ async def execute_tool(
         elif tool_name == "get_my_okr":
             result = await _get_my_okr(agent_id, arguments)
         elif tool_name == "update_kr_content":
-            result = await _update_kr_content(agent_id, arguments)
+            result = await _update_kr_content(agent_id, user_id, arguments)
         elif tool_name == "update_kr_progress":
-            result = await _update_kr_progress(agent_id, arguments)
+            result = await _update_kr_progress(agent_id, user_id, arguments)
         # collect_okr_progress: batch-read all focus.md files and sync progress to DB
         elif tool_name == "collect_okr_progress":
             result = await _collect_okr_progress(agent_id)
@@ -2560,13 +2560,13 @@ async def execute_tool(
             result = await _get_okr_settings_tool(agent_id)
         # ── OKR Management Tools (OKR Agent exclusive) ──
         elif tool_name == "create_objective":
-            result = await _create_objective(agent_id, arguments)
+            result = await _create_objective(agent_id, user_id, arguments)
         elif tool_name == "create_key_result":
-            result = await _create_key_result(agent_id, arguments)
+            result = await _create_key_result(agent_id, user_id, arguments)
         elif tool_name == "update_objective":
-            result = await _update_objective(agent_id, arguments)
+            result = await _update_objective(agent_id, user_id, arguments)
         elif tool_name == "update_any_kr_progress":
-            result = await _update_any_kr_progress(agent_id, arguments)
+            result = await _update_any_kr_progress(agent_id, user_id, arguments)
         # generate_monthly_okr_report: produce the monthly summary report
         elif tool_name == "generate_monthly_okr_report":
             result = await _generate_monthly_okr_report(agent_id)
@@ -10466,7 +10466,72 @@ async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
         return f"Failed to retrieve your OKR: {str(e)[:200]}"
 
 
-async def _update_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _load_okr_request_context(
+    db,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+) -> dict:
+    from app.models.agent import Agent as AgentModel
+    from app.models.user import User as UserModel
+
+    ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent = ag_res.scalar_one_or_none()
+    requester = None
+    if user_id:
+        user_res = await db.execute(select(UserModel).where(UserModel.id == user_id))
+        requester = user_res.scalar_one_or_none()
+
+    return {
+        "agent": agent,
+        "tenant_id": getattr(agent, "tenant_id", None),
+        "agent_is_system": bool(agent and agent.is_system),
+        "requester": requester,
+        "requester_user_id": user_id,
+        "requester_is_admin": bool(requester and requester.role in ("org_admin", "platform_admin")),
+    }
+
+
+def _okr_permission_denied(message: str) -> str:
+    return f"Permission denied: {message}"
+
+
+def _can_access_existing_okr_target(ctx: dict, owner_type: str, owner_id: uuid.UUID | None) -> str | None:
+    if ctx["agent_is_system"]:
+        if ctx["requester_is_admin"]:
+            return None
+        if owner_type != "user" or owner_id != ctx["requester_user_id"]:
+            return _okr_permission_denied(
+                "non-admin requests may only create or modify the requester's own personal OKRs. "
+                "Do not create or edit company OKRs or other members' OKRs."
+            )
+        return None
+
+    if owner_type != "agent" or owner_id != ctx["agent"].id:
+        return _okr_permission_denied(
+            "you can only create or modify your own agent OKRs."
+        )
+    return None
+
+
+def _can_create_okr_target(ctx: dict, owner_type: str, owner_id: uuid.UUID | None) -> str | None:
+    if ctx["agent_is_system"]:
+        if ctx["requester_is_admin"]:
+            return None
+        if owner_type != "user" or owner_id != ctx["requester_user_id"]:
+            return _okr_permission_denied(
+                "non-admin requests may only create the requester's own personal OKRs. "
+                "Creating company OKRs or other members' OKRs requires an org admin."
+            )
+        return None
+
+    if owner_type != "agent" or owner_id != ctx["agent"].id:
+        return _okr_permission_denied(
+            "you can only create OKRs for yourself."
+        )
+    return None
+
+
+async def _update_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     """Update a KR's current_value. Only the owning agent may call this.
 
     Automatically writes an OKRProgressLog entry for history tracking.
@@ -10489,30 +10554,32 @@ async def _update_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -> st
         return f"Invalid kr_id format: {kr_id_str}"
 
     try:
-        from app.database import async_session
         from app.models.okr import OKRObjective, OKRKeyResult, OKRProgressLog
         from sqlalchemy import select as _select
         from datetime import datetime
 
         async with async_session() as db:
-            # Verify the KR belongs to this agent (via objective.owner_id)
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
             result = await db.execute(
                 _select(OKRKeyResult, OKRObjective)
                 .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
                 .where(
                     OKRKeyResult.id == kr_id,
-                    OKRObjective.owner_type == "agent",
-                    OKRObjective.owner_id == agent_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
                 )
             )
             row = result.first()
             if not row:
-                return (
-                    f"Key Result {kr_id_str} not found or does not belong to you. "
-                    "Use get_my_okr to retrieve your own KR IDs."
-                )
+                return f"Key Result {kr_id_str} not found in your organization."
 
             kr, obj = row
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
+
             prev_value = kr.current_value
             kr.current_value = float(value)
             kr.last_updated_at = datetime.utcnow()
@@ -10548,7 +10615,7 @@ async def _update_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -> st
         return f"Failed to update KR progress: {str(e)[:200]}"
 
 
-async def _update_kr_content(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _update_kr_content(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     """Update metadata/content fields of one of the caller's own KRs."""
     if not agent_id:
         return "OKR tools require agent context."
@@ -10578,23 +10645,27 @@ async def _update_kr_content(agent_id: uuid.UUID | None, arguments: dict) -> str
         from sqlalchemy import select as _select
 
         async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
             result = await db.execute(
                 _select(OKRKeyResult, OKRObjective)
                 .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
                 .where(
                     OKRKeyResult.id == kr_id,
-                    OKRObjective.owner_type == "agent",
-                    OKRObjective.owner_id == agent_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
                 )
             )
             row = result.first()
             if not row:
-                return (
-                    f"Key Result {kr_id_str} not found or does not belong to you. "
-                    "Use get_my_okr to retrieve your own KR IDs."
-                )
+                return f"Key Result {kr_id_str} not found in your organization."
 
-            kr, _ = row
+            kr, obj = row
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
+
             changed_fields: list[str] = []
             if "title" in provided_updates:
                 kr.title = str(provided_updates["title"]).strip()
@@ -10757,7 +10828,7 @@ async def _get_okr_settings_tool(agent_id: uuid.UUID | None) -> str:
         return f"Failed to get OKR settings: {str(e)[:200]}"
 
 
-async def _create_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _create_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     if not agent_id:
         return "OKR tools require agent context."
     try:
@@ -10766,8 +10837,8 @@ async def _create_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
         from app.models.user import User as UserModel
         from app.models.org import OrgMember
         async with async_session() as db:
-            ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-            ag = ag_res.scalar_one_or_none()
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            ag = ctx["agent"]
             if not ag:
                 return "Agent not found."
 
@@ -10846,6 +10917,13 @@ async def _create_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
             if owner_type != "company" and not owner_id:
                return f"Failed: owner_id or owner_name is required for {owner_type} OKRs."
 
+            if not ctx["agent_is_system"] and owner_type == "agent" and owner_id is None:
+                owner_id = agent_id
+
+            permission_error = _can_create_okr_target(ctx, owner_type, owner_id)
+            if permission_error:
+                return permission_error
+
             obj = OKRObjective(
                 tenant_id=ag.tenant_id,
                 title=title,
@@ -10865,12 +10943,16 @@ async def _create_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
         return f"Failed to create objective: {str(e)[:200]}"
 
 
-async def _create_key_result(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _create_key_result(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     if not agent_id:
         return "OKR tools require agent context."
     try:
         from app.models.okr import OKRObjective, OKRKeyResult
         async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
             obj_id_str = arguments.get("objective_id")
             if not obj_id_str:
                 return "Missing objective_id"
@@ -10880,9 +10962,19 @@ async def _create_key_result(agent_id: uuid.UUID | None, arguments: dict) -> str
                 return "Invalid formatted objective_id (must be UUID)"
 
             # Verify objective exists
-            obj_res = await db.execute(select(OKRObjective).where(OKRObjective.id == obj_id))
-            if not obj_res.scalar_one_or_none():
+            obj_res = await db.execute(
+                select(OKRObjective).where(
+                    OKRObjective.id == obj_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            obj = obj_res.scalar_one_or_none()
+            if not obj:
                 return f"Objective {obj_id} not found."
+
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
 
             kr = OKRKeyResult(
                 objective_id=obj_id,
@@ -10900,19 +10992,23 @@ async def _create_key_result(agent_id: uuid.UUID | None, arguments: dict) -> str
         return f"Failed to create key result: {str(e)[:200]}"
 
 
-async def _update_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _update_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     """Update Objective metadata.
 
     Permission rules:
     - Regular agents: can only modify Objectives they own (owner_type='agent', owner_id=agent_id).
-    - System agents (OKR Agent, is_system=True): can modify any Objective.
+    - System agents are constrained by the requesting user's role: admins can modify any OKR,
+      non-admins may only modify their own personal OKRs.
     """
     if not agent_id:
         return "OKR tools require agent context."
     try:
-        from app.models.agent import Agent as AgentModel
         from app.models.okr import OKRObjective
         async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
             obj_id_str = arguments.get("objective_id")
             if not obj_id_str:
                 return "Missing objective_id"
@@ -10921,21 +11017,19 @@ async def _update_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
             except ValueError:
                 return "Invalid formatted objective_id (must be UUID)"
 
-            obj_res = await db.execute(select(OKRObjective).where(OKRObjective.id == obj_id))
+            obj_res = await db.execute(
+                select(OKRObjective).where(
+                    OKRObjective.id == obj_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
             obj = obj_res.scalar_one_or_none()
             if not obj:
                 return f"Objective {obj_id} not found."
 
-            # Permission check: non-system agents can only update their own O.
-            ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-            ag = ag_res.scalar_one_or_none()
-            is_system = bool(ag and ag.is_system)
-            if not is_system:
-                if not (obj.owner_type == "agent" and obj.owner_id == agent_id):
-                    return (
-                        "Permission denied: you can only update your own Objectives. "
-                        "Use get_my_okr to retrieve your own objective IDs."
-                    )
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
 
             updates = []
             if "title" in arguments:
@@ -10966,14 +11060,17 @@ async def _update_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
         return f"Failed to update objective: {str(e)[:200]}"
 
 
-async def _update_any_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _update_any_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     """OKR Agent exclusive version of update_kr_progress."""
     if not agent_id:
         return "OKR tools require agent context."
     try:
-        from app.models.agent import Agent as AgentModel
-        from app.models.okr import OKRKeyResult, OKRProgressLog
+        from app.models.okr import OKRKeyResult, OKRObjective, OKRProgressLog
         async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
             kr_id_str = arguments.get("kr_id")
             val = arguments.get("value")
             if not kr_id_str or val is None:
@@ -10983,13 +11080,22 @@ async def _update_any_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -
             except ValueError:
                 return "Invalid formatted kr_id (must be UUID)"
 
-            kr_res = await db.execute(select(OKRKeyResult).where(OKRKeyResult.id == kr_id))
-            kr = kr_res.scalar_one_or_none()
-            if not kr:
-                return f"Key Result {kr_id} not found."
+            kr_res = await db.execute(
+                select(OKRKeyResult, OKRObjective)
+                .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
+                .where(
+                    OKRKeyResult.id == kr_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            row = kr_res.first()
+            if not row:
+                return f"Key Result {kr_id} not found in your organization."
 
-            ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-            ag = ag_res.scalar_one_or_none()
+            kr, obj = row
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
 
             old_val = kr.current_value
             kr.current_value = float(val)
@@ -11017,7 +11123,7 @@ async def _update_any_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -
                 kr_id=kr.id,
                 previous_value=old_val,
                 new_value=kr.current_value,
-                source="okr_agent" if (ag and ag.is_system) else "agent",
+                source="okr_agent" if ctx["agent_is_system"] else "agent",
                 note=note
             )
             db.add(log_entry)
