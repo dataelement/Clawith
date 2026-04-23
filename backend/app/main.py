@@ -24,7 +24,10 @@ async def _start_ss_local() -> None:
     # Load proxy nodes from config file (gitignored, mounted as Docker volume)
     import json as _json
     cfg_file = os.environ.get("SS_CONFIG_FILE", "/data/ss-nodes.json")
-    if os.path.exists(cfg_file):
+    # isfile(), not exists(): Docker auto-creates the bind-mount source as a
+    # *directory* when the host-side file is missing, so a bare exists() check
+    # passes and the subsequent open() crashes with IsADirectoryError on boot.
+    if os.path.isfile(cfg_file):
         # Guard against empty or malformed config file — both produce a clear
         # warning and a clean exit rather than an unhandled JSONDecodeError.
         try:
