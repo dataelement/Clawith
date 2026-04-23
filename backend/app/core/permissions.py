@@ -20,7 +20,7 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     Access is granted if:
     1. User is platform admin → manage
     2. User is the agent creator → manage
-    3. User has explicit permission (company/user scope) → from permission record
+    3. User has explicit permission (company/user/private scope) → from permission record
     """
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
@@ -47,6 +47,10 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
         if perm.scope_type == "company":
             return agent, perm.access_level or "use"
         if perm.scope_type == "user" and perm.scope_id == user.id:
+            # User scope: only the creator can access
+            return agent, perm.access_level or "manage"
+        if perm.scope_type == "user_group" and perm.scope_id == user.id:
+            # User group scope: specific users can access
             return agent, perm.access_level or "use"
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
