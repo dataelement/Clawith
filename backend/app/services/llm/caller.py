@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from sqlalchemy import select
@@ -27,6 +27,8 @@ from app.services.token_tracker import record_token_usage, extract_usage_tokens,
 
 from .client import LLMError
 from .failover import classify_error, FailoverErrorType
+from .json_recovery import canonicalize_tool_arguments
+from .tool_result_shaping import shape_tool_result
 from .utils import LLMMessage, create_llm_client, get_max_tokens, get_model_api_key
 
 if TYPE_CHECKING:
@@ -38,6 +40,10 @@ TOOLS_REQUIRING_ARGS = frozenset({
     "write_file", "read_file", "delete_file", "read_document",
     "send_message_to_agent", "send_feishu_message", "send_email"
 })
+
+# Cap for any single tool-result entry sent into LLM history.
+# Phase 1 uses a constant; Phase 2 will make this per-agent configurable.
+TOOL_RESULT_MAX_CHARS = 20_000
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -193,6 +199,47 @@ def _check_tool_requires_args(tool_name: str, args: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def _canonicalize_tc_arguments(tc: dict, session_id: str) -> dict[str, Any]:
+    """Canonicalize ``tc['function']['arguments']`` in place and return the parsed dict.
+
+    The canonical JSON is written back to ``tc['function']['arguments']`` so that
+    any subsequent LLM round receiving this ``tc`` in conversation history will
+    pass DashScope's ``function.arguments must be in JSON format`` validation.
+    Used by both in-flight tool loops (_process_tool_call and _try_model).
+    """
+    fn = tc["function"]
+    tool_name = fn["name"]
+    raw_args = fn.get("arguments", "{}")
+    args, canonical_args, repair_method = canonicalize_tool_arguments(raw_args)
+    fn["arguments"] = canonical_args
+    if repair_method != "clean":
+        logger.warning(
+            f"[LLM] tool_call args repaired: tool={tool_name} method={repair_method} "
+            f"orig_len={len(raw_args)} new_len={len(canonical_args)} session={session_id}"
+        )
+    return args
+
+
+def _shape_tool_content_for_context(tool_content, tool_name: str, session_id: str):
+    """Return tool_content capped at TOOL_RESULT_MAX_CHARS (string content only).
+
+    Vision content is always a list[dict] per vision_inject.try_inject_screenshot_vision —
+    we pass those through unchanged to preserve base64 image data.
+    """
+    # Invariant: vision content is always a list[dict]; see vision_inject.try_inject_screenshot_vision.
+    if not isinstance(tool_content, str):
+        return tool_content
+    shaped, was_truncated = shape_tool_result(tool_content, TOOL_RESULT_MAX_CHARS)
+    if was_truncated:
+        dropped = len(tool_content) - len(shaped)
+        logger.warning(
+            f"[LLM] tool_result truncated: tool={tool_name} "
+            f"orig_len={len(tool_content)} new_len={len(shaped)} "
+            f"dropped={dropped} session={session_id}"
+        )
+    return shaped
+
+
 async def _process_tool_call(
     tc: dict,
     api_messages: list,
@@ -204,22 +251,11 @@ async def _process_tool_call(
     full_reasoning_content: str,
 ) -> str:
     """Process a single tool call and return result."""
-    fn = tc["function"]
-    tool_name = fn["name"]
-    raw_args = fn.get("arguments", "{}")
-    logger.info(f"[LLM] Calling tool: {tool_name}({json.dumps(raw_args, ensure_ascii=False)[:100]})")
+    raw_args = tc["function"].get("arguments", "{}")
+    logger.info(f"[LLM] Calling tool: {tc['function']['name']}({json.dumps(raw_args, ensure_ascii=False)[:100]})")
 
-    from app.services.llm.json_recovery import canonicalize_tool_arguments
-    args, canonical_args, repair_method = canonicalize_tool_arguments(raw_args)
-    # Overwrite tc.function.arguments with canonical JSON so later LLM rounds
-    # receive a history entry guaranteed to pass DashScope's JSON validator.
-    fn["arguments"] = canonical_args
-    if repair_method != "clean":
-        logger.warning(
-            f"[LLM] tool_call args repaired: tool={tool_name} method={repair_method} "
-            f"orig_len={len(raw_args)} canonical_len={len(canonical_args)} "
-            f"session={session_id}"
-        )
+    args = _canonicalize_tc_arguments(tc, session_id)
+    tool_name = tc["function"]["name"]
 
     # Guard: check if tool requires arguments
     should_execute, error_msg = _check_tool_requires_args(tool_name, args)
@@ -275,19 +311,7 @@ async def _process_tool_call(
         except Exception:
             pass
     
-    # Shape oversized tool results to protect conversation context budget.
-    # Only applies to plain-string content — vision content arrays are left alone.
-    from app.services.llm.tool_result_shaping import shape_tool_result
-    TOOL_RESULT_MAX_CHARS = 20_000
-    if isinstance(tool_content, str):
-        shaped, was_truncated = shape_tool_result(tool_content, TOOL_RESULT_MAX_CHARS)
-        if was_truncated:
-            logger.warning(
-                f"[LLM] tool_result truncated: tool={tool_name} "
-                f"orig_len={len(tool_content)} shaped_len={len(shaped)} "
-                f"session={session_id}"
-            )
-        tool_content = shaped
+    tool_content = _shape_tool_content_for_context(tool_content, tool_name, session_id)
 
     api_messages.append(LLMMessage(
         role="tool",
@@ -770,13 +794,8 @@ async def call_agent_llm_with_tools(
                 ))
 
                 for tc in response.tool_calls:
-                    fn = tc["function"]
-                    tool_name = fn["name"]
-                    raw_args = fn.get("arguments", "{}")
-                    try:
-                        args = json.loads(raw_args) if raw_args else {}
-                    except json.JSONDecodeError:
-                        args = {}
+                    args = _canonicalize_tc_arguments(tc, session_id)
+                    tool_name = tc["function"]["name"]
 
                     tool_executed = True
                     result = await execute_tool(
@@ -785,10 +804,11 @@ async def call_agent_llm_with_tools(
                         user_id=agent.creator_id,
                         session_id=session_id,
                     )
+                    shaped_content = _shape_tool_content_for_context(str(result), tool_name, session_id)
                     api_messages.append(LLMMessage(
                         role="tool",
                         tool_call_id=tc["id"],
-                        content=str(result),
+                        content=shaped_content,
                     ))
 
             if agent_id and _accumulated_tokens > 0:
