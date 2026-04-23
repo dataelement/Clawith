@@ -26,6 +26,41 @@ from loguru import logger
 class RegistrationService:
     """Service for handling user registration flows."""
 
+    async def ensure_identity_provider(
+        self,
+        db: AsyncSession,
+        provider_type: str,
+        tenant_id: uuid.UUID | None,
+        *,
+        name: str | None = None,
+        sso_login_enabled: bool = False,
+    ) -> IdentityProvider:
+        """Get or create an identity provider record for a tenant."""
+        query = select(IdentityProvider).where(
+            IdentityProvider.provider_type == provider_type,
+        )
+        if tenant_id is None:
+            query = query.where(IdentityProvider.tenant_id.is_(None))
+        else:
+            query = query.where(IdentityProvider.tenant_id == tenant_id)
+
+        result = await db.execute(query)
+        provider = result.scalar_one_or_none()
+        if provider:
+            return provider
+
+        provider = IdentityProvider(
+            provider_type=provider_type,
+            name=name or provider_type.capitalize(),
+            is_active=True,
+            sso_login_enabled=sso_login_enabled,
+            config={},
+            tenant_id=tenant_id,
+        )
+        db.add(provider)
+        await db.flush()
+        return provider
+
     async def detect_tenant_by_email(self, db: AsyncSession, email: str) -> Tenant | None:
         """Detect tenant based on email domain.
 
