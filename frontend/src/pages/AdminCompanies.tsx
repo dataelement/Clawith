@@ -6,6 +6,7 @@ import { saveAccentColor, getSavedAccentColor } from '../utils/theme';
 import { IconFilter } from '@tabler/icons-react';
 import PlatformDashboard from './PlatformDashboard';
 import LinearCopyButton from '../components/LinearCopyButton';
+import { useDialog } from '../components/Dialog/DialogProvider';
 // Helper for authenticated JSON fetch
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -639,6 +640,7 @@ function PlatformTab() {
 // ─── Companies Tab ─────────────────────────────────
 function CompaniesTab() {
     const { t } = useTranslation();
+    const dialog = useDialog();
     const [companies, setCompanies] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -750,7 +752,10 @@ function CompaniesTab() {
 
     const handleToggle = async (id: string, currentlyActive: boolean) => {
         const action = currentlyActive ? 'disable' : 'enable';
-        if (currentlyActive && !confirm(t('admin.confirmDisable', 'Disable this company? All users and agents will be paused.'))) return;
+        if (currentlyActive) {
+            const ok = await dialog.confirm(t('admin.confirmDisable', 'Disable this company? All users and agents will be paused.'), { title: '禁用公司', danger: true, confirmLabel: '禁用' });
+            if (!ok) return;
+        }
         try {
             await adminApi.toggleCompany(id);
             loadCompanies();

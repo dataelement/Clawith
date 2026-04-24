@@ -3,9 +3,11 @@ import { Link, useSearchParams, useNavigate, useLocation } from 'react-router-do
 import { useTranslation } from 'react-i18next';
 import { authApi } from '../services/api';
 import { useAuthStore } from '../stores';
+import { useToast } from '../components/Toast/ToastProvider';
 
 export default function VerifyEmail() {
     const { t, i18n } = useTranslation();
+    const toast = useToast();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
     const location = useLocation();
@@ -79,9 +81,9 @@ export default function VerifyEmail() {
         setLoading(true);
         try {
             await authApi.resendVerification(email);
-            alert(isChinese ? '验证码已重发，请检查您的邮箱。' : 'Verification code resent. Please check your email.');
+            toast.success(isChinese ? '验证码已重发，请检查您的邮箱' : 'Verification code resent. Please check your email.');
         } catch (err: any) {
-            alert(err.message || 'Failed to resend verification');
+            toast.error(isChinese ? '重发失败' : 'Failed to resend verification', { details: String(err?.message || err) });
         } finally {
             setLoading(false);
         }
