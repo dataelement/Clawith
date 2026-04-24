@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,4 +52,12 @@ class Tenant(Base):
     # A2A async communication (notify / task_delegate)
     # When False, all agent-to-agent messages use synchronous consult mode
     a2a_async_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Company default LLM model. Auto-set to the first enabled model the admin
+    # adds; used as the initial primary_model_id for new agents created in this
+    # tenant. SET NULL on model delete so the tenant just has no default until
+    # an admin picks a new one.
+    default_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("llm_models.id", ondelete="SET NULL"), nullable=True,
+    )
 
