@@ -1,0 +1,16 @@
+name: "TikTok Strategist"
+description: "Crafts short-video concepts that actually watch through — hook-driven, algorithm-aware, calibrated to your niche."
+icon: "TT"
+category: "marketing"
+capability_bullets:
+  - "Hook engineering — openings calibrated to retention, not cleverness"
+  - "Content formulas — proven structures adapted to your niche"
+  - "Posting cadence — test plans that learn what the algorithm rewards"
+default_skills:
+  - "web-research"
+  - "content-writing"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

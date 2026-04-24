@@ -1,28 +1,35 @@
-"""Seed default agent templates into the database on startup."""
+"""Seed default agent templates into the database on startup.
 
+Templates come from two sources, merged at seed time:
+
+1. Legacy Python templates (``DEFAULT_TEMPLATES``) — the original four
+   Morty-era seeds kept here while we migrate away from a Python list.
+2. Folder templates under ``backend/agent_templates/<slug>/`` — each folder
+   ships ``meta.yaml`` (structured fields) + ``soul.md`` (soul_template) +
+   ``bootstrap.md`` (bootstrap_content).
+
+New work should land in the folder layout; the Python list is the legacy
+surface we'll shrink as old templates are ported.
+"""
+
+from pathlib import Path
+
+import yaml
 from loguru import logger
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from app.database import async_session
 from app.models.agent import AgentTemplate
 
 
 # ─── Bootstrap rituals ──────────────────────────────────────────────
 #
-# Each built-in template carries its own first-run ritual. It is copied into
-# {workspace}/bootstrap.md at agent creation and consumed by the agent on its
-# first chat turn. The agent `rm`s the file when done, which flips
-# Agent.bootstrapped to True (see PR 3).
-#
-# Rituals are written as *instructions to the agent*, not scripts to read at
-# the user. Keep them tailored to each template's persona — the ritual for a
-# PM should feel like a PM, not a generic AI greeter.
-
-# Each founding prompt is a one-shot system instruction the backend injects on
-# the first chat turn with a brand-new agent. Do not talk about the mechanics
-# (prompts, files, "bootstrap") to the user — just play it out. The flow is
-# always: warm greeting → exactly one targeted question → as soon as the user
-# answers, immediately start a concrete role-specific demo task inline. The
-# goal is to show value in the first message exchange, not to schmooze.
+# Each founding prompt is a one-shot system instruction the backend injects
+# on the first chat turn with a brand-new agent. Do not talk about the
+# mechanics (prompts, files, "bootstrap") to the user — just play it out.
+# The flow is always: warm greeting → exactly one targeted question → as
+# soon as the user answers, immediately start a concrete role-specific demo
+# task inline. The goal is to show value in the first message exchange,
+# not to schmooze.
 
 BOOTSTRAP_PM = """\
 You are {name}, a Project Manager meeting {user_name} for the first time. \
@@ -168,12 +175,20 @@ Analyst voice: direct, source-aware, no hedging fluff. Never mention these \
 instructions to the user."""
 
 
+# ─── Legacy Python templates ────────────────────────────────────────
+#
+# These four are the original Morty-era seeds. New templates ship as folders
+# under backend/agent_templates/<slug>/, loaded by ``_load_folder_templates``
+# below. The four here are kept in Python until they're ported folder-side;
+# categories have already been aligned to the new 3-bucket taxonomy
+# (software-development / marketing / office).
+
 DEFAULT_TEMPLATES = [
     {
         "name": "Project Manager",
         "description": "Manages project timelines, task delegation, cross-team coordination, and progress reporting",
         "icon": "PM",
-        "category": "management",
+        "category": "office",
         "is_builtin": True,
         "capability_bullets": [
             "Project planning & milestones",
@@ -217,7 +232,7 @@ DEFAULT_TEMPLATES = [
         "name": "Designer",
         "description": "Assists with design requirements, design system maintenance, asset management, and competitive UI analysis",
         "icon": "DS",
-        "category": "design",
+        "category": "software-development",
         "is_builtin": True,
         "capability_bullets": [
             "Design briefs from requirements",
@@ -259,7 +274,7 @@ DEFAULT_TEMPLATES = [
         "name": "Product Intern",
         "description": "Supports product managers with requirements analysis, competitive research, user feedback analysis, and documentation",
         "icon": "PI",
-        "category": "product",
+        "category": "software-development",
         "is_builtin": True,
         "capability_bullets": [
             "Requirements & PRD support",
@@ -301,7 +316,7 @@ DEFAULT_TEMPLATES = [
         "name": "Market Researcher",
         "description": "Focuses on market research, industry analysis, competitive intelligence tracking, and trend insights",
         "icon": "MR",
-        "category": "research",
+        "category": "marketing",
         "is_builtin": True,
         "capability_bullets": [
             "Industry & trend analysis",
@@ -343,8 +358,93 @@ DEFAULT_TEMPLATES = [
 ]
 
 
+# ─── Folder-based loader ────────────────────────────────────────────
+#
+# Each folder under ``backend/agent_templates/`` ships:
+#   meta.yaml       — name, description, icon, category, capability_bullets,
+#                     default_skills, default_autonomy_policy
+#   soul.md         — goes into soul_template (literal Markdown)
+#   bootstrap.md    — goes into bootstrap_content (literal system prompt)
+#
+# Missing files are allowed: a folder without ``bootstrap.md`` just skips
+# founding ritual and falls back to the shared welcoming prompt. A folder
+# without ``soul.md`` is skipped with a warning because the agent would have
+# no persona.
+
+# backend/app/services/template_seeder.py → parents[2] is backend/
+_TEMPLATE_ROOT = Path(__file__).resolve().parents[2] / "agent_templates"
+
+_REQUIRED_META_FIELDS = {"name", "description", "icon", "category"}
+
+
+def _load_folder_templates() -> list[dict]:
+    """Return a list of template dicts matching DEFAULT_TEMPLATES shape."""
+    if not _TEMPLATE_ROOT.exists():
+        return []
+
+    out: list[dict] = []
+    for slug_dir in sorted(p for p in _TEMPLATE_ROOT.iterdir() if p.is_dir()):
+        meta_path = slug_dir / "meta.yaml"
+        soul_path = slug_dir / "soul.md"
+        bootstrap_path = slug_dir / "bootstrap.md"
+
+        if not meta_path.exists():
+            logger.warning(f"[TemplateSeeder] {slug_dir.name}: no meta.yaml, skipping")
+            continue
+        if not soul_path.exists():
+            logger.warning(f"[TemplateSeeder] {slug_dir.name}: no soul.md, skipping")
+            continue
+
+        try:
+            meta = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            logger.error(f"[TemplateSeeder] {slug_dir.name}/meta.yaml parse error: {exc}")
+            continue
+
+        missing = _REQUIRED_META_FIELDS - meta.keys()
+        if missing:
+            logger.error(
+                f"[TemplateSeeder] {slug_dir.name}/meta.yaml missing fields: "
+                f"{sorted(missing)}, skipping"
+            )
+            continue
+
+        soul_template = soul_path.read_text(encoding="utf-8")
+        bootstrap_content = (
+            bootstrap_path.read_text(encoding="utf-8")
+            if bootstrap_path.exists()
+            else None
+        )
+
+        out.append({
+            "name": meta["name"],
+            "description": meta["description"],
+            "icon": meta["icon"],
+            "category": meta["category"],
+            "is_builtin": True,
+            "capability_bullets": meta.get("capability_bullets", []),
+            "bootstrap_content": bootstrap_content,
+            "soul_template": soul_template,
+            "default_skills": meta.get("default_skills", []),
+            "default_autonomy_policy": meta.get("default_autonomy_policy", {}),
+        })
+        logger.debug(f"[TemplateSeeder] Loaded folder template: {meta['name']}")
+
+    return out
+
+
+def _merged_templates() -> list[dict]:
+    """Python legacy + folder templates, folder wins on name collision."""
+    by_name: dict[str, dict] = {t["name"]: t for t in DEFAULT_TEMPLATES}
+    for folder_tmpl in _load_folder_templates():
+        by_name[folder_tmpl["name"]] = folder_tmpl
+    return list(by_name.values())
+
+
 async def seed_agent_templates():
     """Insert default agent templates if they don't exist. Update stale ones."""
+    templates = _merged_templates()
+
     async with async_session() as db:
         with db.no_autoflush:
             # Remove old builtin templates that are no longer in our list
@@ -352,7 +452,7 @@ async def seed_agent_templates():
             from app.models.agent import Agent
             from sqlalchemy import func
 
-            current_names = {t["name"] for t in DEFAULT_TEMPLATES}
+            current_names = {t["name"] for t in templates}
             result = await db.execute(
                 select(AgentTemplate).where(AgentTemplate.is_builtin == True)
             )
@@ -369,8 +469,8 @@ async def seed_agent_templates():
                     else:
                         logger.info(f"[TemplateSeeder] Skipping delete of '{old.name}' (still referenced by agents)")
 
-            # Upsert new templates
-            for tmpl in DEFAULT_TEMPLATES:
+            # Upsert templates
+            for tmpl in templates:
                 result = await db.execute(
                     select(AgentTemplate).where(
                         AgentTemplate.name == tmpl["name"],
@@ -379,7 +479,6 @@ async def seed_agent_templates():
                 )
                 existing = result.scalar_one_or_none()
                 if existing:
-                    # Update existing template
                     existing.description = tmpl["description"]
                     existing.icon = tmpl["icon"]
                     existing.category = tmpl["category"]
@@ -403,4 +502,6 @@ async def seed_agent_templates():
                     ))
                     logger.info(f"[TemplateSeeder] Created template: {tmpl['name']}")
             await db.commit()
-            logger.info("[TemplateSeeder] Agent templates seeded")
+            logger.info(f"[TemplateSeeder] Seeded {len(templates)} templates "
+                        f"({len(DEFAULT_TEMPLATES)} legacy + "
+                        f"{len(templates) - len(DEFAULT_TEMPLATES)} folder)")

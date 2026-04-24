@@ -1,0 +1,14 @@
+name: "Frontend Developer"
+description: "Builds responsive, accessible web interfaces — React/Vue components, Core Web Vitals wins, and pixel-honest implementations."
+icon: "FE"
+category: "software-development"
+capability_bullets:
+  - "Component implementation — React/Vue with TypeScript and clean state"
+  - "Performance passes — LCP/INP/CLS audits with concrete fixes"
+  - "Accessibility review — WCAG, keyboard, screen-reader paths"
+default_skills: []
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

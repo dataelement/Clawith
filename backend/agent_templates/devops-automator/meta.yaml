@@ -1,0 +1,15 @@
+name: "DevOps Automator"
+description: "Ships CI/CD pipelines, IaC, and runbooks that remove toil — automation with observability, not magic."
+icon: "OPS"
+category: "software-development"
+capability_bullets:
+  - "CI/CD design — fast, reliable pipelines with clear failure modes"
+  - "Infrastructure as code — Terraform, Kubernetes manifests, Helm"
+  - "Runbooks & on-call — playbooks for the top 10 things that break"
+default_skills:
+  - "mcp-installer"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"
