@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { agentApi, channelApi, enterpriseApi, skillApi } from '../services/api';
+import { agentApi, channelApi, enterpriseApi, skillApi, tenantApi } from '../services/api';
 import ChannelConfig from '../components/ChannelConfig';
 import LinearCopyButton from '../components/LinearCopyButton';
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
@@ -93,6 +93,22 @@ export default function AgentCreate() {
         queryKey: ['llm-models'],
         queryFn: enterpriseApi.llmModels,
     });
+
+    // Tenant default model — used to preselect the model step so the open-source
+    // default ("hire and go") path needs no clicks. User can override.
+    const { data: myTenant } = useQuery({
+        queryKey: ['tenant', 'me'],
+        queryFn: () => tenantApi.me(),
+        staleTime: 5 * 60 * 1000,
+    });
+    useEffect(() => {
+        if (!myTenant?.default_model_id) return;
+        const enabledModels = (models as any[]).filter((m: any) => m.enabled);
+        const exists = enabledModels.some((m: any) => m.id === myTenant.default_model_id);
+        if (exists) {
+            setForm(prev => prev.primary_model_id ? prev : { ...prev, primary_model_id: myTenant.default_model_id! });
+        }
+    }, [myTenant?.default_model_id, models]);
 
     // Fetch templates
     const { data: templates = [] } = useQuery({
