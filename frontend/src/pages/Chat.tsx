@@ -9,6 +9,7 @@ import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { formatFileSize } from '../utils/formatFileSize';
 import { useAuthStore } from '../stores';
 import { useDropZone } from '../hooks/useDropZone';
+import { useToast } from '../components/Toast/ToastProvider';
 
 /* ── Inline SVG Icons ── */
 const Icons = {
@@ -262,6 +263,7 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
 
 export default function Chat() {
     const { t } = useTranslation();
+    const toast = useToast();
     const { id } = useParams<{ id: string }>();
     const token = useAuthStore((s) => s.token);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -646,7 +648,7 @@ export default function Chat() {
             });
         } catch (err: any) {
             if (err?.message !== 'Upload cancelled') {
-                alert(t('agent.upload.failed') + (err?.message ? `: ${err.message}` : ''));
+                toast.error(t('agent.upload.failed'), { details: String(err?.message || '') });
             }
         } finally {
             if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -750,7 +752,7 @@ export default function Chat() {
             });
         } catch (err: any) {
             if (err?.message !== 'Upload cancelled') {
-                alert(t('agent.upload.failed') + (err?.message ? `: ${err.message}` : ''));
+                toast.error(t('agent.upload.failed'), { details: String(err?.message || '') });
             }
         } finally {
             if (previewUrl) URL.revokeObjectURL(previewUrl);

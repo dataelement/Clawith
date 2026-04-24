@@ -6,6 +6,8 @@ import './i18n';
 import './index.css';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
+import { DialogProvider } from './components/Dialog/DialogProvider';
+import { ToastProvider } from './components/Toast/ToastProvider';
 import { loadSavedAccentColor } from './utils/theme';
 
 // Apply saved theme color before first paint
@@ -22,7 +24,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <ErrorBoundary>
             <QueryClientProvider client={queryClient}>
                 <BrowserRouter>
-                    <App />
+                    <DialogProvider>
+                        <ToastProvider>
+                            <App />
+                        </ToastProvider>
+                    </DialogProvider>
                 </BrowserRouter>
             </QueryClientProvider>
         </ErrorBoundary>

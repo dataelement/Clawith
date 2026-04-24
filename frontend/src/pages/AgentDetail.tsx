@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import ConfirmModal from '../components/ConfirmModal';
+import { useDialog } from '../components/Dialog/DialogProvider';
+import { useToast } from '../components/Toast/ToastProvider';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import FileBrowser from '../components/FileBrowser';
 import ChannelConfig from '../components/ChannelConfig';
@@ -48,6 +50,8 @@ const getCategoryLabels = (t: any): Record<string, string> => ({
 
 function ToolsManager({ agentId, canManage = false }: { agentId: string; canManage?: boolean }) {
     const { t } = useTranslation();
+    const dialog = useDialog();
+    const toast = useToast();
     const [tools, setTools] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [configTool, setConfigTool] = useState<any | null>(null);
@@ -215,7 +219,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                 setConfigTool(null);
             }
             loadTools();
-        } catch (e) { alert('Save failed: ' + e); }
+        } catch (e: any) { toast.error('保存失败', { details: String(e?.message || e) }); }
         setConfigSaving(false);
     };
 
@@ -316,7 +320,11 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                     {canManage && tool.source === 'agent' && tool.agent_tool_id && (
                                         <button
                                             onClick={async () => {
-                                                if (!confirm(t('agent.tools.confirmDelete', `Remove "${tool.display_name}" from this agent?`))) return;
+                                                const ok = await dialog.confirm(
+                                                    t('agent.tools.confirmDelete', `Remove "${tool.display_name}" from this agent?`),
+                                                    { danger: true, confirmLabel: '移除' },
+                                                );
+                                                if (!ok) return;
                                                 setDeletingToolId(tool.id);
                                                 try {
                                                     const token = localStorage.getItem('token');
@@ -325,8 +333,8 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         headers: { Authorization: `Bearer ${token}` },
                                                     });
                                                     if (res.ok) await loadTools();
-                                                    else alert('Delete failed');
-                                                } catch (e) { alert('Delete failed: ' + e); }
+                                                    else toast.error('删除失败');
+                                                } catch (e: any) { toast.error('删除失败', { details: String(e?.message || e) }); }
                                                 setDeletingToolId(null);
                                             }}
                                             disabled={deletingToolId === tool.id}
@@ -648,8 +656,12 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                     headers: { Authorization: `Bearer ${token}` }
                                                 });
                                                 const data = await res.json();
-                                                alert(data.message || (data.ok ? '✅ Test successful' : '❌ Test failed: ' + data.error));
-                                            } catch (e: any) { alert('Test failed: ' + e.message); }
+                                                if (data.ok) {
+                                                    await dialog.alert(data.message || '测试成功', { type: 'success', title: '连通性测试' });
+                                                } else {
+                                                    await dialog.alert('测试失败', { type: 'error', title: '连通性测试', details: typeof data.error === 'string' ? data.error : JSON.stringify(data, null, 2) });
+                                                }
+                                            } catch (e: any) { await dialog.alert('测试失败', { type: 'error', title: '连通性测试', details: String(e?.message || e) }); }
                                             finally { if (btn) btn.textContent = 'Test Connection'; }
                                         }}
                                         id="cat-test-btn"
@@ -1332,6 +1344,8 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
 
 function AgentDetailInner() {
     const { t, i18n } = useTranslation();
+    const dialog = useDialog();
+    const toast = useToast();
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const queryClient = useQueryClient();
@@ -1716,16 +1730,20 @@ function AgentDetailInner() {
             } else {
                 const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
                 console.error('Failed to create session:', err);
-                alert(`Failed to create session: ${err.detail || res.status}`);
+                toast.error('创建会话失败', { details: String(err.detail || `HTTP ${res.status}`) });
             }
         } catch (err: any) {
             console.error('Failed to create session:', err);
-            alert(`Failed to create session: ${err.message || err}`);
+            toast.error('创建会话失败', { details: String(err.message || err) });
         }
     };
 
     const deleteSession = async (sessionId: string) => {
-        if (!confirm(t('chat.deleteConfirm', 'Delete this session and all its messages? This cannot be undone.'))) return;
+        const ok = await dialog.confirm(
+            t('chat.deleteConfirm', 'Delete this session and all its messages? This cannot be undone.'),
+            { title: '删除会话', danger: true, confirmLabel: '删除' },
+        );
+        if (!ok) return;
         const tkn = localStorage.getItem('token');
         try {
             await fetch(`/api/agents/${id}/sessions/${sessionId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tkn}` } });
@@ -1743,7 +1761,7 @@ function AgentDetailInner() {
             await fetchMySessions(false, id);
             if (canViewAllAgentChatSessions) await fetchAllSessions();
         } catch (e: any) {
-            alert(e.message || 'Delete failed');
+            toast.error('删除失败', { details: String(e?.message || e) });
         }
     };
 
@@ -1777,7 +1795,7 @@ function AgentDetailInner() {
             });
             queryClient.invalidateQueries({ queryKey: ['agent', id] });
             setShowExpiryModal(false);
-        } catch (e) { alert('Failed: ' + e); }
+        } catch (e: any) { toast.error('保存失败', { details: String(e?.message || e) }); }
         setExpirySaving(false);
     };
     interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
@@ -2382,7 +2400,7 @@ function AgentDetailInner() {
         if (!files.length) return;
         const allowedFiles = files.slice(0, 10 - attachedFiles.length);
         if (!allowedFiles.length) {
-            alert('Limit of 10 attached files reached.');
+            toast.warning('最多可附加 10 个文件');
             return;
         }
 
@@ -2425,7 +2443,7 @@ function AgentDetailInner() {
                 if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
                 setChatUploadDrafts((prev) => prev.filter((d) => d.id !== draft.id));
                 chatUploadAbortRef.current.delete(draft.id);
-                if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
+                if (err?.message !== 'Upload cancelled') toast.error(t('agent.upload.failed'), { details: String(err?.message || err) });
             }
         };
 
@@ -2454,7 +2472,7 @@ function AgentDetailInner() {
         e.preventDefault();
         const allowedFiles = filesToUpload.slice(0, 10 - attachedFiles.length);
         if (!allowedFiles.length) {
-            alert('Limit of 10 attached files reached.');
+            toast.warning('最多可附加 10 个文件');
             return;
         }
 
@@ -2497,7 +2515,7 @@ function AgentDetailInner() {
                 if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
                 setChatUploadDrafts((prev) => prev.filter((d) => d.id !== draft.id));
                 chatUploadAbortRef.current.delete(draft.id);
-                if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
+                if (err?.message !== 'Upload cancelled') toast.error(t('agent.upload.failed'), { details: String(err?.message || err) });
             }
         };
 
@@ -2528,7 +2546,7 @@ function AgentDetailInner() {
                 setAttachedFiles(prev => [...prev, { name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined }]);
             } catch (err: any) {
                 if (err?.message !== 'Upload cancelled') {
-                    alert(err?.message || t('agent.upload.failed'));
+                    toast.error(t('agent.upload.failed'), { details: String(err?.message || '') });
                 }
             } finally {
                 if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -2588,7 +2606,7 @@ function AgentDetailInner() {
         },
         onError: (err: any) => {
             const msg = err?.detail || err?.message || String(err);
-            alert(`Failed to create schedule: ${msg}`);
+            toast.error('创建计划任务失败', { details: String(msg) });
         },
     });
 
@@ -3306,7 +3324,8 @@ function AgentDetailInner() {
                                                             <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                                                                 onClick={async (e) => {
                                                                     e.stopPropagation();
-                                                                    if (confirm(t('agent.aware.deleteTriggerConfirm', { name: trig.name }))) {
+                                                                    const ok = await dialog.confirm(t('agent.aware.deleteTriggerConfirm', { name: trig.name }), { title: '删除触发器', danger: true, confirmLabel: '删除' });
+                                                                    if (ok) {
                                                                         await triggerApi.delete(id!, trig.id);
                                                                         refetchTriggers();
                                                                     }
@@ -3475,7 +3494,8 @@ function AgentDetailInner() {
                                                     </button>
                                                     <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                                                         onClick={async () => {
-                                                            if (confirm(t('agent.aware.deleteTriggerConfirm', { name: trig.name }))) {
+                                                            const ok = await dialog.confirm(t('agent.aware.deleteTriggerConfirm', { name: trig.name }), { title: '删除触发器', danger: true, confirmLabel: '删除' });
+                                                            if (ok) {
                                                                 await triggerApi.delete(id!, trig.id);
                                                                 refetchTriggers();
                                                             }
@@ -3918,10 +3938,10 @@ function AgentDetailInner() {
                                                                 setAgentClawhubInstalling(r.slug);
                                                                 try {
                                                                     const res = await skillApi.agentImport.fromClawhub(id!, r.slug);
-                                                                    alert(`Installed "${r.displayName || r.slug}" (${res.files_written} files)`);
+                                                                    toast.success(`已安装 "${r.displayName || r.slug}"（${res.files_written} 个文件）`);
                                                                     queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
                                                                 } catch (err: any) {
-                                                                    alert(`Import failed: ${err?.message || err}`);
+                                                                    await dialog.alert('安装失败', { type: 'error', details: String(err?.message || err) });
                                                                 } finally {
                                                                     setAgentClawhubInstalling(null);
                                                                 }
@@ -3963,11 +3983,11 @@ function AgentDetailInner() {
                                                         setAgentUrlImporting(true);
                                                         try {
                                                             const res = await skillApi.agentImport.fromUrl(id!, agentUrlInput.trim());
-                                                            alert(`Imported ${res.files_written} files`);
+                                                            toast.success(`已导入 ${res.files_written} 个文件`);
                                                             queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
                                                             setShowAgentUrlImport(false);
                                                         } catch (err: any) {
-                                                            alert(`Import failed: ${err?.message || err}`);
+                                                            await dialog.alert('导入失败', { type: 'error', details: String(err?.message || err) });
                                                         } finally {
                                                             setAgentUrlImporting(false);
                                                         }
@@ -4030,11 +4050,11 @@ function AgentDetailInner() {
                                                                     setImportingSkillId(skill.id);
                                                                     try {
                                                                         const res = await fileApi.importSkill(id!, skill.id);
-                                                                        alert(`✅ Imported "${skill.name}" (${res.files_written} files)`);
+                                                                        toast.success(`已导入 "${skill.name}"（${res.files_written} 个文件）`);
                                                                         queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
                                                                         setShowImportSkillModal(false);
                                                                     } catch (err: any) {
-                                                                        alert(`❌ Import failed: ${err?.message || err}`);
+                                                                        await dialog.alert('导入失败', { type: 'error', details: String(err?.message || err) });
                                                                     } finally {
                                                                         setImportingSkillId(null);
                                                                     }
@@ -5727,7 +5747,7 @@ function AgentDetailInner() {
                                                         queryClient.invalidateQueries({ queryKey: ['agents'] });
                                                         navigate('/');
                                                     } catch (err: any) {
-                                                        alert(err?.message || 'Failed to delete agent');
+                                                        await dialog.alert('删除数字员工失败', { type: 'error', details: String(err?.message || err) });
                                                     }
                                                 }}>{t('agent.settings.danger.confirmDelete')}</button>
                                                 <button className="btn btn-secondary" onClick={() => setShowDeleteConfirm(false)}>{t('common.cancel')}</button>
