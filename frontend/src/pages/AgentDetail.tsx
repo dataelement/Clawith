@@ -2044,6 +2044,14 @@ function AgentDetailInner() {
         };
         ws.onmessage = (e) => {
             const d = JSON.parse(e.data);
+            // Onboarding lock fired (or trigger was rejected because the pair
+            // was already onboarded). Either way, invalidate the cached agent
+            // record so the kickoff effect stops thinking a new session needs
+            // onboarding. Fire early and unconditionally — the event is cheap.
+            if (d.type === 'onboarded') {
+                queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+                return;
+            }
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
                 const nextStreaming = ['thinking', 'chunk', 'tool_call'].includes(d.type);

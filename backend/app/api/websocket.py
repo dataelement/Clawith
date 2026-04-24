@@ -175,6 +175,7 @@ async def websocket_chat(
             # Captured for onboarding lookups — the DB-bound `agent` goes out
             # of scope when this session block closes.
             agent_snapshot = agent
+            user_display_name = (user.display_name or "").strip() or "there"
             logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}, ctx: {ctx_size}")
 
             # Load the agent's primary model
@@ -357,6 +358,23 @@ async def websocket_chat(
             if not content and not is_onboarding_trigger:
                 continue
             if is_onboarding_trigger:
+                # Guard against stale triggers. A frontend with a cached
+                # agent query from before the ritual completed can fire an
+                # onboarding_trigger on a new session even though the pair
+                # is already locked. In that case the resolver would return
+                # no prompt, but the placeholder "Please begin the
+                # onboarding" would still reach the LLM and the agent would
+                # dutifully restart the ritual. Short-circuit here, emit an
+                # event so the frontend refreshes its cache, and move on.
+                from app.services.onboarding import is_onboarded as _is_onboarded
+                async with async_session() as _gdb:
+                    if await _is_onboarded(_gdb, agent_id, user_id):
+                        logger.info("[WS] Onboarding trigger ignored — pair already onboarded")
+                        await websocket.send_json({
+                            "type": "onboarded",
+                            "agent_id": str(agent_id),
+                        })
+                        continue
                 # Minimal placeholder so the LLM has a valid user turn to anchor
                 # its greeting. The onboarding system prompt is what actually
                 # drives the reply; this text is never shown or saved.
@@ -520,6 +538,14 @@ async def websocket_chat(
                                 from app.services.onboarding import mark_onboarded
                                 async with async_session() as _ob_db:
                                     await mark_onboarded(_ob_db, agent_id, user_id)
+                                # Tell the frontend to refresh its cached agent
+                                # record so subsequent sessions (or other open
+                                # tabs) see onboarded_for_me=true and skip the
+                                # kickoff effect.
+                                await websocket.send_json({
+                                    "type": "onboarded",
+                                    "agent_id": str(agent_id),
+                                })
                             except Exception as _ob_err:
                                 logger.warning(f"[WS] mark_onboarded failed (non-fatal): {_ob_err}")
                     
@@ -607,6 +633,7 @@ async def websocket_chat(
                             async with async_session() as _ob_db:
                                 _onb = await resolve_onboarding_prompt(
                                     _ob_db, agent_snapshot, user_id,
+                                    user_name=user_display_name,
                                 )
                             if _onb:
                                 _truncated = [{"role": "system", "content": _onb.prompt}] + _truncated

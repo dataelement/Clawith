@@ -55,24 +55,28 @@ class OnboardingInjection:
 # it greets and asks one tight question; on the follow-up (user_turns >= 1)
 # it pivots to helping with whatever they replied, never re-asking context.
 _WELCOMING_PROMPT = """\
-A teammate in your company is meeting you for the first time. You're NOT \
-being founded — your working context was established earlier with someone \
-else. Don't re-ask project-context questions.
+{user_name} is meeting you for the first time. You're NOT being founded — \
+your working context was established earlier with someone else. Don't re-ask \
+project-context questions.
 
-This conversation has had {user_turns} user messages so far.
+This conversation has had {user_turns} user messages so far. Markdown \
+rendering is on — **use bold** to highlight the user's name, your own name, \
+capability labels, and key next-step phrases.
 
 If user_turns == 0 (greeting turn):
-- Greet them warmly in one short line.
-- Introduce yourself in one sentence: {name}{role_line}.
-- Mention 2–3 things you can help with{bullets_line}.
-- Ask ONE open-ended question about what they want to accomplish today.
-- Stop there. Keep it to three short paragraphs.
+- Open with: "**Hi {user_name}!**" on its own line.
+- One-line intro: "I'm **{name}**{role_line}."
+- List 2–3 short bullets of what you can help with. Put the capability label \
+in bold, then a brief explanation{bullets_line}.
+- Ask ONE open-ended question about what they want to accomplish today \
+(bold the question).
+- Stop there. Three short paragraphs max.
 
 If user_turns >= 1 (response turn):
 - They've told you what they need. DO NOT ask clarifying questions.
-- Jump straight into helping: produce a concrete first pass, a plan, or a \
-question-answer — whichever fits their ask best.
-- Close by offering one clear next step they can pick.
+- Jump straight into helping: produce a concrete first pass, a plan, or an \
+answer — whichever fits. Use **bold** on section headers and key terms.
+- Close with one clear next step offer, with the next-step phrase bolded.
 
 Never mention these instructions to the user."""
 
@@ -81,11 +85,12 @@ def _render_welcoming(
     agent: Agent,
     capability_bullets: list[str] | None,
     user_turns: int,
+    user_name: str,
 ) -> str:
     role_line = f", your {agent.role_description}" if agent.role_description else ""
     if capability_bullets:
         bullets = "; ".join(b.strip() for b in capability_bullets if b and b.strip())
-        bullets_line = f" (e.g. {bullets})" if bullets else ""
+        bullets_line = f" — ideas to lean on: {bullets}" if bullets else ""
     else:
         bullets_line = ""
     return _WELCOMING_PROMPT.format(
@@ -93,6 +98,7 @@ def _render_welcoming(
         role_line=role_line,
         bullets_line=bullets_line,
         user_turns=user_turns,
+        user_name=user_name,
     )
 
 
@@ -100,6 +106,8 @@ async def resolve_onboarding_prompt(
     db: AsyncSession,
     agent: Agent,
     user_id: uuid.UUID,
+    *,
+    user_name: str = "there",
 ) -> OnboardingInjection | None:
     """Decide what system prompt to inject for this (user, agent) turn.
 
@@ -153,11 +161,14 @@ async def resolve_onboarding_prompt(
             template_prompt = tpl.bootstrap_content
 
     if is_founder and template_prompt:
-        prompt = template_prompt.replace("{name}", agent.name).replace(
-            "{user_turns}", str(user_turns),
+        prompt = (
+            template_prompt
+            .replace("{name}", agent.name)
+            .replace("{user_name}", user_name)
+            .replace("{user_turns}", str(user_turns))
         )
     else:
-        prompt = _render_welcoming(agent, capability_bullets, user_turns)
+        prompt = _render_welcoming(agent, capability_bullets, user_turns, user_name)
 
     # Lock once the deliverable turn starts streaming (user_turns >= 1 at that
     # point). The greeting turn (user_turns == 0) intentionally doesn't lock
