@@ -364,6 +364,77 @@ export const enterpriseApi = {
         }),
 };
 
+// ─── Codex OAuth (ChatGPT Plus/Pro subscription) ──────
+export interface CodexOauthStartResponse {
+    authorize_url: string;
+    state: string;
+    redirect_uri: string;
+    loopback_ready: boolean;
+    manual_paste_hint: string;
+}
+
+export interface CodexOauthPollResponse {
+    code?: string | null;
+    error?: string | null;
+    expired?: boolean;
+}
+
+export interface CodexOauthModelResponse {
+    id: string;
+    label: string;
+    provider: string;
+    model: string;
+    oauth_account_id: string | null;
+}
+
+export const codexOauthApi = {
+    start: () =>
+        request<CodexOauthStartResponse>('/llm-models/codex-oauth/start', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        }),
+
+    poll: (state: string) =>
+        request<CodexOauthPollResponse>(
+            `/llm-models/codex-oauth/poll?state=${encodeURIComponent(state)}`,
+        ),
+
+    complete: (
+        body: { state: string; code: string; label: string; model: string },
+        tenantId?: string | null,
+    ) =>
+        request<CodexOauthModelResponse>(
+            `/llm-models/codex-oauth/complete${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
+            { method: 'POST', body: JSON.stringify(body) },
+        ),
+
+    pasteCreds: (
+        body: {
+            access_token: string;
+            refresh_token: string;
+            expires_in_seconds: number;
+            account_id?: string | null;
+            label: string;
+            model: string;
+        },
+        tenantId?: string | null,
+    ) =>
+        request<CodexOauthModelResponse>(
+            `/llm-models/codex-oauth/paste-creds${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
+            { method: 'POST', body: JSON.stringify(body) },
+        ),
+};
+
+export const CODEX_OAUTH_MODELS = [
+    'gpt-5.1',
+    'gpt-5.1-codex',
+    'gpt-5.1-codex-mini',
+    'gpt-5.1-codex-max',
+    'gpt-5.2',
+    'gpt-5.2-codex',
+    'codex-mini-latest',
+] as const;
+
 // ─── Activity Logs ────────────────────────────────────
 export const activityApi = {
     list: (agentId: string, limit = 50) =>

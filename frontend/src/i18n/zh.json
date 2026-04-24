@@ -1140,7 +1140,43 @@
       "vision": "视觉",
       "temperature": "模型温度",
       "temperaturePlaceholder": "例如 0.7 或 1.0（留空使用默认值）",
-      "temperatureDesc": "留空使用提供商默认值。o1/o3 推理模型通常需要 1.0"
+      "temperatureDesc": "留空使用提供商默认值。o1/o3 推理模型通常需要 1.0",
+      "codex": {
+        "connectButton": "连接 ChatGPT",
+        "title": "连接 ChatGPT（Codex 订阅）",
+        "subtitle": "用你的 ChatGPT Plus / Pro 订阅直接为 Clawith 智能体提供推理能力，不再需要 OpenAI API Key。Token 过期自动刷新。",
+        "label": "显示名称",
+        "model": "模型",
+        "tabs": {
+          "oauth": "浏览器登录",
+          "paste": "粘贴 Token"
+        },
+        "oauth": {
+          "idleHint": "点击后在新标签页打开 OpenAI 登录页。授权完成后浏览器会跳回 localhost:1455，Clawith 会自动捕获授权码。",
+          "startButton": "开始 ChatGPT 登录",
+          "waitingLoopback": "新标签页已打开。登录并授权 Codex 后回到此页，我们会自动检测回调。",
+          "waitingManual": "新标签页已打开。本地端口 1455 不可用，授权完成后把完整跳转 URL 粘贴到下方。",
+          "manualPasteLabel": "粘贴跳转 URL（localhost:1455/auth/callback?code=...&state=...）",
+          "submitManual": "使用此 URL",
+          "codeReceived": "已收到授权码。填写名称和模型后点击创建。",
+          "createButton": "创建模型",
+          "creating": "正在创建...",
+          "done": "已创建。在编辑智能体时可以选择这个模型。"
+        },
+        "paste": {
+          "hint": "在本地跑 `codex login`，然后打开 ~/.codex/auth.json 把字段粘贴到下方。Clawith 会接管之后的 Token 刷新。",
+          "expiresHint": "access_token 剩余有效秒数",
+          "accountIdOptional": "Account ID（可选 — 留空会自动从 access_token 中解析）"
+        },
+        "errors": {
+          "pollTimeout": "等待浏览器回调超时。重新发起授权，或改用粘贴 Token。",
+          "sessionExpired": "OAuth 会话已过期，请重新发起授权。",
+          "stateMismatch": "State 不匹配 — 该 URL 不属于本次登录会话。",
+          "manualUrlInvalid": "无法从该 URL 解析出 code + state。",
+          "tokensRequired": "access_token 和 refresh_token 都必填。",
+          "labelRequired": "显示名称必填。"
+        }
+      }
     },
     "tools": {
       "title": "全局工具管理",

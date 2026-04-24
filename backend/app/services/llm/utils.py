@@ -10,11 +10,13 @@ for convenient access.
 
 from app.core.security import decrypt_data
 from app.config import get_settings
+from app.database import async_session
 from app.models.llm import LLMModel
 
 # Re-export all client classes and functions from client.py
 from .client import (
     AnthropicClient,
+    CodexOAuthClient,
     GeminiClient,
     LLMClient,
     LLMError,
@@ -47,7 +49,10 @@ ANTHROPIC_API_PROVIDERS = {"anthropic"}
 
 
 def get_model_api_key(model: LLMModel) -> str:
-    """Decrypt the model's API key, with backward compatibility for plaintext keys."""
+    """Decrypt the model's API key, with backward compatibility for plaintext keys.
+
+    Returns an empty string for OAuth-backed models (they have no static key).
+    """
     raw = model.api_key_encrypted or ""
     if not raw:
         return ""
@@ -56,6 +61,41 @@ def get_model_api_key(model: LLMModel) -> str:
         return decrypt_data(raw, settings.SECRET_KEY)
     except ValueError:
         return raw
+
+
+def get_llm_client_for_model(
+    model: LLMModel,
+    *,
+    timeout: float | None = None,
+    session_factory=None,
+) -> LLMClient:
+    """Create the correct LLMClient for a model, dispatching on auth_type.
+
+    Static-key providers continue to pull the decrypted `api_key_encrypted`.
+    OAuth-backed providers (auth_type='codex_oauth') bypass the static key and
+    delegate token lifecycle to CodexOAuthClient, which reads/refreshes tokens
+    from the llm_models row via the provided async session factory.
+    """
+    effective_timeout = float(timeout if timeout is not None else (getattr(model, "request_timeout", None) or 120.0))
+
+    if getattr(model, "auth_type", "static") == "codex_oauth":
+        return create_llm_client(
+            provider=model.provider or "codex-oauth",
+            api_key="",
+            model=model.model,
+            base_url=model.base_url,
+            timeout=effective_timeout,
+            model_id=model.id,
+            session_factory=session_factory or async_session,
+        )
+
+    return create_llm_client(
+        provider=model.provider,
+        api_key=get_model_api_key(model),
+        model=model.model,
+        base_url=model.base_url,
+        timeout=effective_timeout,
+    )
 
 
 def get_tool_params(provider: str) -> dict:
@@ -82,12 +122,14 @@ __all__ = [
     "get_provider_base_url",
     "get_max_tokens",
     "get_model_api_key",
+    "get_llm_client_for_model",
     # New client classes
     "LLMClient",
     "OpenAICompatibleClient",
     "OpenAIResponsesClient",
     "GeminiClient",
     "AnthropicClient",
+    "CodexOAuthClient",
     "LLMMessage",
     "LLMResponse",
     "LLMStreamChunk",

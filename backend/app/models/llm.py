@@ -19,7 +19,13 @@ class LLMModel(Base):
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True, index=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)  # anthropic, openai, deepseek, etc.
     model: Mapped[str] = mapped_column(String(100), nullable=False)  # claude-opus-4-6, gpt-4o, etc.
-    api_key_encrypted: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # 'static' (default) uses api_key_encrypted; 'codex_oauth' uses oauth_* columns below.
+    auth_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default="static")
+    api_key_encrypted: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    oauth_access_token_encrypted: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    oauth_refresh_token_encrypted: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    oauth_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    oauth_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     base_url: Mapped[str | None] = mapped_column(String(500))
     label: Mapped[str] = mapped_column(String(200), nullable=False)  # Display name
     max_tokens_per_day: Mapped[int | None] = mapped_column(Integer)
