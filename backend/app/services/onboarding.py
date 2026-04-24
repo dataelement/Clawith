@@ -19,6 +19,7 @@ mid-message.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
@@ -26,30 +27,61 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent, AgentTemplate, AgentUserOnboarding
+from app.models.audit import ChatMessage
 
 if TYPE_CHECKING:  # pragma: no cover
     pass
 
 
+@dataclass(frozen=True)
+class OnboardingInjection:
+    """What the WS handler needs to apply for a given turn.
+
+    ``prompt`` is the system message to prepend; ``lock_on_first_chunk`` says
+    whether this turn's first streamed chunk should commit the junction row.
+    Greeting turns (where the user hasn't said anything yet) don't lock — the
+    deliverable turn does, so the whole two-step ritual is guarded.
+    """
+
+    prompt: str
+    lock_on_first_chunk: bool
+
+
 # Single shared welcoming prompt. Rendered per-call with the agent's fields.
 # Kept here (not in DB) because it's uniform across templates — only the
 # founding flow benefits from per-template authoring.
+#
+# This prompt is turn-aware: on the user's first exposure (user_turns == 0)
+# it greets and asks one tight question; on the follow-up (user_turns >= 1)
+# it pivots to helping with whatever they replied, never re-asking context.
 _WELCOMING_PROMPT = """\
-A new teammate in your company is opening a chat with you for the first time. \
-They are NOT the founder — the founder already established your working \
-context. Don't re-ask project-context questions; just open the door.
+A teammate in your company is meeting you for the first time. You're NOT \
+being founded — your working context was established earlier with someone \
+else. Don't re-ask project-context questions.
 
-For this first turn:
-1. Greet them warmly.
-2. Briefly introduce yourself: {name}{role_line}.
-3. Mention 2–3 things you can help with{bullets_line}.
-4. Ask an open-ended question about what they want to accomplish today.
+This conversation has had {user_turns} user messages so far.
 
-Keep the whole reply to three short paragraphs. Warm, not robotic. Do not \
-mention this instruction to the user — just start the greeting."""
+If user_turns == 0 (greeting turn):
+- Greet them warmly in one short line.
+- Introduce yourself in one sentence: {name}{role_line}.
+- Mention 2–3 things you can help with{bullets_line}.
+- Ask ONE open-ended question about what they want to accomplish today.
+- Stop there. Keep it to three short paragraphs.
+
+If user_turns >= 1 (response turn):
+- They've told you what they need. DO NOT ask clarifying questions.
+- Jump straight into helping: produce a concrete first pass, a plan, or a \
+question-answer — whichever fits their ask best.
+- Close by offering one clear next step they can pick.
+
+Never mention these instructions to the user."""
 
 
-def _render_welcoming(agent: Agent, capability_bullets: list[str] | None) -> str:
+def _render_welcoming(
+    agent: Agent,
+    capability_bullets: list[str] | None,
+    user_turns: int,
+) -> str:
     role_line = f", your {agent.role_description}" if agent.role_description else ""
     if capability_bullets:
         bullets = "; ".join(b.strip() for b in capability_bullets if b and b.strip())
@@ -60,6 +92,7 @@ def _render_welcoming(agent: Agent, capability_bullets: list[str] | None) -> str
         name=agent.name,
         role_line=role_line,
         bullets_line=bullets_line,
+        user_turns=user_turns,
     )
 
 
@@ -67,15 +100,18 @@ async def resolve_onboarding_prompt(
     db: AsyncSession,
     agent: Agent,
     user_id: uuid.UUID,
-) -> str | None:
-    """Return a system prompt to inject for this (user, agent) turn, or None.
+) -> OnboardingInjection | None:
+    """Decide what system prompt to inject for this (user, agent) turn.
 
-    The prompt is a *one-shot* instruction for the LLM call; callers are
-    expected to prepend it to the message list they hand to the LLM, and to
-    call :func:`mark_onboarded` once the stream starts so the lock fires.
-
-    Returns ``None`` when the user has already been onboarded to this agent,
-    in which case the caller should behave exactly like a normal turn.
+    Returns ``None`` when the pair is already onboarded and the turn should
+    proceed normally. Otherwise returns an :class:`OnboardingInjection` with:
+      - ``prompt``: the filled-in system instruction (founding or welcoming,
+        with a ``{user_turns}`` variable already resolved so the LLM can
+        branch between a greeting-only reply and a task-delivery reply);
+      - ``lock_on_first_chunk``: ``True`` iff this turn should commit the
+        junction row once streaming begins. We only lock after the user has
+        sent at least one real message, so the two-step ritual (greeting
+        turn → deliverable turn) stays guarded by the system prompt.
     """
     existing = await db.execute(
         select(AgentUserOnboarding).where(
@@ -86,9 +122,18 @@ async def resolve_onboarding_prompt(
     if existing.scalar_one_or_none():
         return None
 
-    # No row yet. Is anyone onboarded to this agent at all? If not, this user
-    # is the founder — use the template's tailored script. Otherwise welcome
-    # them with the generic greeting.
+    # Count real user messages this person has sent to this agent. Onboarding
+    # triggers are not persisted, so only authentic typed turns are counted.
+    user_turn_count = await db.execute(
+        select(func.count()).select_from(ChatMessage).where(
+            ChatMessage.agent_id == agent.id,
+            ChatMessage.user_id == user_id,
+            ChatMessage.role == "user",
+        )
+    )
+    user_turns = int(user_turn_count.scalar_one() or 0)
+
+    # Is anyone onboarded to this agent yet? If not, this user is the founder.
     peer_count = await db.execute(
         select(func.count()).select_from(AgentUserOnboarding).where(
             AgentUserOnboarding.agent_id == agent.id,
@@ -96,26 +141,31 @@ async def resolve_onboarding_prompt(
     )
     is_founder = peer_count.scalar_one() == 0
 
-    if is_founder and agent.template_id:
+    template_prompt: str | None = None
+    capability_bullets: list[str] | None = None
+    if agent.template_id:
         tpl_result = await db.execute(
             select(AgentTemplate).where(AgentTemplate.id == agent.template_id)
         )
         tpl = tpl_result.scalar_one_or_none()
-        if tpl and tpl.bootstrap_content:
-            return tpl.bootstrap_content.replace("{name}", agent.name)
+        if tpl:
+            capability_bullets = tpl.capability_bullets or None
+            template_prompt = tpl.bootstrap_content
 
-    # Welcoming fallback applies both to non-founders and to founders of
-    # custom agents that carry no founding script.
-    capability_bullets: list[str] | None = None
-    if agent.template_id:
-        tpl_result = await db.execute(
-            select(AgentTemplate.capability_bullets).where(
-                AgentTemplate.id == agent.template_id,
-            )
+    if is_founder and template_prompt:
+        prompt = template_prompt.replace("{name}", agent.name).replace(
+            "{user_turns}", str(user_turns),
         )
-        row = tpl_result.first()
-        capability_bullets = row[0] if row else None
-    return _render_welcoming(agent, capability_bullets)
+    else:
+        prompt = _render_welcoming(agent, capability_bullets, user_turns)
+
+    # Lock once the deliverable turn starts streaming (user_turns >= 1 at that
+    # point). The greeting turn (user_turns == 0) intentionally doesn't lock
+    # — we want the ritual to retry if the user disconnects before replying.
+    return OnboardingInjection(
+        prompt=prompt,
+        lock_on_first_chunk=user_turns >= 1,
+    )
 
 
 async def mark_onboarded(

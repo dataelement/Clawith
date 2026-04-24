@@ -418,6 +418,19 @@ async def websocket_chat(
                     saved_content = f"[file:{file_name}]\n{saved_content}"
             if is_onboarding_trigger:
                 logger.info("[WS] Onboarding trigger — skipping user-message persistence")
+                # Title this session "Onboarding" up front so it's identifiable
+                # in the session list even before the user has typed anything.
+                # The auto-title logic in the normal path only overwrites titles
+                # that start with "Session ", so this stays sticky.
+                async with async_session() as _sdb:
+                    from app.models.chat_session import ChatSession as _CS
+                    _sr = await _sdb.execute(
+                        select(_CS).where(_CS.id == uuid.UUID(conv_id))
+                    )
+                    _s = _sr.scalar_one_or_none()
+                    if _s and _s.title.startswith("Session "):
+                        _s.title = "Onboarding"
+                        await _sdb.commit()
             else:
                 async with async_session() as db:
                     user_msg = ChatMessage(
@@ -581,20 +594,24 @@ async def websocket_chat(
                             _truncated.pop(0)
 
                         # Per-(user, agent) onboarding: if the junction table
-                        # has no row for this pair yet, prepend a system prompt
-                        # — the founder gets the template's tailored script,
-                        # every subsequent user gets the generic welcoming
-                        # prompt. The lock row is written in stream_to_ws on
-                        # the first streamed chunk (see above).
+                        # has no row for this pair yet, prepend a system prompt.
+                        # The prompt is turn-aware — on the greeting turn it
+                        # tells the agent to greet + ask one question; on the
+                        # deliverable turn it tells the agent to drop question
+                        # mode and immediately produce a concrete output. The
+                        # junction row is only committed on the deliverable
+                        # turn (see lock_on_first_chunk below), so the full
+                        # two-step ritual stays guarded.
                         from app.services.onboarding import resolve_onboarding_prompt
                         try:
                             async with async_session() as _ob_db:
-                                _onb_prompt = await resolve_onboarding_prompt(
+                                _onb = await resolve_onboarding_prompt(
                                     _ob_db, agent_snapshot, user_id,
                                 )
-                            if _onb_prompt:
-                                _truncated = [{"role": "system", "content": _onb_prompt}] + _truncated
-                                needs_onboarding_mark = True
+                            if _onb:
+                                _truncated = [{"role": "system", "content": _onb.prompt}] + _truncated
+                                if _onb.lock_on_first_chunk:
+                                    needs_onboarding_mark = True
                         except Exception as _onb_err:
                             logger.warning(f"[WS] Onboarding prompt resolve failed (non-fatal): {_onb_err}")
 

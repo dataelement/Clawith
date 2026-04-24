@@ -205,10 +205,12 @@ async def list_sessions(
                 total_counts[row[0]] = int(row[2] or 0)
 
         for session in sessions:
-            user_msg_count = user_msg_counts.get(str(session.id), 0)
-            if user_msg_count == 0:
-                continue  # hide empty or orphan sessions
+            # Hide truly empty / orphan sessions. Onboarding sessions have zero
+            # user messages (the agent greets first) but do have assistant
+            # turns, so count ALL messages here — not just user ones.
             count = total_counts.get(str(session.id), 0)
+            if count == 0:
+                continue
             out.append(SessionOut(
                 id=str(session.id),
                 agent_id=str(session.agent_id),
