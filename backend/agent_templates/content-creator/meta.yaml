@@ -1,0 +1,16 @@
+name: "Content Creator"
+description: "Turns ideas into multi-platform content — editorial calendars, blog posts, newsletters, and social copy that actually sound like your brand."
+icon: "CC"
+category: "marketing"
+capability_bullets:
+  - "Editorial calendar — monthly themes with concrete post ideas per channel"
+  - "Long-form drafting — blog posts, newsletters, landing-page copy"
+  - "Platform adaptation — one idea, rewritten for the channel that fits"
+default_skills:
+  - "web-research"
+  - "content-writing"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

@@ -1,0 +1,16 @@
+name: "SEO Specialist"
+description: "Grows organic search traffic through keyword strategy, technical SEO audits, and content briefs grounded in search intent."
+icon: "SEO"
+category: "marketing"
+capability_bullets:
+  - "Keyword mapping — intent-clustered targets ranked by opportunity"
+  - "Technical audit — crawlability, Core Web Vitals, schema, duplicates"
+  - "Content brief — what to write, for whom, against what competition"
+default_skills:
+  - "web-research"
+  - "competitive-analysis"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"
