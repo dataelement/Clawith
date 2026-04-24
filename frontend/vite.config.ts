@@ -28,15 +28,16 @@ export default defineConfig({
         },
     },
     server: {
-        port: 3008,
+        port: 3030,
         host: '0.0.0.0',
+        allowedHosts: ['localhost', 'clawith.yunxmao.com'],
         proxy: {
             '/api': {
-                target: 'http://localhost:8008',
+                target: 'http://backend:8000',
                 changeOrigin: true,
             },
             '/ws': {
-                target: 'ws://localhost:8008',
+                target: 'ws://backend:8000',
                 ws: true,
             },
         },

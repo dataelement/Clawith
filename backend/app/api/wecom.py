@@ -160,40 +160,174 @@ async def configure_wecom_channel(
 ):
     """Configure WeCom bot for an agent.
 
-    Supports two modes:
-    - WebSocket (AI Bot): bot_id + bot_secret (no callback URL needed)
-    - Webhook (legacy): corp_id, secret, token, encoding_aes_key
+    Supports multi-account configuration:
+    - New format: data.accounts = {"default": {...}, "ops": {...}}
+    - Legacy format: data.bot_id, data.bot_secret (auto-converted to accounts.default)
+
+    Each account supports two modes:
+    - WebSocket (AI Bot): bot_id + bot_secret
+    - Webhook: corp_id, secret, token, encoding_aes_key
     """
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can configure channel")
 
-    # WebSocket mode fields (AI Bot)
-    bot_id = data.get("bot_id", "").strip()
-    bot_secret = data.get("bot_secret", "").strip()
+    logger.info(f"[WeCom] Configuring channel for agent {agent_id}")
 
-    # Legacy webhook mode fields
-    corp_id = data.get("corp_id", "").strip()
-    wecom_agent_id = data.get("wecom_agent_id", "").strip()
-    secret = data.get("secret", "").strip()
-    token = data.get("token", "").strip()
-    encoding_aes_key = data.get("encoding_aes_key", "").strip()
+    # Check for new multi-account format
+    accounts = data.get("accounts", {})
+    logger.info(f"[WeCom] Received accounts data: {list(accounts.keys()) if accounts else 'none'}")
 
-    # At least one mode must be configured
-    has_ws_mode = bool(bot_id and bot_secret)
-    has_webhook_mode = bool(corp_id and secret and token and encoding_aes_key)
-    if not has_ws_mode and not has_webhook_mode:
-        raise HTTPException(
-            status_code=422,
-            detail="Either bot_id+bot_secret (WebSocket) or corp_id+secret+token+encoding_aes_key (Webhook) required"
-        )
+    if accounts:
+        # New multi-account format
+        if not isinstance(accounts, dict):
+            raise HTTPException(status_code=422, detail="accounts must be an object")
 
-    extra_config = {
-        "wecom_agent_id": wecom_agent_id,
-        "bot_id": bot_id,
-        "bot_secret": bot_secret,
-        "connection_mode": "websocket" if has_ws_mode else "webhook",
-    }
+        if not accounts:
+            raise HTTPException(status_code=422, detail="At least one account is required")
+
+        # Validate each account (support both new nested format and legacy flat format)
+        for account_id, account_config in accounts.items():
+            if not account_id:
+                raise HTTPException(status_code=422, detail="Account ID cannot be empty")
+
+            # Check for new nested format (bot/agent objects)
+            if "bot" in account_config or "agent" in account_config:
+                bot_config = account_config.get("bot", {})
+                agent_config = account_config.get("agent", {})
+                
+                bot_ws_enabled = account_config.get("bot_websocket_enabled", False)
+                bot_wh_enabled = account_config.get("bot_webhook_enabled", False)
+                agent_wh_enabled = account_config.get("agent_webhook_enabled", False)
+                
+                # At least one mode must be enabled
+                if not bot_ws_enabled and not bot_wh_enabled and not agent_wh_enabled:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Account '{account_id}': At least one communication mode must be enabled"
+                    )
+                
+                # Validate bot config if any bot mode enabled
+                if bot_ws_enabled or bot_wh_enabled:
+                    if bot_ws_enabled:
+                        # WebSocket mode requires id and secret
+                        if not bot_config.get("id", "").strip() or not bot_config.get("secret", "").strip():
+                            raise HTTPException(
+                                status_code=422,
+                                detail=f"Account '{account_id}': Bot ID and Secret are required for WebSocket mode"
+                            )
+                    if bot_wh_enabled:
+                        # Webhook mode requires token and encoding_aes_key
+                        if not bot_config.get("token", "").strip() or not bot_config.get("encoding_aes_key", "").strip():
+                            raise HTTPException(
+                                status_code=422,
+                                detail=f"Account '{account_id}': Token and EncodingAESKey are required for Bot Webhook mode"
+                            )
+                
+                # Validate agent config if agent mode enabled
+                if agent_wh_enabled:
+                    if not agent_config.get("corp_id", "").strip():
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Account '{account_id}': CorpID is required for Agent Webhook mode"
+                        )
+                    if not agent_config.get("agent_id", "").strip():
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Account '{account_id}': AgentID is required for Agent Webhook mode"
+                        )
+                    if not agent_config.get("secret", "").strip():
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Account '{account_id}': Secret is required for Agent Webhook mode"
+                        )
+                    if not agent_config.get("token", "").strip():
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Account '{account_id}': Token is required for Agent Webhook mode"
+                        )
+                    if not agent_config.get("encoding_aes_key", "").strip():
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Account '{account_id}': EncodingAESKey is required for Agent Webhook mode"
+                        )
+            else:
+                # Legacy flat format validation
+                bot_id = account_config.get("bot_id", "").strip()
+                bot_secret = account_config.get("bot_secret", "").strip()
+                corp_id = account_config.get("corp_id", "").strip()
+                secret = account_config.get("secret", "").strip()
+                token = account_config.get("token", "").strip()
+                encoding_aes_key = account_config.get("encoding_aes_key", "").strip()
+
+                has_ws_mode = bool(bot_id and bot_secret)
+                has_webhook_mode = bool(corp_id and secret and token and encoding_aes_key)
+
+                if not has_ws_mode and not has_webhook_mode:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Account '{account_id}': Either bot_id+bot_secret (WebSocket) or corp_id+secret+token+encoding_aes_key (Webhook) required"
+                    )
+
+        # Use the first account's credentials for app_id/app_secret (for backward compatibility)
+        first_account = list(accounts.values())[0]
+        corp_id = first_account.get("corp_id", "").strip()
+        secret = first_account.get("secret", "").strip()
+        token = first_account.get("token", "").strip()
+        encoding_aes_key = first_account.get("encoding_aes_key", "").strip()
+
+        extra_config = {
+            "accounts": accounts,
+            "default_account": data.get("default_account", "default"),
+        }
+    else:
+        # Legacy single-account format (backward compatibility)
+        bot_id = data.get("bot_id", "").strip()
+        bot_secret = data.get("bot_secret", "").strip()
+        corp_id = data.get("corp_id", "").strip()
+        wecom_agent_id = data.get("wecom_agent_id", "").strip()
+        secret = data.get("secret", "").strip()
+        token = data.get("token", "").strip()
+        encoding_aes_key = data.get("encoding_aes_key", "").strip()
+
+        has_ws_mode = bool(bot_id and bot_secret)
+        has_webhook_mode = bool(corp_id and secret and token and encoding_aes_key)
+
+        if not has_ws_mode and not has_webhook_mode:
+            raise HTTPException(
+                status_code=422,
+                detail="Either bot_id+bot_secret (WebSocket) or corp_id+secret+token+encoding_aes_key (Webhook) required"
+            )
+
+        requested_mode = data.get("connection_mode", "").strip()
+        if requested_mode in ("websocket", "webhook"):
+            connection_mode = requested_mode
+        else:
+            connection_mode = "websocket" if has_ws_mode else "webhook"
+
+        # Convert to multi-account format
+        accounts = {
+            "default": {
+                "bot_id": bot_id,
+                "bot_secret": bot_secret,
+                "connection_mode": connection_mode,
+                "corp_id": corp_id,
+                "wecom_agent_id": wecom_agent_id,
+                "secret": secret,
+                "token": token,
+                "encoding_aes_key": encoding_aes_key,
+            }
+        }
+
+        extra_config = {
+            "accounts": accounts,
+            "default_account": "default",
+            # Keep legacy fields for backward compatibility
+            "bot_id": bot_id,
+            "bot_secret": bot_secret,
+            "connection_mode": connection_mode,
+            "wecom_agent_id": wecom_agent_id,
+        }
 
     result = await db.execute(
         select(ChannelConfig).where(
@@ -228,17 +362,39 @@ async def configure_wecom_channel(
         await db.flush()
         config_out = ChannelConfigOut.model_validate(config)
 
+    # Auto-start WebSocket clients for all accounts with bot credentials
     try:
-        if has_ws_mode:
-            asyncio.create_task(
-                wecom_stream_manager.start_client(agent_id, bot_id, bot_secret)
-            )
-            logger.info(f"[WeCom] WebSocket client start triggered for agent {agent_id}")
-        else:
-            asyncio.create_task(wecom_stream_manager.stop_client(agent_id))
-            logger.info(f"[WeCom] WebSocket client stop triggered for agent {agent_id}")
+        from app.services.wecom_stream import wecom_stream_manager
+        import asyncio
+
+        for account_id, account_config in accounts.items():
+            # Support new nested format (bot.id, bot.secret)
+            bot_config = account_config.get("bot", {})
+            bot_ws_enabled = account_config.get("bot_websocket_enabled", False)
+            
+            # Check for bot WebSocket credentials
+            if bot_ws_enabled:
+                bot_id = bot_config.get("id", "").strip() if isinstance(bot_config, dict) else ""
+                bot_secret = bot_config.get("secret", "").strip() if isinstance(bot_config, dict) else ""
+                
+                if bot_id and bot_secret:
+                    asyncio.create_task(
+                        wecom_stream_manager.start_client(agent_id, account_id, bot_id, bot_secret)
+                    )
+                    logger.info(f"[WeCom] WebSocket client start triggered for agent {agent_id}, account {account_id}")
+                else:
+                    logger.warning(f"[WeCom] Account {account_id} has bot_websocket_enabled but missing id/secret")
+            
+            # Also check legacy flat format
+            bot_id = account_config.get("bot_id", "").strip()
+            bot_secret = account_config.get("bot_secret", "").strip()
+            if bot_id and bot_secret:
+                asyncio.create_task(
+                    wecom_stream_manager.start_client(agent_id, account_id, bot_id, bot_secret)
+                )
+                logger.info(f"[WeCom] WebSocket client start triggered (legacy format) for agent {agent_id}, account {account_id}")
     except Exception as e:
-        logger.error(f"[WeCom] Failed to update WebSocket client state: {e}")
+        logger.error(f"[WeCom] Failed to start WebSocket client(s): {e}")
 
     return config_out
 
@@ -274,8 +430,80 @@ async def get_wecom_webhook_url(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    """Get webhook URLs for all WeCom accounts.
+    
+    Returns URLs grouped by type (bot/agent) for accounts with webhook enabled.
+    
+    New format:
+    {
+        "webhook_urls": {
+            "bot": {
+                "wecom_xxx": "http://xxx/api/channel/wecom/{agent_id}/bot/wecom_xxx/webhook"
+            },
+            "agent": {
+                "wecom_xxx": "http://xxx/api/channel/wecom/{agent_id}/agent/wecom_xxx/webhook"
+            }
+        }
+    }
+    """
+    from app.services.platform_service import platform_service
     public_base = await platform_service.get_public_base_url(db, request)
-    return {"webhook_url": f"{public_base}/api/channel/wecom/{agent_id}/webhook"}
+    
+    # Get channel config to check for multi-account setup
+    result = await db.execute(
+        select(ChannelConfig).where(
+            ChannelConfig.agent_id == agent_id,
+            ChannelConfig.channel_type == "wecom",
+        )
+    )
+    config = result.scalar_one_or_none()
+    
+    webhook_urls = {
+        "bot": {},
+        "agent": {},
+    }
+    
+    if config:
+        extra = config.extra_config or {}
+        accounts = extra.get("accounts", {})
+        
+        if accounts:
+            # Multi-account format
+            for account_id, acc_config in accounts.items():
+                # Migrate if needed
+                if "bot" not in acc_config and "agent" not in acc_config:
+                    acc_config = _migrate_account_config(acc_config)
+                
+                # Bot webhook URL (for 智能机器人短链接)
+                bot_webhook_enabled = acc_config.get("bot_webhook_enabled", False)
+                bot_config = acc_config.get("bot", {})
+                if bot_webhook_enabled and bot_config.get("id"):
+                    webhook_urls["bot"][account_id] = f"{public_base}/api/channel/wecom/{agent_id}/bot/{account_id}/webhook"
+                
+                # Agent webhook URL (for 企业应用)
+                agent_webhook_enabled = acc_config.get("agent_webhook_enabled", False)
+                agent_config = acc_config.get("agent", {})
+                if agent_webhook_enabled and agent_config.get("corp_id"):
+                    webhook_urls["agent"][account_id] = f"{public_base}/api/channel/wecom/{agent_id}/agent/{account_id}/webhook"
+        else:
+            # Legacy single-account format
+            legacy_config = _migrate_account_config({
+                "bot_id": extra.get("bot_id", ""),
+                "bot_secret": extra.get("bot_secret", ""),
+                "connection_mode": extra.get("connection_mode", "websocket"),
+                "corp_id": config.app_id or "",
+                "secret": config.app_secret or "",
+                "token": config.verification_token or "",
+                "encoding_aes_key": config.encrypt_key or "",
+            })
+            
+            if legacy_config.get("bot_webhook_enabled") and legacy_config.get("bot", {}).get("id"):
+                webhook_urls["bot"]["default"] = f"{public_base}/api/channel/wecom/{agent_id}/bot/default/webhook"
+            
+            if legacy_config.get("agent_webhook_enabled") and legacy_config.get("agent", {}).get("corp_id"):
+                webhook_urls["agent"]["default"] = f"{public_base}/api/channel/wecom/{agent_id}/agent/default/webhook"
+    
+    return {"webhook_urls": webhook_urls}
 
 
 @router.delete("/agents/{agent_id}/wecom-channel", status_code=204)
@@ -300,6 +528,134 @@ async def delete_wecom_channel(
     await db.delete(config)
 
 
+# ─── Account Config Helper ──────────────────────────────
+
+def _migrate_account_config(old_config: dict) -> dict:
+    """Migrate old account format to new multi-mode format.
+    
+    Old format:
+        {
+            "bot_id": "aibXXX",
+            "bot_secret": "xxx",
+            "connection_mode": "websocket",  # or "webhook"
+            "corp_id": "...",
+            "wecom_agent_id": "...",
+            "secret": "...",
+            "token": "...",
+            "encoding_aes_key": "..."
+        }
+    
+    New format:
+        {
+            "nickname": "默认机器人",
+            "bot": {
+                "id": "aibXXX",
+                "secret": "xxx",
+                "token": "...",       # optional
+                "encoding_aes_key": "..."  # optional
+            },
+            "agent": {
+                "corp_id": "...",
+                "agent_id": "...",
+                "secret": "...",
+                "token": "...",
+                "encoding_aes_key": "..."
+            },
+            "bot_websocket_enabled": True,
+            "bot_webhook_enabled": False,
+            "agent_webhook_enabled": False
+        }
+    """
+    connection_mode = old_config.get("connection_mode", "websocket")
+    
+    new_config = {
+        "nickname": old_config.get("nickname", "默认机器人"),
+        "bot_websocket_enabled": connection_mode == "websocket",
+        "bot_webhook_enabled": connection_mode == "webhook",
+        "agent_webhook_enabled": False,
+    }
+    
+    # Bot config (for both websocket and webhook)
+    bot_id = old_config.get("bot_id", "")
+    bot_secret = old_config.get("bot_secret", "")
+    if bot_id or bot_secret:
+        new_config["bot"] = {
+            "id": bot_id,
+            "secret": bot_secret,
+        }
+        # Add webhook-specific fields if present
+        token = old_config.get("token", "")
+        encoding_aes_key = old_config.get("encoding_aes_key", "")
+        if token:
+            new_config["bot"]["token"] = token
+        if encoding_aes_key:
+            new_config["bot"]["encoding_aes_key"] = encoding_aes_key
+    
+    # Agent config (enterprise app)
+    corp_id = old_config.get("corp_id", "")
+    agent_id = old_config.get("wecom_agent_id", "")
+    secret = old_config.get("secret", "")
+    token = old_config.get("token", "")
+    encoding_aes_key = old_config.get("encoding_aes_key", "")
+    
+    if corp_id and secret:
+        new_config["agent"] = {
+            "corp_id": corp_id,
+            "agent_id": agent_id,
+            "secret": secret,
+            "token": token,
+            "encoding_aes_key": encoding_aes_key,
+        }
+        # If has agent config, enable it
+        new_config["agent_webhook_enabled"] = True
+    
+    return new_config
+
+
+def _get_account_config(config: ChannelConfig, account_id: str) -> dict:
+    """Extract account-specific configuration from extra_config.
+    
+    Supports three WeCom connection modes:
+    1. Bot WebSocket (智能机器人长连接): bot.id + bot.secret
+    2. Bot Webhook (智能机器人短链接): bot.id + bot.secret + bot.token + bot.encoding_aes_key
+    3. Agent Webhook (企业应用): agent.corp_id + agent.agent_id + agent.secret + agent.token + agent.encoding_aes_key
+    
+    Args:
+        config: ChannelConfig object
+        account_id: Account ID to look up (e.g., "wecom_xxx" or "default")
+    
+    Returns:
+        Account configuration dict with new multi-mode format
+    """
+    extra = config.extra_config or {}
+    accounts = extra.get("accounts", {})
+    
+    # New multi-account format
+    if accounts and account_id in accounts:
+        acc = accounts[account_id]
+        # Check if already in new format (has bot or agent nested object)
+        if "bot" in acc or "agent" in acc:
+            return acc
+        # Otherwise migrate old format
+        return _migrate_account_config(acc)
+    
+    # Legacy single-account format - treat as "default" account
+    if account_id == "default" and not accounts:
+        old_format = {
+            "bot_id": extra.get("bot_id", ""),
+            "bot_secret": extra.get("bot_secret", ""),
+            "connection_mode": extra.get("connection_mode", "websocket"),
+            "corp_id": config.app_id or "",
+            "wecom_agent_id": extra.get("wecom_agent_id", ""),
+            "secret": config.app_secret or "",
+            "token": config.verification_token or "",
+            "encoding_aes_key": config.encrypt_key or "",
+        }
+        return _migrate_account_config(old_format)
+    
+    return {}
+
+
 # ─── Event Webhook ──────────────────────────────────────
 
 _processed_wecom_events: set[str] = set()
@@ -308,7 +664,7 @@ _processed_kf_msgids: set[str] = set()
 
 
 @router.get("/channel/wecom/{agent_id}/webhook")
-async def wecom_verify_webhook(
+async def wecom_verify_webhook_legacy(
     agent_id: uuid.UUID,
     msg_signature: str = "",
     timestamp: str = "",
@@ -316,7 +672,63 @@ async def wecom_verify_webhook(
     echostr: str = "",
     db: AsyncSession = Depends(get_db),
 ):
-    """Handle WeCom callback URL verification (GET request)."""
+    """Handle WeCom callback URL verification (GET request) - Legacy route using default account."""
+    # Delegate to multi-account handler with default account_id
+    return await _wecom_verify_webhook_handler(
+        agent_id=agent_id,
+        account_id="default",
+        msg_signature=msg_signature,
+        timestamp=timestamp,
+        nonce=nonce,
+        echostr=echostr,
+        db=db,
+    )
+
+
+@router.get("/channel/wecom/{agent_id}/bot/{account_id}/webhook")
+@router.get("/channel/wecom/{agent_id}/agent/{account_id}/webhook")
+async def wecom_verify_webhook_multi(
+    agent_id: uuid.UUID,
+    account_id: str,
+    msg_signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    echostr: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle WeCom callback URL verification (GET request) - Multi-account route."""
+    return await _wecom_verify_webhook_handler(
+        agent_id=agent_id,
+        account_id=account_id,
+        msg_signature=msg_signature,
+        timestamp=timestamp,
+        nonce=nonce,
+        echostr=echostr,
+        db=db,
+    )
+
+
+async def _wecom_verify_webhook_handler(
+    agent_id: uuid.UUID,
+    account_id: str,
+    msg_signature: str,
+    timestamp: str,
+    nonce: str,
+    echostr: str,
+    db: AsyncSession,
+):
+    """Internal handler for WeCom callback URL verification."""
+    import urllib.parse
+    
+    # URL decode parameters (required by WeCom)
+    msg_signature = urllib.parse.unquote(msg_signature) if msg_signature else ""
+    timestamp = urllib.parse.unquote(timestamp) if timestamp else ""
+    nonce = urllib.parse.unquote(nonce) if nonce else ""
+    echostr = urllib.parse.unquote(echostr) if echostr else ""
+    
+    logger.info(f"[WeCom] URL verification request for agent={agent_id}, account={account_id}")
+    logger.info(f"[WeCom] Parameters: msg_signature={msg_signature[:20]}..., timestamp={timestamp}, nonce={nonce}")
+    
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -325,15 +737,47 @@ async def wecom_verify_webhook(
     )
     config = result.scalar_one_or_none()
     if not config:
+        logger.warning(f"[WeCom] No config found for agent={agent_id}, account={account_id}")
         return Response(status_code=404)
 
-    token = config.verification_token or ""
-    encoding_aes_key = config.encrypt_key or ""
+    # Get account-specific config (with migration support)
+    account_config = _get_account_config(config, account_id)
+    logger.info(f"[WeCom] Account config keys: {list(account_config.keys())}")
+    
+    # Try to get webhook credentials from new nested format
+    # First check bot config (for 智能机器人短链接)
+    bot_config = account_config.get("bot", {})
+    token = bot_config.get("token", "")
+    encoding_aes_key = bot_config.get("encoding_aes_key", "")
+    
+    logger.info(f"[WeCom] Bot config: token={bool(token)}, encoding_aes_key={bool(encoding_aes_key)}")
+    
+    # If not found, try agent config (for 企业应用)
+    if not token:
+        agent_config = account_config.get("agent", {})
+        token = agent_config.get("token", "")
+        encoding_aes_key = agent_config.get("encoding_aes_key", "")
+    
+    # Fall back to old flat format
+    if not token:
+        token = account_config.get("token", "")
+        encoding_aes_key = account_config.get("encoding_aes_key", "")
+    
+    # Final fallback to legacy config
+    if not token:
+        token = config.verification_token or ""
+        encoding_aes_key = config.encrypt_key or ""
+
+    if not token:
+        logger.warning(f"[WeCom] No token found for account {account_id}")
+        return Response(status_code=403)
 
     # Verify signature
     expected_sig = _verify_signature(token, timestamp, nonce, echostr)
+    logger.info(f"[WeCom] Signature verification: expected={expected_sig}, got={msg_signature}")
+    
     if expected_sig != msg_signature:
-        logger.warning(f"[WeCom] Signature mismatch: expected={expected_sig}, got={msg_signature}")
+        logger.warning(f"[WeCom] Signature mismatch for account {account_id}")
         return Response(status_code=403)
 
     # Decrypt echostr and return plaintext
@@ -341,7 +785,7 @@ async def wecom_verify_webhook(
         decrypted, _ = _decrypt_msg(encoding_aes_key, echostr)
         return Response(content=decrypted, media_type="text/plain")
     except Exception as e:
-        logger.error(f"[WeCom] Failed to decrypt echostr: {e}")
+        logger.error(f"[WeCom] Failed to decrypt echostr for account {account_id}: {e}")
         return Response(status_code=500)
 
 
@@ -354,8 +798,76 @@ async def wecom_event_webhook(
     nonce: str = "",
     db: AsyncSession = Depends(get_db),
 ):
-    """Handle WeCom message callback (POST request with encrypted XML)."""
+    """Handle WeCom message callback (POST request with encrypted XML) - Legacy route (default account)."""
+    return await _wecom_event_webhook_handler(
+        agent_id=agent_id,
+        account_id="default",
+        request=request,
+        msg_signature=msg_signature,
+        timestamp=timestamp,
+        nonce=nonce,
+        db=db,
+    )
+
+
+@router.post("/channel/wecom/{agent_id}/bot/{account_id}/webhook")
+async def wecom_bot_event_webhook(
+    agent_id: uuid.UUID,
+    account_id: str,
+    request: Request,
+    msg_signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle WeCom bot message callback (POST request with encrypted XML)."""
+    return await _wecom_event_webhook_handler(
+        agent_id=agent_id,
+        account_id=account_id,
+        request=request,
+        msg_signature=msg_signature,
+        timestamp=timestamp,
+        nonce=nonce,
+        db=db,
+    )
+
+
+@router.post("/channel/wecom/{agent_id}/agent/{account_id}/webhook")
+async def wecom_agent_event_webhook(
+    agent_id: uuid.UUID,
+    account_id: str,
+    request: Request,
+    msg_signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle WeCom agent message callback (POST request with encrypted XML)."""
+    return await _wecom_event_webhook_handler(
+        agent_id=agent_id,
+        account_id=account_id,
+        request=request,
+        msg_signature=msg_signature,
+        timestamp=timestamp,
+        nonce=nonce,
+        db=db,
+    )
+
+
+async def _wecom_event_webhook_handler(
+    agent_id: uuid.UUID,
+    account_id: str,
+    request: Request,
+    msg_signature: str,
+    timestamp: str,
+    nonce: str,
+    db: AsyncSession,
+):
+    """Internal handler for WeCom message callback (POST request with encrypted XML)."""
+    logger.info(f"[WeCom Webhook] Received request for agent={agent_id}, account={account_id}")
+    
     body_bytes = await request.body()
+    logger.debug(f"[WeCom Webhook] Body length: {len(body_bytes)}")
 
     # Get channel config
     result = await db.execute(
@@ -366,50 +878,133 @@ async def wecom_event_webhook(
     )
     config = result.scalar_one_or_none()
     if not config:
+        logger.warning(f"[WeCom Webhook] No config found for agent={agent_id}")
         return Response(status_code=404)
 
-    token = config.verification_token or ""
-    encoding_aes_key = config.encrypt_key or ""
-    # Parse encrypted XML body
+    # Get account-specific config (with migration support)
+    account_config = _get_account_config(config, account_id)
+    logger.info(f"[WeCom Webhook] Account config found: {list(account_config.keys())}")
+    
+    # Try to get webhook credentials from new nested format
+    # First check bot config (for 智能机器人短链接)
+    bot_config = account_config.get("bot", {})
+    token = bot_config.get("token", "")
+    encoding_aes_key = bot_config.get("encoding_aes_key", "")
+    
+    # If not found, try agent config (for 企业应用)
+    corp_id = ""
+    if not token:
+        agent_config = account_config.get("agent", {})
+        token = agent_config.get("token", "")
+        encoding_aes_key = agent_config.get("encoding_aes_key", "")
+        corp_id = agent_config.get("corp_id", "")
+    
+    # Fall back to old flat format
+    if not token:
+        token = account_config.get("token", "")
+        encoding_aes_key = account_config.get("encoding_aes_key", "")
+        corp_id = account_config.get("corp_id", "")
+    
+    # Final fallback to legacy config
+    if not token:
+        token = config.verification_token or ""
+        encoding_aes_key = config.encrypt_key or ""
+        corp_id = config.app_id or ""
+
+    # Parse encrypted body - support both JSON and XML formats
+    import json as _json
+    encrypt_text = ""
+    
+    # Try JSON format first (智能机器人 API 模式默认使用 JSON)
     try:
-        root = ET.fromstring(body_bytes)
-        encrypt_text = root.findtext("Encrypt", "")
-    except Exception as e:
-        logger.error(f"[WeCom] Failed to parse XML body: {e}")
+        body_json = _json.loads(body_bytes)
+        encrypt_text = body_json.get("encrypt", "") or body_json.get("Encrypt", "")
+        logger.info(f"[WeCom Webhook] Parsed as JSON, encrypt found: {bool(encrypt_text)}")
+    except Exception:
+        # Try XML format (企业应用使用 XML)
+        try:
+            root = ET.fromstring(body_bytes)
+            encrypt_text = root.findtext("Encrypt", "")
+            logger.info(f"[WeCom Webhook] Parsed as XML, encrypt found: {bool(encrypt_text)}")
+        except Exception as e:
+            logger.error(f"[WeCom] Failed to parse body as JSON or XML: {e}")
+            logger.debug(f"[WeCom] Body content: {body_bytes[:500]}")
+            return Response(content="success", media_type="text/plain")
+
+    if not encrypt_text:
+        logger.error(f"[WeCom] No encrypt field found in body")
         return Response(content="success", media_type="text/plain")
 
     # Verify signature
     expected_sig = _verify_signature(token, timestamp, nonce, encrypt_text)
     if expected_sig != msg_signature:
-        logger.warning("[WeCom] Signature mismatch on POST")
+        logger.warning(f"[WeCom] Signature mismatch on POST for account {account_id}")
         return Response(status_code=403)
 
     # Decrypt message
     try:
         decrypted_xml, recv_corp_id = _decrypt_msg(encoding_aes_key, encrypt_text)
+        logger.info(f"[WeCom] Decrypted event for {agent_id}, account {account_id}")
+        logger.debug(f"[WeCom] Decrypted content: {decrypted_xml[:500]}")
     except Exception as e:
-        logger.error(f"[WeCom] Failed to decrypt message: {e}")
+        logger.error(f"[WeCom] Failed to decrypt message for account {account_id}: {e}")
         return Response(content="success", media_type="text/plain")
 
-    logger.info(f"[WeCom] Decrypted event for {agent_id}")
-
-    # Parse decrypted message XML
+    # Try to parse as JSON first (智能机器人消息格式), then XML (企业应用格式)
+    msg_type = ""
+    from_user = ""
+    msg_id = ""
+    open_kfid = ""
+    event_token = ""
+    chat_id = ""
+    user_text = ""
+    response_url = ""  # 智能机器人主动回复URL
+    
     try:
-        msg_root = ET.fromstring(decrypted_xml)
-    except Exception as e:
-        logger.error(f"[WeCom] Failed to parse decrypted XML: {e}")
-        return Response(content="success", media_type="text/plain")
-
-    msg_type = msg_root.findtext("MsgType", "")
-    from_user = msg_root.findtext("FromUserName", "")  # WeCom userid
-    msg_id = msg_root.findtext("MsgId", "")
-    open_kfid = msg_root.findtext("OpenKfId", "")
-    token = msg_root.findtext("Token", "")
-    # Group chat ID — present when message comes from a WeCom group
-    chat_id = msg_root.findtext("ChatId", "")
+        # Try JSON format first (智能机器人)
+        msg_json = _json.loads(decrypted_xml)
+        logger.info(f"[WeCom] Decrypted JSON keys: {list(msg_json.keys())}")
+        
+        msg_type = msg_json.get("msgtype", "") or msg_json.get("MsgType", "")
+        
+        # 智能机器人消息格式: from.userid 或 from.user_id
+        from_obj = msg_json.get("from", {})
+        if isinstance(from_obj, dict):
+            from_user = from_obj.get("userid", "") or from_obj.get("user_id", "")
+        else:
+            from_user = str(from_obj)
+        
+        msg_id = msg_json.get("msgid", "") or msg_json.get("MsgId", "")
+        chat_id = msg_json.get("chatid", "") or msg_json.get("ChatId", "")
+        
+        # 智能机器人回调中有 response_url，用于主动回复
+        response_url = msg_json.get("response_url", "")
+        
+        # Get text content
+        if msg_type == "text":
+            text_obj = msg_json.get("text", {})
+            user_text = text_obj.get("content", "") if isinstance(text_obj, dict) else ""
+        
+        logger.info(f"[WeCom] Parsed decrypted as JSON: type={msg_type}, from={from_user}, msg_id={msg_id}, response_url={bool(response_url)}")
+    except Exception:
+        # Try XML format (企业应用)
+        try:
+            msg_root = ET.fromstring(decrypted_xml)
+            msg_type = msg_root.findtext("MsgType", "")
+            from_user = msg_root.findtext("FromUserName", "")
+            msg_id = msg_root.findtext("MsgId", "")
+            open_kfid = msg_root.findtext("OpenKfId", "")
+            event_token = msg_root.findtext("Token", "")
+            chat_id = msg_root.findtext("ChatId", "")
+            user_text = msg_root.findtext("Content", "")
+            logger.info(f"[WeCom] Parsed decrypted as XML: type={msg_type}, from={from_user}")
+        except Exception as e:
+            logger.error(f"[WeCom] Failed to parse decrypted content as JSON or XML: {e}")
+            logger.debug(f"[WeCom] Decrypted content preview: {decrypted_xml[:500]}")
+            return Response(content="success", media_type="text/plain")
 
     # Dedup
-    dedup_key = msg_id if msg_id else token
+    dedup_key = msg_id if msg_id else event_token
     if dedup_key and dedup_key in _processed_wecom_events:
         return Response(content="success", media_type="text/plain")
     if dedup_key:
@@ -417,23 +1012,64 @@ async def wecom_event_webhook(
         if len(_processed_wecom_events) > 1000:
             _processed_wecom_events.clear()
 
-    logger.info(f"[WeCom] Message type={msg_type}, from={from_user}, msg_id={msg_id}, chat_id={chat_id or 'N/A'}")
+    logger.info(f"[WeCom] Message type={msg_type}, from={from_user}, msg_id={msg_id}, chat_id={chat_id or 'N/A'}, account={account_id}")
 
+    # Check if this is bot_webhook mode (智能机器人短链接) - needs synchronous reply
+    bot_webhook_enabled = account_config.get("bot_webhook_enabled", False)
+    
     if msg_type == "text":
-        user_text = msg_root.findtext("Content", "").strip()
-        if not user_text:
+        if not user_text or not user_text.strip():
+            if bot_webhook_enabled:
+                # Return empty success for 智能机器人短链接 (no reply)
+                return Response(content="success", media_type="text/plain")
             return Response(content="success", media_type="text/plain")
 
-        # Process in background task
+        user_text = user_text.strip()
+        
+        # For 智能机器人短链接, use response_url to reply
+        if bot_webhook_enabled:
+            logger.info(f"[WeCom Bot Webhook] Processing text message: {user_text[:50]}")
+            reply_text = await _process_wecom_bot_webhook_message(
+                db, agent_id, config, from_user, user_text, chat_id, account_id
+            )
+            
+            # 使用 response_url 主动回复（如果存在）
+            if response_url:
+                logger.info(f"[WeCom Bot Webhook] Using response_url to reply")
+                import httpx
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        # 主动回复使用 markdown 格式
+                        reply_payload = {
+                            "msgtype": "markdown",
+                            "markdown": {"content": reply_text}
+                        }
+                        resp = await client.post(response_url, json=reply_payload)
+                        logger.info(f"[WeCom Bot Webhook] response_url reply status: {resp.status_code}, body: {resp.text[:200]}")
+                except Exception as e:
+                    logger.error(f"[WeCom Bot Webhook] Failed to reply via response_url: {e}")
+            else:
+                # 如果没有response_url，尝试被动回复
+                logger.info(f"[WeCom Bot Webhook] No response_url, trying passive reply")
+                response_json = _json.dumps({
+                    "msgtype": "text",
+                    "text": {"content": reply_text}
+                }, ensure_ascii=False)
+                return Response(content=response_json, media_type="application/json")
+            
+            return Response(content="success", media_type="text/plain")
+        
+        # For other modes, process in background
+        import asyncio
         asyncio.create_task(
-            _process_wecom_text(db, agent_id, config, from_user, user_text, chat_id=chat_id)
+            _process_wecom_text(db, agent_id, config, from_user, user_text, chat_id=chat_id, account_id=account_id)
         )
 
     elif msg_type == "event":
         event = msg_root.findtext("Event", "")
         if event == "kf_msg_or_event":
             asyncio.create_task(
-                _process_wecom_kf_event(agent_id, config, token, open_kfid)
+                _process_wecom_kf_event(agent_id, config, event_token, open_kfid)
             )
         else:
             logger.info(f"[WeCom] Received event: {event} (not handled)")
@@ -510,6 +1146,113 @@ async def _process_wecom_kf_event(agent_id: uuid.UUID, config_obj: ChannelConfig
         logger.error(f"[WeCom KF] Error in background task: {e}")
 
 
+async def _process_wecom_bot_webhook_message(
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    config: ChannelConfig,
+    from_user: str,
+    user_text: str,
+    chat_id: str = "",
+    account_id: str = "default",
+) -> str:
+    """Process a WeCom bot webhook message synchronously and return reply text.
+    
+    For 智能机器人短链接 mode, we need to reply synchronously in the HTTP response.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import select as _select
+    from app.models.agent import Agent as AgentModel
+    from app.models.audit import ChatMessage
+    from app.services.channel_session import find_or_create_channel_session
+    from app.services.channel_user_service import channel_user_service
+    from app.api.feishu import _call_agent_llm
+
+    try:
+        # Load agent
+        agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
+        agent_obj = agent_r.scalar_one_or_none()
+        if not agent_obj:
+            logger.warning(f"[WeCom Bot Webhook] Agent {agent_id} not found")
+            return "Sorry, agent not found."
+        
+        creator_id = agent_obj.creator_id
+        from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+        ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
+
+        # Determine conversation ID
+        _is_group = bool(chat_id)
+        account_suffix = f"_{account_id}" if account_id != "default" else ""
+        if _is_group:
+            conv_id = f"wecom_group_{chat_id}{account_suffix}"
+        else:
+            conv_id = f"wecom_p2p_{from_user}{account_suffix}"
+
+        # Resolve channel user
+        extra_info = {"unionid": from_user}
+        platform_user = await channel_user_service.resolve_channel_user(
+            db=db,
+            agent=agent_obj,
+            channel_type="wecom",
+            external_user_id=from_user,
+            extra_info=extra_info,
+        )
+        platform_user_id = platform_user.id
+
+        # Find or create session
+        sess = await find_or_create_channel_session(
+            db=db,
+            agent_id=agent_id,
+            user_id=creator_id if _is_group else platform_user_id,
+            external_conv_id=conv_id,
+            source_channel="wecom",
+            first_message_title=user_text,
+            is_group=_is_group,
+            group_name=f"WeCom Group {chat_id[:8]}" if _is_group else None,
+        )
+        session_conv_id = str(sess.id)
+
+        # Load history
+        history_r = await db.execute(
+            _select(ChatMessage)
+            .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(ctx_size)
+        )
+        history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
+
+        # Save user message
+        db.add(ChatMessage(
+            agent_id=agent_id, user_id=platform_user_id,
+            role="user", content=user_text,
+            conversation_id=session_conv_id,
+        ))
+        sess.last_message_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        # Call LLM
+        reply_text = await _call_agent_llm(
+            db, agent_id, user_text,
+            history=history, user_id=platform_user_id,
+        )
+        logger.info(f"[WeCom Bot Webhook] LLM reply: {reply_text[:100]}")
+
+        # Save assistant message
+        db.add(ChatMessage(
+            agent_id=agent_id, user_id=platform_user_id,
+            role="assistant", content=reply_text,
+            conversation_id=session_conv_id,
+        ))
+        await db.commit()
+
+        return reply_text
+
+    except Exception as e:
+        logger.error(f"[WeCom Bot Webhook] Error processing message: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"处理消息时出错: {str(e)[:100]}"
+
+
 async def _process_wecom_text(
     db: AsyncSession,
     agent_id: uuid.UUID,
@@ -520,6 +1263,7 @@ async def _process_wecom_text(
     open_kfid: str = None,
     kf_msg_id: str = None,
     chat_id: str = "",
+    account_id: str = "default",
 ):
     """Process an incoming WeCom text message and reply."""
 
@@ -534,11 +1278,13 @@ async def _process_wecom_text(
         ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
         # Distinguish group chat from P2P by chat_id presence
+        # Include account_id in conv_id to separate sessions across accounts
         _is_group = bool(chat_id)
+        account_suffix = f"_{account_id}" if account_id != "default" else ""
         if _is_group:
-            conv_id = f"wecom_group_{chat_id}"
+            conv_id = f"wecom_group_{chat_id}{account_suffix}"
         else:
-            conv_id = f"wecom_p2p_{from_user}"
+            conv_id = f"wecom_p2p_{from_user}{account_suffix}"
 
         # The channel_user_service resolves display names from OrgMember records
         # (populated by org-sync or enriched on first SSO login). No need to
@@ -593,41 +1339,110 @@ async def _process_wecom_text(
         )
         logger.info(f"[WeCom] LLM reply: {reply_text[:100]}")
 
-        # Send reply via WeCom API
-        wecom_agent_id = (config.extra_config or {}).get("wecom_agent_id", "")
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                tok_resp = await client.get(
-                    "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-                    params={"corpid": config.app_id, "corpsecret": config.app_secret},
-                )
-                access_token = tok_resp.json().get("access_token", "")
-                if access_token:
-                    if is_kf and open_kfid:
-                        # For KF messages, need to bridge/trans state first then send via kf/send_msg
-                        res_state = await client.post(
-                            f"https://qyapi.weixin.qq.com/cgi-bin/kf/service_state/trans?access_token={access_token}", 
-                            json={"open_kfid": open_kfid, "external_userid": from_user, "service_state": 1}
+        # Get account config to determine reply method
+        account_config = _get_account_config(config, account_id)
+        
+        # Determine which API to use for sending reply
+        # Priority: bot_webhook > agent_webhook (if both enabled, prefer bot)
+        bot_webhook_enabled = account_config.get("bot_webhook_enabled", False)
+        agent_webhook_enabled = account_config.get("agent_webhook_enabled", False)
+        
+        # For KF messages, always use KF API
+        if is_kf and open_kfid:
+            # Get bot or agent credentials
+            bot_config = account_config.get("bot", {})
+            agent_config = account_config.get("agent", {})
+            
+            # Prefer bot credentials for KF
+            corp_id = bot_config.get("corp_id", "") or agent_config.get("corp_id", "")
+            secret = bot_config.get("secret", "") or agent_config.get("secret", "")
+            
+            if corp_id and secret:
+                try:
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        tok_resp = await client.get(
+                            "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+                            params={"corpid": corp_id, "corpsecret": secret},
                         )
-                        logger.info(f"[WeCom KF] trans state result: {res_state.json()}")
-                        res_send = await client.post(
-                            f"https://qyapi.weixin.qq.com/cgi-bin/kf/send_msg?access_token={access_token}", 
-                            json={"touser": from_user, "open_kfid": open_kfid, "msgtype": "text", "text": {"content": reply_text}}
+                        access_token = tok_resp.json().get("access_token", "")
+                        if access_token:
+                            res_state = await client.post(
+                                f"https://qyapi.weixin.qq.com/cgi-bin/kf/service_state/trans?access_token={access_token}",
+                                json={"open_kfid": open_kfid, "external_userid": from_user, "service_state": 1}
+                            )
+                            logger.info(f"[WeCom KF] trans state result: {res_state.json()}")
+                            res_send = await client.post(
+                                f"https://qyapi.weixin.qq.com/cgi-bin/kf/send_msg?access_token={access_token}",
+                                json={"touser": from_user, "open_kfid": open_kfid, "msgtype": "text", "text": {"content": reply_text}}
+                            )
+                            logger.info(f"[WeCom KF] send_msg result: {res_send.json()}")
+                except Exception as e:
+                    logger.error(f"[WeCom KF] Failed to send reply: {e}")
+        elif bot_webhook_enabled:
+            # Use Bot API (智能机器人短链接)
+            # Bot uses bot_id and bot_secret, NOT corp_id!
+            bot_config = account_config.get("bot", {})
+            bot_id = bot_config.get("id", "")
+            bot_secret = bot_config.get("secret", "")
+            
+            if bot_id and bot_secret:
+                try:
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        # Bot uses different token endpoint
+                        tok_resp = await client.get(
+                            "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+                            params={"corpid": bot_id, "corpsecret": bot_secret},
                         )
-                        logger.info(f"[WeCom KF] send_msg result: {res_send.json()}")
-                    else:
-                        # Default legacy Send as text
-                        await client.post(
-                            f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
-                            json={
-                                "touser": from_user,
-                                "msgtype": "text",
-                                "agentid": int(wecom_agent_id) if wecom_agent_id else 0,
-                                "text": {"content": reply_text},
-                            },
+                        access_token = tok_resp.json().get("access_token", "")
+                        if access_token:
+                            res_send = await client.post(
+                                f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
+                                json={
+                                    "touser": from_user,
+                                    "msgtype": "text",
+                                    "agentid": 0,  # Bot uses agentid 0
+                                    "text": {"content": reply_text},
+                                },
+                            )
+                            logger.info(f"[WeCom Bot Webhook] send result: {res_send.json()}")
+                except Exception as e:
+                    logger.error(f"[WeCom Bot Webhook] Failed to send reply: {e}")
+            else:
+                logger.warning(f"[WeCom] Bot webhook enabled but missing bot_id or bot_secret for account {account_id}")
+        
+        elif agent_webhook_enabled:
+            # Use Enterprise App API (企业应用)
+            agent_config = account_config.get("agent", {})
+            corp_id = agent_config.get("corp_id", "")
+            agent_id_int = agent_config.get("agent_id", "")
+            secret = agent_config.get("secret", "")
+            
+            if corp_id and secret:
+                try:
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        tok_resp = await client.get(
+                            "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+                            params={"corpid": corp_id, "corpsecret": secret},
                         )
-        except Exception as e:
-            logger.error(f"[WeCom] Failed to send reply: {e}")
+                        access_token = tok_resp.json().get("access_token", "")
+                        if access_token:
+                            res_send = await client.post(
+                                f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
+                                json={
+                                    "touser": from_user,
+                                    "msgtype": "text",
+                                    "agentid": int(agent_id_int) if agent_id_int else 0,
+                                    "text": {"content": reply_text},
+                                },
+                            )
+                            logger.info(f"[WeCom Agent Webhook] send result: {res_send.json()}")
+                except Exception as e:
+                    logger.error(f"[WeCom Agent Webhook] Failed to send reply: {e}")
+            else:
+                logger.warning(f"[WeCom] Agent webhook enabled but missing config for account {account_id}")
+        
+        else:
+            logger.info(f"[WeCom] No webhook enabled for account {account_id}, reply saved to conversation only")
 
         # Save assistant reply
         db.add(ChatMessage(

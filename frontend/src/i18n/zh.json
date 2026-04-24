@@ -686,7 +686,15 @@
       "reloadPage": "重新加载页面",
       "selectAgent": "— 选择数字员工 —",
       "failedToCreateSession": "创建会话失败",
-      "failed": "失败"
+      "failed": "失败",
+      "selectAll": "全选",
+      "bulkDelete": "批量删除",
+      "selectedCount": "已选择 {{count}} 项",
+      "bulkDeleteConfirm": "确定要删除选中的 {{count}} 个工具吗？此操作无法撤销。",
+      "bulkDeleteSuccess": "成功删除 {{count}} 个工具",
+      "deleteSuccess": "删除成功",
+      "toolsCount": "个工具",
+      "partialFailed": "部分失败"
     },
     "toolCategories": {
       "file": "文件操作",
@@ -1164,6 +1172,14 @@
       "noAgentInstalledTools": "暂无 Agent 安装的工具。",
       "removeFromAgent": "从 Agent 中移除 \"{{name}}\"？",
       "delete": "删除",
+      "selectAll": "全选",
+      "bulkDelete": "批量删除",
+      "selectedCount": "已选择 {{count}} 项",
+      "bulkDeleteConfirm": "确定要删除选中的 {{count}} 个工具吗？此操作无法撤销。",
+      "bulkDeleteSuccess": "成功删除 {{count}} 个工具",
+      "deleteFailed": "删除失败",
+      "deleteSuccess": "删除成功",
+      "toolsCount": "个工具",
       "addMcpServer": "添加 MCP 服务器",
       "mcpServer": "MCP 服务器",
       "jsonConfig": "JSON 配置",
@@ -1772,6 +1788,31 @@
       "ws_step5": "复制生成的 Bot ID 和 Secret → 填入上方 → 点击保存配置",
       "ws_step6": "在企业微信中找到机器人，发送消息测试",
       "ws_note": "WebSocket 长连接模式无需公网 IP、回调地址或域名备案（ICP），连接由系统自动管理。"
+    },
+    "wecomMultiAccount": {
+      "accounts": "账号列表",
+      "addAccount": "添加账号",
+      "editAccount": "编辑账号",
+      "deleteAccount": "删除账号",
+      "nickname": "账号昵称",
+      "nicknamePlaceholder": "例如：客服机器人、销售助手",
+      "accountId": "账号ID",
+      "communicationModes": "通信模式",
+      "webhookUrls": "Webhook URLs",
+      "confirmDeleteTitle": "确认删除账号",
+      "cannotDeleteTitle": "无法删除",
+      "confirmDelete": "确定要删除该账号吗？此操作不可撤销。",
+      "errors": {
+        "nicknameRequired": "请填写账号昵称",
+        "botIdRequired": "Bot ID 是必填项",
+        "botSecretRequired": "Bot Secret 是必填项",
+        "tokenRequired": "Token 是必填项",
+        "encodingAesKeyRequired": "EncodingAESKey 是必填项",
+        "corpIdRequired": "CorpID 是必填项",
+        "agentIdRequired": "AgentID 是必填项",
+        "secretRequired": "Secret 是必填项",
+        "cannotDeleteLastAccount": "无法删除最后一个账号"
+      }
     }
   },
   "identity": {

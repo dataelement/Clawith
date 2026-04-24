@@ -605,7 +605,15 @@
       "reloadPage": "Reload Page",
       "selectAgent": "— Select Agent —",
       "failedToCreateSession": "Failed to create session",
-      "failed": "Failed"
+      "failed": "Failed",
+      "selectAll": "Select All",
+      "bulkDelete": "Bulk Delete",
+      "selectedCount": "{{count}} selected",
+      "bulkDeleteConfirm": "Are you sure you want to delete {{count}} selected tools? This action cannot be undone.",
+      "bulkDeleteSuccess": "Successfully deleted {{count}} tools",
+      "deleteSuccess": "Delete successful",
+      "toolsCount": "tools",
+      "partialFailed": "Some operations failed"
     },
     "toolCategories": {
       "file": "File Operations",
@@ -1051,6 +1059,14 @@
       "noAgentInstalledTools": "No agent-installed tools yet.",
       "removeFromAgent": "Remove \"{{name}}\" from agent?",
       "delete": "Delete",
+      "selectAll": "Select All",
+      "bulkDelete": "Bulk Delete",
+      "selectedCount": "{{count}} selected",
+      "bulkDeleteConfirm": "Are you sure you want to delete {{count}} selected tools? This action cannot be undone.",
+      "bulkDeleteSuccess": "Successfully deleted {{count}} tools",
+      "deleteFailed": "Delete failed",
+      "deleteSuccess": "Delete successful",
+      "toolsCount": "tools",
       "addMcpServer": "Add MCP Server",
       "mcpServer": "MCP Server",
       "jsonConfig": "JSON Config",
@@ -1599,6 +1615,31 @@
       "ws_step5": "Copy the Bot ID and Secret that are generated → paste them above → click Save Config",
       "ws_step6": "Find the bot in WeCom and send a test message",
       "ws_note": "WebSocket mode requires no public IP, callback URL, or domain verification (ICP). The connection is managed automatically."
+    },
+    "wecomMultiAccount": {
+      "accounts": "Accounts",
+      "addAccount": "Add Account",
+      "editAccount": "Edit Account",
+      "deleteAccount": "Delete Account",
+      "nickname": "Account Nickname",
+      "nicknamePlaceholder": "e.g., Customer Service Bot, Sales Assistant",
+      "accountId": "Account ID",
+      "communicationModes": "Communication Mode",
+      "webhookUrls": "Webhook URLs",
+      "confirmDeleteTitle": "Confirm Delete Account",
+      "cannotDeleteTitle": "Cannot Delete",
+      "confirmDelete": "Are you sure you want to delete this account? This action cannot be undone.",
+      "errors": {
+        "nicknameRequired": "Please enter an account nickname",
+        "botIdRequired": "Bot ID is required",
+        "botSecretRequired": "Bot Secret is required",
+        "tokenRequired": "Token is required",
+        "encodingAesKeyRequired": "EncodingAESKey is required",
+        "corpIdRequired": "CorpID is required",
+        "agentIdRequired": "AgentID is required",
+        "secretRequired": "Secret is required",
+        "cannotDeleteLastAccount": "Cannot delete the last account"
+      }
     }
   },
   "platformDashboard": {

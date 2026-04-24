@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { channelApi } from '../services/api';
 import LinearCopyButton from './LinearCopyButton';
+import WeComAccountManager, { type WeComAccount } from './WeComAccountManager';
 // ─── Shared fetchAuth (same as AgentDetail) ─────────────
 function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -341,6 +342,9 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [agentbayTesting, setAgentbayTesting] = useState(false);
     const [agentbayTestResult, setAgentbayTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null);
 
+    // WeCom multi-account state
+    const [wecomAccounts, setWecomAccounts] = useState<WeComAccount[]>([]);
+
     // ─── Edit mode: queries for each channel ────────────
     const enabled = mode === 'edit' && !!agentId;
 
@@ -396,9 +400,37 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     });
     const { data: wecomWebhook } = useQuery({
         queryKey: ['wecom-webhook-url', agentId],
-        queryFn: () => fetchAuth<any>(`/agents/${agentId}/wecom-channel/webhook-url`),
+        queryFn: () => fetchAuth<any>(`/agents/${agentId}/wecom-channel/webhook-url`).catch(() => null),
         enabled: enabled,
     });
+
+    // Initialize wecomAccounts from backend config
+    useEffect(() => {
+        if (wecomConfig?.extra_config?.accounts) {
+            const accountsObj = wecomConfig.extra_config.accounts;
+            const accountsList: WeComAccount[] = Object.entries(accountsObj).map(([id, acc]: [string, any]) => ({
+                id,
+                nickname: acc.nickname || '',
+                bot_websocket_enabled: acc.bot_websocket_enabled || false,
+                bot_webhook_enabled: acc.bot_webhook_enabled || false,
+                agent_webhook_enabled: acc.agent_webhook_enabled || false,
+                bot: acc.bot ? {
+                    id: acc.bot.id || '',
+                    secret: acc.bot.secret || '',
+                    token: acc.bot.token || '',
+                    encoding_aes_key: acc.bot.encoding_aes_key || '',
+                } : undefined,
+                agent: acc.agent ? {
+                    corp_id: acc.agent.corp_id || '',
+                    agent_id: acc.agent.agent_id || '',
+                    secret: acc.agent.secret || '',
+                    token: acc.agent.token || '',
+                    encoding_aes_key: acc.agent.encoding_aes_key || '',
+                } : undefined,
+            }));
+            setWecomAccounts(accountsList);
+        }
+    }, [wecomConfig]);
     const { data: atlassianConfig } = useQuery({
         queryKey: ['atlassian-channel', agentId],
         queryFn: () => fetchAuth<any>(`/agents/${agentId}/atlassian-channel`).catch(() => null),
@@ -445,11 +477,12 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             }
             return fetchAuth(`/agents/${agentId}/${ch.apiSlug}`, { method: 'POST', body: JSON.stringify(data) });
         },
-        onSuccess: (_d, { ch }) => {
+        onSuccess: async (_d, { ch }) => {
             const keys = ch.useChannelApi
                 ? [['channel', agentId]]
                 : [[`${ch.apiSlug}`, agentId], [`${ch.id}-webhook-url`, agentId]];
-            keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
+            // Invalidate and wait for refetch to complete
+            await Promise.all(keys.map(k => queryClient.invalidateQueries({ queryKey: k })));
             // Reset form
             setForms(prev => ({ ...prev, [ch.id]: {} }));
             setEditing(ch.id, false);
@@ -816,35 +849,18 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     </div>
                                 )}
 
-                                {/* WeCom websocket status */}
-                                {ch.id === 'wecom' && configConnMode === 'websocket' && (
-                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                                            <span
-                                                style={{
-                                                    width: '6px',
-                                                    height: '6px',
-                                                    borderRadius: '50%',
-                                                    background: config.is_connected ? '#07C160' : '#F59E0B',
-                                                    display: 'inline-block',
-                                                }}
-                                            ></span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>
-                                                {config.is_connected
-                                                    ? t('agent.settings.channel.websocketConnected', 'Connected via WebSocket (No callback URL needed)')
-                                                    : t('agent.settings.channel.websocketDisconnected', 'Configured for WebSocket, but currently disconnected')}
-                                            </span>
-                                        </div>
-                                        {!config.is_connected && (
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                                {t('agent.settings.channel.websocketDisconnectedHint', 'Reconnect by saving the WeCom WebSocket configuration again.')}
-                                            </div>
-                                        )}
-                                    </div>
+                                {/* WeCom - Use WeComAccountManager for multi-account support */}
+                                {ch.id === 'wecom' && (
+                                    <WeComAccountManager
+                                        accounts={wecomAccounts}
+                                        onAccountsChange={setWecomAccounts}
+                                        webhookUrls={wecomWebhook}
+                                        agentId={agentId}
+                                    />
                                 )}
 
-                                {/* Webhook URL (non-websocket channels) */}
-                                {ch.webhookLabel && !(ch.connectionMode && configConnMode === 'websocket') && ch.id !== 'dingtalk' && ch.id !== 'atlassian' && (
+                                {/* Webhook URL (non-websocket channels) - NOT for wecom which uses WeComAccountManager */}
+                                {ch.webhookLabel && !(ch.connectionMode && configConnMode === 'websocket') && ch.id !== 'dingtalk' && ch.id !== 'atlassian' && ch.id !== 'wecom' && (
                                     <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
                                         <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>{ch.webhookLabel}</div>
                                         <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
@@ -923,10 +939,11 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     </div>
                                 )}
 
-                                {/* Setup guide in configured view */}
-                                {renderGuide(ch.guide, !!(ch.connectionMode && configConnMode === 'websocket'), ch)}
+                                {/* Setup guide in configured view - NOT for wecom which uses WeComAccountManager */}
+                                {ch.id !== 'wecom' && renderGuide(ch.guide, !!(ch.connectionMode && configConnMode === 'websocket'), ch)}
 
-                                {/* Action buttons */}
+                                {/* Action buttons - NOT for wecom which uses WeComAccountManager */}
+                                {ch.id !== 'wecom' && (
                                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                                     {ch.hasTestConnection && ch.id === 'atlassian' && (
                                         <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAtlassian} disabled={atlassianTesting}>
@@ -947,19 +964,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 prefill.app_secret = config.app_secret || '';
                                                 prefill.encrypt_key = config.encrypt_key || '';
                                                 setConnectionModes(prev => ({ ...prev, feishu: config.extra_config?.connection_mode || 'websocket' }));
-                                            } else if (ch.id === 'wecom') {
-                                                const cm = config.extra_config?.connection_mode === 'websocket' ? 'websocket' : 'webhook';
-                                                setConnectionModes(prev => ({ ...prev, wecom: cm }));
-                                                if (cm === 'websocket') {
-                                                    prefill.bot_id = config.extra_config?.bot_id || '';
-                                                    prefill.bot_secret = config.extra_config?.bot_secret || '';
-                                                } else {
-                                                    prefill.corp_id = config.app_id || '';
-                                                    prefill.wecom_agent_id = config.extra_config?.wecom_agent_id || '';
-                                                    prefill.secret = config.app_secret || '';
-                                                    prefill.token = config.verification_token || '';
-                                                    prefill.encoding_aes_key = config.encrypt_key || '';
-                                                }
                                             } else if (ch.id === 'slack') {
                                                 prefill.bot_token = config.app_secret || '';
                                                 prefill.signing_secret = config.encrypt_key || '';
@@ -995,7 +999,16 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }}
                                         onClick={() => deleteMutation.mutate({ ch })}>Disconnect</button>
                                 </div>
+                                )}
                             </div>
+                        ) : ch.id === 'wecom' ? (
+                            /* ── WeCom: always use WeComAccountManager ── */
+                            <WeComAccountManager
+                                accounts={wecomAccounts}
+                                onAccountsChange={setWecomAccounts}
+                                webhookUrls={wecomWebhook}
+                                agentId={agentId}
+                            />
                         ) : (
                             /* ── Form view (new or editing) ── */
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>

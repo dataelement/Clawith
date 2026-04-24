@@ -181,20 +181,35 @@ export default function AgentCreate() {
                 }
             }
 
-            // WeCom
-            if (channelValues.wecom_bot_id && channelValues.wecom_bot_secret) {
+            // WeCom - Multi-account support
+            const wecomAccountsJson = channelValues.wecom_accounts;
+            if (wecomAccountsJson) {
                 try {
-                    const connMode = channelValues.wecom_connection_mode || 'websocket';
-                    await channelApi.create(agent.id, {
-                        channel_type: 'wecom',
-                        app_id: connMode === 'websocket' ? channelValues.wecom_bot_id : undefined,
-                        app_secret: connMode === 'websocket' ? channelValues.wecom_bot_secret : undefined,
-                        extra_config: {
-                            connection_mode: connMode,
-                            bot_id: channelValues.wecom_bot_id,
-                            bot_secret: channelValues.wecom_bot_secret,
-                        }
-                    });
+                    const accounts = JSON.parse(wecomAccountsJson);
+                    if (Array.isArray(accounts) && accounts.length > 0) {
+                        // Convert array to object format for API
+                        const accountsObj: Record<string, any> = {};
+                        accounts.forEach((acc: any) => {
+                            accountsObj[acc.id] = {
+                                nickname: acc.nickname || '',
+                                bot_id: acc.bot_id || '',
+                                bot_secret: acc.bot_secret || '',
+                                connection_mode: acc.connection_mode || 'websocket',
+                                corp_id: acc.corp_id || '',
+                                wecom_agent_id: acc.wecom_agent_id || '',
+                                secret: acc.secret || '',
+                                token: acc.token || '',
+                                encoding_aes_key: acc.encoding_aes_key || '',
+                            };
+                        });
+
+                        await channelApi.create(agent.id, {
+                            channel_type: 'wecom',
+                            extra_config: {
+                                accounts: accountsObj,
+                            }
+                        });
+                    }
                 } catch (err) {
                     console.error('Failed to bind WeCom channel:', err);
                     setError(
