@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { agentApi, channelApi, enterpriseApi, skillApi, tenantApi } from '../services/api';
 import ChannelConfig from '../components/ChannelConfig';
 import LinearCopyButton from '../components/LinearCopyButton';
+import { useToast } from '../components/Toast/ToastProvider';
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
 const OPENCLAW_STEPS = ['basicInfo', 'permissions'] as const;
 
@@ -60,6 +61,7 @@ function parseSoulTemplate(soulTemplate: string, sectionNames: string[] = []): R
 
 export default function AgentCreate() {
     const { t } = useTranslation();
+    const toast = useToast();
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const [step, setStep] = useState(0);
@@ -625,7 +627,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                                         template_id: '',
                                                     }));
                                                 } catch {
-                                                    alert('Invalid JSON file');
+                                                    toast.error('JSON 文件格式无效');
                                                 }
                                             };
                                             reader.readAsText(file);

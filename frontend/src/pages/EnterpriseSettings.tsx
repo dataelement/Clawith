@@ -10,6 +10,8 @@ import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS }
 import UserManagement from './UserManagement';
 import InvitationCodes from './InvitationCodes';
 import LinearCopyButton from '../components/LinearCopyButton';
+import { useDialog } from '../components/Dialog/DialogProvider';
+import { useToast } from '../components/Toast/ToastProvider';
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -131,6 +133,8 @@ function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
     idpType: string; existingProvider: any; tenant: any; t: any;
 }) {
     const qc = useQueryClient();
+    const dialog = useDialog();
+    const toast = useToast();
     const [liveDomain, setLiveDomain] = useState<string>(existingProvider?.sso_domain || tenant?.sso_domain || '');
     const [ssoError, setSsoError] = useState<string>('');
     const [toggling, setToggling] = useState(false);
@@ -145,7 +149,7 @@ function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
 
     const handleSsoToggle = async () => {
         if (!existingProvider) {
-            alert(t('enterprise.identity.saveFirst', 'Please save the configuration first to enable SSO.'));
+            toast.warning(t('enterprise.identity.saveFirst', 'Please save the configuration first to enable SSO.'));
             return;
         }
         const newVal = !ssoEnabled;
@@ -743,7 +747,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                             <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>
                         )}
                         {existingProvider && (
-                            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={() => confirm('Are you sure you want to delete this configuration?') && deleteProvider.mutate(existingProvider.id)}>
+                            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={async () => { const ok = await dialog.confirm('确定要删除此配置吗？', { title: '删除配置', danger: true, confirmLabel: '删除' }); if (ok) deleteProvider.mutate(existingProvider.id); }}>
                                 {t('common.delete', 'Delete')}
                             </button>
                         )}
@@ -1659,6 +1663,7 @@ function CompanyTimezoneEditor() {
 // ── Broadcast Section ──────────────────────────
 function BroadcastSection() {
     const { t } = useTranslation();
+    const toast = useToast();
     const [title, setTitle] = useState('');
     const [body, setBody] = useState('');
     const [sendEmail, setSendEmail] = useState(false);
@@ -1678,7 +1683,7 @@ function BroadcastSection() {
             });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
-                alert(err.detail || 'Failed to send broadcast');
+                toast.error('广播发送失败', { details: String(err.detail || `HTTP ${res.status}`) });
                 setSending(false);
                 return;
             }
@@ -1692,7 +1697,7 @@ function BroadcastSection() {
             setBody('');
             setSendEmail(false);
         } catch (e: any) {
-            alert(e.message || 'Failed');
+            toast.error('广播发送失败', { details: String(e?.message || e) });
         }
         setSending(false);
     };
@@ -1753,6 +1758,8 @@ function BroadcastSection() {
 
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
+    const dialog = useDialog();
+    const toast = useToast();
     const qc = useQueryClient();
     const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users' | 'invites'>('info');
 
@@ -1789,7 +1796,7 @@ export default function EnterpriseSettings() {
         try {
             await fetchJson('/enterprise/tenant-quotas', { method: 'PATCH', body: JSON.stringify(quotaForm) });
             setQuotaSaved(true); setTimeout(() => setQuotaSaved(false), 2000);
-        } catch (e) { alert('Failed to save'); }
+        } catch (e: any) { toast.error('保存失败', { details: String(e?.message || e) }); }
         setQuotaSaving(false);
     };
     const [companyIntro, setCompanyIntro] = useState('');
@@ -1992,8 +1999,8 @@ export default function EnterpriseSettings() {
             if (res.status === 409) {
                 const data = await res.json();
                 const agents = data.detail?.agents || [];
-                const msg = `This model is used by ${agents.length} agent(s):\n\n${agents.join(', ')}\n\nDelete anyway? (their model config will be cleared)`;
-                if (confirm(msg)) {
+                const msg = `该模型正在被 ${agents.length} 个数字员工使用：\n\n${agents.join(', ')}\n\n仍要删除吗？（对应的模型配置会被清空）`;
+                if (await dialog.confirm(msg, { title: '删除模型', danger: true, confirmLabel: '强制删除' })) {
                     // Retry with force
                     const r2 = await fetch(`/api/enterprise/llm-models/${id}?force=true`, {
                         method: 'DELETE',
@@ -2167,11 +2174,11 @@ export default function EnterpriseSettings() {
                                                 if (btn) { btn.textContent = t('enterprise.llm.testSuccess', { latency: result.latency_ms }); btn.style.color = 'var(--success)'; }
                                                 setTimeout(() => { if (btn) { btn.textContent = origText; btn.style.color = ''; } }, 3000);
                                             } else {
-                                                alert(t('enterprise.llm.testFailed', { error: result.error || 'Unknown error', latency: result.latency_ms }));
+                                                await dialog.alert(t('enterprise.llm.testFailedShort', '连通性测试失败'), { type: 'error', title: t('enterprise.llm.testTitle', '连通性测试'), details: String(result.error || 'Unknown error') });
                                                 if (btn) btn.textContent = origText;
                                             }
                                         } catch (e: any) {
-                                            alert(t('enterprise.llm.testError', { message: e.message }));
+                                            await dialog.alert(t('enterprise.llm.testErrorShort', '连通性测试出错'), { type: 'error', title: t('enterprise.llm.testTitle', '连通性测试'), details: String(e?.message || e) });
                                             if (btn) btn.textContent = origText;
                                         }
                                     }}>{t('enterprise.llm.test')}</button>
@@ -2277,11 +2284,11 @@ export default function EnterpriseSettings() {
                                                             if (btn) { btn.textContent = t('enterprise.llm.testSuccess', { latency: result.latency_ms }); btn.style.color = 'var(--success)'; }
                                                             setTimeout(() => { if (btn) { btn.textContent = origText; btn.style.color = ''; } }, 3000);
                                                         } else {
-                                                            alert(t('enterprise.llm.testFailed', { error: result.error || 'Unknown error', latency: result.latency_ms }));
+                                                            await dialog.alert(t('enterprise.llm.testFailedShort', '连通性测试失败'), { type: 'error', title: t('enterprise.llm.testTitle', '连通性测试'), details: String(result.error || 'Unknown error') });
                                                             if (btn) btn.textContent = origText;
                                                         }
                                                     } catch (e: any) {
-                                                        alert(t('enterprise.llm.testError', { message: e.message }));
+                                                        await dialog.alert(t('enterprise.llm.testErrorShort', '连通性测试出错'), { type: 'error', title: t('enterprise.llm.testTitle', '连通性测试'), details: String(e?.message || e) });
                                                         if (btn) btn.textContent = origText;
                                                     }
                                                 }}>{t('enterprise.llm.test')}</button>
@@ -2528,7 +2535,7 @@ export default function EnterpriseSettings() {
                                         onChange={async (e) => {
                                             const wantEnable = e.target.checked;
                                             if (wantEnable) {
-                                                const confirmed = window.confirm(
+                                                const confirmed = await dialog.confirm(
                                                     t('enterprise.a2aAsync.enableWarning',
                                                         [
                                                             '⚠️ You are about to enable the A2A Async Communication feature (Beta).',
@@ -2545,9 +2552,10 @@ export default function EnterpriseSettings() {
                                                             '',
                                                             'Are you sure you want to enable this feature?'
                                                         ].join('\n')
-                                                    )
+                                                    ),
+                                                    { title: '启用 A2A 异步通信（Beta）', confirmLabel: '启用' },
                                                 );
-                                                if (!confirmed) return;
+                                                if (!confirmed) { e.target.checked = false; return; }
                                             }
                                             try {
                                                 await fetchJson(`/tenants/${selectedTenantId}`, {
@@ -2556,7 +2564,7 @@ export default function EnterpriseSettings() {
                                                 });
                                                 qc.invalidateQueries({ queryKey: ['tenant', selectedTenantId] });
                                             } catch (err: any) {
-                                                alert(err.message || 'Update failed');
+                                                toast.error('更新失败', { details: String(err?.message || err) });
                                             }
                                         }}
                                         style={{ opacity: 0, width: 0, height: 0 }}
@@ -2600,8 +2608,11 @@ export default function EnterpriseSettings() {
                             <button
                                 className="btn"
                                 onClick={async () => {
-                                    const name = document.querySelector<HTMLInputElement>('.company-name-input')?.value || selectedTenantId;
-                                    if (!confirm(t('enterprise.deleteCompanyConfirm', 'Are you sure you want to delete this company and ALL its data? This cannot be undone.'))) return;
+                                    const ok = await dialog.confirm(
+                                        t('enterprise.deleteCompanyConfirm', 'Are you sure you want to delete this company and ALL its data? This cannot be undone.'),
+                                        { title: '删除公司', danger: true, confirmLabel: '永久删除' },
+                                    );
+                                    if (!ok) return;
                                     try {
                                         const res = await fetchJson<any>(`/tenants/${selectedTenantId}`, { method: 'DELETE' });
                                         // Switch to fallback tenant
@@ -2611,7 +2622,7 @@ export default function EnterpriseSettings() {
                                         window.dispatchEvent(new StorageEvent('storage', { key: 'current_tenant_id', newValue: fallbackId }));
                                         qc.invalidateQueries({ queryKey: ['tenants'] });
                                     } catch (e: any) {
-                                        alert(e.message || 'Delete failed');
+                                        await dialog.alert('删除失败', { type: 'error', details: String(e?.message || e) });
                                     }
                                 }}
                                 style={{
@@ -2768,7 +2779,8 @@ export default function EnterpriseSettings() {
                                                     </div>
                                                 </div>
                                                 <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={async () => {
-                                                    if (!confirm(t('enterprise.tools.removeFromAgent', { name: row.tool_display_name }))) return;
+                                                    const ok = await dialog.confirm(t('enterprise.tools.removeFromAgent', { name: row.tool_display_name }), { title: '移除工具', danger: true, confirmLabel: '移除' });
+                                                    if (!ok) return;
                                                     try {
                                                         await fetchJson(`/tools/agent-tool/${row.agent_tool_id}`, { method: 'DELETE' });
                                                     } catch {
@@ -2898,7 +2910,7 @@ export default function EnterpriseSettings() {
                                                                         }
                                                                         await loadAllTools();
                                                                     } catch (e: any) {
-                                                                        alert(`${t('enterprise.tools.importFailed') || 'Import failed'}: ${e.message}`);
+                                                                        await dialog.alert(t('enterprise.tools.importFailed') || '导入失败', { type: 'error', details: String(e?.message || e) });
                                                                     }
                                                                 }}>{t('enterprise.tools.import') || 'Import'}</button>
                                                             </div>
@@ -2939,7 +2951,9 @@ export default function EnterpriseSettings() {
                                                                 await loadAllTools();
                                                                 setShowAddMCP(false); setMcpTestResult(null); setMcpForm({ server_url: '', server_name: '', api_key: '' }); setMcpRawInput('');
                                                                 if (errors.length > 0) {
-                                                                    alert(`Imported ${successCount}/${tools.length} tools.\nFailed:\n${errors.join('\n')}`);
+                                                                    await dialog.alert(`已导入 ${successCount}/${tools.length} 个工具`, { type: 'warning', title: '部分导入失败', details: errors.join('\n') });
+                                                                } else if (successCount > 0) {
+                                                                    toast.success(`已导入 ${successCount} 个工具`);
                                                                 }
                                                             }}>{t('enterprise.tools.importAll')}</button>
                                                         </div>
@@ -3046,7 +3060,8 @@ export default function EnterpriseSettings() {
                                                                                 </div>
                                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
                                                                                     <button className="btn btn-danger" style={{ padding: '3px 7px', fontSize: '10px' }} onClick={async () => {
-                                                                                        if (!confirm(`${t('common.delete')} ${tool.display_name}?`)) return;
+                                                                                        const ok = await dialog.confirm(`确定删除 ${tool.display_name}？`, { title: '删除工具', danger: true, confirmLabel: '删除' });
+                                                                                        if (!ok) return;
                                                                                         await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
                                                                                         await loadAllTools();
                                                                                     }}>{t('common.delete')}</button>
@@ -3085,7 +3100,8 @@ export default function EnterpriseSettings() {
                                                                                             <button style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }} onClick={() => { setEditingToolId(tool.id); setEditingConfig({ ...tool.config }); }}>Configure</button>
                                                                                         )}
                                                                                         <button className="btn btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
-                                                                                            if (!confirm(`${t('common.delete')} ${tool.display_name}?`)) return;
+                                                                                            const ok = await dialog.confirm(`确定删除 ${tool.display_name}？`, { title: '删除工具', danger: true, confirmLabel: '删除' });
+                                                                                            if (!ok) return;
                                                                                             await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
                                                                                             loadAllTools();
                                                                                         }}>{t('common.delete')}</button>
@@ -3148,7 +3164,7 @@ export default function EnterpriseSettings() {
                                                                             await fetchJson('/tools/bulk', { method: 'PUT', body: JSON.stringify(payload) });
                                                                             loadAllTools();
                                                                         } catch (err: any) {
-                                                                            alert('Bulk update failed: ' + err.message);
+                                                                            toast.error('批量更新失败', { details: String(err?.message || err) });
                                                                         }
                                                                     }}
                                                                     style={{ opacity: 0, width: 0, height: 0 }} />
@@ -3216,7 +3232,8 @@ export default function EnterpriseSettings() {
                                                                             {/* Delete (non-builtin only) */}
                                                                             {tool.type !== 'builtin' && (
                                                                                 <button className="btn btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
-                                                                                    if (!confirm(`${t('common.delete')} ${tool.display_name}?`)) return;
+                                                                                    const ok = await dialog.confirm(`确定删除 ${tool.display_name}？`, { title: '删除工具', danger: true, confirmLabel: '删除' });
+                                                                                    if (!ok) return;
                                                                                     await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
                                                                                     loadAllTools();
                                                                                     loadAgentInstalledTools();
@@ -3315,7 +3332,7 @@ export default function EnterpriseSettings() {
                                                     await loadAllTools();
                                                     setEditingMcpServer(null);
                                                 } catch (e: any) {
-                                                    alert('Failed to update server: ' + e.message);
+                                                    toast.error('更新服务器失败', { details: String(e?.message || e) });
                                                 }
                                                 setMcpServerSaving(false);
                                             }}>{mcpServerSaving ? 'Saving...' : 'Save Changes'}</button>

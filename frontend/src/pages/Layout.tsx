@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
 import { agentApi, tenantApi, authApi } from '../services/api';
+import { useToast } from '../components/Toast/ToastProvider';
 
 import {
     IconHome,
@@ -234,6 +235,7 @@ function VersionDisplay() {
 
 export default function Layout() {
     const { t, i18n } = useTranslation();
+    const toast = useToast();
     const navigate = useNavigate();
     const { user, logout, setAuth } = useAuthStore();
     const queryClient = useQueryClient();
@@ -310,7 +312,7 @@ export default function Layout() {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({ detail: 'Failed to switch tenant' }));
-            alert(err.detail || 'Failed to switch tenant');
+            toast.error('切换公司失败', { details: String(err.detail || `HTTP ${res.status}`) });
             return;
         }
         const data = await res.json();
