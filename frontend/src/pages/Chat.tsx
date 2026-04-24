@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
-import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
+import ModelSwitcher from '../components/ModelSwitcher';
+import { agentApi, enterpriseApi, tenantApi, uploadFileWithProgress } from '../services/api';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { formatFileSize } from '../utils/formatFileSize';
 import { useAuthStore } from '../stores';
@@ -261,7 +262,7 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
 }
 
 export default function Chat() {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const { id } = useParams<{ id: string }>();
     const token = useAuthStore((s) => s.token);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -287,12 +288,34 @@ export default function Chat() {
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
+    // Track history load + whether we've already fired the one-shot onboarding
+    // trigger so the agent greets the user at most once per mount.
+    const historyLoaded = useRef(false);
+    const onboardingKickoffSent = useRef(false);
 
     const { data: agent } = useQuery({
         queryKey: ['agent', id],
         queryFn: () => agentApi.get(id!),
         enabled: !!id,
     });
+
+    // Tenant default model — used only as a "默认" tag in the dropdown, not as
+    // the initial selection. Initial selection is agent.primary_model_id.
+    const { data: myTenant } = useQuery({
+        queryKey: ['tenant', 'me'],
+        queryFn: () => tenantApi.me(),
+        staleTime: 5 * 60 * 1000,
+    });
+
+    // Per-session model override. Lives in component state — remounting Chat
+    // (new agent / new session) resets it. Initialized from the agent's
+    // configured primary_model_id once the agent record loads.
+    const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
+    useEffect(() => {
+        if (agent?.primary_model_id && overrideModelId === null) {
+            setOverrideModelId(agent.primary_model_id);
+        }
+    }, [agent?.primary_model_id]);
 
     const { data: llmModels = [] } = useQuery({
         queryKey: ['llm-models'],
@@ -397,8 +420,29 @@ export default function Chat() {
                     setMessages(processed);
                 }
             })
-            .catch(() => { /* ignore */ });
+            .catch(() => { /* ignore */ })
+            .finally(() => { historyLoaded.current = true; });
     }, [id, token]);
+
+    // Per-(user, agent) onboarding kickoff: if this viewer has never been
+    // onboarded to this agent and the conversation is empty, fire a tagged
+    // trigger the backend treats as "agent greets first" — no visible user
+    // bubble, no DB write for the placeholder turn. One-shot per mount.
+    useEffect(() => {
+        if (onboardingKickoffSent.current) return;
+        if (!connected || !wsRef.current) return;
+        if (!agent || agent.onboarded_for_me !== false) return;
+        if (!historyLoaded.current) return;
+        if (messages.length > 0) return;
+        onboardingKickoffSent.current = true;
+        setIsWaiting(true);
+        setStreaming(true);
+        wsRef.current.send(JSON.stringify({
+            content: '',
+            kind: 'onboarding_trigger',
+            model_id: overrideModelId,
+        }));
+    }, [connected, agent, messages.length, overrideModelId]);
 
     useEffect(() => {
         if (!id || !token) return;
@@ -703,7 +747,7 @@ export default function Chat() {
             imageUrl: attachedFile?.imageUrl,
             timestamp: new Date().toISOString(),
         }]);
-        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '' }));
+        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '', model_id: overrideModelId }));
         setInput('');
         setAttachedFile(null);
     };
@@ -952,6 +996,14 @@ export default function Chat() {
                                 placeholder={t('chat.placeholder')}
                                 disabled={!connected}
                                 rows={1}
+                            />
+                        </div>
+                        <div style={{ padding: '0 8px', marginTop: '4px' }}>
+                            <ModelSwitcher
+                                value={overrideModelId}
+                                onChange={setOverrideModelId}
+                                tenantDefaultId={myTenant?.default_model_id}
+                                disabled={!connected}
                             />
                         </div>
                         <div className="chat-composer-toolbar">

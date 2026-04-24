@@ -1970,6 +1970,18 @@ export default function EnterpriseSettings() {
         mutationFn: ({ id, data }: { id: string; data: any }) => fetchJson(`/enterprise/llm-models/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
         onSuccess: () => { qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] }); setShowAddModel(false); setEditingModelId(null); },
     });
+    // Tenant default model — for rendering a "默认" badge in the model list.
+    const { data: tenantForDefault, refetch: refetchTenantForDefault } = useQuery({
+        queryKey: ['tenant-default-model', selectedTenantId],
+        queryFn: () => fetchJson<{ default_model_id: string | null }>(
+            selectedTenantId ? `/tenants/${selectedTenantId}` : '/tenants/me'
+        ),
+        enabled: activeTab === 'llm',
+    });
+    const setDefaultModel = useMutation({
+        mutationFn: (modelId: string) => fetchJson(`/enterprise/llm-models/${modelId}/set-default`, { method: 'POST' }),
+        onSuccess: () => { refetchTenantForDefault(); },
+    });
     const deleteModel = useMutation({
         mutationFn: async ({ id, force = false }: { id: string; force?: boolean }) => {
             const url = force ? `/enterprise/llm-models/${id}?force=true` : `/enterprise/llm-models/${id}`;
@@ -2324,6 +2336,13 @@ export default function EnterpriseSettings() {
                                                     }} />
                                                 </button>
                                                 {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>Vision</span>}
+                                                {tenantForDefault?.default_model_id === m.id ? (
+                                                    <span className="badge" style={{ background: 'rgba(34,197,94,0.15)', color: 'rgb(34,197,94)', fontSize: '10px' }}>{t('enterprise.llm.defaultBadge', '默认')}</span>
+                                                ) : m.enabled ? (
+                                                    <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setDefaultModel.mutate(m.id)} title={t('enterprise.llm.setAsDefaultTitle', 'Set as default for new agents')}>
+                                                        {t('enterprise.llm.setAsDefault', '设为默认')}
+                                                    </button>
+                                                ) : null}
                                                 <button className="btn btn-ghost" onClick={() => {
                                                     setEditingModelId(m.id);
                                                     setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', request_timeout: m.request_timeout ? String(m.request_timeout) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
