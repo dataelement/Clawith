@@ -575,7 +575,8 @@ async def _process_wecom_text(
             .order_by(ChatMessage.created_at.desc())
             .limit(ctx_size)
         )
-        history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
+        from app.services.llm.utils import convert_chat_messages_to_llm_format as _conv
+        history = _conv(reversed(history_r.scalars().all()))
 
         # Save user message
         db.add(ChatMessage(

@@ -389,9 +389,8 @@ async def _send_to_agent_background(
             )
             hist_msgs = list(reversed(hist_result.scalars().all()))
 
-            messages = []
-            for h in hist_msgs:
-                messages.append({"role": h.role, "content": h.content or ""})
+            from app.services.llm.utils import convert_chat_messages_to_llm_format as _conv
+            messages = _conv(hist_msgs)
 
             # Add the new message with agent communication context
             user_msg = f"{agent_comm_alert}\n\n[Message from agent: {source_agent_name}]\n{content}"

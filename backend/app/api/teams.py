@@ -477,7 +477,8 @@ async def teams_event_webhook(
             .order_by(ChatMessage.created_at.desc())
             .limit(ctx_size)
         )
-        history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
+        from app.services.llm.utils import convert_chat_messages_to_llm_format as _conv
+        history = _conv(reversed(history_r.scalars().all()))
 
         # Save user message
         db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))

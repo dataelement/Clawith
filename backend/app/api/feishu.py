@@ -564,7 +564,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 .limit(ctx_size)
             )
             history_msgs = history_result.scalars().all()
-            history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
+            from app.services.llm.utils import convert_chat_messages_to_llm_format
+            history = convert_chat_messages_to_llm_format(reversed(history_msgs))
 
             # --- Resolve Feishu sender identity & find/create platform user ---
             import uuid as _uuid
@@ -1121,7 +1122,8 @@ async def _handle_feishu_file(
             .order_by(ChatMessage.created_at.desc())
             .limit(ctx_size)
         )
-        _history = [{"role": m.role, "content": m.content} for m in reversed(_hist_r.scalars().all())]
+        from app.services.llm.utils import convert_chat_messages_to_llm_format as _convert_hist
+        _history = _convert_hist(reversed(_hist_r.scalars().all()))
 
         await db.commit()
 
@@ -1374,9 +1376,10 @@ async def _call_agent_llm(
     # Build conversation messages (without system prompt — call_llm adds it)
     messages: list[dict] = []
     from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+    from app.services.llm.utils import truncate_messages_with_pair_integrity as _truncate_pairs
     ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
     if history:
-        messages.extend(history[-ctx_size:])
+        messages.extend(_truncate_pairs(history, ctx_size))
     messages.append({"role": "user", "content": user_text})
 
     # Use actual user_id so the system prompt knows who it's chatting with

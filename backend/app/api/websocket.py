@@ -17,6 +17,7 @@ from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.llm import call_llm, call_llm_with_failover
+from app.services.llm.utils import convert_chat_messages_to_llm_format, truncate_messages_with_pair_integrity
 
 router = APIRouter(tags=["websocket"])
 
@@ -285,45 +286,7 @@ async def websocket_chat(
     await websocket.send_json({"type": "connected", "session_id": conv_id})
 
     # Build conversation context from history
-    conversation: list[dict] = []
-    for msg in history_messages:
-        if msg.role == "tool_call":
-            # Convert stored tool_call JSON into OpenAI-format assistant+tool pair
-            try:
-                import json as _j_hist
-                tc_data = _j_hist.loads(msg.content)
-                tc_name = tc_data.get("name", "unknown")
-                tc_args = tc_data.get("args", {})
-                tc_result = tc_data.get("result", "")
-                tc_id = f"call_{msg.id}"  # synthetic tool_call_id
-                # Assistant message with tool_calls array
-                asst_msg = {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": tc_id,
-                        "type": "function",
-                        "function": {"name": tc_name, "arguments": _j_hist.dumps(tc_args, ensure_ascii=False)},
-                    }],
-                }
-                if tc_data.get("reasoning_content"):
-                    asst_msg["reasoning_content"] = tc_data["reasoning_content"]
-                conversation.append(asst_msg)
-                # Tool result message.
-                from app.services.vision_inject import sanitize_history_tool_result
-                sanitized_result = sanitize_history_tool_result(str(tc_result))
-                conversation.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": sanitized_result[:500],
-                })
-            except Exception:
-                continue  # Skip malformed tool_call records
-        else:
-            entry = {"role": msg.role, "content": msg.content}
-            if hasattr(msg, 'thinking') and msg.thinking:
-                entry["thinking"] = msg.thinking
-            conversation.append(entry)
+    conversation = convert_chat_messages_to_llm_format(history_messages)
 
     try:
         # Send welcome message on new session (no history)
@@ -516,9 +479,7 @@ async def websocket_chat(
                             await websocket.send_json({"type": "info", "content": f"Primary model error, {reason}"})
 
                         # To prevent tool call message pairs(assistant + tool) from being broken down.
-                        _truncated = conversation[-ctx_size:]
-                        while _truncated and _truncated[0].get("role") == "tool":
-                            _truncated.pop(0)
+                        _truncated = truncate_messages_with_pair_integrity(conversation, ctx_size)
 
                         return await call_llm_with_failover(
                             primary_model=llm_model,
