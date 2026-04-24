@@ -192,6 +192,22 @@ async def process_dingtalk_message(
         )
         platform_user_id = platform_user.id
 
+        # Check for channel commands (/new, /reset)
+        from app.services.channel_commands import is_channel_command, handle_channel_command
+        if is_channel_command(user_text):
+            cmd_result = await handle_channel_command(
+                db=db, command=user_text, agent_id=agent_id,
+                user_id=platform_user_id, external_conv_id=conv_id,
+                source_channel="dingtalk",
+            )
+            await db.commit()
+            async with httpx.AsyncClient(timeout=10) as _cl_cmd:
+                await _cl_cmd.post(session_webhook, json={
+                    "msgtype": "text",
+                    "text": {"content": cmd_result["message"]},
+                })
+            return
+
         # Find or create session
         sess = await find_or_create_channel_session(
             db=db,
