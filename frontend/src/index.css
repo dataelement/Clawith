@@ -2126,6 +2126,11 @@ select:focus {
   gap: 6px;
 }
 
+.workspace-op-tree-tools-full {
+  width: 100%;
+  justify-content: flex-end;
+}
+
 .workspace-op-tree-scope {
   display: inline-flex;
   align-items: center;
@@ -2170,6 +2175,14 @@ select:focus {
   background: var(--bg-tertiary);
   border-color: var(--border-default);
   color: var(--text-primary);
+}
+
+.workspace-op-mini-btn-icon {
+  width: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .workspace-op-tree-dir,

@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import uuid
+import unicodedata
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -3517,6 +3518,54 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
         return f"❌ Auto-recovery failed: {str(e)[:200]}"
 
 
+def _normalize_tool_rel_path(rel_path: str) -> str:
+    normalized = unicodedata.normalize("NFC", (rel_path or "").strip()).replace("\\", "/")
+    normalized = re.sub(r"/+", "/", normalized).lstrip("./")
+    return normalized
+
+
+def _collapse_filename_for_match(name: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFC", name or "")).casefold()
+
+
+def _allowed_root_for_tool_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> tuple[Path, str]:
+    normalized = _normalize_tool_rel_path(rel_path)
+    if normalized.startswith("enterprise_info"):
+        enterprise_root = (
+            (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+            if tenant_id
+            else (WORKSPACE_ROOT / "enterprise_info").resolve()
+        )
+        sub = normalized[len("enterprise_info"):].lstrip("/")
+        return enterprise_root, sub
+    return ws.resolve(), normalized
+
+
+def _resolve_tool_source_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> Path:
+    root, normalized = _allowed_root_for_tool_path(ws, rel_path, tenant_id=tenant_id)
+    candidate = (root / normalized).resolve() if normalized else root
+    if not str(candidate).startswith(str(root)):
+        raise ValueError("Access denied for this path")
+    if candidate.exists():
+        return candidate
+
+    parent = candidate.parent
+    if parent.exists():
+        wanted = _collapse_filename_for_match(candidate.name)
+        for sibling in parent.iterdir():
+            if _collapse_filename_for_match(sibling.name) == wanted:
+                return sibling
+    return candidate
+
+
+def _resolve_tool_target_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> Path:
+    root, normalized = _allowed_root_for_tool_path(ws, rel_path, tenant_id=tenant_id)
+    candidate = (root / normalized).resolve() if normalized else root
+    if not str(candidate).startswith(str(root)):
+        raise ValueError("❌ Access denied.")
+    return candidate
+
+
 def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
@@ -3586,20 +3635,10 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
     Returns:
         File content with line numbers, or error message
     """
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
-    if rel_path and rel_path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
-        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(file_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
-    else:
-        file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+    try:
+        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
+    except ValueError as exc:
+        return str(exc)
 
     if not file_path.exists():
         return f"File not found: {rel_path}"
@@ -3639,20 +3678,10 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
 
 async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
     """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
-    if rel_path and rel_path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
-        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(file_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
-    else:
-        file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+    try:
+        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
+    except ValueError as exc:
+        return str(exc)
 
     if not file_path.exists():
         return f"File not found: {rel_path}"
@@ -3771,13 +3800,11 @@ async def _convert_csv_to_xlsx(agent_id: uuid.UUID, ws: Path, arguments: dict) -
     target_path = arguments.get("target_path")
     if not source_path or not target_path:
         return "❌ Missing 'source_path' or 'target_path'."
-        
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())): return "❌ Access denied to source_path."
-    if not str(tgt_file).startswith(str(ws.resolve())): return "❌ Access denied to target_path."
-    
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
     if not src_file.exists(): return f"❌ Source file not found: {source_path}"
     
     try:
@@ -3816,13 +3843,11 @@ async def _convert_html_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dict) -
     target_path = arguments.get("target_path")
     if not source_path or not target_path:
         return "❌ Missing 'source_path' or 'target_path'."
-        
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())): return "❌ Access denied."
-    if not str(tgt_file).startswith(str(ws.resolve())): return "❌ Access denied."
-    
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
     if not src_file.exists(): return f"❌ Source file not found: {source_path}"
     
     try:
@@ -3838,12 +3863,11 @@ async def _convert_html_to_pptx(agent_id: uuid.UUID, ws: Path, arguments: dict) 
     source_path = arguments.get("source_path")
     target_path = arguments.get("target_path")
     if not source_path or not target_path: return "❌ Missing paths."
-    
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())) or not str(tgt_file).startswith(str(ws.resolve())):
-        return "❌ Access denied."
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
     if not src_file.exists(): return "❌ Source file not found."
     
     try:
@@ -3888,12 +3912,11 @@ async def _convert_markdown_to_docx(agent_id: uuid.UUID, ws: Path, arguments: di
     source_path = arguments.get("source_path")
     target_path = arguments.get("target_path")
     if not source_path or not target_path: return "❌ Missing paths."
-    
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())) or not str(tgt_file).startswith(str(ws.resolve())):
-        return "❌ Access denied."
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
     if not src_file.exists(): return "❌ Source file not found."
 
     try:
@@ -3979,12 +4002,11 @@ async def _convert_markdown_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dic
     source_path = arguments.get("source_path")
     target_path = arguments.get("target_path")
     if not source_path or not target_path: return "❌ Missing paths."
-    
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())) or not str(tgt_file).startswith(str(ws.resolve())):
-        return "❌ Access denied."
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
     if not src_file.exists(): return "❌ Source file not found."
 
     try:
