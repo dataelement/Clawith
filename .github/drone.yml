@@ -73,7 +73,7 @@ steps:
           echo "警告: 未找到历史 tag，升级测试将被跳过"
           echo "SKIP_UPGRADE_TEST=true" > .env.drone
           # 仅构建当前版本
-          docker build -t clawith-backend:new -f backend/Dockerfile ./backend
+          docker build -t clawith-backend:new --build-arg CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -f backend/Dockerfile ./backend
           docker build -t clawith-frontend:new -f frontend/Dockerfile ./frontend
           docker save -o clawith-backend-new.tar clawith-backend:new
           docker save -o clawith-frontend-new.tar clawith-frontend:new
@@ -87,7 +87,7 @@ steps:
       # --- 构建旧版本镜像 ---
       - echo "--- 构建旧版本镜像 ($PREV_TAG) ---"
       - git checkout $PREV_TAG
-      - docker build -t clawith-backend:old -f backend/Dockerfile ./backend
+      - docker build -t clawith-backend:old --build-arg CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -f backend/Dockerfile ./backend
       - docker build -t clawith-frontend:old -f frontend/Dockerfile ./frontend
       - docker save -o clawith-backend-old.tar clawith-backend:old
       - docker save -o clawith-frontend-old.tar clawith-frontend:old
@@ -96,7 +96,7 @@ steps:
       # --- 构建当前版本镜像 ---
       - echo "--- 构建当前版本镜像 ($DRONE_COMMIT_SHORT) ---"
       - git checkout $DRONE_COMMIT
-      - docker build -t clawith-backend:new -f backend/Dockerfile ./backend
+      - docker build -t clawith-backend:new --build-arg CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -f backend/Dockerfile ./backend
       - docker build -t clawith-frontend:new -f frontend/Dockerfile ./frontend
       - docker save -o clawith-backend-new.tar clawith-backend:new
       - docker save -o clawith-frontend-new.tar clawith-frontend:new
