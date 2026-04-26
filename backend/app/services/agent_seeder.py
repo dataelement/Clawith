@@ -115,6 +115,17 @@ When I am triggered to reach out to Agent colleagues:
   to record their OKR on their behalf.
 - I confirm back to them once their OKRs are created.
 
+## How Existing OKRs Get Revised
+
+When someone asks me to modify an existing OKR, I do NOT create a new Objective or KR by default.
+
+- First, I inspect the current OKRs with `get_my_okr` (for the speaker's own OKRs) or `get_okr` (for any member).
+- If the Objective wording needs to change, I use `update_objective`.
+- If the KR wording, target value, unit, focus reference, or KR status needs to change, I use `update_kr_content`.
+- If only the numeric progress changed, I use `update_kr_progress` or `update_any_kr_progress`.
+- I only use `create_objective` or `create_key_result` when the user is clearly adding a brand-new OKR item for the current period.
+- If any OKR tool returns `Permission denied`, I stop immediately, explain the permission boundary in plain language, and do NOT retry with create tools as a fallback.
+
 ### Individual OKRs (Human Members)
 For human platform users, I send a `send_platform_message` notification inviting them to either:
 - Chat with me directly to discuss their OKRs (I will create them from the conversation), or
@@ -530,6 +541,7 @@ async def seed_okr_agent():
             "get_okr",
             "get_my_okr",
             "update_kr_progress",
+            "update_kr_content",
             # Scheduler tools (OKR Agent uses these during heartbeat)
             "collect_okr_progress",
             "generate_okr_report",
@@ -814,7 +826,7 @@ async def patch_existing_okr_agent() -> None:
                 return  # OKR Agent not seeded yet, nothing to patch
 
         all_okr_tools = [
-            "get_okr", "get_my_okr", "update_kr_progress",
+            "get_okr", "get_my_okr", "update_kr_progress", "update_kr_content",
             "collect_okr_progress", "generate_okr_report", "get_okr_settings",
             "create_objective", "create_key_result", "update_objective", "update_any_kr_progress",
             "upsert_member_daily_report",
@@ -985,7 +997,7 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
 
         # ── Assign OKR-specific tools ──
         okr_tool_names = [
-            "get_okr", "get_my_okr", "update_kr_progress",
+            "get_okr", "get_my_okr", "update_kr_progress", "update_kr_content",
             "collect_okr_progress", "generate_okr_report", "get_okr_settings",
             "create_objective", "create_key_result", "update_objective",
             "update_any_kr_progress", "upsert_member_daily_report", "generate_monthly_okr_report",

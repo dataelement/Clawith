@@ -228,6 +228,7 @@ class LLMClient(ABC):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -489,6 +490,7 @@ class OpenAICompatibleClient(LLMClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -551,6 +553,18 @@ class OpenAICompatibleClient(LLMClient):
                                     tc["function"]["arguments"] = json.dumps(arg_chunk, ensure_ascii=False)
                                 else:
                                     tc["function"]["arguments"] += str(arg_chunk)
+                            if on_tool_delta and (
+                                tc["function"].get("name")
+                                or tc["function"].get("arguments")
+                            ):
+                                await on_tool_delta(
+                                    {
+                                        "id": tc.get("id") or f"draft-{idx}",
+                                        "index": idx,
+                                        "name": tc["function"].get("name", ""),
+                                        "arguments": tc["function"].get("arguments", ""),
+                                    }
+                                )
 
                         if chunk.usage:
                             final_usage = chunk.usage
@@ -862,6 +876,7 @@ class OpenAIResponsesClient(LLMClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -1256,6 +1271,7 @@ class GeminiClient(LLMClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -1268,6 +1284,7 @@ class GeminiClient(LLMClient):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 on_chunk=on_chunk,
+                on_tool_delta=on_tool_delta,
                 on_thinking=on_thinking,
                 **kwargs,
             )
@@ -1568,6 +1585,7 @@ class AnthropicClient(LLMClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -1634,6 +1652,15 @@ class AnthropicClient(LLMClient):
                                 "type": "function",
                                 "function": {"name": block.get("name"), "arguments": ""}
                             })
+                            if on_tool_delta:
+                                await on_tool_delta(
+                                    {
+                                        "id": block.get("id") or f"draft-{idx}",
+                                        "index": idx,
+                                        "name": block.get("name", ""),
+                                        "arguments": "",
+                                    }
+                                )
 
                     elif current_event == "content_block_delta":
                         idx = data.get("index", 0)
@@ -1659,6 +1686,15 @@ class AnthropicClient(LLMClient):
                             if idx in tool_call_index_map:
                                 tc_idx = tool_call_index_map[idx]
                                 tool_calls_data[tc_idx]["function"]["arguments"] += delta.get("partial_json", "")
+                                if on_tool_delta:
+                                    await on_tool_delta(
+                                        {
+                                            "id": tool_calls_data[tc_idx].get("id") or f"draft-{idx}",
+                                            "index": idx,
+                                            "name": tool_calls_data[tc_idx]["function"].get("name", ""),
+                                            "arguments": tool_calls_data[tc_idx]["function"].get("arguments", ""),
+                                        }
+                                    )
 
                     elif current_event == "message_delta":
                         delta = data.get("delta", {})

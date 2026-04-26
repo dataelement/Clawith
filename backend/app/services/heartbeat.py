@@ -485,6 +485,34 @@ async def start_heartbeat():
         await asyncio.sleep(60)
 
 
+async def _notify_oneshot_error(
+    triggered_by_user_id: uuid.UUID | None,
+    agent_id: uuid.UUID,
+    agent_name: str,
+    error_msg: str,
+) -> None:
+    """Create a platform notification for the admin who triggered a failed oneshot task."""
+    if not triggered_by_user_id:
+        return
+    try:
+        from app.database import async_session
+        from app.models.notification import Notification
+        async with async_session() as db:
+            db.add(Notification(
+                user_id=triggered_by_user_id,
+                type="system",
+                title=f"{agent_name} task failed",
+                body=error_msg[:500],
+                link=f"/agents/{agent_id}#chat",
+                ref_id=agent_id,
+                sender_name=agent_name,
+            ))
+            await db.commit()
+        logger.info(f"[Oneshot] Notified user {triggered_by_user_id} about {agent_name} failure")
+    except Exception as e:
+        logger.warning(f"[Oneshot] Failed to create error notification: {e}")
+
+
 async def run_agent_oneshot(
     agent_id: uuid.UUID,
     prompt: str,
@@ -498,6 +526,7 @@ async def run_agent_oneshot(
     - Does NOT update last_heartbeat_at
     - Does NOT check active hours
     - Configurable max_rounds to handle multi-member outreach tasks
+    - Sends a platform notification to the triggering user on failure
 
     Returns the final reply string (for logging purposes).
     """
@@ -505,6 +534,7 @@ async def run_agent_oneshot(
         from app.database import async_session
         from app.models.agent import Agent
         from app.models.llm import LLMModel
+        from app.services.llm import get_model_api_key
 
         # ── Phase 1: Read agent + model config (short DB transaction) ──────────
         agent_name = ""
@@ -527,20 +557,24 @@ async def run_agent_oneshot(
 
             model_id = agent.primary_model_id or agent.fallback_model_id
             if not model_id:
+                msg = "Agent has no LLM model configured. Please assign a model in Agent Settings."
                 logger.warning(f"[Oneshot] Agent {agent_id} has no model configured — aborting")
+                await _notify_oneshot_error(triggered_by_user_id, agent_id, agent_name or str(agent_id), msg)
                 return ""
 
             model_result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
             model = model_result.scalar_one_or_none()
             if not model:
+                msg = f"The configured LLM model ({model_id}) was not found. Please check Agent Settings."
                 logger.warning(f"[Oneshot] Model {model_id} not found — aborting")
+                await _notify_oneshot_error(triggered_by_user_id, agent_id, agent_name or str(agent_id), msg)
                 return ""
 
             agent_name = agent.name
             agent_role = agent.role_description or ""
             agent_creator_id = agent.creator_id
             model_provider = model.provider
-            model_api_key = model.api_key_encrypted
+            model_api_key = get_model_api_key(model)
             model_model = model.model
             model_base_url = model.base_url
             model_temperature = model.temperature
@@ -577,7 +611,9 @@ async def run_agent_oneshot(
                 timeout=float(model_request_timeout or 120.0),
             )
         except Exception as e:
+            msg = f"Failed to initialise the LLM client: {e}"
             logger.error(f"[Oneshot] Failed to create LLM client for {agent_name}: {e}")
+            await _notify_oneshot_error(triggered_by_user_id, agent_id, agent_name, msg)
             return ""
 
         tools_for_llm = await get_agent_tools_for_llm(agent_id)
@@ -599,9 +635,17 @@ async def run_agent_oneshot(
                 )
             except LLMError as e:
                 logger.error(f"[Oneshot] LLM error (round {round_i}): {e}")
+                await _notify_oneshot_error(
+                    triggered_by_user_id, agent_id, agent_name,
+                    f"LLM call failed (round {round_i}): {e}",
+                )
                 break
             except Exception as e:
                 logger.error(f"[Oneshot] Unexpected LLM error (round {round_i}): {e}")
+                await _notify_oneshot_error(
+                    triggered_by_user_id, agent_id, agent_name,
+                    f"Unexpected error during LLM call (round {round_i}): {e}",
+                )
                 break
 
             # Track token usage
@@ -666,6 +710,24 @@ async def run_agent_oneshot(
                 )
             except Exception:
                 pass
+
+        # ── Phase 4: Clear any previous error notifications ──────────
+        if triggered_by_user_id:
+            try:
+                from sqlalchemy import delete
+                from app.models.notification import Notification
+                async with async_session() as db:
+                    await db.execute(
+                        delete(Notification).where(
+                            Notification.user_id == triggered_by_user_id,
+                            Notification.ref_id == agent_id,
+                            Notification.type == "system",
+                            Notification.title.contains("task failed")
+                        )
+                    )
+                    await db.commit()
+            except Exception as e:
+                logger.warning(f"[Oneshot] Failed to clear error notifications: {e}")
 
         logger.info(f"[Oneshot] {agent_name} completed ({round_i + 1} rounds, {accumulated_tokens} tokens)")
         return reply

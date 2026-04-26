@@ -1271,8 +1271,9 @@ BUILTIN_TOOLS = [
         "display_name": "My OKR",
         "description": (
             "Get your own OKR Objectives and Key Results for the current period. "
-            "Returns a structured view of your goals, current progress values, and kr_id references "
-            "you need to call update_kr_progress. Call this before reporting progress to confirm your KR IDs."
+            "Returns a structured view of your goals, current progress values, plus objective_id and kr_id references "
+            "you need to update existing OKRs correctly. Call this before changing progress, KR content, "
+            "or Objective text so you reuse the current records instead of creating duplicates."
         ),
         "category": "okr",
         "icon": "🎯",
@@ -1327,6 +1328,53 @@ BUILTIN_TOOLS = [
                 },
             },
             "required": ["kr_id", "value"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "update_kr_content",
+        "display_name": "Update KR Content",
+        "description": (
+            "Update the content fields of one of YOUR OWN Key Results, such as title, target value, unit, "
+            "focus reference, or status. Use get_my_okr first to obtain the kr_id. "
+            "This tool is for changing KR definition/content, not reporting progress. "
+            "If the user says to change, revise, adjust, or replace an existing KR target or wording, "
+            "prefer this tool instead of create_key_result."
+        ),
+        "category": "okr",
+        "icon": "✏️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "kr_id": {
+                    "type": "string",
+                    "description": "UUID of the Key Result to update (from get_my_okr).",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional new KR title.",
+                },
+                "target_value": {
+                    "type": "number",
+                    "description": "Optional new target value.",
+                },
+                "unit": {
+                    "type": "string",
+                    "description": "Optional new unit label.",
+                },
+                "focus_ref": {
+                    "type": "string",
+                    "description": "Optional new focus file reference.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["on_track", "at_risk", "behind", "completed"],
+                    "description": "Optional explicit status override.",
+                },
+            },
+            "required": ["kr_id"],
         },
         "config": {},
         "config_schema": {},
@@ -1414,6 +1462,8 @@ BUILTIN_TOOLS = [
         "description": (
             "Create an OKR Objective for the company, a specific user, or a specific agent. "
             "Call this after confirming the objective with the relevant person through conversation. "
+            "Use this only when a new Objective needs to be created for the period. "
+            "If the person already has a matching Objective and just wants to revise it, use update_objective instead. "
             "owner_type must be 'company', 'user', or 'agent'. "
             "owner_id is not required for company-level objectives. "
             "period_start and period_end must be ISO date strings (YYYY-MM-DD)."
@@ -1466,6 +1516,8 @@ BUILTIN_TOOLS = [
         "description": (
             "Create a Key Result (KR) under an existing Objective. "
             "Get the objective_id first using get_okr. "
+            "Use this only for a brand-new KR. If the user is revising the wording, target value, unit, "
+            "or focus reference of an existing KR, use update_kr_content instead. "
             "target_value is the goal number (e.g. 50000 for 50000 followers). "
             "unit is optional but recommended for clarity (e.g. '%', 'NPS', '万元', 'followers')."
         ),
@@ -1510,7 +1562,8 @@ BUILTIN_TOOLS = [
             "Modify an Objective's title, description, status, or period dates. "
             "Regular agents can only update their own Objectives — call get_my_okr first "
             "to get your objective_id. The OKR Agent can update any member's Objective. "
-            "Only provide the fields you want to change."
+            "Only provide the fields you want to change. If the request is to revise an existing OKR's "
+            "goal text rather than create a new one, prefer this tool over create_objective."
         ),
         "category": "okr",
         "icon": "✏️",
@@ -1620,7 +1673,7 @@ BUILTIN_TOOLS = [
         "description": (
             "Create or update the final normalized daily report for any member in the company. "
             "Use this after discussing progress with the member and distilling their update into "
-            "one concise final report. The stored content should stay within 200 characters."
+            "one concise final report. The stored content should stay within 2000 characters."
         ),
         "category": "okr",
         "icon": "📝",
@@ -1634,7 +1687,7 @@ BUILTIN_TOOLS = [
                 },
                 "content": {
                     "type": "string",
-                    "description": "Final concise daily report content. Keep it within 200 characters.",
+                    "description": "Final concise daily report content. Keep it within 2000 characters.",
                 },
                 "member_type": {
                     "type": "string",
@@ -2142,6 +2195,51 @@ BUILTIN_TOOLS = [
                 "source": {"type": "string", "description": "ClawHub skill slug (e.g. 'market-research') or GitHub URL"},
             },
             "required": ["source"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "update_kr_content",
+        "display_name": "Update KR Content",
+        "description": (
+            "Update the content fields of one of YOUR OWN Key Results. "
+            "Call get_my_okr first to obtain the kr_id, then change title, target_value, unit, "
+            "focus_ref, or status as needed. This does not record a progress update."
+        ),
+        "category": "okr",
+        "icon": "✏️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "kr_id": {
+                    "type": "string",
+                    "description": "UUID of the Key Result to update (from get_my_okr).",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional new KR title.",
+                },
+                "target_value": {
+                    "type": "number",
+                    "description": "Optional new target value.",
+                },
+                "unit": {
+                    "type": "string",
+                    "description": "Optional new unit label.",
+                },
+                "focus_ref": {
+                    "type": "string",
+                    "description": "Optional new focus reference.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["on_track", "at_risk", "behind", "completed"],
+                    "description": "Optional explicit status value.",
+                },
+            },
+            "required": ["kr_id"],
         },
         "config": {},
         "config_schema": {},

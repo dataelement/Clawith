@@ -115,6 +115,13 @@ interface MemberWithoutOKR {
     source_label?: string | null;
 }
 
+interface ChannelWarning {
+    channel_type: string;
+    channel_display: string;
+    affected_members: string[];
+    count: number;
+}
+
 interface MembersWithoutOKRData {
     period_start: string;
     period_end: string;
@@ -124,6 +131,12 @@ interface MembersWithoutOKRData {
     tracked_user_ids: string[];
     tracked_agent_ids: string[];
     total: number;
+    last_outreach_error?: {
+        message: string;
+        timestamp: string;
+        is_read: boolean;
+    } | null;
+    channel_warnings?: ChannelWarning[];
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -511,14 +524,12 @@ function AddKRForm({
 function ObjectiveCard({
     obj,
     isChinese,
-    ownerLabel,
     canEdit,
     onInvalidate,
     onDelete,
 }: {
     obj: Objective;
     isChinese: boolean;
-    ownerLabel?: string;
     canEdit: boolean;
     onInvalidate: () => void;
     onDelete?: (objId: string) => void;
@@ -568,37 +579,11 @@ function ObjectiveCard({
 
                 <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ paddingRight: '12px' }}>
-                        <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.5, wordBreak: 'break-word', whiteSpace: 'normal' }}>
-                            {ownerLabel && (
-                                <span style={{
-                                    verticalAlign: 'text-bottom',
-                                    marginRight: '8px',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    fontSize: '11px',
-                                    color: obj.owner_type === 'agent' ? '#6366f1' : '#0ea5e9',
-                                    background: obj.owner_type === 'agent' ? 'rgba(99, 102, 241, 0.1)' : 'rgba(14, 165, 233, 0.08)',
-                                    border: obj.owner_type === 'agent' ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid rgba(14, 165, 233, 0.25)',
-                                    borderRadius: '4px',
-                                    padding: '1px 6px',
-                                    lineHeight: 1,
-                                    fontWeight: 500,
-                                }}>
-                                    {obj.owner_type === 'agent' ? (
-                                        // Robot icon for AI agents
-                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
-                                    ) : (
-                                        // Person icon for human members
-                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-                                    )}
-                                    {ownerLabel}
-                                </span>
-                            )}
+                        <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.5, wordBreak: 'break-word', whiteSpace: 'normal' }}>
                             {obj.title}
                         </div>
                     {obj.description && (
-                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{obj.description}</div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px', lineHeight: 1.5 }}>{obj.description}</div>
                     )}
                     </div>
                 </div>
@@ -824,6 +809,7 @@ export default function OKR() {
     const user = useAuthStore(s => s.user);
     const isChinese = i18n.language?.startsWith('zh');
     const isAdmin = user && ['platform_admin', 'org_admin'].includes(user.role);
+    const okrRoleMode = isAdmin ? 'admin' : 'member';
     const queryClient = useQueryClient();
 
     const [selectedPeriod, setSelectedPeriod] = useState<Period | null>(null);
@@ -963,7 +949,7 @@ export default function OKR() {
     const periodOptions = periods;
 
     return (
-        <div style={{ padding: '24px', maxWidth: 960, margin: '0 auto' }}>
+        <div data-okr-role-mode={okrRoleMode} style={{ padding: '24px', maxWidth: 960, margin: '0 auto' }}>
             {/* Page Header */}
             <div style={{
                 display: 'grid',
@@ -1089,7 +1075,7 @@ export default function OKR() {
                     )}
 
                     {/* Create Objective button */}
-                    {selectedPeriod && !creating && (
+                    {isAdmin && selectedPeriod && !creating && (
                         <button
                             id="create-objective-btn"
                             onClick={() => setCreating(true)}
@@ -1143,8 +1129,12 @@ export default function OKR() {
                             color: 'var(--text-tertiary)', fontSize: '13px',
                         }}>
                             {isChinese
-                                ? '当前周期暂无 OKR。点击右上角「新建目标」或联系 OKR Agent 来设定目标。'
-                                : 'No OKRs for this period yet. Click "New Objective" or ask the OKR Agent.'}
+                                ? (isAdmin
+                                    ? '当前周期暂无 OKR。点击右上角「新建目标」或联系 OKR Agent 来设定目标。'
+                                    : '当前周期暂无 OKR。请联系 OKR Agent 来设定目标。')
+                                : (isAdmin
+                                    ? 'No OKRs for this period yet. Click "New Objective" or ask the OKR Agent.'
+                                    : 'No OKRs for this period yet. Please ask the OKR Agent to set them up.')}
                         </div>
                     )}
 
@@ -1186,22 +1176,78 @@ export default function OKR() {
                                 <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
                                 <span style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>{memberObjs.length}</span>
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                                 {Object.entries(memberGroups).map(([ownerKey, group]) => (
-                                    group.objs.map(obj => (
-                                        <ObjectiveCard
-                                            key={obj.id}
-                                            obj={obj}
-                                            isChinese={isChinese}
-                                            ownerLabel={group.label}
-                                            canEdit={true}
-                                            onInvalidate={invalidateObjectives}
-                                            onDelete={async (id) => {
-                                                await fetchJson(`/okr/objectives/${id}`, { method: 'DELETE' });
-                                                invalidateObjectives();
-                                            }}
-                                        />
-                                    ))
+                                    <div
+                                        key={ownerKey}
+                                        style={{
+                                            border: '1px solid var(--border-subtle)',
+                                            borderRadius: '14px',
+                                            background: 'var(--bg-primary)',
+                                            padding: '14px',
+                                        }}
+                                    >
+                                        <div style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'space-between',
+                                            gap: '12px',
+                                            marginBottom: '12px',
+                                        }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                                                <div style={{
+                                                    width: '28px',
+                                                    height: '28px',
+                                                    borderRadius: '999px',
+                                                    background: 'var(--bg-secondary)',
+                                                    border: '1px solid var(--border-subtle)',
+                                                    color: 'var(--text-secondary)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    fontSize: '13px',
+                                                    fontWeight: 700,
+                                                    flexShrink: 0,
+                                                }}>
+                                                    {group.label.slice(0, 1).toUpperCase()}
+                                                </div>
+                                                <div style={{
+                                                    fontSize: '14px',
+                                                    fontWeight: 700,
+                                                    color: 'var(--text-primary)',
+                                                    minWidth: 0,
+                                                }}>
+                                                    {group.label}
+                                                </div>
+                                                <span style={{
+                                                    fontSize: '11px',
+                                                    color: 'var(--text-tertiary)',
+                                                    border: '1px solid var(--border-subtle)',
+                                                    borderRadius: '999px',
+                                                    padding: '2px 8px',
+                                                    whiteSpace: 'nowrap',
+                                                }}>
+                                                    {group.objs.length} {isChinese ? '个目标' : 'objectives'}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                            {group.objs.map(obj => (
+                                                <ObjectiveCard
+                                                    key={obj.id}
+                                                    obj={obj}
+                                                    isChinese={isChinese}
+                                                    canEdit={!!isAdmin}
+                                                    onInvalidate={invalidateObjectives}
+                                                    onDelete={async (id) => {
+                                                        await fetchJson(`/okr/objectives/${id}`, { method: 'DELETE' });
+                                                        invalidateObjectives();
+                                                    }}
+                                                />
+                                            ))}
+                                        </div>
+                                    </div>
                                 ))}
                             </div>
                         </section>
@@ -1247,6 +1293,14 @@ function MembersWithoutOKRPanel({
         refetchOnWindowFocus: true,
     });
 
+    // When a background failure is detected via refetch, clear the stale
+    // success message so the error banner becomes visible automatically.
+    React.useEffect(() => {
+        if (data?.last_outreach_error && nudgeResult) {
+            setNudgeResult(null);
+        }
+    }, [data?.last_outreach_error, nudgeResult]);
+
     // Don't render when loading or no incomplete members
     if (isLoading || !data || !data.members_without_okr?.length) {
         return null;
@@ -1262,6 +1316,12 @@ function MembersWithoutOKRPanel({
             );
             setNudgeResult(result.message);
             queryClient.invalidateQueries({ queryKey: ['okr-members-without-okr'] });
+
+            // The background task may fail asynchronously (e.g. LLM API key invalid).
+            // Schedule delayed re-fetches so the error banner appears automatically
+            // without requiring a manual page refresh.
+            setTimeout(() => queryClient.invalidateQueries({ queryKey: ['okr-members-without-okr'] }), 5000);
+            setTimeout(() => queryClient.invalidateQueries({ queryKey: ['okr-members-without-okr'] }), 12000);
         } catch (e: any) {
             setNudgeResult(e.message ?? (isChinese ? '催促失败，请重试' : 'Failed to trigger outreach'));
         } finally {
@@ -1269,7 +1329,17 @@ function MembersWithoutOKRPanel({
         }
     }
 
-    const { members_without_okr: members, company_okr_exists, okr_agent_id } = data;
+    const { members_without_okr: members, company_okr_exists, okr_agent_id, last_outreach_error, channel_warnings } = data;
+
+    // Build a set of unreachable member names for ⚠️ icon display
+    const unreachableNames = new Set<string>();
+    if (channel_warnings?.length) {
+        for (const w of channel_warnings) {
+            for (const name of w.affected_members) {
+                unreachableNames.add(name);
+            }
+        }
+    }
 
     return (
         <section style={{ marginTop: '32px' }}>
@@ -1281,6 +1351,46 @@ function MembersWithoutOKRPanel({
                 <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
                 <span style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>{members.length}</span>
             </div>
+
+            {/* Channel misconfiguration warning */}
+            {channel_warnings && channel_warnings.length > 0 && (
+                <div style={{
+                    display: 'flex', alignItems: 'flex-start', gap: '8px',
+                    padding: '10px 14px',
+                    marginBottom: '12px',
+                    background: 'rgba(245, 158, 11, 0.06)',
+                    border: '1px solid rgba(245, 158, 11, 0.2)',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    color: '#92400e',
+                    lineHeight: 1.6,
+                }}>
+                    <span style={{ flexShrink: 0, fontSize: '14px' }}>⚠️</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                        {channel_warnings.map((w, i) => (
+                            <div key={i} style={{ marginBottom: i < channel_warnings.length - 1 ? '4px' : 0 }}>
+                                <span style={{ fontWeight: 600 }}>{w.affected_members.join('、')}</span>
+                                {' '}
+                                {isChinese
+                                    ? `为 ${w.channel_display} 用户，但该 Agent 未配置 ${w.channel_display} 机器人，催办消息无法送达。`
+                                    : `are on ${w.channel_display} but the Agent has no ${w.channel_display} bot configured. Nudge messages cannot be delivered.`}
+                            </div>
+                        ))}
+                        {okr_agent_id && (
+                            <a
+                                href={`/agents/${okr_agent_id}#settings`}
+                                style={{
+                                    fontSize: '11px', color: '#d97706',
+                                    textDecoration: 'none', fontWeight: 500,
+                                    display: 'inline-block', marginTop: '2px',
+                                }}
+                            >
+                                {isChinese ? '前往 Agent Settings 配置 →' : 'Configure in Agent Settings →'}
+                            </a>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Nudge button + description — below title, above member list */}
             <div style={{
@@ -1313,6 +1423,45 @@ function MembersWithoutOKRPanel({
                                     {isChinese ? '查看会话 →' : 'View chat →'}
                                 </a>
                             )}
+                        </div>
+                    )}
+                    {/* Show error banner if the last background outreach task failed */}
+                    {!nudgeResult && last_outreach_error && (
+                        <div style={{
+                            fontSize: '12px',
+                            color: '#b91c1c',
+                            background: 'rgba(239,68,68,0.08)',
+                            border: '1px solid rgba(239,68,68,0.2)',
+                            borderRadius: '6px',
+                            padding: '8px 10px',
+                            marginTop: '8px',
+                            lineHeight: 1.5,
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: '6px',
+                        }}>
+                            <span style={{ flexShrink: 0 }}>⚠️</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontWeight: 600, marginBottom: '2px' }}>
+                                    {isChinese ? 'OKR Agent 上次执行失败' : 'OKR Agent task failed'}
+                                </div>
+                                <div style={{ color: '#991b1b', wordBreak: 'break-word' }}>
+                                    {last_outreach_error.message}
+                                </div>
+                                {last_outreach_error.timestamp && (
+                                    <div style={{ fontSize: '11px', color: '#b45309', marginTop: '4px' }}>
+                                        {new Date(last_outreach_error.timestamp).toLocaleString()}
+                                    </div>
+                                )}
+                                {okr_agent_id && (
+                                    <a
+                                        href={`/agents/${okr_agent_id}#settings`}
+                                        style={{ fontSize: '11px', color: 'var(--accent-primary)', textDecoration: 'none', marginTop: '4px', display: 'inline-block' }}
+                                    >
+                                        {isChinese ? '检查 Agent 设置 →' : 'Check Agent Settings →'}
+                                    </a>
+                                )}
+                            </div>
                         </div>
                     )}
                 </div>
@@ -1386,6 +1535,10 @@ function MembersWithoutOKRPanel({
                                             : (isChinese ? '平台成员' : 'Platform member'))}
                                 </div>
                             </div>
+                            {unreachableNames.has(member.display_name) && (
+                                <span title={isChinese ? '渠道未配置，无法推送' : 'Channel not configured, cannot deliver'}
+                                    style={{ fontSize: '12px', cursor: 'help', flexShrink: 0 }}>⚠️</span>
+                            )}
                             <span style={{
                                 fontSize: '10px', color: 'var(--text-tertiary)',
                                 border: '1px dashed var(--border-subtle)',
@@ -1746,7 +1899,7 @@ function ReportsTab({ isChinese }: { isChinese: boolean }) {
                             )}
                         </div>
 
-                        <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 }}>
                             {selectedMemberReport ? (
                                 <div
                                     key={`content-${selectedMemberReport.id}`}
@@ -1755,6 +1908,7 @@ function ReportsTab({ isChinese }: { isChinese: boolean }) {
                                         border: '1px solid var(--border-subtle)',
                                         borderRadius: '10px',
                                         background: 'var(--bg-secondary)',
+                                        minWidth: 0,
                                     }}
                                 >
                                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '8px', flexWrap: 'wrap' }}>
@@ -1768,7 +1922,13 @@ function ReportsTab({ isChinese }: { isChinese: boolean }) {
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
                                         {selectedMemberReport.group_label}
                                     </div>
-                                    <div style={{ fontSize: '13px', lineHeight: '1.7', color: selectedMemberReport.content ? 'var(--text-secondary)' : 'var(--text-tertiary)' }}>
+                                    <div style={{
+                                        fontSize: '13px',
+                                        lineHeight: '1.7',
+                                        color: selectedMemberReport.content ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+                                        whiteSpace: 'pre-wrap',
+                                        wordBreak: 'break-word',
+                                    }}>
                                         {selectedMemberReport.content || (isChinese ? '当天暂无日报提交。' : 'No daily report submitted for this day.')}
                                     </div>
                                 </div>

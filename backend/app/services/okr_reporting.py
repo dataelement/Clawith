@@ -6,28 +6,34 @@ This module implements the simplified reporting chain:
   -> company monthly report
 
 The implementation intentionally keeps summarization lightweight:
-  - member reports are capped at 200 chars at write time
+  - member reports are capped at 2000 chars at write time
   - company reports use deterministic section-building
   - bucketed aggregation is used when source volume is large
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import and_, or_, select
+from loguru import logger
 
 from app.database import async_session
 from app.models.agent import Agent
+from app.models.llm import LLMModel
 from app.models.okr import CompanyReport, MemberDailyReport, OKRSettings
 from app.models.org import AgentAgentRelationship, AgentRelationship, OrgMember
 from app.models.user import User
+from app.services.llm.client import chat_complete
+from app.services.llm.utils import get_model_api_key, get_max_tokens
 
 
-MEMBER_DAILY_CHAR_LIMIT = 200
+MEMBER_DAILY_CHAR_LIMIT = 2000
 BUCKET_SIZE = 20
+LLM_PROMPT_CHAR_LIMIT = 1200
 
 RISK_KEYWORDS = (
     "risk", "block", "blocked", "issue", "delay", "delayed",
@@ -47,12 +53,34 @@ class CompanyMember:
     group_label: str
 
 
+@dataclass
+class ResolvedReportModels:
+    """Resolved OKR Agent models used for company report generation."""
+
+    primary: LLMModel | None
+    fallback: LLMModel | None
+    okr_agent_id: uuid.UUID | None
+
+
 def _truncate_report_content(content: str) -> str:
     """Normalize member report content and enforce the character cap."""
-    compact = " ".join((content or "").strip().split())
-    if len(compact) <= MEMBER_DAILY_CHAR_LIMIT:
-        return compact
-    return compact[: MEMBER_DAILY_CHAR_LIMIT - 1].rstrip() + "…"
+    normalized_lines = [
+        " ".join(line.split())
+        for line in (content or "").replace("\r\n", "\n").split("\n")
+        if line.strip()
+    ]
+    normalized = "\n".join(normalized_lines)
+    if len(normalized) <= MEMBER_DAILY_CHAR_LIMIT:
+        return normalized
+    return normalized[: MEMBER_DAILY_CHAR_LIMIT - 1].rstrip() + "…"
+
+
+def _truncate_for_prompt(content: str, limit: int = LLM_PROMPT_CHAR_LIMIT) -> str:
+    """Trim source text before sending it to the report summarizer."""
+    normalized = _truncate_report_content(content)
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
 
 
 def _contains_risk(text: str) -> bool:
@@ -82,6 +110,46 @@ def _month_end(day: date) -> date:
     if day.month == 12:
         return day.replace(month=12, day=31)
     return day.replace(month=day.month + 1, day=1) - timedelta(days=1)
+
+
+async def _resolve_report_models(tenant_id: uuid.UUID) -> ResolvedReportModels:
+    """Load the OKR Agent's primary/fallback models for report generation."""
+    async with async_session() as db:
+        settings_result = await db.execute(
+            select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
+        )
+        settings = settings_result.scalar_one_or_none()
+        if not settings or not settings.okr_agent_id:
+            return ResolvedReportModels(primary=None, fallback=None, okr_agent_id=None)
+
+        agent_result = await db.execute(select(Agent).where(Agent.id == settings.okr_agent_id))
+        agent = agent_result.scalar_one_or_none()
+        if not agent:
+            return ResolvedReportModels(primary=None, fallback=None, okr_agent_id=settings.okr_agent_id)
+
+        primary: LLMModel | None = None
+        fallback: LLMModel | None = None
+
+        if agent.primary_model_id:
+            primary_result = await db.execute(
+                select(LLMModel).where(LLMModel.id == agent.primary_model_id)
+            )
+            primary = primary_result.scalar_one_or_none()
+
+        if agent.fallback_model_id:
+            fallback_result = await db.execute(
+                select(LLMModel).where(LLMModel.id == agent.fallback_model_id)
+            )
+            fallback = fallback_result.scalar_one_or_none()
+
+        if not primary and fallback:
+            primary, fallback = fallback, None
+
+        return ResolvedReportModels(
+            primary=primary,
+            fallback=fallback,
+            okr_agent_id=settings.okr_agent_id,
+        )
 
 
 async def list_company_members(tenant_id: uuid.UUID) -> list[CompanyMember]:
@@ -347,6 +415,143 @@ def _build_company_daily_content(
     return "\n".join(lines)
 
 
+def _default_report_headings(report_type: str) -> tuple[str, str]:
+    """Return canonical report title metadata."""
+    if report_type == "daily":
+        return "Company Daily Report", "Date"
+    if report_type == "weekly":
+        return "Company Weekly Report", "Period"
+    return "Company Monthly Report", "Period"
+
+
+def _sanitize_llm_report_output(
+    report_type: str,
+    period_start: date,
+    period_end: date,
+    content: str,
+) -> str:
+    """Normalize LLM output into markdown while preserving the requested structure."""
+    text = (content or "").strip()
+    if not text:
+        return ""
+    if text.startswith("```"):
+        parts = text.split("```")
+        text = next((part for part in parts if part.strip() and part.strip().lower() != "markdown"), "").strip()
+        if text.lower().startswith("markdown"):
+            text = text[len("markdown"):].strip()
+
+    title, period_key = _default_report_headings(report_type)
+    period_line = (
+        f"{period_key}: {period_start.isoformat()}"
+        if report_type == "daily"
+        else f"{period_key}: {period_start.isoformat()} to {period_end.isoformat()}"
+    )
+
+    if not text.startswith("# "):
+        text = f"# {title}\n{period_line}\n\n{text}"
+    else:
+        lines = text.splitlines()
+        if lines[0].strip() != f"# {title}":
+            lines[0] = f"# {title}"
+        text = "\n".join(lines)
+        if period_line not in text:
+            body = "\n".join(text.splitlines()[1:]).lstrip("\n")
+            text = f"# {title}\n{period_line}\n\n{body}".strip()
+
+    return text
+
+
+async def _generate_llm_report_content(
+    tenant_id: uuid.UUID,
+    report_type: str,
+    period_start: date,
+    period_end: date,
+    payload: dict,
+    *,
+    fallback_content: str,
+) -> str:
+    """Generate a structured company report with the OKR Agent model."""
+    models = await _resolve_report_models(tenant_id)
+    if not models.primary:
+        return fallback_content
+
+    title, period_key = _default_report_headings(report_type)
+    period_value = (
+        period_start.isoformat()
+        if report_type == "daily"
+        else f"{period_start.isoformat()} to {period_end.isoformat()}"
+    )
+    system_prompt = (
+        "You are the OKR reporting copilot for an enterprise workspace. "
+        "Write a concise management-style markdown report in Simplified Chinese. "
+        "Use only the provided facts. Do not invent progress, risks, or actions. "
+        "Do not expose raw extraction mechanics such as bucket labels. "
+        "Merge similar updates into coherent summaries."
+    )
+    user_prompt = (
+        f"Generate a {report_type} company OKR report.\n"
+        "Return markdown only.\n"
+        "Use this exact structure:\n"
+        f"# {title}\n"
+        f"{period_key}: {period_value}\n\n"
+        "## Executive Summary\n"
+        "- 2 to 4 bullets.\n\n"
+        "## Key Progress\n"
+        "- Group related updates into clear bullets.\n\n"
+        "## Risks and Blockers\n"
+        "- Summarize meaningful risks. If none, say so briefly.\n\n"
+        "## Follow-up Actions\n"
+        "- Concrete next steps or reminders.\n\n"
+        "## Submission Status\n"
+        "- Describe submission coverage and who is still missing if relevant.\n\n"
+        "Rules:\n"
+        "- Keep narrative text in Simplified Chinese.\n"
+        "- Preserve member names exactly as given.\n"
+        "- Avoid repeating the same fact across sections.\n"
+        "- Do not copy raw entries line by line if they can be merged.\n"
+        "- If the source data is sparse, state that clearly and keep the structure complete.\n\n"
+        "Source data (JSON):\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+    async def _try_model(model: LLMModel) -> str:
+        response = await chat_complete(
+            provider=model.provider,
+            api_key=get_model_api_key(model),
+            model=model.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            base_url=model.base_url,
+            temperature=model.temperature,
+            max_tokens=min(get_max_tokens(model.provider, model.model, getattr(model, "max_output_tokens", None)), 1800),
+            timeout=float(getattr(model, "request_timeout", None) or 120.0),
+        )
+        return (
+            response.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+
+    for candidate in (models.primary, models.fallback):
+        if not candidate:
+            continue
+        try:
+            generated = await _try_model(candidate)
+            normalized = _sanitize_llm_report_output(report_type, period_start, period_end, generated)
+            if normalized:
+                return normalized
+        except Exception as exc:
+            logger.warning(
+                f"[OKR] LLM company report generation failed tenant={tenant_id} "
+                f"report_type={report_type} model={getattr(candidate, 'model', '?')}: {exc}"
+            )
+
+    return fallback_content
+
+
 def _extract_section_lines(content: str, section: str) -> list[str]:
     """Extract bullet lines from a markdown section title."""
     lines = content.splitlines()
@@ -527,6 +732,30 @@ async def generate_company_daily_report(tenant_id: uuid.UUID, period_day: date) 
         missing_items,
         submitted_items,
     )
+    llm_payload = {
+        "report_type": "daily",
+        "period_start": period_day.isoformat(),
+        "period_end": period_day.isoformat(),
+        "submitted_count": len(submitted_items),
+        "missing_count": len(missing_items),
+        "submitted_members": [item["display_name"] for item in submitted_items],
+        "missing_members": [item["display_name"] for item in missing_items],
+        "submitted_reports": [
+            {
+                "member_name": item["display_name"],
+                "content": _truncate_for_prompt(item["content"]),
+            }
+            for item in submitted_items
+        ],
+    }
+    content = await _generate_llm_report_content(
+        tenant_id,
+        "daily",
+        period_day,
+        period_day,
+        llm_payload,
+        fallback_content=content,
+    )
     return await _upsert_company_report(
         tenant_id,
         "daily",
@@ -562,6 +791,33 @@ async def generate_company_weekly_report(tenant_id: uuid.UUID, week_start: date)
         source_reports,
         missing_count=missing_count,
         submitted_count=submitted_count,
+    )
+    llm_payload = {
+        "report_type": "weekly",
+        "period_start": week_start.isoformat(),
+        "period_end": week_end.isoformat(),
+        "source_report_count": len(source_reports),
+        "submitted_count": submitted_count,
+        "missing_count": missing_count,
+        "source_reports": [
+            {
+                "period_label": report.period_label,
+                "period_start": report.period_start.isoformat(),
+                "period_end": report.period_end.isoformat(),
+                "submitted_count": report.submitted_count,
+                "missing_count": report.missing_count,
+                "content": _truncate_for_prompt(report.content, limit=1800),
+            }
+            for report in source_reports
+        ],
+    }
+    content = await _generate_llm_report_content(
+        tenant_id,
+        "weekly",
+        week_start,
+        week_end,
+        llm_payload,
+        fallback_content=content,
     )
     return await _upsert_company_report(
         tenant_id,
@@ -599,6 +855,33 @@ async def generate_company_monthly_report(tenant_id: uuid.UUID, month_anchor: da
         source_reports,
         missing_count=missing_count,
         submitted_count=submitted_count,
+    )
+    llm_payload = {
+        "report_type": "monthly",
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "source_report_count": len(source_reports),
+        "submitted_count": submitted_count,
+        "missing_count": missing_count,
+        "source_reports": [
+            {
+                "period_label": report.period_label,
+                "period_start": report.period_start.isoformat(),
+                "period_end": report.period_end.isoformat(),
+                "submitted_count": report.submitted_count,
+                "missing_count": report.missing_count,
+                "content": _truncate_for_prompt(report.content, limit=1800),
+            }
+            for report in source_reports
+        ],
+    }
+    content = await _generate_llm_report_content(
+        tenant_id,
+        "monthly",
+        period_start,
+        period_end,
+        llm_payload,
+        fallback_content=content,
     )
     return await _upsert_company_report(
         tenant_id,

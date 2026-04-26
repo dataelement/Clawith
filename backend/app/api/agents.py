@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import build_visible_agents_query, check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission
@@ -181,66 +181,20 @@ async def list_agents(
     db: AsyncSession = Depends(get_db),
 ):
     """List all agents the current user has access to."""
-    # Platform admins can inspect every tenant. Org admins are scoped to their
-    # own company unless an explicit same-tenant filter is supplied.
-    if current_user.role == "platform_admin":
-        stmt = select(Agent)
-        if tenant_id:
-            stmt = stmt.where(Agent.tenant_id == tenant_id)
-        result = await db.execute(stmt.order_by(Agent.created_at.desc()))
-        agents = result.scalars().all()
-        # Lazy reset token counters
-        needs_flush = False
-        for a in agents:
-            if await _lazy_reset_token_counters(a, db):
-                needs_flush = True
-        if needs_flush:
-            await db.commit()
-        unread_by_agent = await _build_unread_count_by_agent(db, agents, current_user)
-        return [_serialize_agent_out(a, unread_by_agent.get(str(a.id), 0)) for a in agents]
-
-    if current_user.role == "org_admin":
-        effective_tenant_id = tenant_id or current_user.tenant_id
-        if effective_tenant_id != current_user.tenant_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Can only list agents in your own company")
-        result = await db.execute(
-            select(Agent).where(Agent.tenant_id == effective_tenant_id).order_by(Agent.created_at.desc())
+    if tenant_id and tenant_id != current_user.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Can only list agents in your own company",
         )
-        agents = result.scalars().all()
-        needs_flush = False
-        for a in agents:
-            if await _lazy_reset_token_counters(a, db):
-                needs_flush = True
-        if needs_flush:
-            await db.commit()
-        unread_by_agent = await _build_unread_count_by_agent(db, agents, current_user)
-        return [_serialize_agent_out(a, unread_by_agent.get(str(a.id), 0)) for a in agents]
 
-    # agent_admin sees their own created agents + permitted
-    # member sees only permitted
-    # All scoped to user's tenant
-    user_tenant = current_user.tenant_id
+    requested_tenant_id = current_user.tenant_id
 
-    # Get agents user created (within their tenant)
-    created = select(Agent).where(Agent.creator_id == current_user.id, Agent.tenant_id == user_tenant)
+    stmt = build_visible_agents_query(
+        current_user,
+        tenant_id=requested_tenant_id,
+    ).order_by(Agent.created_at.desc())
 
-    # Get agents user has permission to (within their tenant)
-    permitted_ids = (
-        select(AgentPermission.agent_id)
-        .where(
-            (AgentPermission.scope_type == "company")
-            | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
-        )
-    )
-    permitted = select(Agent).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
-
-    # Union
-    from sqlalchemy import union_all
-
-    combined = union_all(created, permitted).subquery()
-    result = await db.execute(
-        select(Agent).where(Agent.id.in_(select(combined.c.id))).order_by(Agent.created_at.desc())
-    )
+    result = await db.execute(stmt)
     agents = result.scalars().all()
     # Lazy reset token counters
     needs_flush = False

@@ -45,6 +45,17 @@ router = APIRouter(prefix="/api/okr", tags=["okr"])
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 
+def _is_okr_admin(user) -> bool:
+    return getattr(user, "role", None) in ("org_admin", "platform_admin")
+
+
+def _dashboard_write_forbidden() -> HTTPException:
+    return HTTPException(
+        403,
+        "Only org admins can modify OKRs in the dashboard. Members should use OKR Agent to manage their own OKRs.",
+    )
+
+
 async def _sync_okr_agent_relationships(db, tenant_id: uuid.UUID, okr_agent_id: uuid.UUID) -> None:
     """Auto-connect the OKR Agent to all active org members and company-visible agents.
 
@@ -808,6 +819,9 @@ async def create_objective(body: ObjectiveCreate, user=Depends(get_current_user)
     """Create a new Objective."""
     from app.models.org import OrgMember
 
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         resolved_owner_id: uuid.UUID | None = None
 
@@ -876,6 +890,9 @@ async def update_objective(
     user=Depends(get_current_user),
 ):
     """Update an Objective's title, description or status."""
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRObjective).where(
@@ -905,6 +922,9 @@ async def delete_objective(
     user=Depends(get_current_user),
 ):
     """Soft delete an Objective (set status to archived)."""
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRObjective).where(
@@ -961,6 +981,9 @@ async def create_key_result(
     user=Depends(get_current_user),
 ):
     """Create a new Key Result under the specified Objective."""
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         # Verify objective belongs to this tenant
         obj_result = await db.execute(
@@ -996,6 +1019,9 @@ async def update_key_result(
     When current_value changes, an OKRProgressLog entry is created
     automatically to maintain the complete progress history.
     """
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRKeyResult, OKRObjective)
@@ -1051,6 +1077,9 @@ async def update_kr_progress_endpoint(
     Used by the update_kr_progress agent tool and the OKR Agent.
     Records an OKRProgressLog entry with the provided note.
     """
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRKeyResult, OKRObjective)
@@ -1103,6 +1132,10 @@ async def delete_key_result(
 ):
     """Hard delete a key result."""
     from app.models.okr import OKRProgressLog
+
+    if not _is_okr_admin(user):
+        raise _dashboard_write_forbidden()
+
     async with async_session() as db:
         result = await db.execute(
             select(OKRKeyResult, OKRObjective)
@@ -1515,6 +1548,85 @@ async def members_without_okr(user=Depends(get_current_user)):
                         "channel": None, "channel_user_id": None,
                     })
 
+    # ── Check for recent oneshot failure notifications ──────────────────────
+    last_outreach_error = None
+    if okr_agent_id_val:
+        from app.models.notification import Notification
+        async with async_session() as db2:
+            notif_result = await db2.execute(
+                select(Notification)
+                .where(
+                    Notification.user_id == user.id,
+                    Notification.ref_id == okr_agent_id_val,
+                    Notification.type == "system",
+                    Notification.title.contains("task failed"),
+                )
+                .order_by(Notification.created_at.desc())
+                .limit(1)
+            )
+            notif = notif_result.scalar_one_or_none()
+            if notif:
+                last_outreach_error = {
+                    "message": notif.body,
+                    "timestamp": notif.created_at.isoformat() if notif.created_at else "",
+                    "is_read": notif.is_read,
+                }
+
+    # ── Check for channel members whose channel is not configured on the OKR Agent ──
+    channel_warnings: list[dict] = []
+    if okr_agent_id_val and members_without_okr:
+        # Collect unique channel types referenced by members without OKR
+        from app.models.channel_config import ChannelConfig as _CC
+        member_channels: dict[str, list[str]] = {}  # channel_name -> [member_names]
+        for m in members_without_okr:
+            ch = m.get("channel") or m.get("source_label")
+            if ch and ch not in ("Platform User", "Web"):
+                member_channels.setdefault(ch, []).append(m.get("display_name", "?"))
+
+        if member_channels:
+            # Map display channel names to channel_type enum values
+            _channel_name_to_type = {
+                "feishu": "feishu", "Feishu": "feishu",
+                "dingtalk": "dingtalk", "DingTalk": "dingtalk",
+                "wecom": "wecom", "WeCom": "wecom",
+                "slack": "slack", "Slack": "slack",
+                "discord": "discord", "Discord": "discord",
+                "wechat": "wechat", "WeChat": "wechat",
+            }
+            needed_types = set()
+            for ch_name in member_channels:
+                ct = _channel_name_to_type.get(ch_name)
+                if ct:
+                    needed_types.add(ct)
+
+            if needed_types:
+                async with async_session() as db3:
+                    configured_result = await db3.execute(
+                        select(_CC.channel_type).where(
+                            _CC.agent_id == okr_agent_id_val,
+                            _CC.channel_type.in_(list(needed_types)),
+                            _CC.is_configured == True,  # noqa: E712
+                        )
+                    )
+                    configured_types = {row[0] for row in configured_result.fetchall()}
+
+                missing_types = needed_types - configured_types
+                # Build warnings for each missing channel
+                _type_to_display = {v: k for k, v in _channel_name_to_type.items() if k[0].isupper()}
+                for mt in missing_types:
+                    display_name = _type_to_display.get(mt, mt)
+                    # Find member names on this channel
+                    affected = []
+                    for ch_name, names in member_channels.items():
+                        if _channel_name_to_type.get(ch_name) == mt:
+                            affected.extend(names)
+                    channel_warnings.append({
+                        "channel_type": mt,
+                        "channel_display": display_name,
+                        "affected_members": affected,
+                        "count": len(affected),
+                    })
+
     return {
         "period_start": ps.isoformat(),
         "period_end": pe.isoformat(),
@@ -1524,6 +1636,8 @@ async def members_without_okr(user=Depends(get_current_user)):
         "tracked_user_ids": tracked_user_ids,
         "tracked_agent_ids": tracked_agent_ids,
         "total": len(members_without_okr),
+        "last_outreach_error": last_outreach_error,
+        "channel_warnings": channel_warnings,
     }
 
 
@@ -1695,13 +1809,12 @@ async def trigger_member_outreach(user=Depends(get_current_user)):
 
         # Determine channel hint
         has_channel = bool(org_member.open_id or org_member.external_id)
-        if platform_uid:
-            channel_hint = (
-                'send_platform_message(username="<their_username>", message=...)\n'
-                "  OR send_channel_message if they have a linked channel"
-            )
-        elif has_channel:
+        if has_channel:
             channel_hint = f'send_channel_message(member_name="{org_member.name}", message=...)'
+            if platform_uid:
+                channel_hint += "  (They also have a Platform account, but prefer channel message here)"
+        elif platform_uid:
+            channel_hint = 'send_platform_message(username="<their_username>", message=...)'
         else:
             channel_hint = "No channel available — note this in your summary"
 

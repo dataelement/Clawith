@@ -651,7 +651,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                     part += (
                         "\n执行要求：先调用 get_okr_settings 确认日报收集是否开启。"
                         "如果开启，只能联系你关系网络中的成员和数字员工来收集今天的最终日报，"
-                        "并整理成不超过 200 字的正式日报；"
+                        "并整理成不超过 2000 字的正式日报；"
                         "如果未开启，则说明本次无需执行并停止。"
                     )
                 elif t.name in ("daily_okr_report", "weekly_okr_report", "monthly_okr_report"):
@@ -680,7 +680,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 if t.type == "on_message" and cfg.get("okr_member_id") and cfg.get("okr_report_date"):
                     part += (
                         "\n执行要求：这是一次日报回复入库事件。"
-                        f"\n1. 将对方回复整理成一段不超过 200 字的最终日报。"
+                        f"\n1. 将对方回复整理成一段不超过 2000 字的最终日报。"
                         f"\n2. 立即调用 upsert_member_daily_report(report_date=\"{cfg['okr_report_date']}\", "
                         f"member_type=\"{cfg.get('okr_member_type', 'user')}\", "
                         f"member_id=\"{cfg['okr_member_id']}\", content=\"<整理后的日报>\")。"

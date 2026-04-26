@@ -566,11 +566,14 @@ async def websocket_chat(
                                     except Exception:
                                         _ws_args = {}
                                 _ws_path = _ws_args.get("output_path") or _ws_args.get("path", "")
+                                _ws_result = str(data.get("result") or "")
+                                _pending_approval = "requires approval" in _ws_result.lower()
                                 data["workspace_activity"] = {
                                     "action": _WORKSPACE_TOOL_ACTIONS[_done_tool_name],
                                     "path": _ws_path,
                                     "tool": _done_tool_name,
-                                    "ok": True,
+                                    "ok": not _pending_approval,
+                                    "pendingApproval": _pending_approval,
                                 }
                                 logger.info(f"[WS][Workspace] activity: {_done_tool_name} → {_ws_path}")
 
@@ -612,6 +615,46 @@ async def websocket_chat(
                         thinking_content.append(text)
                         await websocket.send_json({"type": "thinking", "content": text})
 
+                    _workspace_draft_cache: dict[str, str] = {}
+
+                    async def tool_delta_to_ws(data: dict):
+                        """Stream workspace file-operation drafts while tool args are still arriving."""
+                        tool_name = data.get("name", "")
+                        if tool_name not in {
+                            "write_file",
+                            "edit_file",
+                            "delete_file",
+                            "convert_markdown_to_docx",
+                            "convert_csv_to_xlsx",
+                            "convert_markdown_to_pdf",
+                            "convert_html_to_pdf",
+                            "convert_html_to_pptx",
+                        }:
+                            return
+
+                        raw_args = data.get("arguments", "")
+                        if isinstance(raw_args, (dict, list)):
+                            raw_args = json.dumps(raw_args, ensure_ascii=False)
+                        elif raw_args is None:
+                            raw_args = ""
+                        else:
+                            raw_args = str(raw_args)
+
+                        draft_id = str(data.get("id") or f"draft-{data.get('index', 0)}")
+                        if _workspace_draft_cache.get(draft_id) == raw_args:
+                            return
+                        _workspace_draft_cache[draft_id] = raw_args
+
+                        await websocket.send_json(
+                            {
+                                "type": "workspace_draft",
+                                "id": draft_id,
+                                "index": data.get("index", 0),
+                                "name": tool_name,
+                                "arguments": raw_args,
+                            }
+                        )
+
                     import asyncio as _aio
 
                     # Run call_llm_with_failover as a cancellable task
@@ -635,6 +678,7 @@ async def websocket_chat(
                             session_id=conv_id,
                             on_chunk=stream_to_ws,
                             on_tool_call=tool_call_to_ws,
+                            on_tool_delta=tool_delta_to_ws,
                             on_thinking=thinking_to_ws,
                             supports_vision=getattr(llm_model, 'supports_vision', False),
                             on_failover=_on_failover,

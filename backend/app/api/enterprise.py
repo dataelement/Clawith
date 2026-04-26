@@ -17,6 +17,7 @@ from app.database import async_session, get_db
 from app.models.org import OrgDepartment, OrgMember
 from app.models.identity import IdentityProvider
 from app.models.user import User
+from app.services.org_sync_adapter import derive_member_department_paths
 from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.models.audit import AuditLog, ApprovalRequest, EnterpriseInfo
@@ -1309,13 +1310,17 @@ async def list_org_members(
     query = query.order_by(OrgMember.name).limit(100)
     result = await db.execute(query)
     rows = result.all()
+    member_paths = await derive_member_department_paths(
+        db,
+        [m for m, _provider_name, _provider_type in rows],
+    )
     return [
         {
             "id": str(m.id),
             "name": m.name,
             "email": m.email,
             "title": m.title,
-            "department_path": m.department_path,
+            "department_path": member_paths.get(m.id, m.department_path),
             "avatar_url": m.avatar_url,
             "external_id": m.external_id,
             "provider_id": str(m.provider_id) if m.provider_id else None,

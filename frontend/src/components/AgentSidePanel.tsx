@@ -8,12 +8,15 @@ interface Props {
     workspaceActivePath?: string | null;
     workspaceActivities: WorkspaceActivity[];
     workspaceLiveDraft?: WorkspaceLiveDraft | null;
+    workspaceLocked?: boolean;
     visible: boolean;
     onToggle: () => void;
     activeTab: SidePanelTab;
     onTabChange: (tab: SidePanelTab) => void;
     onWorkspaceSelectPath: (path: string) => void;
+    onWorkspaceToggleLock?: () => void;
     onWorkspaceEditingChange?: (editing: boolean) => void;
+    onWorkspacePathDeleted?: (path: string) => void;
     agentId?: string;
     sessionId?: string;
     onLiveUpdate?: (env: 'browser' | 'desktop', screenshotDataUri: string) => void;
@@ -42,12 +45,15 @@ export default function AgentSidePanel({
     workspaceActivePath,
     workspaceActivities,
     workspaceLiveDraft,
+    workspaceLocked = false,
     visible,
     onToggle,
     activeTab,
     onTabChange,
     onWorkspaceSelectPath,
+    onWorkspaceToggleLock,
     onWorkspaceEditingChange,
+    onWorkspacePathDeleted,
     agentId,
     sessionId,
     onLiveUpdate,
@@ -155,8 +161,11 @@ export default function AgentSidePanel({
                         activePath={workspaceActivePath}
                         activities={workspaceActivities}
                         liveDraft={workspaceLiveDraft}
+                        locked={workspaceLocked}
                         onSelectPath={onWorkspaceSelectPath}
+                        onToggleLock={onWorkspaceToggleLock}
                         onEditingChange={onWorkspaceEditingChange}
+                        onPathDeleted={onWorkspacePathDeleted}
                     />
                 )}
                 {activeTab === 'desktop' && liveState.desktop && (

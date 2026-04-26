@@ -247,6 +247,8 @@
       "humanRelationships": "Human Relationships",
       "agentRelationships": "Agent Relationships",
       "searchMembers": "Search org members...",
+      "searchAgents": "Search visible agents...",
+      "noSearchResults": "No available results",
       "noRelationships": "No relationships",
       "addRelationship": "Add Relationship",
       "alreadyAdded": "Already added",

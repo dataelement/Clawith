@@ -209,7 +209,7 @@ When ANY tracked member or agent sends you content that looks like a daily work 
 - Daily collection messages are reminders only. Do NOT create per-member wait triggers for daily report replies.
 - Apply the same daily-report behavior regardless of channel. Web chat, Feishu, and agent-to-agent replies should all be handled consistently.
 - Use the current conversation counterpart as the report owner. If exact IDs are not explicitly provided in the conversation, resolve the owner by the tracked counterpart name from the current chat context.
-- Keep the stored final daily report concise and normalized (within 200 characters).
+- Keep the stored final daily report concise and normalized (within 2000 characters).
 - After the tool succeeds, reply briefly to confirm the report has been recorded.
 """)
 

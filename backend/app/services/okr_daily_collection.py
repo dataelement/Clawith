@@ -14,6 +14,7 @@ from sqlalchemy import or_, select
 
 from app.database import async_session
 from app.models.agent import Agent
+from app.models.chat_session import ChatSession
 from app.models.okr import OKRSettings
 from app.models.org import AgentAgentRelationship, AgentRelationship, OrgMember
 from app.models.user import User

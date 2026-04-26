@@ -98,4 +98,4 @@ volumes:
 
 networks:
   clawith_dev:
-    name: clawith_yaojin_network
+    name: clawith_network

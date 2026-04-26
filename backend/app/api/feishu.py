@@ -33,8 +33,6 @@ _USER_RESOLUTION_ERROR_TIP = (
     "抱歉，我暂时无法稳定识别你的飞书账号，已停止本次处理以避免重复创建账号。"
     "请稍后重试，或联系管理员检查飞书 Contact API 权限。"
 )
-
-
 def _build_card(
     answer_text: str,
     thinking_text: str = "",
@@ -171,6 +169,92 @@ class _SerialPatchQueue:
     async def drain(self) -> None:
         if self._tail:
             await self._tail
+
+
+def _build_llm_history_from_chat_messages(history_messages: list) -> list[dict]:
+    """Rebuild LLM history from persisted chat messages.
+
+    Feishu persists real tool calls as `tool_call` rows. To preserve the
+    same conversational continuity as the web client, convert those rows back
+    into assistant tool-call messages plus tool result messages before sending
+    history to the model.
+    """
+    import json as _json
+
+    history: list[dict] = []
+    for msg in history_messages:
+        if msg.role == "tool_call":
+            try:
+                payload = _json.loads(msg.content or "{}")
+            except Exception:
+                payload = {}
+
+            # Support both local schema (tool_name/arguments) and remote schema (name/args)
+            tool_name = payload.get("tool_name") or payload.get("name") or "unknown_tool"
+            tool_args = payload.get("arguments") or payload.get("args") or {}
+            tool_result = payload.get("result") or ""
+            call_id = payload.get("tool_call_id") or f"feishu-tool-{msg.id}"
+
+            history.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": _json.dumps(tool_args, ensure_ascii=False) if isinstance(tool_args, dict) else str(tool_args),
+                    },
+                }],
+            })
+            history.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": str(tool_result) if tool_result else "",
+            })
+            continue
+
+        history.append({"role": msg.role, "content": msg.content})
+    return history
+
+
+async def _save_feishu_tool_call(
+    *,
+    db_session_factory,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: str,
+    tool_name: str,
+    status: str,
+    arguments: dict | None,
+    result: str,
+    tool_call_id: str | None = None,
+    reasoning_content: str | None = None,
+) -> None:
+    """Persist a completed Feishu tool call into chat history."""
+    import json as _json
+    from app.models.audit import ChatMessage
+
+    payload = {
+        "tool_name": tool_name,
+        "arguments": arguments or {},
+        "result": result,
+        "tool_call_id": tool_call_id,
+        "status": status,
+        "reasoning_content": reasoning_content,
+    }
+    try:
+        async with db_session_factory() as _tc_db:
+            _tc_db.add(ChatMessage(
+                agent_id=agent_id,
+                user_id=user_id,
+                role="tool_call",
+                content=_json.dumps(payload, ensure_ascii=False, default=str),
+                conversation_id=conversation_id,
+            ))
+            await _tc_db.commit()
+    except Exception as e:
+        logger.warning(f"[Feishu] Failed to save tool_call: {e}")
 
 
 # ─── OAuth ──────────────────────────────────────────────
@@ -579,7 +663,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 .limit(ctx_size)
             )
             history_msgs = history_result.scalars().all()
-            history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
+            history = _build_llm_history_from_chat_messages(list(reversed(history_msgs)))
 
             # --- Resolve Feishu sender identity & find/create platform user ---
             import uuid as _uuid
@@ -725,8 +809,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             # Prepend sender identity so the agent knows who is talking
             llm_user_text = user_text
             if sender_name:
-                id_part = f" (ID: {sender_user_id_feishu})" if sender_user_id_feishu else ""
-                llm_user_text = f"[发送者: {sender_name}{id_part}] {user_text}"
+                llm_user_text = f"[发送者: {sender_name}] {user_text}"
 
             # ── Inject recent uploaded file context ──────────────────────────
             # Check the uploads directory for recently modified files (within 30 min).
@@ -927,26 +1010,19 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     _tool_status_done.append(f"ℹ️ Tool update: `{tool_name}` ({status})")
 
                 if status and status != "running":
-                    try:
-                        from app.database import async_session as _async_session_tc
-
-                        async with _async_session_tc() as _tc_db:
-                            _tc_db.add(ChatMessage(
-                                agent_id=agent_id,
-                                user_id=platform_user_id,
-                                role="tool_call",
-                                content=_json.dumps({
-                                    "name": tool_name,
-                                    "args": evt.get("args"),
-                                    "status": status,
-                                    "result": (str(result) if result is not None else "")[:500],
-                                    "reasoning_content": evt.get("reasoning_content"),
-                                }, ensure_ascii=False, default=str),
-                                conversation_id=session_conv_id,
-                            ))
-                            await _tc_db.commit()
-                    except Exception as _tc_err:
-                        logger.warning(f"[Feishu] Failed to save tool_call: {_tc_err}")
+                    from app.database import async_session as _async_session_tc
+                    await _save_feishu_tool_call(
+                        db_session_factory=_async_session_tc,
+                        agent_id=agent_id,
+                        user_id=platform_user_id,
+                        conversation_id=session_conv_id,
+                        tool_name=tool_name,
+                        status=status,
+                        arguments=evt.get("args") or evt.get("arguments") or {},
+                        result=(str(result) if result is not None else "")[:500],
+                        tool_call_id=evt.get("call_id"),
+                        reasoning_content=evt.get("reasoning_content"),
+                    )
                 if _patch_msg_id:
                     await _flush_stream("tool", force=True)
 
@@ -1083,7 +1159,14 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             await log_activity(agent_id, "chat_reply", f"回复了飞书消息: {final_reply_text[:80]}", detail={"channel": "feishu", "user_text": user_text[:200], "reply": final_reply_text[:500]})
 
             # Save assistant reply to history (use platform_user_id so messages stay in one session)
-            db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=final_reply_text, conversation_id=session_conv_id))
+            db.add(ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="assistant",
+                content=final_reply_text,
+                thinking="".join(_thinking_buffer) or None,
+                conversation_id=session_conv_id,
+            ))
             _sess.last_message_at = _dt.now(_tz.utc)
             await db.commit()
 
@@ -1296,7 +1379,7 @@ async def _handle_feishu_file(
             .order_by(ChatMessage.created_at.desc())
             .limit(ctx_size)
         )
-        _history = [{"role": m.role, "content": m.content} for m in reversed(_hist_r.scalars().all())]
+        _history = _build_llm_history_from_chat_messages(list(reversed(_hist_r.scalars().all())))
 
         await db.commit()
 

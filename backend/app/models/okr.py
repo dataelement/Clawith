@@ -263,7 +263,7 @@ class MemberDailyReport(Base):
     report_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     content: Mapped[str] = mapped_column(
         Text, nullable=False, default=""
-    )  # final concise report, target length <= 200 chars
+    )  # final concise report, target length <= 2000 chars
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="submitted"
     )  # submitted | late | revised | incomplete

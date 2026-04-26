@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import uuid
+import unicodedata
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,12 +41,6 @@ from app.services.workspace_collaboration import (
     delete_workspace_file,
     read_text_if_exists,
     write_workspace_file,
-)
-from app.services.workspace_paths import (
-    WorkspacePathError,
-    enterprise_info_root,
-    resolve_agent_visible_path,
-    resolve_path_within_root,
 )
 from app.config import get_settings
 
@@ -2172,6 +2167,18 @@ async def execute_tool(
         session_id: The ChatSession ID, used to isolate AgentBay instances
                     per conversation. Passed through to agentbay_* tools.
     """
+    if not isinstance(tool_name, str):
+        tool_name = str(tool_name or "")
+    tool_name = (
+        tool_name
+        .replace("`", "")
+        .replace("\u200b", "")
+        .replace("\u200c", "")
+        .replace("\u200d", "")
+        .replace("\ufeff", "")
+        .strip()
+    )
+
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
     ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
@@ -2539,8 +2546,10 @@ async def execute_tool(
             result = await _get_okr(agent_id, arguments)
         elif tool_name == "get_my_okr":
             result = await _get_my_okr(agent_id, arguments)
+        elif tool_name == "update_kr_content":
+            result = await _update_kr_content(agent_id, user_id, arguments)
         elif tool_name == "update_kr_progress":
-            result = await _update_kr_progress(agent_id, arguments)
+            result = await _update_kr_progress(agent_id, user_id, arguments)
         # collect_okr_progress: batch-read all focus.md files and sync progress to DB
         elif tool_name == "collect_okr_progress":
             result = await _collect_okr_progress(agent_id)
@@ -2552,13 +2561,13 @@ async def execute_tool(
             result = await _get_okr_settings_tool(agent_id)
         # ── OKR Management Tools (OKR Agent exclusive) ──
         elif tool_name == "create_objective":
-            result = await _create_objective(agent_id, arguments)
+            result = await _create_objective(agent_id, user_id, arguments)
         elif tool_name == "create_key_result":
-            result = await _create_key_result(agent_id, arguments)
+            result = await _create_key_result(agent_id, user_id, arguments)
         elif tool_name == "update_objective":
-            result = await _update_objective(agent_id, arguments)
+            result = await _update_objective(agent_id, user_id, arguments)
         elif tool_name == "update_any_kr_progress":
-            result = await _update_any_kr_progress(agent_id, arguments)
+            result = await _update_any_kr_progress(agent_id, user_id, arguments)
         # generate_monthly_okr_report: produce the monthly summary report
         elif tool_name == "generate_monthly_okr_report":
             result = await _generate_monthly_okr_report(agent_id)
@@ -3509,17 +3518,71 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
         return f"❌ Auto-recovery failed: {str(e)[:200]}"
 
 
-def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
-    try:
-        resolved = resolve_agent_visible_path(
-            ws,
-            rel_path,
-            workspace_root=WORKSPACE_ROOT,
-            tenant_id=tenant_id,
+def _normalize_tool_rel_path(rel_path: str) -> str:
+    normalized = unicodedata.normalize("NFC", (rel_path or "").strip()).replace("\\", "/")
+    normalized = re.sub(r"/+", "/", normalized).lstrip("./")
+    return normalized
+
+
+def _collapse_filename_for_match(name: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFC", name or "")).casefold()
+
+
+def _allowed_root_for_tool_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> tuple[Path, str]:
+    normalized = _normalize_tool_rel_path(rel_path)
+    if normalized.startswith("enterprise_info"):
+        enterprise_root = (
+            (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+            if tenant_id
+            else (WORKSPACE_ROOT / "enterprise_info").resolve()
         )
-        target = resolved.path
-    except WorkspacePathError:
-        return "Access denied for this path"
+        sub = normalized[len("enterprise_info"):].lstrip("/")
+        return enterprise_root, sub
+    return ws.resolve(), normalized
+
+
+def _resolve_tool_source_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> Path:
+    root, normalized = _allowed_root_for_tool_path(ws, rel_path, tenant_id=tenant_id)
+    candidate = (root / normalized).resolve() if normalized else root
+    if not str(candidate).startswith(str(root)):
+        raise ValueError("Access denied for this path")
+    if candidate.exists():
+        return candidate
+
+    parent = candidate.parent
+    if parent.exists():
+        wanted = _collapse_filename_for_match(candidate.name)
+        for sibling in parent.iterdir():
+            if _collapse_filename_for_match(sibling.name) == wanted:
+                return sibling
+    return candidate
+
+
+def _resolve_tool_target_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> Path:
+    root, normalized = _allowed_root_for_tool_path(ws, rel_path, tenant_id=tenant_id)
+    candidate = (root / normalized).resolve() if normalized else root
+    if not str(candidate).startswith(str(root)):
+        raise ValueError("❌ Access denied.")
+    return candidate
+
+
+def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if rel_path and rel_path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        # Remap: enterprise_info/... → enterprise_info_{tenant_id}/...
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        target = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(target).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+    else:
+        target = (ws / rel_path) if rel_path else ws
+        target = target.resolve()
+        if not str(target).startswith(str(ws.resolve())):
+            return "Access denied for this path"
 
     if not target.exists():
         return f"Directory not found: {rel_path or '/'}"
@@ -3527,7 +3590,10 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     items = []
     # If listing root, also show enterprise_info entry
     if not rel_path:
-        enterprise_dir = enterprise_info_root(WORKSPACE_ROOT, tenant_id)
+        if tenant_id:
+            enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
+        else:
+            enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
         if enterprise_dir.exists():
             items.append("  📁 enterprise_info/ (shared company info)")
 
@@ -3570,14 +3636,9 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
         File content with line numbers, or error message
     """
     try:
-        file_path = resolve_agent_visible_path(
-            ws,
-            rel_path,
-            workspace_root=WORKSPACE_ROOT,
-            tenant_id=tenant_id,
-        ).path
-    except WorkspacePathError:
-        return "Access denied for this path"
+        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
+    except ValueError as exc:
+        return str(exc)
 
     if not file_path.exists():
         return f"File not found: {rel_path}"
@@ -3618,14 +3679,9 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
 async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
     """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
     try:
-        file_path = resolve_agent_visible_path(
-            ws,
-            rel_path,
-            workspace_root=WORKSPACE_ROOT,
-            tenant_id=tenant_id,
-        ).path
-    except WorkspacePathError:
-        return "Access denied for this path"
+        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
+    except ValueError as exc:
+        return str(exc)
 
     if not file_path.exists():
         return f"File not found: {rel_path}"
@@ -3744,25 +3800,36 @@ async def _convert_csv_to_xlsx(agent_id: uuid.UUID, ws: Path, arguments: dict) -
     target_path = arguments.get("target_path")
     if not source_path or not target_path:
         return "❌ Missing 'source_path' or 'target_path'."
-        
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())): return "❌ Access denied to source_path."
-    if not str(tgt_file).startswith(str(ws.resolve())): return "❌ Access denied to target_path."
-    
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
     if not src_file.exists(): return f"❌ Source file not found: {source_path}"
     
     try:
         import csv
         from openpyxl import Workbook
+
+        text = src_file.read_text(encoding="utf-8-sig")
+        lines = [line.strip() for line in text.splitlines() if line.strip()][:10]
+        candidates = [",", "，", ";", "\t", "|"]
+        delimiter = ","
+        if lines:
+            scores = {candidate: sum(line.count(candidate) for line in lines) for candidate in candidates}
+            if any(scores.values()):
+                delimiter = max(scores, key=scores.get)
         
         wb = Workbook()
         ws_sheet = wb.active
         with src_file.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.reader(f)
+            reader = csv.reader(f, delimiter=delimiter)
             for row in reader:
-                ws_sheet.append(row)
+                values = list(row)
+                while values and not str(values[-1] or "").strip():
+                    values.pop()
+                if values:
+                    ws_sheet.append(values)
         
         tgt_file.parent.mkdir(parents=True, exist_ok=True)
         wb.save(str(tgt_file))
@@ -3776,13 +3843,11 @@ async def _convert_html_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dict) -
     target_path = arguments.get("target_path")
     if not source_path or not target_path:
         return "❌ Missing 'source_path' or 'target_path'."
-        
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())): return "❌ Access denied."
-    if not str(tgt_file).startswith(str(ws.resolve())): return "❌ Access denied."
-    
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
     if not src_file.exists(): return f"❌ Source file not found: {source_path}"
     
     try:
@@ -3798,12 +3863,11 @@ async def _convert_html_to_pptx(agent_id: uuid.UUID, ws: Path, arguments: dict) 
     source_path = arguments.get("source_path")
     target_path = arguments.get("target_path")
     if not source_path or not target_path: return "❌ Missing paths."
-    
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())) or not str(tgt_file).startswith(str(ws.resolve())):
-        return "❌ Access denied."
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
     if not src_file.exists(): return "❌ Source file not found."
     
     try:
@@ -3848,39 +3912,85 @@ async def _convert_markdown_to_docx(agent_id: uuid.UUID, ws: Path, arguments: di
     source_path = arguments.get("source_path")
     target_path = arguments.get("target_path")
     if not source_path or not target_path: return "❌ Missing paths."
-    
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())) or not str(tgt_file).startswith(str(ws.resolve())):
-        return "❌ Access denied."
-    if not src_file.exists(): return "❌ Source file not found."
-    
     try:
-        from bs4 import BeautifulSoup
-        import markdown
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
+    if not src_file.exists(): return "❌ Source file not found."
+
+    try:
         from docx import Document
-        
         md_text = src_file.read_text(encoding="utf-8")
-        html_text = markdown.markdown(md_text, extensions=['tables'])
-        soup = BeautifulSoup(html_text, "html.parser")
-        
         doc = Document()
-        for element in soup.children:
-            if element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                level = int(element.name[1])
-                doc.add_heading(element.get_text(strip=True), level=level)
-            elif element.name == 'p':
-                # Skip paragraphs that contains nothing
-                text = element.get_text(strip=True)
+
+        def flush_paragraph(lines: list[str]) -> None:
+            text = " ".join(line.strip() for line in lines if line.strip()).strip()
+            if text:
+                doc.add_paragraph(text)
+
+        paragraph_lines: list[str] = []
+        lines = md_text.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip()
+            stripped = line.strip()
+
+            if not stripped:
+                flush_paragraph(paragraph_lines)
+                paragraph_lines = []
+                i += 1
+                continue
+
+            heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+            if heading_match:
+                flush_paragraph(paragraph_lines)
+                paragraph_lines = []
+                level = min(len(heading_match.group(1)), 6)
+                doc.add_heading(heading_match.group(2).strip(), level=level)
+                i += 1
+                continue
+
+            bullet_match = re.match(r"^[-*+]\s+(.*)$", stripped)
+            ordered_match = re.match(r"^\d+\.\s+(.*)$", stripped)
+            if bullet_match or ordered_match:
+                flush_paragraph(paragraph_lines)
+                paragraph_lines = []
+                text = (bullet_match or ordered_match).group(1).strip()
                 if text:
-                    doc.add_paragraph(text)
-            elif element.name in ['ul', 'ol']:
-                for li in element.find_all("li"):
-                    doc.add_paragraph(li.get_text(strip=True), style='List Bullet')
-            elif element.name == 'table':
-                doc.add_paragraph("[Table Content: " + element.get_text(separator=" | ", strip=True) + "]")
-                
+                    doc.add_paragraph(text, style="List Bullet" if bullet_match else "List Number")
+                i += 1
+                continue
+
+            if "|" in stripped:
+                table_lines: list[str] = []
+                flush_paragraph(paragraph_lines)
+                paragraph_lines = []
+                while i < len(lines) and "|" in lines[i]:
+                    candidate = lines[i].strip()
+                    if candidate:
+                        table_lines.append(candidate)
+                    i += 1
+                data_rows = []
+                for raw in table_lines:
+                    cells = [cell.strip() for cell in raw.strip("|").split("|")]
+                    if cells and all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells):
+                        continue
+                    if any(cell for cell in cells):
+                        data_rows.append(cells)
+                if data_rows:
+                    table = doc.add_table(rows=len(data_rows), cols=max(len(row) for row in data_rows))
+                    table.style = "Table Grid"
+                    for row_idx, row in enumerate(data_rows):
+                        for col_idx, cell in enumerate(row):
+                            table.cell(row_idx, col_idx).text = cell
+                continue
+
+            paragraph_lines.append(stripped)
+            i += 1
+
+        flush_paragraph(paragraph_lines)
+
         tgt_file.parent.mkdir(parents=True, exist_ok=True)
         doc.save(str(tgt_file))
         return f"✅ Successfully converted Markdown to Word: {target_path}"
@@ -3892,25 +4002,120 @@ async def _convert_markdown_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dic
     source_path = arguments.get("source_path")
     target_path = arguments.get("target_path")
     if not source_path or not target_path: return "❌ Missing paths."
-    
-    src_file = (ws / source_path).resolve()
-    tgt_file = (ws / target_path).resolve()
-    
-    if not str(src_file).startswith(str(ws.resolve())) or not str(tgt_file).startswith(str(ws.resolve())):
-        return "❌ Access denied."
-    if not src_file.exists(): return "❌ Source file not found."
-    
     try:
-        import markdown
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
+    if not src_file.exists(): return "❌ Source file not found."
+
+    try:
         from weasyprint import HTML
-        
+
         md_text = src_file.read_text(encoding="utf-8")
-        html_text = markdown.markdown(md_text, extensions=['extra', 'codehilite'])
-        
-        # We need relative paths for local images to be resolved. WeasyPrint supports base_url.
-        # But for now, we just pass string and rely on absolute refs or no images.
-        full_html = f"<html><head><meta charset='utf-8'><style>body{{font-family: sans-serif; line-height: 1.6; padding: 2em;}}</style></head><body>{html_text}</body></html>"
-        
+
+        def escape_html(text: str) -> str:
+            return (
+                text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+            )
+
+        def render_inline(text: str) -> str:
+            text = escape_html(text)
+            text = re.sub(r"\*\*\*(.*?)\*\*\*", r"<strong><em>\1</em></strong>", text)
+            text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text)
+            text = re.sub(r"__(.*?)__", r"<strong>\1</strong>", text)
+            text = re.sub(r"\*(.*?)\*", r"<em>\1</em>", text)
+            text = re.sub(r"_(.*?)_", r"<em>\1</em>", text)
+            text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+            text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+            return text
+
+        def is_table_separator(line: str) -> bool:
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+        html_parts: list[str] = []
+        lines = md_text.splitlines()
+        in_list = False
+        i = 0
+        while i < len(lines):
+            raw_line = lines[i]
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if not stripped:
+                if in_list:
+                    html_parts.append("</ul>")
+                    in_list = False
+                i += 1
+                continue
+
+            heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+            if heading_match:
+                if in_list:
+                    html_parts.append("</ul>")
+                    in_list = False
+                level = len(heading_match.group(1))
+                html_parts.append(f"<h{level}>{render_inline(heading_match.group(2).strip())}</h{level}>")
+                i += 1
+                continue
+
+            bullet_match = re.match(r"^[-*+]\s+(.*)$", stripped)
+            if bullet_match:
+                if not in_list:
+                    html_parts.append("<ul>")
+                    in_list = True
+                html_parts.append(f"<li>{render_inline(bullet_match.group(1).strip())}</li>")
+                i += 1
+                continue
+
+            if "|" in stripped and i + 1 < len(lines) and is_table_separator(lines[i + 1].strip()):
+                if in_list:
+                    html_parts.append("</ul>")
+                    in_list = False
+                header_cells = [render_inline(cell.strip()) for cell in stripped.strip("|").split("|")]
+                table_rows: list[list[str]] = []
+                i += 2
+                while i < len(lines) and "|" in lines[i].strip():
+                    row = [render_inline(cell.strip()) for cell in lines[i].strip().strip("|").split("|")]
+                    table_rows.append(row)
+                    i += 1
+                html_parts.append("<table><thead><tr>" + "".join(f"<th>{cell}</th>" for cell in header_cells) + "</tr></thead><tbody>")
+                html_parts.extend(
+                    "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+                    for row in table_rows
+                )
+                html_parts.append("</tbody></table>")
+                continue
+
+            if in_list:
+                html_parts.append("</ul>")
+                in_list = False
+            html_parts.append(f"<p>{render_inline(stripped)}</p>")
+            i += 1
+
+        if in_list:
+            html_parts.append("</ul>")
+
+        html_text = "\n".join(html_parts)
+
+        full_html = (
+            "<html><head><meta charset='utf-8'><style>"
+            "body{font-family:'WenQuanYi Micro Hei','Noto Sans CJK SC',sans-serif;line-height:1.65;padding:2em;color:#111827;}"
+            "h1,h2,h3{line-height:1.25;margin:1.2em 0 .55em;}"
+            "p{margin:.55em 0;}"
+            "table{width:100%;border-collapse:collapse;margin:1em 0;font-size:12px;}"
+            "th,td{border:1px solid #d8dee9;padding:7px 9px;text-align:left;vertical-align:top;}"
+            "th{background:#f3f4f6;font-weight:700;}"
+            "code{background:#f3f4f6;padding:1px 4px;border-radius:4px;}"
+            "a{color:#2563eb;text-decoration:none;}"
+            "</style></head><body>"
+            f"{html_text}"
+            "</body></html>"
+        )
+
         tgt_file.parent.mkdir(parents=True, exist_ok=True)
         HTML(string=full_html, base_url=str(ws.resolve())).write_pdf(str(tgt_file))
         return f"✅ Successfully converted Markdown to PDF: {target_path}"
@@ -3924,16 +4129,22 @@ def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = N
     if rel_path.strip("/") == "tasks.json":
         return "tasks.json is read-only. Use manage_tasks tool to manage tasks."
 
-    try:
-        file_path = resolve_agent_visible_path(
-            ws,
-            rel_path,
-            workspace_root=WORKSPACE_ROOT,
-            tenant_id=tenant_id,
-            require_subpath_for_enterprise=True,
-        ).path
-    except WorkspacePathError as e:
-        return f"Write failed: {e}" if rel_path.strip().startswith("enterprise_info") else "Access denied for this path"
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if rel_path and rel_path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        if not sub:
+            return "Write failed: please provide a file path under enterprise_info/, e.g. enterprise_info/knowledge_base/report.md"
+        file_path = (enterprise_root / sub).resolve()
+        if not str(file_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+    else:
+        file_path = (ws / rel_path).resolve()
+        if not str(file_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3948,9 +4159,8 @@ def _delete_file(ws: Path, rel_path: str) -> str:
     if rel_path.strip("/") in protected:
         return f"{rel_path} cannot be deleted (protected)"
 
-    try:
-        file_path = resolve_path_within_root(ws, rel_path, label="workspace path")
-    except WorkspacePathError:
+    file_path = (ws / rel_path).resolve()
+    if not str(file_path).startswith(str(ws.resolve())):
         return "Access denied for this path"
     if not file_path.exists():
         return f"File not found: {rel_path}"
@@ -3981,15 +4191,20 @@ def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replac
     Returns:
         Success message or error
     """
-    try:
-        file_path = resolve_agent_visible_path(
-            ws,
-            rel_path,
-            workspace_root=WORKSPACE_ROOT,
-            tenant_id=tenant_id,
-        ).path
-    except WorkspacePathError:
-        return "Access denied for this path"
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if rel_path and rel_path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(file_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+    else:
+        file_path = (ws / rel_path).resolve()
+        if not str(file_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
 
     if not file_path.exists():
         return f"File not found: {rel_path}"
@@ -4035,17 +4250,22 @@ def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "
     Returns:
         Matching lines with file paths and line numbers
     """
-    try:
-        resolved = resolve_agent_visible_path(
-            ws,
-            "" if path == "." else path,
-            workspace_root=WORKSPACE_ROOT,
-            tenant_id=tenant_id,
-        )
-        search_path = resolved.path
-        ws_for_relative = resolved.relative_root
-    except WorkspacePathError:
-        return "Access denied for this path"
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if path and path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = path[len("enterprise_info"):].lstrip("/")
+        search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(search_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+        ws_for_relative = enterprise_root
+    else:
+        search_path = (ws / path).resolve() if path and path != "." else ws
+        if not str(search_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
+        ws_for_relative = ws
 
     if not search_path.exists():
         return f"Directory not found: {path}"
@@ -4112,17 +4332,22 @@ def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None =
     Returns:
         List of matching files with sizes
     """
-    try:
-        resolved = resolve_agent_visible_path(
-            ws,
-            "" if path == "." else path,
-            workspace_root=WORKSPACE_ROOT,
-            tenant_id=tenant_id,
-        )
-        search_path = resolved.path
-        ws_for_relative = resolved.relative_root
-    except WorkspacePathError:
-        return "Access denied for this path"
+    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    if path and path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = path[len("enterprise_info"):].lstrip("/")
+        search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(search_path).startswith(str(enterprise_root)):
+            return "Access denied for this path"
+        ws_for_relative = enterprise_root
+    else:
+        search_path = (ws / path).resolve() if path and path != "." else ws
+        if not str(search_path).startswith(str(ws.resolve())):
+            return "Access denied for this path"
+        ws_for_relative = ws
 
     if not search_path.exists():
         return f"Directory not found: {path}"
@@ -5904,6 +6129,50 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
 
 # ─── Code Execution ─────────────────────────────────────────────
 
+# Dangerous patterns to block (for legacy fallback)
+_DANGEROUS_BASH = [
+    "rm -rf /", "rm -rf ~", "sudo ", "mkfs", "dd if=",
+    ":(){ :", "chmod 777 /", "chown ", "shutdown", "reboot",
+    "curl ", "wget ", "nc ", "ncat ", "ssh ", "scp ",
+    "python3 -c", "python -c",
+]
+
+_DANGEROUS_PYTHON_IMPORTS = [
+    "subprocess", "shutil.rmtree", "os.system", "os.popen",
+    "os.exec", "os.spawn",
+    "socket", "http.client", "urllib.request", "requests",
+    "ftplib", "smtplib", "telnetlib", "ctypes",
+    "__import__", "importlib",
+]
+
+
+def _check_code_safety(language: str, code: str) -> str | None:
+    """Check code for dangerous patterns. Returns error message if unsafe, None if ok."""
+    code_lower = code.lower()
+
+    if language == "bash":
+        for pattern in _DANGEROUS_BASH:
+            if pattern.lower() in code_lower:
+                return f"❌ Blocked: dangerous command detected ({pattern.strip()})"
+        # Block deep path traversal outside workspace
+        if "../../" in code:
+            return "❌ Blocked: directory traversal not allowed"
+
+    elif language == "python":
+        for pattern in _DANGEROUS_PYTHON_IMPORTS:
+            if pattern.lower() in code_lower:
+                return f"❌ Blocked: unsafe operation detected ({pattern})"
+
+    elif language == "node":
+        dangerous_node = ["child_process", "fs.rmSync", "fs.rmdirSync", "process.exit",
+                          "require('http')", "require('https')", "require('net')"]
+        for pattern in dangerous_node:
+            if pattern.lower() in code_lower:
+                return f"❌ Blocked: unsafe operation detected ({pattern})"
+
+    return None
+
+
 async def _execute_code(
     agent_id: Optional[uuid.UUID],
     ws: Path,
@@ -5970,16 +6239,113 @@ async def _execute_code(
         return backend._format_result(result)
 
     except ValueError as e:
+        # Sandbox disabled or misconfigured
         if is_e2b_tool:
+            # Do not silently fall back — surface the config error to the user
             return f"❌ E2B sandbox configuration error: {str(e)[:300]}\nPlease check the API key in the tool settings."
-        logger.warning(f"[Sandbox] Config issue for agent {agent_id}: {e}")
-        return f"❌ Sandbox configuration error: {str(e)[:300]}"
+        logger.warning(f"[Sandbox] Config issue, falling back to legacy subprocess: {e}")
+        return await _execute_code_legacy(ws, arguments)
 
     except Exception as e:
         logger.exception(f"[Sandbox] Execution failed for agent {agent_id} (tool={tool_name})")
         if is_e2b_tool:
+            # Do not silently fall back to local execution
             return f"❌ E2B execution error: {str(e)[:200]}"
+        # For local tool: try legacy subprocess as last resort
+        try:
+            return await _execute_code_legacy(ws, arguments)
+        except Exception:
+            logger.exception(f"[Sandbox] Fallback also failed for agent {agent_id}")
+            return f"❌ Execution error: {str(e)[:200]}"
+
+
+async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
+    """Legacy subprocess-based code execution (fallback)."""
+    import asyncio
+
+    language = arguments.get("language", "python")
+    code = arguments.get("code", "")
+    timeout = min(arguments.get("timeout", 30), 60)
+
+    if not code.strip():
+        return "❌ No code provided"
+
+    if language not in ("python", "bash", "node"):
+        return f"❌ Unsupported language: {language}. Use: python, bash, or node"
+
+    # Security check
+    safety_error = _check_code_safety(language, code)
+    if safety_error:
+        return safety_error
+
+    # Working directory is the agent's root directory (must be absolute)
+    # This allows code to access skills/, workspace/, memory/ etc. directly
+    work_dir = ws.resolve()
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine command and file extension
+    if language == "python":
+        ext = ".py"
+        cmd_prefix = ["python3"]
+    elif language == "bash":
+        ext = ".sh"
+        cmd_prefix = ["bash"]
+    elif language == "node":
+        ext = ".js"
+        cmd_prefix = ["node"]
+    else:
+        return f"❌ Unsupported language: {language}"
+
+    # Write code to a temp file inside workspace
+    script_path = work_dir / f"_exec_tmp{ext}"
+    try:
+        script_path.write_text(code, encoding="utf-8")
+
+        # Inherit parent environment but override HOME to workspace
+        safe_env = dict(os.environ)
+        safe_env["HOME"] = str(work_dir)
+        safe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd_prefix, str(script_path),
+            cwd=str(work_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=safe_env,
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return f"❌ Code execution timed out after {timeout}s"
+
+        stdout_str = stdout.decode("utf-8", errors="replace")[:10000]
+        stderr_str = stderr.decode("utf-8", errors="replace")[:5000]
+
+        result_parts = []
+        if stdout_str.strip():
+            result_parts.append(f"📤 Output:\n{stdout_str}")
+        if stderr_str.strip():
+            result_parts.append(f"⚠️ Stderr:\n{stderr_str}")
+        if proc.returncode != 0:
+            result_parts.append(f"Exit code: {proc.returncode}")
+
+        if not result_parts:
+            return "✅ Code executed successfully (no output)"
+
+        return "\n\n".join(result_parts)
+
+    except Exception as e:
         return f"❌ Execution error: {str(e)[:200]}"
+    finally:
+        # Clean up temp script
+        try:
+            script_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
 
 # ─── Resource Discovery Executors ───────────────────────────────
 
@@ -6474,9 +6840,8 @@ async def _generate_image(agent_id: uuid.UUID, ws: Path, arguments: dict, provid
         save_path = f"workspace/images/{slug}_{ts}.png"
 
     # Ensure the target directory exists and path is within workspace
-    try:
-        full_save_path = resolve_path_within_root(ws, save_path, label="save path")
-    except WorkspacePathError:
+    full_save_path = (ws / save_path).resolve()
+    if not str(full_save_path).startswith(str(ws.resolve())):
         return "❌ Access denied: save path is outside the workspace"
     full_save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -8801,9 +9166,8 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
         return "Only .html and .htm files can be published"
 
     # Resolve and check file exists
-    try:
-        full_path = resolve_path_within_root(ws, path, label="workspace path")
-    except WorkspacePathError:
+    full_path = (ws / path).resolve()
+    if not str(full_path).startswith(str(ws.resolve())):
         return "Path traversal not allowed"
     if not full_path.exists() or not full_path.is_file():
         return f"File not found: {path}"
@@ -9920,9 +10284,8 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
     # ── Helper: resolve and validate a workspace-relative path ──────────────
     def resolve_workspace(rel_path: str) -> tuple[str | None, str]:
         """Return (absolute_local_path_str, error_message). error_message is '' on success."""
-        try:
-            local = resolve_path_within_root(ws, rel_path, label="workspace path")
-        except WorkspacePathError:
+        local = (ws / rel_path).resolve()
+        if not str(local).startswith(str(ws.resolve())):
             return None, "Permission denied: path must be inside the agent workspace"
         return str(local), ""
 
@@ -10090,6 +10453,8 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
         from app.database import async_session
         from app.models.agent import Agent
         from app.models.okr import OKRObjective, OKRKeyResult, OKRSettings
+        from app.models.org import OrgMember
+        from app.models.user import User
         from sqlalchemy import select as _select
         from datetime import date, timedelta
 
@@ -10150,6 +10515,58 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
             for kr in all_krs:
                 krs_by_obj.setdefault(str(kr.objective_id), []).append(kr)
 
+            # Resolve readable owner names so the OKR Agent can reason about
+            # members by display name instead of raw UUIDs.
+            user_owner_ids = [
+                o.owner_id for o in objectives
+                if o.owner_type == "user" and o.owner_id
+            ]
+            agent_owner_ids = [
+                o.owner_id for o in objectives
+                if o.owner_type == "agent" and o.owner_id
+            ]
+
+            user_names: dict[uuid.UUID, str] = {}
+            if user_owner_ids:
+                u_result = await db.execute(
+                    _select(User.id, User.display_name).where(User.id.in_(user_owner_ids))
+                )
+                user_names = {
+                    row.id: (row.display_name or "")
+                    for row in u_result.fetchall()
+                }
+
+                unresolved_ids = [oid for oid in user_owner_ids if oid not in user_names]
+                if unresolved_ids:
+                    m_result = await db.execute(
+                        _select(OrgMember.id, OrgMember.name).where(
+                            OrgMember.id.in_(unresolved_ids)
+                        )
+                    )
+                    for row in m_result.fetchall():
+                        user_names[row.id] = row.name or ""
+
+            agent_names: dict[uuid.UUID, str] = {}
+            if agent_owner_ids:
+                a_result = await db.execute(
+                    _select(Agent.id, Agent.name).where(Agent.id.in_(agent_owner_ids))
+                )
+                agent_names = {
+                    row.id: (row.name or "")
+                    for row in a_result.fetchall()
+                }
+
+            def _resolve_owner_label(obj: OKRObjective) -> str:
+                if obj.owner_type == "company":
+                    return "Company"
+                if not obj.owner_id:
+                    return f"{obj.owner_type}:unassigned"
+                if obj.owner_type == "user":
+                    return user_names.get(obj.owner_id) or f"user:{obj.owner_id}"
+                if obj.owner_type == "agent":
+                    return agent_names.get(obj.owner_id) or f"agent:{obj.owner_id}"
+                return f"{obj.owner_type}:{obj.owner_id}"
+
         # Format output
         lines = [f"# OKR Board — {ps} to {pe}\n"]
 
@@ -10174,7 +10591,7 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
         if member_objs:
             lines.append("\n## Member Objectives")
             for o in member_objs:
-                owner_label = f"{o.owner_type}:{o.owner_id}"
+                owner_label = _resolve_owner_label(o)
                 krs = krs_by_obj.get(str(o.id), [])
                 lines.append(f"\n**{owner_label}** | O: {o.title}")
                 for kr in krs:
@@ -10194,7 +10611,8 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
 async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
     """Return the calling agent's own Objectives and KRs.
 
-    Includes kr_id values so the agent can call update_kr_progress.
+    Includes objective_id and kr_id values so the agent can update existing OKRs
+    instead of accidentally creating duplicate ones.
     """
     if not agent_id:
         return "OKR tools require agent context."
@@ -10254,10 +10672,17 @@ async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
             for kr in all_krs:
                 krs_by_obj.setdefault(str(kr.objective_id), []).append(kr)
 
-        lines = [f"# My OKRs — {ps} to {pe}\n"]
+        lines = [
+            f"# My OKRs — {ps} to {pe}\n",
+            "If you need to revise an existing OKR, reuse the IDs below:",
+            "- change Objective title/description/status with update_objective(objective_id=...)",
+            "- change KR title/target/unit/focus/status with update_kr_content(kr_id=...)",
+            "- change KR numeric progress with update_kr_progress(kr_id=...)",
+            "",
+        ]
         for o in objectives:
             krs = krs_by_obj.get(str(o.id), [])
-            lines.append(f"**O: {o.title}**")
+            lines.append(f"**O: {o.title}**  objective_id={o.id}")
             if o.description:
                 lines.append(f"  {o.description}")
             for kr in krs:
@@ -10273,7 +10698,72 @@ async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
         return f"Failed to retrieve your OKR: {str(e)[:200]}"
 
 
-async def _update_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _load_okr_request_context(
+    db,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+) -> dict:
+    from app.models.agent import Agent as AgentModel
+    from app.models.user import User as UserModel
+
+    ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent = ag_res.scalar_one_or_none()
+    requester = None
+    if user_id:
+        user_res = await db.execute(select(UserModel).where(UserModel.id == user_id))
+        requester = user_res.scalar_one_or_none()
+
+    return {
+        "agent": agent,
+        "tenant_id": getattr(agent, "tenant_id", None),
+        "agent_is_system": bool(agent and agent.is_system),
+        "requester": requester,
+        "requester_user_id": user_id,
+        "requester_is_admin": bool(requester and requester.role in ("org_admin", "platform_admin")),
+    }
+
+
+def _okr_permission_denied(message: str) -> str:
+    return f"Permission denied: {message}"
+
+
+def _can_access_existing_okr_target(ctx: dict, owner_type: str, owner_id: uuid.UUID | None) -> str | None:
+    if ctx["agent_is_system"]:
+        if ctx["requester_is_admin"]:
+            return None
+        if owner_type != "user" or owner_id != ctx["requester_user_id"]:
+            return _okr_permission_denied(
+                "non-admin requests may only create or modify the requester's own personal OKRs. "
+                "Do not create or edit company OKRs or other members' OKRs."
+            )
+        return None
+
+    if owner_type != "agent" or owner_id != ctx["agent"].id:
+        return _okr_permission_denied(
+            "you can only create or modify your own agent OKRs."
+        )
+    return None
+
+
+def _can_create_okr_target(ctx: dict, owner_type: str, owner_id: uuid.UUID | None) -> str | None:
+    if ctx["agent_is_system"]:
+        if ctx["requester_is_admin"]:
+            return None
+        if owner_type != "user" or owner_id != ctx["requester_user_id"]:
+            return _okr_permission_denied(
+                "non-admin requests may only create the requester's own personal OKRs. "
+                "Creating company OKRs or other members' OKRs requires an org admin."
+            )
+        return None
+
+    if owner_type != "agent" or owner_id != ctx["agent"].id:
+        return _okr_permission_denied(
+            "you can only create OKRs for yourself."
+        )
+    return None
+
+
+async def _update_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     """Update a KR's current_value. Only the owning agent may call this.
 
     Automatically writes an OKRProgressLog entry for history tracking.
@@ -10296,30 +10786,32 @@ async def _update_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -> st
         return f"Invalid kr_id format: {kr_id_str}"
 
     try:
-        from app.database import async_session
         from app.models.okr import OKRObjective, OKRKeyResult, OKRProgressLog
         from sqlalchemy import select as _select
         from datetime import datetime
 
         async with async_session() as db:
-            # Verify the KR belongs to this agent (via objective.owner_id)
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
             result = await db.execute(
                 _select(OKRKeyResult, OKRObjective)
                 .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
                 .where(
                     OKRKeyResult.id == kr_id,
-                    OKRObjective.owner_type == "agent",
-                    OKRObjective.owner_id == agent_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
                 )
             )
             row = result.first()
             if not row:
-                return (
-                    f"Key Result {kr_id_str} not found or does not belong to you. "
-                    "Use get_my_okr to retrieve your own KR IDs."
-                )
+                return f"Key Result {kr_id_str} not found in your organization."
 
             kr, obj = row
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
+
             prev_value = kr.current_value
             kr.current_value = float(value)
             kr.last_updated_at = datetime.utcnow()
@@ -10353,6 +10845,86 @@ async def _update_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -> st
     except Exception as e:
         logger.exception(f"[OKR] update_kr_progress failed for agent {agent_id}")
         return f"Failed to update KR progress: {str(e)[:200]}"
+
+
+async def _update_kr_content(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
+    """Update metadata/content fields of one of the caller's own KRs."""
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    kr_id_str = arguments.get("kr_id", "").strip()
+    if not kr_id_str:
+        return "Missing required argument 'kr_id'. Call get_my_okr first to get your KR IDs."
+
+    try:
+        kr_id = uuid.UUID(kr_id_str)
+    except ValueError:
+        return f"Invalid kr_id format: {kr_id_str}"
+
+    supported_fields = {
+        "title": arguments.get("title"),
+        "target_value": arguments.get("target_value"),
+        "unit": arguments.get("unit"),
+        "focus_ref": arguments.get("focus_ref"),
+        "status": arguments.get("status"),
+    }
+    provided_updates = {key: value for key, value in supported_fields.items() if value is not None}
+    if not provided_updates:
+        return "No KR content fields provided. You can update: title, target_value, unit, focus_ref, status."
+
+    try:
+        from app.models.okr import OKRObjective, OKRKeyResult
+        from sqlalchemy import select as _select
+
+        async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
+            result = await db.execute(
+                _select(OKRKeyResult, OKRObjective)
+                .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
+                .where(
+                    OKRKeyResult.id == kr_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            row = result.first()
+            if not row:
+                return f"Key Result {kr_id_str} not found in your organization."
+
+            kr, obj = row
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
+
+            changed_fields: list[str] = []
+            if "title" in provided_updates:
+                kr.title = str(provided_updates["title"]).strip()
+                changed_fields.append("title")
+            if "target_value" in provided_updates:
+                kr.target_value = float(provided_updates["target_value"])
+                changed_fields.append("target_value")
+            if "unit" in provided_updates:
+                kr.unit = str(provided_updates["unit"]).strip() or None
+                changed_fields.append("unit")
+            if "focus_ref" in provided_updates:
+                kr.focus_ref = str(provided_updates["focus_ref"]).strip() or None
+                changed_fields.append("focus_ref")
+            if "status" in provided_updates:
+                kr.status = str(provided_updates["status"]).strip()
+                changed_fields.append("status")
+
+            await db.commit()
+
+        return (
+            f"KR content updated: {kr.title}\n"
+            f"Changed fields: {', '.join(changed_fields)}"
+        )
+
+    except Exception as e:
+        logger.exception(f"[OKR] update_kr_content failed for agent {agent_id}")
+        return f"Failed to update KR content: {str(e)[:200]}"
 
 
 async def _collect_okr_progress(agent_id: uuid.UUID | None) -> str:
@@ -10488,7 +11060,7 @@ async def _get_okr_settings_tool(agent_id: uuid.UUID | None) -> str:
         return f"Failed to get OKR settings: {str(e)[:200]}"
 
 
-async def _create_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _create_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     if not agent_id:
         return "OKR tools require agent context."
     try:
@@ -10497,8 +11069,8 @@ async def _create_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
         from app.models.user import User as UserModel
         from app.models.org import OrgMember
         async with async_session() as db:
-            ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-            ag = ag_res.scalar_one_or_none()
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            ag = ctx["agent"]
             if not ag:
                 return "Agent not found."
 
@@ -10577,6 +11149,13 @@ async def _create_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
             if owner_type != "company" and not owner_id:
                return f"Failed: owner_id or owner_name is required for {owner_type} OKRs."
 
+            if not ctx["agent_is_system"] and owner_type == "agent" and owner_id is None:
+                owner_id = agent_id
+
+            permission_error = _can_create_okr_target(ctx, owner_type, owner_id)
+            if permission_error:
+                return permission_error
+
             obj = OKRObjective(
                 tenant_id=ag.tenant_id,
                 title=title,
@@ -10596,12 +11175,16 @@ async def _create_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
         return f"Failed to create objective: {str(e)[:200]}"
 
 
-async def _create_key_result(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _create_key_result(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     if not agent_id:
         return "OKR tools require agent context."
     try:
         from app.models.okr import OKRObjective, OKRKeyResult
         async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
             obj_id_str = arguments.get("objective_id")
             if not obj_id_str:
                 return "Missing objective_id"
@@ -10611,9 +11194,19 @@ async def _create_key_result(agent_id: uuid.UUID | None, arguments: dict) -> str
                 return "Invalid formatted objective_id (must be UUID)"
 
             # Verify objective exists
-            obj_res = await db.execute(select(OKRObjective).where(OKRObjective.id == obj_id))
-            if not obj_res.scalar_one_or_none():
+            obj_res = await db.execute(
+                select(OKRObjective).where(
+                    OKRObjective.id == obj_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            obj = obj_res.scalar_one_or_none()
+            if not obj:
                 return f"Objective {obj_id} not found."
+
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
 
             kr = OKRKeyResult(
                 objective_id=obj_id,
@@ -10631,19 +11224,23 @@ async def _create_key_result(agent_id: uuid.UUID | None, arguments: dict) -> str
         return f"Failed to create key result: {str(e)[:200]}"
 
 
-async def _update_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _update_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     """Update Objective metadata.
 
     Permission rules:
     - Regular agents: can only modify Objectives they own (owner_type='agent', owner_id=agent_id).
-    - System agents (OKR Agent, is_system=True): can modify any Objective.
+    - System agents are constrained by the requesting user's role: admins can modify any OKR,
+      non-admins may only modify their own personal OKRs.
     """
     if not agent_id:
         return "OKR tools require agent context."
     try:
-        from app.models.agent import Agent as AgentModel
         from app.models.okr import OKRObjective
         async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
             obj_id_str = arguments.get("objective_id")
             if not obj_id_str:
                 return "Missing objective_id"
@@ -10652,21 +11249,19 @@ async def _update_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
             except ValueError:
                 return "Invalid formatted objective_id (must be UUID)"
 
-            obj_res = await db.execute(select(OKRObjective).where(OKRObjective.id == obj_id))
+            obj_res = await db.execute(
+                select(OKRObjective).where(
+                    OKRObjective.id == obj_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
             obj = obj_res.scalar_one_or_none()
             if not obj:
                 return f"Objective {obj_id} not found."
 
-            # Permission check: non-system agents can only update their own O.
-            ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-            ag = ag_res.scalar_one_or_none()
-            is_system = bool(ag and ag.is_system)
-            if not is_system:
-                if not (obj.owner_type == "agent" and obj.owner_id == agent_id):
-                    return (
-                        "Permission denied: you can only update your own Objectives. "
-                        "Use get_my_okr to retrieve your own objective IDs."
-                    )
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
 
             updates = []
             if "title" in arguments:
@@ -10697,14 +11292,17 @@ async def _update_objective(agent_id: uuid.UUID | None, arguments: dict) -> str:
         return f"Failed to update objective: {str(e)[:200]}"
 
 
-async def _update_any_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -> str:
+async def _update_any_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
     """OKR Agent exclusive version of update_kr_progress."""
     if not agent_id:
         return "OKR tools require agent context."
     try:
-        from app.models.agent import Agent as AgentModel
-        from app.models.okr import OKRKeyResult, OKRProgressLog
+        from app.models.okr import OKRKeyResult, OKRObjective, OKRProgressLog
         async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
             kr_id_str = arguments.get("kr_id")
             val = arguments.get("value")
             if not kr_id_str or val is None:
@@ -10714,13 +11312,22 @@ async def _update_any_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -
             except ValueError:
                 return "Invalid formatted kr_id (must be UUID)"
 
-            kr_res = await db.execute(select(OKRKeyResult).where(OKRKeyResult.id == kr_id))
-            kr = kr_res.scalar_one_or_none()
-            if not kr:
-                return f"Key Result {kr_id} not found."
+            kr_res = await db.execute(
+                select(OKRKeyResult, OKRObjective)
+                .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
+                .where(
+                    OKRKeyResult.id == kr_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            row = kr_res.first()
+            if not row:
+                return f"Key Result {kr_id} not found in your organization."
 
-            ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-            ag = ag_res.scalar_one_or_none()
+            kr, obj = row
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
 
             old_val = kr.current_value
             kr.current_value = float(val)
@@ -10748,7 +11355,7 @@ async def _update_any_kr_progress(agent_id: uuid.UUID | None, arguments: dict) -
                 kr_id=kr.id,
                 previous_value=old_val,
                 new_value=kr.current_value,
-                source="okr_agent" if (ag and ag.is_system) else "agent",
+                source="okr_agent" if ctx["agent_is_system"] else "agent",
                 note=note
             )
             db.add(log_entry)

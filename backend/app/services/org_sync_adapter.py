@@ -21,14 +21,113 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.identity import IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
 from app.models.user import User, Identity
-from pypinyin import pinyin, lazy_pinyin, Style
-from anyascii import anyascii as _anyascii
+
+try:
+    from anyascii import anyascii as _anyascii
+except ImportError:  # pragma: no cover - lightweight fallback for minimal test envs
+    def _anyascii(value: str) -> str:
+        return value
+
+try:
+    from pypinyin import Style, lazy_pinyin, pinyin
+except ImportError:  # pragma: no cover - lightweight fallback for minimal test envs
+    class Style:
+        FIRST_LETTER = "first_letter"
+
+    def lazy_pinyin(value: str, errors: str = "default") -> list[str]:
+        ascii_value = _anyascii(value)
+        return list(ascii_value) if ascii_value else list(value)
+
+    def pinyin(value: str, style: str | None = None) -> list[list[str]]:
+        ascii_value = _anyascii(value) or value
+        if style == Style.FIRST_LETTER:
+            return [[ch.lower()] for ch in ascii_value if ch.strip()]
+        return [[ascii_value]]
 
 from app.config import get_settings
 from app.core.security import decrypt_data, hash_password
 from app.services.auth_provider import GoogleWorkspaceAuthProvider
 from app.services.google_workspace_oauth import GOOGLE_HTTP_PROXY
 from jose import jwt
+
+
+def build_department_path_map(departments: list[OrgDepartment]) -> dict[uuid.UUID, str]:
+    """Build department name paths by walking the internal department tree."""
+    dept_by_id = {dept.id: dept for dept in departments}
+    paths: dict[uuid.UUID, str] = {}
+
+    def is_virtual_root(dept: OrgDepartment) -> bool:
+        return not dept.parent_id and str(getattr(dept, "external_id", "") or "") == "0"
+
+    def compute_path(dept_id: uuid.UUID, visited: set[uuid.UUID] | None = None) -> str:
+        if dept_id in paths:
+            return paths[dept_id]
+        if visited is None:
+            visited = set()
+        if dept_id in visited:
+            dept = dept_by_id.get(dept_id)
+            fallback = (dept.name if dept else "") or ""
+            paths[dept_id] = fallback
+            return fallback
+
+        visited.add(dept_id)
+        dept = dept_by_id.get(dept_id)
+        if not dept:
+            return ""
+
+        if is_virtual_root(dept):
+            paths[dept_id] = ""
+            return ""
+
+        name = (dept.name or "").strip()
+        if not dept.parent_id or dept.parent_id not in dept_by_id:
+            paths[dept_id] = name
+            return name
+
+        parent_path = compute_path(dept.parent_id, visited)
+        full_path = f"{parent_path}/{name}" if parent_path else name
+        paths[dept_id] = full_path
+        return full_path
+
+    for dept in departments:
+        compute_path(dept.id)
+
+    return paths
+
+
+async def derive_member_department_paths(
+    db: AsyncSession,
+    members: list[OrgMember],
+) -> dict[uuid.UUID, str]:
+    """Resolve member department paths from department_id via the department tree."""
+    dept_ids = {member.department_id for member in members if member.department_id}
+    if not dept_ids:
+        return {}
+
+    departments: dict[uuid.UUID, OrgDepartment] = {}
+    pending_ids = set(dept_ids)
+
+    while pending_ids:
+        result = await db.execute(
+            select(OrgDepartment).where(OrgDepartment.id.in_(pending_ids))
+        )
+        batch = result.scalars().all()
+        if not batch:
+            break
+
+        next_pending: set[uuid.UUID] = set()
+        for department in batch:
+            departments[department.id] = department
+            if department.parent_id and department.parent_id not in departments:
+                next_pending.add(department.parent_id)
+        pending_ids = next_pending
+
+    dept_path_map = build_department_path_map(list(departments.values()))
+
+    return {
+        member.id: dept_path_map.get(member.department_id, member.department_path or "")
+        for member in members
+    }
 
 
 def _normalize_contact(value: str | None) -> str | None:
@@ -159,6 +258,9 @@ class BaseOrgSyncAdapter(ABC):
                     errors.append(f"Department {dept.external_id}: {str(e)}")
                     logger.error(f"[OrgSync] Failed to sync department {dept.external_id}: {e}")
 
+            await self._rebuild_department_paths(db, provider.id)
+            await db.flush()
+
             # Fetch and sync users (from all departments)
             for dept in departments:
                 try:
@@ -182,6 +284,9 @@ class BaseOrgSyncAdapter(ABC):
                         partial_failure = True
                         logger.error(f"[OrgSync] Failed to sync member {user.external_id} ({user.name}): {e}")
                         errors.append(f"Member {user.external_id}: {str(e)}")
+
+            await self._refresh_member_department_paths(db, provider.id)
+            await db.flush()
 
             # Update provider metadata if possible
             if self.provider:
@@ -353,7 +458,8 @@ class BaseOrgSyncAdapter(ABC):
         existing = result.scalars().first()
 
         now = datetime.now()
-        path = f"{dept.parent_external_id}/{dept.name}" if dept.parent_external_id else dept.name
+        # Path is rebuilt from the internal department tree after sync.
+        path = dept.name
 
         # Resolve parent_id from parent_external_id
         parent_id = None
@@ -391,6 +497,38 @@ class BaseOrgSyncAdapter(ABC):
             db.add(new_dept)
 
         await db.flush()
+
+    async def _rebuild_department_paths(self, db: AsyncSession, provider_id: uuid.UUID) -> dict[uuid.UUID, str]:
+        """Normalize OrgDepartment.path using parent_id/name reverse derivation."""
+        result = await db.execute(
+            select(OrgDepartment).where(OrgDepartment.provider_id == provider_id)
+        )
+        departments = result.scalars().all()
+        path_map = build_department_path_map(departments)
+
+        for dept in departments:
+            dept.path = path_map.get(dept.id, (dept.name or "").strip())
+
+        return path_map
+
+    async def _refresh_member_department_paths(self, db: AsyncSession, provider_id: uuid.UUID):
+        """Refresh OrgMember.department_path from the normalized department tree."""
+        dept_result = await db.execute(
+            select(OrgDepartment).where(OrgDepartment.provider_id == provider_id)
+        )
+        departments = dept_result.scalars().all()
+        dept_path_map = build_department_path_map(departments)
+
+        member_result = await db.execute(
+            select(OrgMember).where(OrgMember.provider_id == provider_id)
+        )
+        members = member_result.scalars().all()
+
+        for member in members:
+            if member.department_id:
+                member.department_path = dept_path_map.get(member.department_id, member.department_path or "")
+            else:
+                member.department_path = member.department_path or ""
 
     async def _upsert_member(
         self,
@@ -771,14 +909,28 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                         f"Feishu fetch users error for dept {department_external_id}: "
                         f"code={error_code}, msg={error_msg}"
                     )
-                    raise RuntimeError(
-                        f"Feishu API error (code {error_code}): {error_msg}. "
-                        f"Access denied. One of the following scopes is required: "
-                        f"[contact:user.employee_id:readonly]. "
-                        f"Please enable this permission in Feishu Open Platform -> App -> "
-                        f"Permissions -> search 'employee_id' -> enable and publish a new version. "
-                        f"Note: unlike DingTalk, Feishu permissions require app re-publishing to take effect."
-                    )
+                    # Provide targeted guidance based on error code
+                    if error_code == 40060:
+                        # 40060 = "no dept authority": the app has correct API scopes
+                        # but lacks DATA-level access to this department.
+                        guidance = (
+                            f"Feishu API error (code {error_code}): {error_msg}. "
+                            f"The app does not have data access to this department. "
+                            f"Please go to Feishu Open Platform -> App -> Permissions -> "
+                            f"Data Permissions (数据权限) -> Contact Scope (通讯录权限范围) -> "
+                            f"set to 'All Employees' (全部员工) or add the required departments. "
+                            f"After changing, you must publish a new app version for it to take effect."
+                        )
+                    else:
+                        guidance = (
+                            f"Feishu API error (code {error_code}): {error_msg}. "
+                            f"One of the following scopes may be required: "
+                            f"[contact:user.employee_id:readonly]. "
+                            f"Please enable this permission in Feishu Open Platform -> App -> "
+                            f"Permissions -> search 'employee_id' -> enable and publish a new version. "
+                            f"Note: unlike DingTalk, Feishu permissions require app re-publishing to take effect."
+                        )
+                    raise RuntimeError(guidance)
 
                 res_data = data.get("data", {})
                 items = res_data.get("items", []) or []

@@ -254,6 +254,8 @@
       "humanRelationships": "人类关系",
       "agentRelationships": "数字员工关系",
       "searchMembers": "搜索组织架构成员...",
+      "searchAgents": "搜索可见数字员工...",
+      "noSearchResults": "没有可添加的结果",
       "noRelationships": "暂无关系",
       "addRelationship": "添加关系",
       "alreadyAdded": "已添加",

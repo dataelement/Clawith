@@ -314,10 +314,13 @@ export default function Layout() {
         const data = await res.json();
         if (data.redirect_url) {
             localStorage.setItem('token', data.access_token);
-            window.location.href = data.redirect_url;
+            const targetUrl = new URL(data.redirect_url, window.location.origin);
+            targetUrl.pathname = '/';
+            targetUrl.hash = '';
+            window.location.href = targetUrl.toString();
         } else if (data.access_token) {
             localStorage.setItem('token', data.access_token);
-            window.location.reload();
+            window.location.href = '/';
         }
     };
 

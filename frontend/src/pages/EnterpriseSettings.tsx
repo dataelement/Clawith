@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi, skillApi } from '../services/api';
@@ -2026,18 +2026,67 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
     const { i18n } = useTranslation();
     // Derive language from i18n — same pattern as OKR.tsx
     const zh = i18n.language?.startsWith('zh');
+    const okrSaveTimerRef = useRef<number | null>(null);
+    const [okrSaveState, setOkrSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+    const [okrSaveError, setOkrSaveError] = useState('');
+    const [dailyTestState, setDailyTestState] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
+    const [dailyTestMessage, setDailyTestMessage] = useState('');
 
     const { data: settings, isLoading } = useQuery({
         queryKey: ['okr-settings', tenantId],
         queryFn: () => fetchJson<any>('/okr/settings')
     });
+    const { data: tenantInfo } = useQuery({
+        queryKey: ['tenant-timezone', tenantId],
+        queryFn: () => fetchJson<any>(`/tenants/${tenantId}`),
+        enabled: !!tenantId,
+    });
     const updateSettings = useMutation({
         mutationFn: (data: any) => fetchJson('/okr/settings', { method: 'PUT', body: JSON.stringify(data) }),
-        onSuccess: () => qc.invalidateQueries({ queryKey: ['okr-settings'] }),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['okr-settings'] });
+            setOkrSaveState('saved');
+            if (okrSaveTimerRef.current) window.clearTimeout(okrSaveTimerRef.current);
+            okrSaveTimerRef.current = window.setTimeout(() => {
+                setOkrSaveState('idle');
+                okrSaveTimerRef.current = null;
+            }, 1800);
+        },
         onError: (error: any) => {
-            alert(error?.message || (zh ? '保存失败，请重试' : 'Save failed, please retry'));
+            setOkrSaveState('error');
+            setOkrSaveError(error?.message || (zh ? '保存失败，请重试' : 'Save failed, please retry'));
         },
     });
+
+    useEffect(() => () => {
+        if (okrSaveTimerRef.current) window.clearTimeout(okrSaveTimerRef.current);
+    }, []);
+
+    const saveOkrSettings = (nextSettings: any) => {
+        if (okrSaveTimerRef.current) {
+            window.clearTimeout(okrSaveTimerRef.current);
+            okrSaveTimerRef.current = null;
+        }
+        setOkrSaveError('');
+        setOkrSaveState('saving');
+        updateSettings.mutate(nextSettings);
+    };
+
+    const runDailyCollectionTest = async () => {
+        setDailyTestState('running');
+        setDailyTestMessage('');
+        try {
+            const result = await fetchJson<any>('/okr/trigger-daily-collection', { method: 'POST' });
+            setDailyTestState('success');
+            setDailyTestMessage(
+                result?.message || (zh ? '测试收集已触发。' : 'Daily collection test triggered.')
+            );
+            qc.invalidateQueries({ queryKey: ['okr-members-without-okr-settings'] });
+        } catch (error: any) {
+            setDailyTestState('error');
+            setDailyTestMessage(error?.message || (zh ? '测试触发失败，请重试。' : 'Failed to trigger the test collection.'));
+        }
+    };
 
     // Fetch members-without-okr to get okr_agent_id and company_okr_exists for the guidance card
     const { data: membersData } = useQuery({
@@ -2050,6 +2099,7 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
     if (isLoading) return <div style={{ padding: '20px' }}>{t('common.loading', 'Loading...')}</div>;
     const s = settings || { enabled: false, first_enabled_at: null, daily_report_enabled: false, daily_report_time: '18:00', daily_report_skip_non_workdays: true, weekly_report_enabled: false, weekly_report_day: 0, period_frequency: 'quarterly', period_length_days: null, period_frequency_locked: false };
     const periodFrequencyLocked = !!s.period_frequency_locked || !!s.first_enabled_at;
+    const effectiveTimezone = tenantInfo?.timezone || 'UTC';
 
     // Primary source: /settings now embeds okr_agent_id directly.
     // Fallback to members-without-okr response for backward compat.
@@ -2078,7 +2128,7 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                             <input
                                 type="checkbox"
                                 checked={s.enabled}
-                                onChange={(e) => updateSettings.mutate({ ...s, enabled: e.target.checked })}
+                                onChange={(e) => saveOkrSettings({ ...s, enabled: e.target.checked })}
                                 style={{ opacity: 0, width: 0, height: 0 }}
                             />
                             <span style={{
@@ -2105,7 +2155,7 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                             <select
                                 className="form-input"
                                 value={s.period_frequency}
-                                onChange={(e) => updateSettings.mutate({ ...s, period_frequency: e.target.value })}
+                                onChange={(e) => saveOkrSettings({ ...s, period_frequency: e.target.value })}
                                 style={{ maxWidth: '300px', cursor: 'pointer' }}
                             >
                                 <option value="quarterly">{zh ? '按季度' : 'Quarterly'}</option>
@@ -2114,6 +2164,24 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                         </div>
                     )}
                 </div>
+
+                {okrSaveState !== 'idle' && (
+                    <div
+                        style={{
+                            padding: '10px 20px 0',
+                            fontSize: '12px',
+                            color: okrSaveState === 'error'
+                                ? 'var(--danger, #dc2626)'
+                                : okrSaveState === 'saved'
+                                    ? 'var(--success, #16a34a)'
+                                    : 'var(--text-tertiary)',
+                        }}
+                    >
+                        {okrSaveState === 'saving' && (zh ? '正在保存 OKR 设置...' : 'Saving OKR settings...')}
+                        {okrSaveState === 'saved' && (zh ? 'OKR 设置已保存' : 'OKR settings saved')}
+                        {okrSaveState === 'error' && okrSaveError}
+                    </div>
+                )}
 
                 {s.enabled && (
                     <div style={{ padding: '20px' }}>
@@ -2259,7 +2327,7 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                                 title={periodFrequencyLocked
                                     ? (zh ? 'OKR 周期已锁定，不能修改' : 'OKR cadence is locked and cannot be changed')
                                     : undefined}
-                                onChange={(e) => updateSettings.mutate({ ...s, period_frequency: e.target.value })}
+                                onChange={(e) => saveOkrSettings({ ...s, period_frequency: e.target.value })}
                                 style={{
                                     maxWidth: '300px',
                                     opacity: periodFrequencyLocked ? 0.65 : 1,
@@ -2284,7 +2352,7 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                                 <input
                                     type="checkbox"
                                     checked={s.daily_report_enabled}
-                                    onChange={(e) => updateSettings.mutate({ ...s, daily_report_enabled: e.target.checked })}
+                                    onChange={(e) => saveOkrSettings({ ...s, daily_report_enabled: e.target.checked })}
                                 />
                                 <div>
                                     <div style={{ fontWeight: 500, fontSize: '13px' }}>
@@ -2304,7 +2372,7 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                                         <input
                                             type="checkbox"
                                             checked={s.daily_report_skip_non_workdays ?? true}
-                                            onChange={(e) => updateSettings.mutate({ ...s, daily_report_skip_non_workdays: e.target.checked })}
+                                            onChange={(e) => saveOkrSettings({ ...s, daily_report_skip_non_workdays: e.target.checked })}
                                         />
                                         {zh ? '自动跳过休息日' : 'Skip non-workdays automatically'}
                                     </label>
@@ -2316,10 +2384,51 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                                         type="time"
                                         className="form-input"
                                         value={s.daily_report_time}
-                                        onChange={(e) => updateSettings.mutate({ ...s, daily_report_time: e.target.value })}
+                                        onChange={(e) => saveOkrSettings({ ...s, daily_report_time: e.target.value })}
                                         style={{ width: '120px' }}
                                     />
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        onClick={runDailyCollectionTest}
+                                        disabled={dailyTestState === 'running'}
+                                        style={{ padding: '6px 12px', fontSize: '12px' }}
+                                    >
+                                        {dailyTestState === 'running'
+                                            ? (zh ? '测试中...' : 'Testing...')
+                                            : (zh ? '立即测试收集' : 'Test Collection Now')}
+                                    </button>
                                     </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6, maxWidth: '560px' }}>
+                                        {zh
+                                            ? `当前按公司时区 ${effectiveTimezone} 执行定时收集。`
+                                            : `Scheduled collection currently follows the company timezone: ${effectiveTimezone}.`}
+                                    </div>
+                                    {effectiveTimezone === 'UTC' && (
+                                        <div style={{ fontSize: '12px', color: 'var(--warning, #d97706)', lineHeight: 1.6, maxWidth: '560px' }}>
+                                            {zh
+                                                ? '你当前公司时区还是 UTC。如果你希望按中国时间触发，请先到“公司信息”里把国家/地区调整为中国或把公司时区改成 Asia/Shanghai。'
+                                                : 'Your company timezone is still UTC. If you expect China local time, update Company Info to China / Asia/Shanghai first.'}
+                                        </div>
+                                    )}
+                                    {dailyTestState !== 'idle' && (
+                                        <div
+                                            style={{
+                                                fontSize: '12px',
+                                                color: dailyTestState === 'error'
+                                                    ? 'var(--danger, #dc2626)'
+                                                    : dailyTestState === 'success'
+                                                        ? 'var(--success, #16a34a)'
+                                                        : 'var(--text-tertiary)',
+                                                lineHeight: 1.6,
+                                                maxWidth: '560px',
+                                            }}
+                                        >
+                                            {dailyTestMessage || (dailyTestState === 'running'
+                                                ? (zh ? '正在触发一次测试收集...' : 'Triggering a test collection...')
+                                                : '')}
+                                        </div>
+                                    )}
                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.6, maxWidth: '560px' }}>
                                         {zh
                                             ? '每天到这个时间后，OKR Agent 会开始向成员收集当天日报。公司日报固定在次日 09:00 生成；公司周报固定在周一 09:00 生成；公司月报固定在每月 1 日 09:00 生成。'

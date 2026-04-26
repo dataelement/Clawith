@@ -22,6 +22,7 @@ from app.models.user import User
 from app.models.workspace import WorkspaceFileRevision
 from app.services.workspace_collaboration import (
     acquire_edit_lock,
+    content_hash,
     list_revisions,
     read_text_if_exists,
     record_revision,
@@ -145,13 +146,23 @@ def _file_kind(path: str) -> str:
         return "pdf"
     if ext in {".xlsx", ".xls"}:
         return "xlsx"
-    if ext == ".docx":
+    if ext in {".docx", ".doc"}:
         return "docx"
-    if ext == ".pptx":
+    if ext in {".pptx", ".ppt"}:
         return "pptx"
     if ext in {".txt", ".log", ".json"}:
         return "text"
+    if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}:
+        return "image"
     return "binary"
+
+
+def _find_companion_text_preview(target: Path) -> Path | None:
+    for suffix in (".md", ".txt"):
+        candidate = target.with_suffix(suffix)
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
 
 
 def _extract_document_text(target: Path, kind: str) -> str:
@@ -192,6 +203,31 @@ def _extract_document_text(target: Path, kind: str) -> str:
     return ""
 
 
+def _detect_csv_delimiter(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()][:10]
+    if not lines:
+        return ","
+    candidates = [",", "，", ";", "\t", "|"]
+    scores = {
+        candidate: sum(line.count(candidate) for line in lines)
+        for candidate in candidates
+    }
+    return max(scores, key=scores.get) if any(scores.values()) else ","
+
+
+def _parse_csv_rows(text: str) -> list[list[str]]:
+    delimiter = _detect_csv_delimiter(text)
+    rows = list(csv.reader(io.StringIO(text), delimiter=delimiter))
+    normalized: list[list[str]] = []
+    for row in rows[:500]:
+        values = list(row)
+        while values and not str(values[-1] or "").strip():
+            values.pop()
+        if values:
+            normalized.append(values)
+    return normalized
+
+
 @router.get("/preview")
 async def preview_file(
     agent_id: uuid.UUID,
@@ -216,16 +252,18 @@ async def preview_file(
             "kind": kind,
             "mime_type": mime_type,
             "content": content or "",
+            "content_hash": content_hash(content or ""),
             "download_url": download_url,
         }
     if kind == "csv":
         content = await read_text_if_exists(target) or ""
-        rows = list(csv.reader(io.StringIO(content)))
+        rows = _parse_csv_rows(content)
         return {
             "path": path,
             "kind": kind,
             "mime_type": mime_type,
             "content": content,
+            "content_hash": content_hash(content),
             "rows": rows[:500],
             "download_url": download_url,
         }
@@ -237,12 +275,64 @@ async def preview_file(
             "url": download_url,
             "download_url": download_url,
         }
-    if kind in {"xlsx", "docx", "pptx"}:
+    if kind == "xlsx":
+        try:
+            from openpyxl import load_workbook
+
+            wb = load_workbook(target, read_only=True, data_only=True)
+            sheets = []
+            for ws in wb.worksheets[:5]:
+                rows = []
+                for row in ws.iter_rows(max_row=120, max_col=30, values_only=True):
+                    values = ["" if cell is None else str(cell) for cell in row]
+                    while values and not str(values[-1] or "").strip():
+                        values.pop()
+                    if any(value.strip() for value in values):
+                        rows.append(values)
+                sheets.append({
+                    "title": ws.title,
+                    "rows": rows,
+                })
+            wb.close()
+            return {
+                "path": path,
+                "kind": kind,
+                "mime_type": mime_type,
+                "text": _extract_document_text(target, kind),
+                "sheets": sheets,
+                "download_url": download_url,
+            }
+        except Exception as exc:
+            return {
+                "path": path,
+                "kind": kind,
+                "mime_type": mime_type,
+                "text": f"Preview extraction failed: {str(exc)[:200]}",
+                "download_url": download_url,
+            }
+    if kind in {"docx", "pptx"}:
+        extracted_text = _extract_document_text(target, kind)
+        companion = _find_companion_text_preview(target)
+        companion_content = await read_text_if_exists(companion) if companion is not None else None
         return {
             "path": path,
             "kind": kind,
             "mime_type": mime_type,
-            "text": _extract_document_text(target, kind),
+            "text": companion_content or extracted_text,
+            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())) if companion is not None else None,
+            "download_url": download_url,
+        }
+
+    companion = _find_companion_text_preview(target)
+    if companion is not None:
+        content = await read_text_if_exists(companion)
+        return {
+            "path": path,
+            "kind": "text",
+            "mime_type": "text/markdown" if companion.suffix.lower() == ".md" else "text/plain",
+            "content": content or "",
+            "content_hash": content_hash(content or ""),
+            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())),
             "download_url": download_url,
         }
 
@@ -518,6 +608,7 @@ from fastapi import File as FastFile, UploadFile as UploadFileType
 
 
 upload_router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
+DEFAULT_UPLOAD_DIR = "workspace/uploads"
 
 
 @upload_router.post("/upload")
@@ -531,12 +622,16 @@ async def upload_file_to_workspace(
     """Upload a binary file to agent workspace."""
     await check_agent_access(db, current_user, agent_id)
 
+    normalized_path = (path or "").strip().strip("/")
+    if not normalized_path or normalized_path == ".":
+        normalized_path = DEFAULT_UPLOAD_DIR
+
     # Validate path prefix
-    if not path.startswith(("workspace/", "skills/")):
-        raise HTTPException(status_code=400, detail="只能上传到 workspace/ 或 skills/ 目录")
+    if normalized_path not in {"workspace", "skills"} and not normalized_path.startswith(("workspace/", "skills/")):
+        raise HTTPException(status_code=400, detail="右侧根目录视图是 agent 根目录；上传文件时请放到 workspace/ 或 skills/ 目录下")
 
     base = _agent_base_dir(agent_id)
-    target_dir = (base / path).resolve()
+    target_dir = (base / normalized_path).resolve()
     if not str(target_dir).startswith(str(base.resolve())):
         raise HTTPException(status_code=403, detail="Path traversal not allowed")
 
@@ -560,8 +655,8 @@ async def upload_file_to_workspace(
 
     return {
         "status": "ok",
-        "path": f"{path}/{filename}",
-        "url": f"/api/agents/{agent_id}/files/download?path={path}/{filename}",
+        "path": f"{normalized_path}/{filename}",
+        "url": f"/api/agents/{agent_id}/files/download?path={normalized_path}/{filename}",
         "filename": filename,
         "size": len(content),
         "extracted_text_path": extracted_path,
