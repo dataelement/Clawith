@@ -38,8 +38,8 @@ steps:
       - git clone --no-single-branch https://github.com/dataelement/Clawith.git .
       - git fetch --tags
       - git checkout $DRONE_COMMIT
-      - echo "当前 commit: $(git log --oneline -1)"
-      - echo "上一个 tag: $(git describe --tags --abbrev=0 2>/dev/null || echo '无 tag')"
+      - echo "当前 commit $(git log --oneline -1)"
+      - echo "上一个 tag $(git describe --tags --abbrev=0 2>/dev/null || echo '无 tag')"
 
   # --------------------------------------------------------
   # Step 2: 构建新旧版本 Docker 镜像
@@ -61,9 +61,9 @@ steps:
     commands:
       - echo "========================================"
       - echo "开始构建 Docker 镜像"
-      - echo "事件: $DRONE_BUILD_EVENT"
-      - echo "目标分支: $DRONE_BRANCH"
-      - echo "提交: $DRONE_COMMIT_SHORT"
+      - echo "事件 $DRONE_BUILD_EVENT"
+      - echo "目标分支 $DRONE_BRANCH"
+      - echo "提交 $DRONE_COMMIT_SHORT"
       - echo "========================================"
 
       # 获取上一个 tag
@@ -80,8 +80,9 @@ steps:
           echo "当前版本镜像构建完成"
           exit 0
         fi
-      - echo "上一个 tag: $PREV_TAG"
-      - echo "SKIP_UPGRADE_TEST=false" > .env.drone
+      - echo "上一个 tag $PREV_TAG"
+      - |
+        echo "SKIP_UPGRADE_TEST=false" > .env.drone
 
       # --- 构建旧版本镜像 ---
       - echo "--- 构建旧版本镜像 ($PREV_TAG) ---"
@@ -177,7 +178,7 @@ steps:
       command_timeout: 10m
       script:
         - echo "========================================"
-        - echo "部署测试: 全新部署验证"
+        - echo "部署测试 全新部署验证"
         - echo "========================================"
         - CI_DIR=/opt/server/clawith-ci
         - DEPLOY_DIR=/opt/server/clawith-private
@@ -221,9 +222,9 @@ steps:
         - echo "检查数据库迁移状态..."
         - |
           MIGRATION_LOG=$(docker compose logs --tail=200 backend 2>&1)
-          if echo "$MIGRATION_LOG" | grep -qi "migration.*FAIL\|alembic.*error"; then
+          if echo "$MIGRATION_LOG" | grep -Eqi "migration.*FAIL|alembic.*error"; then
             echo "❌ 部署测试失败: 检测到数据库迁移失败"
-            echo "$MIGRATION_LOG" | grep -i "migration\|alembic\|error\|FAIL"
+            echo "$MIGRATION_LOG" | grep -Ei "migration|alembic|error|FAIL"
             exit 1
           fi
         - echo "✅ 数据库迁移正常"
@@ -284,7 +285,7 @@ steps:
       command_timeout: 15m
       script:
         - echo "========================================"
-        - echo "升级测试: 旧版 → 新版数据库迁移验证"
+        - echo "升级测试 旧版 → 新版数据库迁移验证"
         - echo "========================================"
         - CI_DIR=/opt/server/clawith-ci
 
@@ -314,7 +315,7 @@ steps:
         # ==============================================
         - echo ""
         - echo "=========================================="
-        - echo "阶段 1: 部署旧版本"
+        - echo "阶段 1 部署旧版本"
         - echo "=========================================="
         - cd /opt/server/clawith-private
 
@@ -331,15 +332,16 @@ steps:
 
         # 启动旧版 backend (纯镜像运行，无 volume mounts)
         - echo "启动旧版 backend..."
-        - docker run -d --name backend-upgrade-test
-            --network clawith_network
-            -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
-            -e REDIS_URL=redis://redis:6379/0
-            -e AGENT_DATA_DIR=/data/agents
-            -e AGENT_TEMPLATE_DIR=/app/agent_template
-            -e SECRET_KEY=ci-test-secret
-            -e JWT_SECRET_KEY=ci-test-jwt-secret
-            -e CORS_ORIGINS='["*"]'
+        - |
+          docker run -d --name backend-upgrade-test \
+            --network clawith_network \
+            -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith \
+            -e REDIS_URL=redis://redis:6379/0 \
+            -e AGENT_DATA_DIR=/data/agents \
+            -e AGENT_TEMPLATE_DIR=/app/agent_template \
+            -e SECRET_KEY=ci-test-secret \
+            -e JWT_SECRET_KEY=ci-test-jwt-secret \
+            -e CORS_ORIGINS='["*"]' \
             clawith-backend:old
 
         # 等待旧版启动
@@ -371,20 +373,21 @@ steps:
         # ==============================================
         - echo ""
         - echo "=========================================="
-        - echo "阶段 2: 升级到新版本"
+        - echo "阶段 2 升级到新版本"
         - echo "=========================================="
 
         # 启动新版 backend (连接同一个 postgres)
         - echo "启动新版 backend (将执行 alembic upgrade head)..."
-        - docker run -d --name backend-upgrade-test
-            --network clawith_network
-            -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
-            -e REDIS_URL=redis://redis:6379/0
-            -e AGENT_DATA_DIR=/data/agents
-            -e AGENT_TEMPLATE_DIR=/app/agent_template
-            -e SECRET_KEY=ci-test-secret
-            -e JWT_SECRET_KEY=ci-test-jwt-secret
-            -e CORS_ORIGINS='["*"]'
+        - |
+          docker run -d --name backend-upgrade-test \
+            --network clawith_network \
+            -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith \
+            -e REDIS_URL=redis://redis:6379/0 \
+            -e AGENT_DATA_DIR=/data/agents \
+            -e AGENT_TEMPLATE_DIR=/app/agent_template \
+            -e SECRET_KEY=ci-test-secret \
+            -e JWT_SECRET_KEY=ci-test-jwt-secret \
+            -e CORS_ORIGINS='["*"]' \
             clawith-backend:new
 
         # 等待新版启动 (包含迁移时间)
@@ -406,10 +409,10 @@ steps:
         - echo "检查数据库迁移状态..."
         - |
           UPGRADE_LOG=$(docker logs --tail=300 backend-upgrade-test 2>&1)
-          if echo "$UPGRADE_LOG" | grep -qi "migration.*FAIL\|alembic.*error\|WARNING.*migration"; then
+          if echo "$UPGRADE_LOG" | grep -Eqi "migration.*FAIL|alembic.*error|WARNING.*migration"; then
             echo "❌ 升级测试失败: 检测到数据库迁移异常"
             echo "--- 迁移相关日志 ---"
-            echo "$UPGRADE_LOG" | grep -i "migration\|alembic\|error\|FAIL\|WARNING"
+            echo "$UPGRADE_LOG" | grep -Ei "migration|alembic|error|FAIL|WARNING"
             docker rm -f backend-upgrade-test
             docker compose down -v --remove-orphans
             exit 1
