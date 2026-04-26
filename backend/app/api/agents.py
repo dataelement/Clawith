@@ -138,49 +138,58 @@ async def list_agents(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all agents the current user has access to."""
-    # platform_admin & org_admin see all agents (optionally filtered by tenant)
-    if current_user.role in ("platform_admin", "org_admin"):
-        stmt = select(Agent)
-        if tenant_id:
-            stmt = stmt.where(Agent.tenant_id == tenant_id)
-        result = await db.execute(stmt.order_by(Agent.created_at.desc()))
-        agents = result.scalars().all()
-        # Lazy reset token counters
-        needs_flush = False
-        for a in agents:
-            if await _lazy_reset_token_counters(a, db):
-                needs_flush = True
-        if needs_flush:
-            await db.commit()
-        return [AgentOut.model_validate(a) for a in agents]
-
-    # agent_admin sees their own created agents + permitted
-    # member sees only permitted
-    # All scoped to user's tenant
+    """List all agents the current user has access to.
+    
+    All users (including admins) only see agents they have permission to access.
+    Agents with scope_type='user' and scope_id=creator are only visible to the creator.
+    """
     user_tenant = current_user.tenant_id
 
-    # Get agents user created (within their tenant)
-    created = select(Agent).where(Agent.creator_id == current_user.id, Agent.tenant_id == user_tenant)
+    # Build the permission filter:
+    # 1. Agents the user created
+    # 2. Agents with scope_type='company' (visible to all in tenant)
+    # 3. Agents with scope_type='user' where user is in scope_ids
+    created = select(Agent).where(
+        Agent.creator_id == current_user.id,
+        Agent.tenant_id == user_tenant
+    )
 
-    # Get agents user has permission to (within their tenant)
-    permitted_ids = (
+    # Get agents with company-wide visibility
+    company_ids = (
         select(AgentPermission.agent_id)
         .where(
-            (AgentPermission.scope_type == "company")
-            | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
+            AgentPermission.scope_type == "company",
+            AgentPermission.agent_id.in_(
+                select(Agent.id).where(Agent.tenant_id == user_tenant)
+            )
         )
     )
-    permitted = select(Agent).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
 
-    # Union
-    from sqlalchemy import union_all
-
-    combined = union_all(created, permitted).subquery()
-    result = await db.execute(
-        select(Agent).where(Agent.id.in_(select(combined.c.id))).order_by(Agent.created_at.desc())
+    # Get agents with user-specific visibility where user is in scope
+    user_permitted_ids = (
+        select(AgentPermission.agent_id)
+        .where(
+            (AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id)
+        )
     )
+
+    # Combine: created OR company-wide OR user-permitted
+    from sqlalchemy import or_, and_
+    
+    query = select(Agent).where(
+        and_(
+            Agent.tenant_id == user_tenant,
+            or_(
+                Agent.creator_id == current_user.id,
+                Agent.id.in_(company_ids),
+                Agent.id.in_(user_permitted_ids)
+            )
+        )
+    ).order_by(Agent.created_at.desc())
+
+    result = await db.execute(query)
     agents = result.scalars().all()
+
     # Lazy reset token counters
     needs_flush = False
     for a in agents:
@@ -188,6 +197,7 @@ async def list_agents(
             needs_flush = True
     if needs_flush:
         await db.commit()
+
     return [AgentOut.model_validate(a) for a in agents]
 
 
@@ -694,7 +704,6 @@ async def stop_agent(
 
 # ─── Agent-Level Approvals ──────────────────────────────
 
-
 @router.get("/{agent_id}/approvals")
 async def list_agent_approvals(
     agent_id: uuid.UUID,
@@ -757,7 +766,6 @@ async def resolve_agent_approval(
 
 
 # ─── OpenClaw API Key Management ────────────────────────
-
 
 @router.post("/{agent_id}/api-key")
 async def generate_or_reset_api_key(
