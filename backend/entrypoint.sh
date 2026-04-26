@@ -1,28 +1,22 @@
 #!/bin/bash
-# Docker entrypoint: initialize DB tables, then start the app.
+# Docker entrypoint: run DB migrations, then start the app.
 # Order matters:
-#   1. create_all  - creates all tables using SQLAlchemy models (idempotent)
-#   2. alembic stamp head - tells alembic we are at the latest revision (skips migrations)
-#      For existing installs that may have missing columns, safe ALTER TABLE patches run first.
-#   3. uvicorn - starts the FastAPI app
+#   1. alembic upgrade head — apply all migrations (creates tables + schema changes)
+#   2. uvicorn — starts the FastAPI app
 
 set -e
 
-# --- Added: Permission fixing and privilege dropping ---
+# --- Permission fixing and privilege dropping ---
 if [ "$(id -u)" = '0' ]; then
     echo "[entrypoint] Detected root user, fixing permissions..."
-    # Ensure directories exist and are owned by clawith
     chown -R clawith:clawith ${AGENT_DATA_DIR}
-    
+
     echo "[entrypoint] Dropping privileges to 'clawith' and re-executing..."
     exec gosu clawith /bin/bash "$0" "$@"
 fi
 # -------------------------------------------------------
 
-echo "[entrypoint] Step 1: Creating/verifying database tables..."
-PYTHONPATH=/app python /app/app/scripts/bootstrap_db.py
-
-echo "[entrypoint] Step 2: Running alembic migrations..."
+echo "[entrypoint] Step 1: Running alembic migrations..."
 # Run all migrations to ensure database schema is up to date.
 # Capture exit code explicitly — do NOT let a migration failure go unnoticed.
 set +e
@@ -55,5 +49,5 @@ else
     echo "[entrypoint] Alembic migrations completed successfully."
 fi
 
-echo "[entrypoint] Step 3: Starting uvicorn..."
+echo "[entrypoint] Step 2: Starting uvicorn..."
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

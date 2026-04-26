@@ -122,41 +122,6 @@ async def lifespan(app: FastAPI):
     from app.services.wechat_channel import wechat_poll_manager
     from app.services.discord_gateway import discord_gateway_manager
 
-    # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
-    try:
-        from app.database import Base, engine
-        # Import all models so Base.metadata is fully populated
-        import app.models.user           # noqa
-        import app.models.agent          # noqa
-        import app.models.task           # noqa
-        import app.models.llm            # noqa
-        import app.models.tool           # noqa
-        import app.models.audit          # noqa
-        import app.models.skill          # noqa
-        import app.models.channel_config  # noqa
-        import app.models.schedule       # noqa
-        import app.models.plaza          # noqa
-        import app.models.activity_log   # noqa
-        import app.models.org            # noqa
-        import app.models.system_settings  # noqa
-        import app.models.invitation_code  # noqa
-        import app.models.tenant         # noqa
-        import app.models.tenant_setting  # noqa
-        import app.models.participant    # noqa
-        import app.models.chat_session   # noqa
-        import app.models.trigger        # noqa
-        import app.models.notification   # noqa
-        import app.models.gateway_message # noqa
-        import app.models.agent_credential  # noqa
-        import app.models.okr            # noqa  OKR system tables
-
-        import app.models.identity       # noqa
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("[startup] Database tables ready")
-    except Exception as e:
-        logger.warning(f"[startup] create_all failed: {e}")
-
     # Startup: seed data — each step isolated so one failure doesn't block others
     logger.info("[startup] seeding...")
 
