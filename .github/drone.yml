@@ -77,6 +77,7 @@ steps:
           docker build -t clawith-frontend:new -f frontend/Dockerfile ./frontend
           docker save -o clawith-backend-new.tar clawith-backend:new
           docker save -o clawith-frontend-new.tar clawith-frontend:new
+          chmod 644 clawith-backend-new.tar clawith-frontend-new.tar
           echo "当前版本镜像构建完成"
           exit 0
         fi
@@ -104,6 +105,7 @@ steps:
 
       # --- 输出文件清单 ---
       - echo "--- 镜像文件清单 ---"
+      - chmod 644 *.tar
       - ls -lh *.tar
       - cat .env.drone
 
