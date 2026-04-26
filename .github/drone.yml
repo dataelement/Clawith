@@ -129,6 +129,7 @@ steps:
         - clawith-frontend-new.tar
         - clawith-backend-old.tar
         - clawith-frontend-old.tar
+        - docker-compose.yml
         - .env.drone
       rm: false
 

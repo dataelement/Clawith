@@ -3,7 +3,7 @@ services:
     image: postgres:15-alpine
     restart: unless-stopped
     networks:
-      - clawith_dev
+      - default
     environment:
       POSTGRES_USER: clawith
       POSTGRES_PASSWORD: clawith
@@ -20,7 +20,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     networks:
-      - clawith_dev
+      - default
     volumes:
       - redisdata:/data
     healthcheck:
@@ -65,7 +65,7 @@ services:
     security_opt:
       - seccomp=unconfined
     networks:
-      - clawith_dev
+      - default
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,7 +87,7 @@ services:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
     networks:
-      - clawith_dev
+      - default
     depends_on:
       - backend
 
@@ -97,5 +97,5 @@ volumes:
 
 
 networks:
-  clawith_dev:
+  default:
     name: clawith_network
