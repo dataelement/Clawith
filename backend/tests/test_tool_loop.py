@@ -300,6 +300,108 @@ async def test_exception_in_serial_continues_to_next(tmp_path):
     assert results[1].content == "ok-B"
 
 
+# ── read_file / read_document bypass truncation ─────────────────────────
+
+
+def _patch_workspace(monkeypatch, tmp_path):
+    """Wire ``get_settings().AGENT_DATA_DIR`` to ``tmp_path`` so the
+    tool-loop's truncation path is actually reachable in unit tests."""
+    from types import SimpleNamespace
+
+    def fake_get_settings():
+        return SimpleNamespace(AGENT_DATA_DIR=str(tmp_path))
+
+    monkeypatch.setattr("app.config.get_settings", fake_get_settings)
+
+
+@pytest.mark.asyncio
+async def test_read_file_output_not_retruncated(tmp_path, monkeypatch):
+    """Regression test for the spill-loop bug. ``read_file`` is the model's
+    intentional retrieval path for content that may already have been spilled
+    to ``_tool_results/<call_id>.txt``. If we re-truncate its output, the
+    spill file gets overwritten with its own marker — the model can never
+    recover the original content and falls into an infinite read loop.
+
+    With the fix, ``read_file`` output passes through unchanged and no
+    new spill file is written."""
+    _patch_workspace(monkeypatch, tmp_path)
+    huge_content = "x" * 60_000  # ~20K tokens — well over the 4K threshold
+
+    async def fake_execute(name, args, agent_id=None, user_id=None, session_id=""):
+        return huge_content
+
+    with patch("app.services.agent_tools.execute_tool", side_effect=fake_execute):
+        ctx = ToolExecutionContext(
+            agent_id="agent-xyz", user_id="u", session_id="s",
+        )
+        tcs = [_tc("c1", "read_file", {"path": "_tool_results/earlier-call.txt"})]
+        results = await execute_tool_calls(tcs, ctx)
+
+    assert results[0].content == huge_content, (
+        "read_file output was truncated — this would form a loop with the "
+        "spill marker and break the retrieval contract."
+    )
+    # Crucially: no new spill file was written under the workspace.
+    spill_root = tmp_path / "agent-xyz" / "_tool_results"
+    assert not spill_root.exists() or list(spill_root.iterdir()) == [], (
+        f"Unexpected spill file written for read_file output: "
+        f"{list(spill_root.iterdir()) if spill_root.exists() else []}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_document_output_not_retruncated(tmp_path, monkeypatch):
+    """Same bypass applies to ``read_document`` — it has its own ``max_chars``
+    parameter (capped at 20 KB), and re-truncating its output here would
+    silently shrink an already-bounded payload and write a spill file the
+    model can't act on."""
+    _patch_workspace(monkeypatch, tmp_path)
+    huge_content = "y" * 60_000
+
+    async def fake_execute(name, args, agent_id=None, user_id=None, session_id=""):
+        return huge_content
+
+    with patch("app.services.agent_tools.execute_tool", side_effect=fake_execute):
+        ctx = ToolExecutionContext(
+            agent_id="agent-xyz", user_id="u", session_id="s",
+        )
+        tcs = [_tc("c1", "read_document", {"path": "report.pdf"})]
+        results = await execute_tool_calls(tcs, ctx)
+
+    assert results[0].content == huge_content
+    spill_root = tmp_path / "agent-xyz" / "_tool_results"
+    assert not spill_root.exists() or list(spill_root.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_other_tools_still_truncate_large_output(tmp_path, monkeypatch):
+    """Control test — the bypass list must not be too broad. ``jina_search``
+    output above the threshold should still spill and return a marker, so
+    history stays bounded for genuinely oversized payloads."""
+    _patch_workspace(monkeypatch, tmp_path)
+    huge_content = "z" * 60_000
+
+    async def fake_execute(name, args, agent_id=None, user_id=None, session_id=""):
+        return huge_content
+
+    with patch("app.services.agent_tools.execute_tool", side_effect=fake_execute):
+        ctx = ToolExecutionContext(
+            agent_id="agent-xyz", user_id="u", session_id="s",
+        )
+        tcs = [_tc("c1", "jina_search", {"query": "rust async"})]
+        results = await execute_tool_calls(tcs, ctx)
+
+    # Truncation kicked in: marker present, in-context body is shorter.
+    assert "[truncated" in str(results[0].content)
+    assert len(str(results[0].content)) < len(huge_content)
+    # Spill file written under the agent's workspace.
+    spill_root = tmp_path / "agent-xyz" / "_tool_results"
+    assert spill_root.exists()
+    files = list(spill_root.iterdir())
+    assert len(files) == 1
+    assert files[0].read_text(encoding="utf-8") == huge_content
+
+
 # ── Empty-args guard ────────────────────────────────────────────────────
 
 

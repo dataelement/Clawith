@@ -56,6 +56,21 @@ TOOLS_REQUIRING_ARGS: frozenset[str] = frozenset({
 })
 
 
+# Tools whose output is the model's intentional retrieval path for content
+# that may itself have already been spilled to ``_tool_results/``. If we
+# re-truncate the result of these, the spill file gets rewritten with its
+# own marker — every subsequent ``read_file`` returns a fresh marker, and
+# the model can never recover the original content (infinite loop, also
+# silently overwrites the spill so even an out-of-band reader sees only
+# the marker). Both listed tools support ``offset``/``limit`` pagination,
+# so if their output is itself too large for one round the model must
+# page through it explicitly.
+_TOOLS_BYPASS_TRUNCATION: frozenset[str] = frozenset({
+    "read_file",
+    "read_document",
+})
+
+
 # Tools safe to run concurrently within one LLM round. Default-deny: a
 # tool not in this set runs serially, in the order the model issued it.
 # Adding a tool here is a *security* decision — see
@@ -264,8 +279,11 @@ async def _run_one(tc: dict[str, Any], ctx: ToolExecutionContext) -> str | list:
         except Exception as e:
             logger.warning(f"[tool-loop] Vision injection failed for {tool_name}: {e}")
 
-    # Tool-result truncation (large payload → spill + marker)
-    if ws_path is not None:
+    # Tool-result truncation (large payload → spill + marker).
+    # Bypass for read_file / read_document: see _TOOLS_BYPASS_TRUNCATION
+    # docstring — re-truncating retrieval tools forms a loop with the
+    # spill marker.
+    if ws_path is not None and tool_name not in _TOOLS_BYPASS_TRUNCATION:
         from app.services.tool_result_truncation import maybe_truncate_tool_result
         tool_content = maybe_truncate_tool_result(
             tool_content, call_id=tc["id"], agent_workspace=ws_path,
