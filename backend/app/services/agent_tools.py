@@ -3186,9 +3186,14 @@ async def _execute_via_smithery_connect(mcp_url: str, tool_name: str, arguments:
             "Please set smithery_namespace and smithery_connection_id in the tool configuration."
         )
 
+    # Smithery Connect (and many MCP servers) emit SSE responses for tools/call.
+    # The server returns 406 Not Acceptable if the client doesn't declare both
+    # application/json and text/event-stream in the Accept header. We parse
+    # both formats below, so advertise both.
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
     }
 
     try:
