@@ -78,6 +78,21 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     return full
 
 
+async def _require_agent_file_delete_access(
+    db: AsyncSession,
+    current_user: User,
+    agent_id: uuid.UUID,
+) -> None:
+    """Allow destructive workspace file operations only for managers/admins."""
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level == "manage" or current_user.role in ("platform_admin", "org_admin", "super_admin"):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only agent managers or admins can delete files",
+    )
+
+
 @router.get("/", response_model=list[FileInfo])
 async def list_files(
     agent_id: uuid.UUID,
@@ -532,7 +547,7 @@ async def delete_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a file."""
-    await check_agent_access(db, current_user, agent_id)
+    await _require_agent_file_delete_access(db, current_user, agent_id)
     target = _safe_path(agent_id, path)
 
     if not target.exists():

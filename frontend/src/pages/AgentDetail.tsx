@@ -4454,7 +4454,7 @@ function AgentDetailInner() {
                                         • <code>skills/my-skill/SKILL.md</code> — {t('agent.skills.folderFormat', 'Each skill is a folder with a SKILL.md file and optional auxiliary files (scripts/, examples/)')}
                                     </div>
                                 </div>
-                                <FileBrowser api={adapter} rootPath="skills" features={{ newFile: true, edit: true, delete: true, newFolder: true, upload: true, directoryNavigation: true }} title={t('agent.skills.skillFiles')} />
+                                <FileBrowser api={adapter} rootPath="skills" features={{ newFile: true, edit: true, delete: canManage, newFolder: true, upload: true, directoryNavigation: true }} title={t('agent.skills.skillFiles')} />
 
                                 {/* Browse ClawHub Modal */}
                                 {showAgentClawhub && (
@@ -4669,7 +4669,7 @@ function AgentDetailInner() {
                             upload: (file, path, onProgress) => fileApi.upload(id!, file, path + '/', onProgress),
                             downloadUrl: (p) => fileApi.downloadUrl(id!, p),
                         };
-                        return <FileBrowser api={adapter} rootPath="workspace" features={{ upload: true, newFile: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }} />;
+                        return <FileBrowser api={adapter} rootPath="workspace" features={{ upload: true, newFile: true, newFolder: true, edit: true, delete: canManage, directoryNavigation: true }} />;
                     })()
                 }
 
