@@ -630,6 +630,7 @@ async def websocket_chat(
                         # turn (see lock_on_first_chunk below), so the full
                         # two-step ritual stays guarded.
                         from app.services.onboarding import resolve_onboarding_prompt
+                        skip_tools_for_greeting = False
                         try:
                             async with async_session() as _ob_db:
                                 _onb = await resolve_onboarding_prompt(
@@ -641,6 +642,11 @@ async def websocket_chat(
                                 _truncated = [{"role": "system", "content": _onb.prompt}] + _truncated
                                 if _onb.lock_on_first_chunk:
                                     needs_onboarding_mark = True
+                                # Greeting turn produces a templated reply that
+                                # never calls tools, so suppress the tool list
+                                # to cut prompt size by ~50% and improve TTFT.
+                                if _onb.is_greeting_turn:
+                                    skip_tools_for_greeting = True
                         except Exception as _onb_err:
                             logger.warning(f"[WS] Onboarding prompt resolve failed (non-fatal): {_onb_err}")
 
@@ -658,6 +664,7 @@ async def websocket_chat(
                             on_thinking=thinking_to_ws,
                             supports_vision=getattr(effective_llm_model, 'supports_vision', False),
                             on_failover=_on_failover,
+                            skip_tools=skip_tools_for_greeting,
                         )
 
                     llm_task = _aio.create_task(_call_with_failover())

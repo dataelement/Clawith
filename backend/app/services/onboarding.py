@@ -37,14 +37,20 @@ if TYPE_CHECKING:  # pragma: no cover
 class OnboardingInjection:
     """What the WS handler needs to apply for a given turn.
 
-    ``prompt`` is the system message to prepend; ``lock_on_first_chunk`` says
-    whether this turn's first streamed chunk should commit the junction row.
-    Greeting turns (where the user hasn't said anything yet) don't lock — the
-    deliverable turn does, so the whole two-step ritual is guarded.
+    - ``prompt``: the system message to prepend.
+    - ``lock_on_first_chunk``: whether this turn's first streamed chunk
+      should commit the junction row. Always True now; the greeting fires
+      exactly once per (agent, user) pair regardless of completion.
+    - ``is_greeting_turn``: True on user_turns == 0, False otherwise. WS
+      handler uses this to skip the agent's tool list when greeting — the
+      bootstrap is a structured templated reply that doesn't call tools,
+      so suppressing the tool definitions saves ~3-5k tokens of prompt
+      and noticeably cuts time-to-first-token (TTFT).
     """
 
     prompt: str
     lock_on_first_chunk: bool
+    is_greeting_turn: bool = False
 
 
 # Single shared welcoming prompt. Rendered per-call with the agent's fields.
@@ -242,6 +248,7 @@ async def resolve_onboarding_prompt(
     return OnboardingInjection(
         prompt=prompt,
         lock_on_first_chunk=True,
+        is_greeting_turn=(user_turns == 0),
     )
 
 

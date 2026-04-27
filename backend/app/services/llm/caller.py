@@ -294,6 +294,7 @@ async def call_llm(
     on_thinking=None,
     supports_vision=False,
     max_tool_rounds_override: int | None = None,
+    skip_tools: bool = False,
 ) -> str:
     """Call LLM via unified client with function-calling tool loop."""
     # Get agent config for tool rounds
@@ -311,8 +312,14 @@ async def call_llm(
     # Look up current user's display name so the agent knows who it's talking to
     static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_user_name)
 
-    # Load tools dynamically from DB
-    tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
+    # Load tools dynamically from DB. `skip_tools=True` is set by the WS
+    # handler on the onboarding greeting turn — the bootstrap response is a
+    # structured templated greeting that never needs to call tools, so we
+    # save ~3-5k tokens of prompt and cut TTFT by passing an empty list.
+    if skip_tools:
+        tools_for_llm = []
+    else:
+        tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
 
     # Convert messages to LLMMessage format
     api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
@@ -456,6 +463,7 @@ async def call_llm_with_failover(
     on_tool_call=None,
     supports_vision=False,
     on_failover=None,
+    skip_tools: bool = False,
 ) -> str:
     """Call LLM with automatic failover support."""
     guard = FailoverGuard()
@@ -494,6 +502,7 @@ async def call_llm_with_failover(
         on_tool_call=_wrapped_on_tool_call,
         on_thinking=on_thinking,
         supports_vision=supports_vision,
+        skip_tools=skip_tools,
     )
 
     # Check if we need to failover
@@ -554,6 +563,7 @@ async def call_llm_with_failover(
         on_tool_call=_fallback_on_tool_call,
         on_thinking=on_thinking,
         supports_vision=getattr(fallback_model, 'supports_vision', False),
+        skip_tools=skip_tools,
     )
 
     # Combine error messages if fallback also failed
