@@ -173,10 +173,10 @@ async def resolve_onboarding_prompt(
       - ``prompt``: the filled-in system instruction (founding or welcoming,
         with a ``{user_turns}`` variable already resolved so the LLM can
         branch between a greeting-only reply and a task-delivery reply);
-      - ``lock_on_first_chunk``: ``True`` iff this turn should commit the
-        junction row once streaming begins. We only lock after the user has
-        sent at least one real message, so the two-step ritual (greeting
-        turn → deliverable turn) stays guarded by the system prompt.
+      - ``lock_on_first_chunk``: always ``True`` — the junction row is
+        committed as soon as the agent starts streaming its first reply,
+        whether that's the greeting or the deliverable turn. This guarantees
+        each (agent, user) pair sees the onboarding ritual exactly once.
     """
     existing = await db.execute(
         select(AgentUserOnboarding).where(
@@ -233,12 +233,15 @@ async def resolve_onboarding_prompt(
     # the soul's "ambiguous → English" rule.
     prompt = _locale_directive(user_locale) + prompt
 
-    # Lock once the deliverable turn starts streaming (user_turns >= 1 at that
-    # point). The greeting turn (user_turns == 0) intentionally doesn't lock
-    # — we want the ritual to retry if the user disconnects before replying.
+    # Lock as soon as the agent starts streaming its first reply, including
+    # the greeting turn. Earlier drafts only locked on user_turns >= 1 so a
+    # disconnected greeting could retry, but UX feedback says the greeting
+    # should fire exactly once per (agent, user) pair — even if the user
+    # closes the tab mid-greeting, they shouldn't see the onboarding ritual
+    # twice on next open.
     return OnboardingInjection(
         prompt=prompt,
-        lock_on_first_chunk=user_turns >= 1,
+        lock_on_first_chunk=True,
     )
 
 
