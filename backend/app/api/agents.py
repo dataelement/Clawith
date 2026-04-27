@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
-from app.models.agent import Agent, AgentPermission
+from app.models.agent import Agent, AgentPermission, AgentTemplate
 from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
 
@@ -342,14 +342,33 @@ async def create_agent(
     from app.models.skill import Skill
     from sqlalchemy.orm import selectinload
 
-    # Always include default skills
+    # Always include global default skills (mcp-installer, skill-creator,
+    # complex-task-executor)
     default_result = await db.execute(
         select(Skill).where(Skill.is_default)
     )
     default_ids = {s.id for s in default_result.scalars().all()}
 
-    # Merge user-selected + default skill IDs
-    all_skill_ids = set(data.skill_ids or []) | default_ids
+    # Include the template's declared default skills (e.g. trading templates
+    # ship with `market-data` / `financial-calendar` in their meta.yaml).
+    # Without this, the SKILL.md never reaches `<agent_dir>/skills/<folder>/`,
+    # so the agent has no idea those MCP-backed skills exist and silently
+    # falls back to web search.
+    template_skill_ids: set = set()
+    if data.template_id:
+        tpl_r = await db.execute(
+            select(AgentTemplate).where(AgentTemplate.id == data.template_id)
+        )
+        tpl = tpl_r.scalar_one_or_none()
+        folder_names = list((tpl.default_skills if tpl else None) or [])
+        if folder_names:
+            tpl_skills_r = await db.execute(
+                select(Skill).where(Skill.folder_name.in_(folder_names))
+            )
+            template_skill_ids = {s.id for s in tpl_skills_r.scalars().all()}
+
+    # Merge user-selected + global default + template-default skill IDs
+    all_skill_ids = set(data.skill_ids or []) | default_ids | template_skill_ids
 
     if all_skill_ids:
         agent_dir = agent_manager._agent_dir(agent.id)
