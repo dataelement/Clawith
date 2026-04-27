@@ -22,6 +22,22 @@ interface Props {
     onClose: () => void;
 }
 
+// Curated list for the "Popular" tab — covers one role from each broad need
+// (personal assistant, project management, marketing, engineering, research).
+// Matches `AgentTemplate.name` exactly.
+const FEATURED_TEMPLATE_NAMES = new Set<string>([
+    'Chief of Staff',
+    'Project Manager',
+    'Growth Hacker',
+    'Content Creator',
+    'Frontend Developer',
+    'Code Reviewer',
+    'Rapid Prototyper',
+    'Market Researcher',
+]);
+
+type TabId = 'popular' | 'software-development' | 'marketing' | 'office';
+
 export default function TalentMarketModal({ open, onClose }: Props) {
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
@@ -29,12 +45,20 @@ export default function TalentMarketModal({ open, onClose }: Props) {
     // Chosen template → hands off to PostHireSettingsModal. The market modal
     // stays mounted behind so the user can cancel and pick someone else.
     const [pendingTemplate, setPendingTemplate] = useState<Template | null>(null);
+    const [activeTab, setActiveTab] = useState<TabId>('popular');
 
     const { data: templates = [], isLoading } = useQuery({
         queryKey: ['agent-templates'],
         queryFn: () => agentApi.templates(),
         enabled: open,
     });
+
+    const tabs: Array<{ id: TabId; label: string }> = [
+        { id: 'popular', label: t('talentMarket.tabPopular', isChinese ? '热门推荐' : 'Popular') },
+        { id: 'software-development', label: t('talentMarket.tabSWE', isChinese ? '软件开发' : 'Software Development') },
+        { id: 'marketing', label: t('talentMarket.tabMarketing', isChinese ? '营销' : 'Marketing') },
+        { id: 'office', label: t('talentMarket.tabOffice', isChinese ? '办公通用' : 'Office') },
+    ];
 
     useEffect(() => {
         if (!open) return;
@@ -48,6 +72,9 @@ export default function TalentMarketModal({ open, onClose }: Props) {
     if (!open) return null;
 
     const builtins = templates.filter((t: Template) => t.is_builtin);
+    const visibleTemplates = activeTab === 'popular'
+        ? builtins.filter((tpl: Template) => FEATURED_TEMPLATE_NAMES.has(tpl.name))
+        : builtins.filter((tpl: Template) => tpl.category === activeTab);
 
     return (
         <div
@@ -89,9 +116,46 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                     </button>
                 </div>
 
+                {/* Category tabs */}
+                <div
+                    role="tablist"
+                    aria-label={t('talentMarket.tabsAria', isChinese ? '分类筛选' : 'Category filters')}
+                    style={{
+                        display: 'flex', gap: '4px', padding: '0 28px',
+                        borderBottom: '1px solid var(--border-subtle)',
+                        overflowX: 'auto',
+                    }}
+                >
+                    {tabs.map((tab) => {
+                        const isActive = activeTab === tab.id;
+                        return (
+                            <button
+                                key={tab.id}
+                                role="tab"
+                                aria-selected={isActive}
+                                onClick={() => setActiveTab(tab.id)}
+                                style={{
+                                    padding: '10px 14px',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    borderBottom: `2px solid ${isActive ? 'var(--accent)' : 'transparent'}`,
+                                    color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                                    fontSize: '13px',
+                                    fontWeight: isActive ? 600 : 500,
+                                    cursor: 'pointer',
+                                    whiteSpace: 'nowrap',
+                                    transition: 'color 120ms, border-color 120ms',
+                                }}
+                            >
+                                {tab.label}
+                            </button>
+                        );
+                    })}
+                </div>
+
                 {/* Cards */}
                 <div style={{
-                    padding: '12px 28px 20px', overflowY: 'auto', flex: 1,
+                    padding: '18px 28px 20px', overflowY: 'auto', flex: 1,
                     display: 'grid',
                     gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
                     gap: '16px',
@@ -102,7 +166,12 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                             {t('common.loading', 'Loading...')}
                         </div>
                     )}
-                    {!isLoading && builtins.map((tpl: Template) => (
+                    {!isLoading && visibleTemplates.length === 0 && (
+                        <div style={{ gridColumn: '1 / -1', padding: '40px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                            {t('talentMarket.empty', isChinese ? '这个分类下还没有模板' : 'No templates in this category yet')}
+                        </div>
+                    )}
+                    {!isLoading && visibleTemplates.map((tpl: Template) => (
                         <TemplateCard
                             key={tpl.id}
                             tpl={tpl}
