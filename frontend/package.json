@@ -1,5 +1,6 @@
 {
   "name": "clawith-frontend",
+  "description": "Frontend workspace for the Clawith platform.",
   "private": true,
   "version": "0.1.0",
   "type": "module",

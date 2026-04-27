@@ -1,7 +1,7 @@
 [project]
 name = "clawith-backend"
 version = "0.1.0"
-description = "Clawith - Enterprise Digital Employee Platform Backend"
+description = "Backend workspace for the Clawith enterprise digital employee platform."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.115.0",
