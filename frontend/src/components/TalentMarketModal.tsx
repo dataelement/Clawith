@@ -88,7 +88,8 @@ export default function TalentMarketModal({ open, onClose }: Props) {
             <div
                 style={{
                     background: 'var(--bg-primary)', borderRadius: '12px',
-                    width: '960px', maxWidth: '95vw', maxHeight: '88vh',
+                    width: '960px', maxWidth: '95vw',
+                    height: 'min(88vh, 720px)',
                     border: '1px solid var(--border-subtle)',
                     boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
                     display: 'flex', flexDirection: 'column', overflow: 'hidden',
@@ -121,9 +122,11 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                     role="tablist"
                     aria-label={t('talentMarket.tabsAria', isChinese ? '分类筛选' : 'Category filters')}
                     style={{
-                        display: 'flex', gap: '4px', padding: '0 28px',
+                        display: 'flex',
+                        padding: '0 28px',
                         borderBottom: '1px solid var(--border-subtle)',
                         overflowX: 'auto',
+                        flexShrink: 0,
                     }}
                 >
                     {tabs.map((tab) => {
@@ -134,17 +137,26 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                                 role="tab"
                                 aria-selected={isActive}
                                 onClick={() => setActiveTab(tab.id)}
+                                onMouseEnter={(e) => {
+                                    if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)';
+                                }}
+                                onMouseLeave={(e) => {
+                                    if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)';
+                                }}
                                 style={{
-                                    padding: '10px 14px',
+                                    padding: '14px 18px',
+                                    marginBottom: '-1px',
+                                    marginRight: '8px',
                                     background: 'transparent',
                                     border: 'none',
-                                    borderBottom: `2px solid ${isActive ? 'var(--accent)' : 'transparent'}`,
+                                    borderBottom: `2px solid ${isActive ? 'var(--text-primary)' : 'transparent'}`,
                                     color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
                                     fontSize: '13px',
-                                    fontWeight: isActive ? 600 : 500,
+                                    fontWeight: 500,
                                     cursor: 'pointer',
                                     whiteSpace: 'nowrap',
                                     transition: 'color 120ms, border-color 120ms',
+                                    outline: 'none',
                                 }}
                             >
                                 {tab.label}
