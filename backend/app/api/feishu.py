@@ -18,6 +18,7 @@ from app.models.user import User
 from app.models.identity import IdentityProvider
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.feishu_service import feishu_service
+from app.services.history_window import truncate_by_message_count
 
 router = APIRouter(tags=["feishu"])
 
@@ -1634,7 +1635,13 @@ async def _call_agent_llm(
     from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
     ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
     if history:
-        messages.extend(_normalize_history_messages(history)[-ctx_size:])
+        # Pair-aware truncation preserves any future assistant.tool_calls ↔ role=tool
+        # pairs intact. Today _normalize_history_messages drops DB role="tool_call"
+        # rows, so this path has no tool messages and the helper acts as plain count
+        # truncation; the safety kicks in once a feishu reorganization helper exists.
+        messages.extend(
+            truncate_by_message_count(_normalize_history_messages(history), ctx_size)
+        )
     messages.append({"role": "user", "content": user_text})
 
     # Use actual user_id so the system prompt knows who it's chatting with
