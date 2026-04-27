@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { IconX } from '@tabler/icons-react';
 import { agentApi, enterpriseApi, tenantApi } from '../services/api';
+import { translateTemplate } from '../i18n/templateTranslations';
 
 interface Template {
     id: string;
@@ -89,12 +90,18 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
     const hire = useMutation({
         mutationFn: (navigateAfter: boolean) => {
             if (!template) return Promise.reject(new Error('No template'));
+            // Localize name + role_description when the UI is in Chinese so
+            // the agent persists with the same labels the user saw on the
+            // Talent Market card. Without this, the DB stores the English
+            // template name and the agent shows "Rapid Prototyper" forever
+            // even though the card said "快速原型工程师".
+            const localized = translateTemplate(
+                { name: template.name, description: template.description || '', capability_bullets: [] },
+                isChinese,
+            );
             const payload: any = {
-                name: template.name,
-                // Auto-fill the agent's role with the template's one-line
-                // description so the detail page doesn't show an empty "角色"
-                // field. Users can still edit it later in settings.
-                role_description: template.description || '',
+                name: localized.name,
+                role_description: localized.description,
                 template_id: template.id,
                 primary_model_id: modelId || undefined,
                 permission_access_level: 'manage',

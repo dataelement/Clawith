@@ -112,14 +112,49 @@ _LANG_NAMES = {
 
 
 def _locale_directive(user_locale: str) -> str:
-    """One-line system instruction to prepend so the greeting turn lands in
-    the user's interface language. Subsequent turns fall through to the
-    soul's standard language-detection rule."""
-    lang_name = _LANG_NAMES.get((user_locale or "en").lower()[:2], "English")
+    """Strong system instruction to prepend so the greeting turn lands in
+    the user's interface language. The bootstrap content below contains
+    English example phrases (greetings, capability labels, pitches) that
+    a literal-minded LLM would otherwise copy verbatim — this directive
+    makes it clear those are TEMPLATES to translate, not strings to copy."""
+    lang_code = (user_locale or "en").lower()[:2]
+    lang_name = _LANG_NAMES.get(lang_code, "English")
+
+    if lang_code == "en":
+        # User's interface is already English — bootstrap is English by
+        # default — no translation needed. Light directive only, to keep
+        # the soul's language-detection rule intact for subsequent turns.
+        return (
+            f"[Interface locale: {lang_name}. Reply in {lang_name} on the "
+            f"greeting turn. From user_turns >= 1, follow your soul's "
+            f"language-detection rule.]\n\n"
+        )
+
     return (
-        f"[Interface locale: {lang_name}. On the greeting turn (user_turns == 0), "
-        f"reply in {lang_name}. From user_turns >= 1, follow your soul's "
-        f"language-detection rule and match the language the user just used.]\n\n"
+        f"[CRITICAL — Interface locale: {lang_name}.\n"
+        f"\n"
+        f"The user's UI is set to {lang_name}. The bootstrap content below is "
+        f"written in English, but the English text inside it (greetings like "
+        f"\"Hi {{user_name}}!\", capability labels, pitch phrases, sample "
+        f"questions, closing prompts) are STRUCTURE TEMPLATES, NOT verbatim "
+        f"strings to copy.\n"
+        f"\n"
+        f"On the greeting turn (user_turns == 0):\n"
+        f"  1. Reply ENTIRELY in {lang_name}.\n"
+        f"  2. Translate every example greeting, capability label, pitch "
+        f"phrase, question, and closing prompt from the bootstrap into "
+        f"natural, native-sounding {lang_name}. Preserve the markdown "
+        f"structure (bold labels, bullets, the question, the close) but the "
+        f"WORDS must be in {lang_name}.\n"
+        f"  3. Keep proper nouns and conventional English technical terms "
+        f"(product names, ticker symbols, acronyms like API/MVP/RSI/GAAP) in "
+        f"English when that's how a native {lang_name} speaker would write "
+        f"them.\n"
+        f"  4. The user's name placeholder {{user_name}} stays as their actual "
+        f"name; do not translate it.\n"
+        f"\n"
+        f"On user_turns >= 1: follow your soul's language-detection rule and "
+        f"match the language the user just typed.]\n\n"
     )
 
 
