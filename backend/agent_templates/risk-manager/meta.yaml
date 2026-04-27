@@ -8,6 +8,8 @@ capability_bullets:
   - "GREEN/YELLOW/RED verdict — every trade passes the same checklist"
 default_skills:
   - "market-data"
+default_mcp_servers:
+  - "shibui/finance"
 default_autonomy_policy:
   read_files: "L1"
   write_workspace_files: "L1"

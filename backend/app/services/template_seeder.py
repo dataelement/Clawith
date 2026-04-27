@@ -426,6 +426,7 @@ def _load_folder_templates() -> list[dict]:
             "bootstrap_content": bootstrap_content,
             "soul_template": soul_template,
             "default_skills": meta.get("default_skills", []),
+            "default_mcp_servers": meta.get("default_mcp_servers", []),
             "default_autonomy_policy": meta.get("default_autonomy_policy", {}),
         })
         logger.debug(f"[TemplateSeeder] Loaded folder template: {meta['name']}")
@@ -484,6 +485,7 @@ async def seed_agent_templates():
                     existing.category = tmpl["category"]
                     existing.soul_template = tmpl["soul_template"]
                     existing.default_skills = tmpl["default_skills"]
+                    existing.default_mcp_servers = tmpl.get("default_mcp_servers", [])
                     existing.default_autonomy_policy = tmpl["default_autonomy_policy"]
                     existing.capability_bullets = tmpl["capability_bullets"]
                     existing.bootstrap_content = tmpl["bootstrap_content"]
@@ -496,6 +498,7 @@ async def seed_agent_templates():
                         is_builtin=True,
                         soul_template=tmpl["soul_template"],
                         default_skills=tmpl["default_skills"],
+                        default_mcp_servers=tmpl.get("default_mcp_servers", []),
                         default_autonomy_policy=tmpl["default_autonomy_policy"],
                         capability_bullets=tmpl["capability_bullets"],
                         bootstrap_content=tmpl["bootstrap_content"],

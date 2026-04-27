@@ -160,6 +160,12 @@ class AgentTemplate(Base):
     category: Mapped[str] = mapped_column(String(50), default="general")
     soul_template: Mapped[str] = mapped_column(Text, default="")
     default_skills: Mapped[list] = mapped_column(JSON, default=[])
+    # Smithery server IDs (e.g. "shibui/finance") to auto-import + bind when
+    # an agent is created from this template. The new-agent handler in
+    # api.agents.create_agent calls import_mcp_from_smithery for each, using
+    # the system-level Smithery key, then assigns the resulting Tool(s) via
+    # AgentTool. Idempotent: existing Tool with same mcp_server_url is reused.
+    default_mcp_servers: Mapped[list] = mapped_column(JSON, default=[])
     default_autonomy_policy: Mapped[dict] = mapped_column(JSON, default={})
     # Talent Market card: 2-4 short capability bullets shown under the role
     capability_bullets: Mapped[list] = mapped_column(JSON, default=[])

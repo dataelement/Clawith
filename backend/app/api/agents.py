@@ -391,6 +391,46 @@ async def create_agent(
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_text(sf.content, encoding="utf-8")
 
+    # Auto-install template-declared MCP servers using the system Smithery key.
+    # For trading agents, this means shibui/finance lands in the agent's tool
+    # list at creation time rather than relying on the agent to install it on
+    # first use via the MCP_INSTALLER skill (which depends on LLM compliance).
+    # Failures are logged and swallowed — agent creation must not fail because
+    # an external Smithery call did.
+    template_mcp_servers = list((tpl.default_mcp_servers if data.template_id and tpl else None) or [])
+    if template_mcp_servers:
+        # Commit the in-flight transaction first so the agent row exists in
+        # the database when import_mcp_from_smithery opens its own session
+        # to insert AgentTool rows. Without this commit the FK to agents.id
+        # is invisible to the parallel session and we get a FK violation.
+        await db.commit()
+        await db.refresh(agent)
+
+        from loguru import logger
+        from app.services.resource_discovery import import_mcp_from_smithery
+        for server_id in template_mcp_servers:
+            try:
+                result_msg = await import_mcp_from_smithery(
+                    server_id=server_id,
+                    agent_id=agent.id,
+                    config={},  # falls back to system Smithery key
+                )
+                if result_msg.startswith("❌"):
+                    logger.warning(
+                        f"[create_agent] MCP pre-install for '{server_id}' "
+                        f"on agent {agent.id} reported error: {result_msg[:200]}"
+                    )
+                else:
+                    logger.info(
+                        f"[create_agent] MCP pre-install '{server_id}' "
+                        f"succeeded for agent {agent.id}"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"[create_agent] MCP pre-install for '{server_id}' "
+                    f"on agent {agent.id} raised: {e}"
+                )
+
     # Start container
     await agent_manager.start_container(db, agent)
     await db.flush()

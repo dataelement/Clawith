@@ -18,7 +18,25 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
     """Read Smithery API key.
 
     Priority: 1) per-agent AgentTool config, 2) system-level tool config.
+
+    Sensitive fields in tool/AgentTool config are stored encrypted (see
+    api.tools._encrypt_sensitive_fields). We must decrypt here before
+    handing the value to httpx — otherwise Smithery rejects with 401.
+    Falls back to raw value when decrypt fails (e.g. legacy plaintext keys).
     """
+    from app.core.security import decrypt_data
+    from app.config import get_settings as _get_settings
+    secret_key = _get_settings().SECRET_KEY
+
+    def _maybe_decrypt(raw: str) -> str:
+        if not raw:
+            return ""
+        try:
+            return decrypt_data(raw, secret_key)
+        except Exception:
+            # Already plaintext (legacy / seeded with plain key) — return as-is.
+            return raw
+
     try:
         async with async_session() as db:
             # 1) Per-agent: check AgentTool configs for any MCP tool with a smithery_api_key
@@ -28,13 +46,13 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
                 )
                 for at in at_r.scalars().all():
                     if at.config and at.config.get("smithery_api_key"):
-                        return at.config["smithery_api_key"]
+                        return _maybe_decrypt(at.config["smithery_api_key"])
             # 2) System-level fallback
             for tool_name in ("discover_resources", "import_mcp_server"):
                 r = await db.execute(select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
                 if tool and tool.config and tool.config.get("smithery_api_key"):
-                    return tool.config["smithery_api_key"]
+                    return _maybe_decrypt(tool.config["smithery_api_key"])
     except Exception:
         pass
     return ""
