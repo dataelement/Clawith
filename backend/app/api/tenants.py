@@ -34,6 +34,7 @@ class TenantOut(BaseModel):
     slug: str
     im_provider: str
     timezone: str = "UTC"
+    country_region: str = "001"
     is_active: bool
     sso_enabled: bool = False
     sso_domain: str | None = None
@@ -47,6 +48,7 @@ class TenantUpdate(BaseModel):
     name: str | None = None
     im_provider: str | None = None
     timezone: str | None = None
+    country_region: str | None = None
     is_active: bool | None = None
     sso_enabled: bool | None = None
     sso_domain: str | None = None
@@ -144,6 +146,8 @@ async def self_create_company(
 
     access_token = None
 
+    from app.services.registration_service import registration_service
+
     if current_user.tenant_id is not None:
         # Multi-tenant: user already belongs to a company.
         # Create a NEW User record for the new tenant instead of overwriting.
@@ -173,6 +177,7 @@ async def self_create_company(
             avatar_url=new_user.avatar_url,
         ))
         await db.flush()
+        await registration_service.bind_org_member(db, new_user)
 
         # Generate token scoped to the new user so frontend can switch context
         access_token = create_access_token(str(new_user.id), new_user.role)
@@ -186,6 +191,7 @@ async def self_create_company(
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         await db.flush()
+        await registration_service.bind_org_member(db, current_user)
 
     await db.commit()
 
@@ -268,6 +274,8 @@ async def join_company(
 
     access_token = None
 
+    from app.services.registration_service import registration_service
+
     if current_user.tenant_id is not None:
         # Multi-tenant: user already belongs to a company.
         # Create a NEW User record for the new tenant.
@@ -297,6 +305,7 @@ async def join_company(
             avatar_url=new_user.avatar_url,
         ))
         await db.flush()
+        await registration_service.bind_org_member(db, new_user)
 
         # Generate token scoped to the new user so frontend can switch context
         access_token = create_access_token(str(new_user.id), new_user.role)
@@ -312,6 +321,8 @@ async def join_company(
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         final_role = current_user.role
+        await db.flush()
+        await registration_service.bind_org_member(db, current_user)
 
     # Increment invitation code usage
     code_obj.used_count += 1
@@ -492,3 +503,141 @@ async def assign_user_to_tenant(
     user.role = role
     await db.flush()
     return {"status": "ok", "user_id": str(user_id), "tenant_id": str(tenant_id), "role": role}
+
+
+# ─── Authenticated: Delete Company ─────────────────────
+
+@router.delete("/{tenant_id}")
+async def delete_tenant(
+    tenant_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete a company and ALL its data.
+
+    Only the org_admin of the specified tenant (or a platform_admin) may call
+    this endpoint.  After deletion the caller receives a `fallback_tenant_id`
+    pointing to another company the user's identity belongs to, or `None` if
+    the user has no other company.
+
+    Deletion is performed in proper FK order to avoid constraint violations:
+    agent-level data → agents → OKR/org data → users → tenant.
+    """
+    from sqlalchemy import text
+
+    # ── Auth check ──────────────────────────────────────────────────────────
+    is_platform_admin = getattr(current_user, "role", None) == "platform_admin"
+    is_own_org_admin = (
+        getattr(current_user, "role", None) == "org_admin"
+        and str(current_user.tenant_id) == str(tenant_id)
+    )
+    if not is_platform_admin and not is_own_org_admin:
+        raise HTTPException(status_code=403, detail="Only the org admin of this company (or a platform admin) can delete it")
+
+    # ── Verify tenant exists ─────────────────────────────────────────────────
+    t_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = t_result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    tid = str(tenant_id)
+
+    # ── Find identity_id BEFORE any deletions (for the fallback lookup later) ─
+    identity_id = current_user.identity_id
+
+    # ── Cascade deletions in safe FK order ───────────────────────────────────
+    # Helper shorthand
+    agent_sub = "SELECT id FROM agents WHERE tenant_id = :tid"
+
+    # 1. Approval requests (has agent_id FK to agents — must delete before agents)
+    await db.execute(text(
+        f"DELETE FROM approval_requests WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 2. Notifications (has both user_id + agent_id FKs — must delete before both)
+    await db.execute(text(
+        f"DELETE FROM notifications WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+    await db.execute(text(
+        "DELETE FROM notifications WHERE user_id IN (SELECT id FROM users WHERE tenant_id = :tid)"
+    ), {"tid": tid})
+
+    # 3. Bi-directional agent-to-agent relationships
+    await db.execute(text(
+        f"DELETE FROM agent_agent_relationships "
+        f"WHERE agent_id IN ({agent_sub}) OR target_agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 4. Agent-to-human relationships
+    await db.execute(text(
+        f"DELETE FROM agent_relationships WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 5. Task logs → tasks
+    await db.execute(text(
+        f"DELETE FROM task_logs "
+        f"WHERE task_id IN (SELECT id FROM tasks WHERE agent_id IN ({agent_sub}))"
+    ), {"tid": tid})
+    await db.execute(text(
+        f"DELETE FROM tasks WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 6. chat_messages has no session_id — delete directly via agent_id
+    await db.execute(text(
+        f"DELETE FROM chat_messages WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+    # 6b. Chat sessions
+    await db.execute(text(
+        f"DELETE FROM chat_sessions WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 7. Agent triggers  (table: agent_triggers, NOT triggers)
+    await db.execute(text(
+        f"DELETE FROM agent_triggers WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 8. Channel configs, permissions, credentials
+    await db.execute(text(
+        f"DELETE FROM channel_configs WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+    await db.execute(text(
+        f"DELETE FROM agent_permissions WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+    await db.execute(text(
+        f"DELETE FROM agent_credentials WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 9. Agents
+    await db.execute(text("DELETE FROM agents WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 10. OKR data (okr_key_results, okr_alignments, okr_progress_logs cascade from okr_objectives FK)
+    await db.execute(text("DELETE FROM okr_settings WHERE tenant_id = :tid"), {"tid": tid})
+    await db.execute(text("DELETE FROM work_reports WHERE tenant_id = :tid"), {"tid": tid})
+    await db.execute(text("DELETE FROM okr_objectives WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 11. Org structure
+    await db.execute(text("DELETE FROM org_members WHERE tenant_id = :tid"), {"tid": tid})
+    await db.execute(text("DELETE FROM org_departments WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 12. Invitation codes
+    await db.execute(text("DELETE FROM invitation_codes WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 12. Users of this tenant
+    await db.execute(text("DELETE FROM users WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 13. Delete the tenant itself
+    await db.execute(text("DELETE FROM tenants WHERE id = :tid"), {"tid": tid})
+
+    await db.commit()
+
+    # ── Find fallback tenant for the caller ──────────────────────────────────
+    fallback_result = await db.execute(
+        select(User.tenant_id).where(
+            User.identity_id == identity_id,
+            User.tenant_id != tenant_id,
+        ).limit(1)
+    )
+    fallback_row = fallback_result.first()
+    fallback_tenant_id = str(fallback_row[0]) if fallback_row else None
+
+    return {"status": "deleted", "fallback_tenant_id": fallback_tenant_id}

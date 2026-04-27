@@ -5,6 +5,7 @@ from various identity providers (Feishu, DingTalk, WeCom, etc.).
 """
 
 import asyncio
+import json
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -20,10 +21,113 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.identity import IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
 from app.models.user import User, Identity
-from pypinyin import pinyin, lazy_pinyin, Style
-from anyascii import anyascii as _anyascii
 
-from app.core.security import hash_password
+try:
+    from anyascii import anyascii as _anyascii
+except ImportError:  # pragma: no cover - lightweight fallback for minimal test envs
+    def _anyascii(value: str) -> str:
+        return value
+
+try:
+    from pypinyin import Style, lazy_pinyin, pinyin
+except ImportError:  # pragma: no cover - lightweight fallback for minimal test envs
+    class Style:
+        FIRST_LETTER = "first_letter"
+
+    def lazy_pinyin(value: str, errors: str = "default") -> list[str]:
+        ascii_value = _anyascii(value)
+        return list(ascii_value) if ascii_value else list(value)
+
+    def pinyin(value: str, style: str | None = None) -> list[list[str]]:
+        ascii_value = _anyascii(value) or value
+        if style == Style.FIRST_LETTER:
+            return [[ch.lower()] for ch in ascii_value if ch.strip()]
+        return [[ascii_value]]
+
+from app.config import get_settings
+from app.core.security import decrypt_data, hash_password
+from app.services.auth_provider import GoogleWorkspaceAuthProvider
+from app.services.google_workspace_oauth import GOOGLE_HTTP_PROXY
+from jose import jwt
+
+
+def build_department_path_map(departments: list[OrgDepartment]) -> dict[uuid.UUID, str]:
+    """Build department name paths by walking the internal department tree."""
+    dept_by_id = {dept.id: dept for dept in departments}
+    paths: dict[uuid.UUID, str] = {}
+
+    def is_virtual_root(dept: OrgDepartment) -> bool:
+        return not dept.parent_id and str(getattr(dept, "external_id", "") or "") == "0"
+
+    def compute_path(dept_id: uuid.UUID, visited: set[uuid.UUID] | None = None) -> str:
+        if dept_id in paths:
+            return paths[dept_id]
+        if visited is None:
+            visited = set()
+        if dept_id in visited:
+            dept = dept_by_id.get(dept_id)
+            fallback = (dept.name if dept else "") or ""
+            paths[dept_id] = fallback
+            return fallback
+
+        visited.add(dept_id)
+        dept = dept_by_id.get(dept_id)
+        if not dept:
+            return ""
+
+        if is_virtual_root(dept):
+            paths[dept_id] = ""
+            return ""
+
+        name = (dept.name or "").strip()
+        if not dept.parent_id or dept.parent_id not in dept_by_id:
+            paths[dept_id] = name
+            return name
+
+        parent_path = compute_path(dept.parent_id, visited)
+        full_path = f"{parent_path}/{name}" if parent_path else name
+        paths[dept_id] = full_path
+        return full_path
+
+    for dept in departments:
+        compute_path(dept.id)
+
+    return paths
+
+
+async def derive_member_department_paths(
+    db: AsyncSession,
+    members: list[OrgMember],
+) -> dict[uuid.UUID, str]:
+    """Resolve member department paths from department_id via the department tree."""
+    dept_ids = {member.department_id for member in members if member.department_id}
+    if not dept_ids:
+        return {}
+
+    departments: dict[uuid.UUID, OrgDepartment] = {}
+    pending_ids = set(dept_ids)
+
+    while pending_ids:
+        result = await db.execute(
+            select(OrgDepartment).where(OrgDepartment.id.in_(pending_ids))
+        )
+        batch = result.scalars().all()
+        if not batch:
+            break
+
+        next_pending: set[uuid.UUID] = set()
+        for department in batch:
+            departments[department.id] = department
+            if department.parent_id and department.parent_id not in departments:
+                next_pending.add(department.parent_id)
+        pending_ids = next_pending
+
+    dept_path_map = build_department_path_map(list(departments.values()))
+
+    return {
+        member.id: dept_path_map.get(member.department_id, member.department_path or "")
+        for member in members
+    }
 
 
 def _normalize_contact(value: str | None) -> str | None:
@@ -154,6 +258,9 @@ class BaseOrgSyncAdapter(ABC):
                     errors.append(f"Department {dept.external_id}: {str(e)}")
                     logger.error(f"[OrgSync] Failed to sync department {dept.external_id}: {e}")
 
+            await self._rebuild_department_paths(db, provider.id)
+            await db.flush()
+
             # Fetch and sync users (from all departments)
             for dept in departments:
                 try:
@@ -177,6 +284,9 @@ class BaseOrgSyncAdapter(ABC):
                         partial_failure = True
                         logger.error(f"[OrgSync] Failed to sync member {user.external_id} ({user.name}): {e}")
                         errors.append(f"Member {user.external_id}: {str(e)}")
+
+            await self._refresh_member_department_paths(db, provider.id)
+            await db.flush()
 
             # Update provider metadata if possible
             if self.provider:
@@ -348,7 +458,8 @@ class BaseOrgSyncAdapter(ABC):
         existing = result.scalars().first()
 
         now = datetime.now()
-        path = f"{dept.parent_external_id}/{dept.name}" if dept.parent_external_id else dept.name
+        # Path is rebuilt from the internal department tree after sync.
+        path = dept.name
 
         # Resolve parent_id from parent_external_id
         parent_id = None
@@ -386,6 +497,38 @@ class BaseOrgSyncAdapter(ABC):
             db.add(new_dept)
 
         await db.flush()
+
+    async def _rebuild_department_paths(self, db: AsyncSession, provider_id: uuid.UUID) -> dict[uuid.UUID, str]:
+        """Normalize OrgDepartment.path using parent_id/name reverse derivation."""
+        result = await db.execute(
+            select(OrgDepartment).where(OrgDepartment.provider_id == provider_id)
+        )
+        departments = result.scalars().all()
+        path_map = build_department_path_map(departments)
+
+        for dept in departments:
+            dept.path = path_map.get(dept.id, (dept.name or "").strip())
+
+        return path_map
+
+    async def _refresh_member_department_paths(self, db: AsyncSession, provider_id: uuid.UUID):
+        """Refresh OrgMember.department_path from the normalized department tree."""
+        dept_result = await db.execute(
+            select(OrgDepartment).where(OrgDepartment.provider_id == provider_id)
+        )
+        departments = dept_result.scalars().all()
+        dept_path_map = build_department_path_map(departments)
+
+        member_result = await db.execute(
+            select(OrgMember).where(OrgMember.provider_id == provider_id)
+        )
+        members = member_result.scalars().all()
+
+        for member in members:
+            if member.department_id:
+                member.department_path = dept_path_map.get(member.department_id, member.department_path or "")
+            else:
+                member.department_path = member.department_path or ""
 
     async def _upsert_member(
         self,
@@ -766,14 +909,28 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
                         f"Feishu fetch users error for dept {department_external_id}: "
                         f"code={error_code}, msg={error_msg}"
                     )
-                    raise RuntimeError(
-                        f"Feishu API error (code {error_code}): {error_msg}. "
-                        f"Access denied. One of the following scopes is required: "
-                        f"[contact:user.employee_id:readonly]. "
-                        f"Please enable this permission in Feishu Open Platform -> App -> "
-                        f"Permissions -> search 'employee_id' -> enable and publish a new version. "
-                        f"Note: unlike DingTalk, Feishu permissions require app re-publishing to take effect."
-                    )
+                    # Provide targeted guidance based on error code
+                    if error_code == 40060:
+                        # 40060 = "no dept authority": the app has correct API scopes
+                        # but lacks DATA-level access to this department.
+                        guidance = (
+                            f"Feishu API error (code {error_code}): {error_msg}. "
+                            f"The app does not have data access to this department. "
+                            f"Please go to Feishu Open Platform -> App -> Permissions -> "
+                            f"Data Permissions (数据权限) -> Contact Scope (通讯录权限范围) -> "
+                            f"set to 'All Employees' (全部员工) or add the required departments. "
+                            f"After changing, you must publish a new app version for it to take effect."
+                        )
+                    else:
+                        guidance = (
+                            f"Feishu API error (code {error_code}): {error_msg}. "
+                            f"One of the following scopes may be required: "
+                            f"[contact:user.employee_id:readonly]. "
+                            f"Please enable this permission in Feishu Open Platform -> App -> "
+                            f"Permissions -> search 'employee_id' -> enable and publish a new version. "
+                            f"Note: unlike DingTalk, Feishu permissions require app re-publishing to take effect."
+                        )
+                    raise RuntimeError(guidance)
 
                 res_data = data.get("data", {})
                 items = res_data.get("items", []) or []
@@ -1178,11 +1335,279 @@ class WeComOrgSyncAdapter(BaseOrgSyncAdapter):
         return user_stubs
 
 
+class GoogleWorkspaceOrgSyncAdapter(BaseOrgSyncAdapter):
+    """Google Workspace organization sync adapter.
+
+    Primary mode uses an admin-authorized refresh token obtained via OAuth.
+    Legacy service-account delegation is kept only as a compatibility fallback.
+    """
+
+    provider_type = "google_workspace"
+
+    GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+    GOOGLE_DIRECTORY_BASE_URL = "https://admin.googleapis.com/admin/directory/v1"
+    GOOGLE_DIRECTORY_SCOPE = "https://www.googleapis.com/auth/admin.directory.user.readonly"
+    GOOGLE_ORGUNIT_SCOPE = "https://www.googleapis.com/auth/admin.directory.orgunit.readonly"
+
+    def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None, tenant_id: uuid.UUID | None = None):
+        super().__init__(provider, config, tenant_id)
+        self.service_account = self._load_service_account(self.config)
+        self.client_id = self.config.get("client_id") or self.config.get("sso_client_id") or ""
+        self.client_secret = self.config.get("client_secret") or self.config.get("sso_client_secret") or ""
+        self.customer_id = (
+            self.config.get("customer_id")
+            or "my_customer"
+        )
+        self.admin_refresh_token = self._load_admin_refresh_token(self.config)
+        self.delegated_admin_email = (
+            self.config.get("delegated_admin_email")
+            or self.config.get("admin_email")
+            or self.config.get("google_admin_authorized_email")
+            or ""
+        )
+        self._access_token: str | None = None
+        self._token_expires_at: datetime | None = None
+        self._org_unit_path_to_external_id: dict[str, str] = {"/": "root"}
+        self._org_unit_path_to_display_path: dict[str, str] = {"/": "Root"}
+
+    @property
+    def api_base_url(self) -> str:
+        return self.GOOGLE_DIRECTORY_BASE_URL
+
+    def _load_service_account(self, config: dict) -> dict[str, Any]:
+        raw = config.get("service_account_json") or config.get("service_account")
+        if raw is None:
+            # Backward compatibility for older configurations that stored
+            # the service account JSON in client_secret.
+            legacy_secret = config.get("client_secret")
+            if isinstance(legacy_secret, str) and legacy_secret.lstrip().startswith("{"):
+                raw = legacy_secret
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("service_account_json must be valid JSON") from exc
+        return {}
+
+    def _load_admin_refresh_token(self, config: dict) -> str:
+        encrypted = config.get("google_admin_refresh_token_encrypted")
+        if isinstance(encrypted, str) and encrypted:
+            try:
+                return decrypt_data(encrypted, get_settings().SECRET_KEY)
+            except Exception as exc:
+                logger.warning(f"Failed to decrypt Google admin refresh token: {exc}")
+        raw = config.get("google_admin_refresh_token")
+        return raw if isinstance(raw, str) else ""
+
+    async def get_access_token(self) -> str:
+        if self._access_token and self._token_expires_at and datetime.now() < self._token_expires_at:
+            return self._access_token
+
+        if self.admin_refresh_token:
+            return await self._refresh_user_access_token()
+
+        if self.service_account:
+            logger.warning("Google Workspace org sync is using legacy service-account delegation fallback")
+            return await self._get_legacy_service_account_access_token()
+
+        raise ValueError("Google Workspace admin authorization is required before directory sync")
+
+    async def _get_legacy_service_account_access_token(self) -> str:
+        """Compatibility path for older Google Workspace configurations."""
+
+        client_email = self.service_account.get("client_email")
+        private_key = self.service_account.get("private_key")
+        token_uri = self.service_account.get("token_uri") or self.GOOGLE_TOKEN_URL
+        scopes = " ".join([self.GOOGLE_DIRECTORY_SCOPE, self.GOOGLE_ORGUNIT_SCOPE])
+
+        if not client_email or not private_key:
+            raise ValueError("Google Workspace service_account_json must include client_email and private_key")
+        if not self.delegated_admin_email:
+            raise ValueError("Google Workspace delegated_admin_email is required for legacy service-account sync")
+
+        now = datetime.now()
+        assertion = jwt.encode(
+            {
+                "iss": client_email,
+                "sub": self.delegated_admin_email,
+                "scope": scopes,
+                "aud": token_uri,
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(minutes=55)).timestamp()),
+            },
+            private_key,
+            algorithm="RS256",
+        )
+
+        async with httpx.AsyncClient(timeout=20, proxy=GOOGLE_HTTP_PROXY) as client:
+            resp = await client.post(
+                token_uri,
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                    "assertion": assertion,
+                },
+            )
+            data = resp.json()
+            if resp.status_code >= 400 or "access_token" not in data:
+                raise RuntimeError(f"Google OAuth token error: {data}")
+            self._access_token = data["access_token"]
+            expires_in = int(data.get("expires_in") or 3600)
+            self._token_expires_at = now + timedelta(seconds=max(expires_in - 60, 60))
+            return self._access_token
+
+    async def _refresh_user_access_token(self) -> str:
+        if not self.client_id or not self.client_secret:
+            raise ValueError("Google Workspace client_id and client_secret are required")
+        if not self.admin_refresh_token:
+            raise ValueError("Google Workspace admin authorization is required before directory sync")
+
+        now = datetime.now()
+        provider = GoogleWorkspaceAuthProvider(config={
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        })
+        data = await provider.refresh_access_token(self.admin_refresh_token)
+        if "access_token" not in data:
+            raise RuntimeError(f"Google OAuth refresh error: {data}")
+        self._access_token = data["access_token"]
+        expires_in = int(data.get("expires_in") or 3600)
+        self._token_expires_at = now + timedelta(seconds=max(expires_in - 60, 60))
+        return self._access_token
+
+    async def fetch_departments(self) -> list[ExternalDepartment]:
+        token = await self.get_access_token()
+        customer_id = self.customer_id or "my_customer"
+        departments: list[ExternalDepartment] = []
+
+        async with httpx.AsyncClient(timeout=20, proxy=GOOGLE_HTTP_PROXY) as client:
+            resp = await client.get(
+                f"{self.GOOGLE_DIRECTORY_BASE_URL}/customer/{customer_id}/orgunits",
+                params={"type": "all"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            data = resp.json()
+            if resp.status_code >= 400:
+                raise RuntimeError(f"Google Workspace orgunits error: {data}")
+
+            items = data.get("organizationUnits", []) or []
+
+            for item in items:
+                org_unit_path = item.get("orgUnitPath") or ""
+                external_id = item.get("orgUnitId") or org_unit_path or item.get("name")
+                normalized_path = org_unit_path if org_unit_path.startswith("/") else f"/{org_unit_path}"
+                self._org_unit_path_to_external_id[normalized_path] = external_id
+                self._org_unit_path_to_display_path[normalized_path] = normalized_path.strip("/") or "Root"
+
+            departments.append(
+                ExternalDepartment(
+                    external_id="root",
+                    name="Root",
+                    parent_external_id=None,
+                    member_count=0,
+                    raw_data={"orgUnitPath": "/", "name": "Root"},
+                )
+            )
+
+            for item in items:
+                org_unit_path = item.get("orgUnitPath") or ""
+                parent_org_unit_path = item.get("parentOrgUnitPath") or "/"
+                external_id = item.get("orgUnitId") or org_unit_path or item.get("name")
+                normalized_path = org_unit_path if org_unit_path.startswith("/") else f"/{org_unit_path}"
+                parent_path = parent_org_unit_path if parent_org_unit_path.startswith("/") else f"/{parent_org_unit_path}"
+                parent_external_id = "root" if parent_path == "/" else self._org_unit_path_to_external_id.get(parent_path)
+
+                departments.append(
+                    ExternalDepartment(
+                        external_id=external_id,
+                        name=item.get("name", ""),
+                        parent_external_id=parent_external_id,
+                        member_count=0,
+                        raw_data=item,
+                    )
+                )
+
+        return departments
+
+    async def fetch_users(self, department_external_id: str) -> list[ExternalUser]:
+        # Google Directory users are listed tenant-wide rather than per-org-unit.
+        # Only fetch them on the root iteration to avoid duplicates.
+        if department_external_id != "root":
+            return []
+
+        token = await self.get_access_token()
+        users: list[ExternalUser] = []
+        page_token = ""
+        customer = self.customer_id or "my_customer"
+
+        async with httpx.AsyncClient(timeout=20, proxy=GOOGLE_HTTP_PROXY) as client:
+            while True:
+                params = {
+                    "customer": customer,
+                    "maxResults": 500,
+                    "projection": "full",
+                    "orderBy": "email",
+                    "showDeleted": "false",
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+
+                resp = await client.get(
+                    f"{self.GOOGLE_DIRECTORY_BASE_URL}/users",
+                    params=params,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                data = resp.json()
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"Google Workspace users error: {data}")
+
+                for item in data.get("users", []) or []:
+                    org_unit_path = item.get("orgUnitPath") or "/"
+                    normalized_path = org_unit_path if org_unit_path.startswith("/") else f"/{org_unit_path}"
+                    department_external = self._org_unit_path_to_external_id.get(normalized_path, "root")
+                    primary_org = ((item.get("organizations") or [None])[0] or {})
+                    primary_phone = self._extract_primary_phone(item.get("phones") or [])
+
+                    users.append(
+                        ExternalUser(
+                            external_id=item.get("id", "") or item.get("primaryEmail", ""),
+                            open_id=item.get("primaryEmail", ""),
+                            unionid="",
+                            name=(item.get("name") or {}).get("fullName") or item.get("primaryEmail", ""),
+                            email=item.get("primaryEmail", "") or "",
+                            avatar_url=item.get("thumbnailPhotoUrl", "") or "",
+                            title=primary_org.get("title", "") or "",
+                            department_external_id=department_external,
+                            department_path=self._org_unit_path_to_display_path.get(normalized_path, "Root"),
+                            department_ids=[department_external],
+                            mobile=primary_phone,
+                            status="inactive" if item.get("suspended") or item.get("archived") else "active",
+                            raw_data=item,
+                        )
+                    )
+
+                page_token = data.get("nextPageToken") or ""
+                if not page_token:
+                    break
+
+        return users
+
+    def _extract_primary_phone(self, phones: list[dict[str, Any]]) -> str:
+        if not phones:
+            return ""
+        for phone in phones:
+            if phone.get("primary"):
+                return phone.get("value", "") or ""
+        return phones[0].get("value", "") or ""
+
+
 # Adapter class mapping
 SYNC_ADAPTER_CLASSES = {
     "feishu": FeishuOrgSyncAdapter,
     "dingtalk": DingTalkOrgSyncAdapter,
     "wecom": WeComOrgSyncAdapter,
+    "google_workspace": GoogleWorkspaceOrgSyncAdapter,
 }
 
 

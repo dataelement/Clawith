@@ -1,9 +1,8 @@
 /**
  * AgentCredentials — Credential management component for Agent Settings.
  *
- * Allows managing stored login credentials (username/password) and
- * browser cookies for specific platforms. Cookies are automatically
- * injected into new AgentBay browser sessions via CDP.
+ * Allows managing stored platform session cookies for specific platforms.
+ * Cookies are automatically injected into new AgentBay browser sessions via CDP.
  *
  * Linear-style design with card-based credential list and modal editor.
  */
@@ -19,14 +18,11 @@ interface Credential {
     credential_type: string;
     platform: string;
     display_name: string;
-    username: string | null;
-    login_url: string | null;
     status: string;
     cookies_updated_at: string | null;
     last_login_at: string | null;
     last_injected_at: string | null;
     has_cookies: boolean;
-    has_password: boolean;
     created_at: string;
     updated_at: string;
 }
@@ -35,9 +31,6 @@ interface FormData {
     credential_type: string;
     platform: string;
     display_name: string;
-    username: string;
-    password: string;
-    login_url: string;
     cookies_json: string;
 }
 
@@ -45,9 +38,6 @@ const EMPTY_FORM: FormData = {
     credential_type: 'website',
     platform: '',
     display_name: '',
-    username: '',
-    password: '',
-    login_url: '',
     cookies_json: '',
 };
 
@@ -165,9 +155,6 @@ export default function AgentCredentials({ agentId }: Props) {
             credential_type: cred.credential_type,
             platform: cred.platform,
             display_name: cred.display_name,
-            username: cred.username || '',
-            password: '', // Never pre-fill password
-            login_url: cred.login_url || '',
             cookies_json: '', // Never pre-fill cookies
         });
         setFormError('');
@@ -204,9 +191,6 @@ export default function AgentCredentials({ agentId }: Props) {
                 platform: form.platform.trim(),
                 display_name: form.display_name.trim(),
             };
-            if (form.username.trim()) payload.username = form.username.trim();
-            if (form.password) payload.password = form.password;
-            if (form.login_url.trim()) payload.login_url = form.login_url.trim();
             if (form.cookies_json.trim()) payload.cookies_json = form.cookies_json.trim();
 
             if (editingId) {
@@ -290,11 +274,6 @@ export default function AgentCredentials({ agentId }: Props) {
                                         <span className="credential-meta-tag">
                                             {CookieIcon}
                                             {t('agent.credentials.meta.cookies')} {cred.cookies_updated_at ? `(${timeAgo(cred.cookies_updated_at)})` : ''}
-                                        </span>
-                                    )}
-                                    {cred.username && (
-                                        <span className="credential-meta-tag">
-                                            {cred.username}
                                         </span>
                                     )}
                                     {cred.last_injected_at && (
@@ -387,40 +366,6 @@ export default function AgentCredentials({ agentId }: Props) {
                                     <option value="social">{t('agent.credentials.modal.typeOptions.social')}</option>
                                     <option value="api_key">{t('agent.credentials.modal.typeOptions.api_key')}</option>
                                 </select>
-                            </label>
-
-                            <label className="credential-field">
-                                <span className="credential-field-label">{t('agent.credentials.modal.username')}</span>
-                                <input
-                                    type="text"
-                                    value={form.username}
-                                    onChange={(e) => setForm(f => ({ ...f, username: e.target.value }))}
-                                    placeholder={t('agent.credentials.modal.usernamePlaceholder')}
-                                />
-                            </label>
-
-                            <label className="credential-field">
-                                <span className="credential-field-label">
-                                    {t('agent.credentials.modal.password')}
-                                    {editingId && <span className="credential-field-hint">{t('agent.credentials.modal.passwordHint')}</span>}
-                                </span>
-                                <input
-                                    type="password"
-                                    value={form.password}
-                                    onChange={(e) => setForm(f => ({ ...f, password: e.target.value }))}
-                                    placeholder={t('agent.credentials.modal.passwordPlaceholder')}
-                                    autoComplete="new-password"
-                                />
-                            </label>
-
-                            <label className="credential-field">
-                                <span className="credential-field-label">{t('agent.credentials.modal.loginUrl')}</span>
-                                <input
-                                    type="text"
-                                    value={form.login_url}
-                                    onChange={(e) => setForm(f => ({ ...f, login_url: e.target.value }))}
-                                    placeholder={t('agent.credentials.modal.loginUrlPlaceholder')}
-                                />
                             </label>
 
                             <label className="credential-field">

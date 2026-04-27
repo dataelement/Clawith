@@ -17,17 +17,38 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Increase api_key_encrypted column length from 500 to 1024
-    # Minimax API keys are very long and exceed the previous 500 char limit
-    op.execute("""
-        ALTER TABLE llm_models
-        ALTER COLUMN api_key_encrypted TYPE VARCHAR(1024)
-    """)
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    indexes = [idx["name"] for idx in inspector.get_indexes("chat_messages")]
+    
+    if 'ix_chat_messages_conversation_id' not in indexes:
+        op.create_index(
+            'ix_chat_messages_conversation_id',
+            'chat_messages',
+            ['conversation_id'],
+            unique=False
+        )
+    
+
+    columns = inspector.get_columns("llm_models")
+    col = next((c for c in columns if c["name"] == "api_key_encrypted"), None)
+    
+    # Only alter if column length is less than 1024
+    if col and (col["type"].length is None or col["type"].length < 1024):
+        op.execute("""
+            ALTER TABLE llm_models
+            ALTER COLUMN api_key_encrypted TYPE VARCHAR(1024)
+        """)
 
 
 def downgrade() -> None:
-    # Revert to 500 chars (may fail if data exceeds 500 chars)
-    op.execute("""
-        ALTER TABLE llm_models
-        ALTER COLUMN api_key_encrypted TYPE VARCHAR(500)
-    """)
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = inspector.get_columns("llm_models")
+    col = next((c for c in columns if c["name"] == "api_key_encrypted"), None)
+    
+    if col and col["type"].length == 1024:
+        op.execute("""
+            ALTER TABLE llm_models
+            ALTER COLUMN api_key_encrypted TYPE VARCHAR(500)
+        """)

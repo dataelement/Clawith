@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import cast, select, func, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
@@ -20,16 +20,12 @@ from app.models.user import User
 router = APIRouter(prefix="/api/agents", tags=["chat-sessions"])
 
 
-def _is_admin_or_creator(user: User, agent: Agent) -> bool:
+def _can_view_all_agent_chat_sessions(user: User, agent: Agent) -> bool:
+    """Admins and the agent creator may list/view/delete other users' chat sessions."""
     return (
-        user.role in ("platform_admin", "org_admin")
+        user.role in ("platform_admin", "org_admin", "agent_admin")
         or str(agent.creator_id) == str(user.id)
     )
-
-
-def _can_view_all_agent_chat_sessions(user: User) -> bool:
-    """Only admin roles may list/view/delete other users' chat sessions."""
-    return user.role in ("platform_admin", "org_admin", "agent_admin")
 
 
 class SessionOut(BaseModel):
@@ -42,6 +38,8 @@ class SessionOut(BaseModel):
     created_at: str
     last_message_at: Optional[str] = None
     message_count: int = 0
+    unread_count: int = 0
+    is_primary: bool = False
     # Agent-to-agent session fields
     peer_agent_id: Optional[str] = None
     peer_agent_name: Optional[str] = None
@@ -78,7 +76,7 @@ async def list_sessions(
     await check_agent_access(db, current_user, agent_id)
 
     if scope == "all":
-        if not _can_view_all_agent_chat_sessions(current_user):
+        if not _can_view_all_agent_chat_sessions(current_user, agent):
             raise HTTPException(status_code=403, detail="Not authorized to view all sessions")
 
         # Fetch all sessions (including agent-to-agent where this agent is peer)
@@ -95,8 +93,10 @@ async def list_sessions(
 
         # --- BULK FETCH: message counts, user names, agent names in 3 queries total ---
         session_ids = [str(s.id) for s in sessions]
+        session_uuid_ids = [s.id for s in sessions]
 
         message_counts: dict[str, int] = {}
+        unread_counts: dict[str, int] = {}
         if session_ids:
             count_res = await db.execute(
                 select(ChatMessage.conversation_id, func.count(ChatMessage.id))
@@ -105,6 +105,25 @@ async def list_sessions(
             )
             for row in count_res.all():
                 message_counts[row[0]] = row[1]
+
+            unread_res = await db.execute(
+                select(ChatSession.id, func.count(ChatMessage.id))
+                .join(ChatMessage, ChatMessage.conversation_id == cast(ChatSession.id, String))
+                .where(
+                    ChatSession.id.in_(session_uuid_ids),
+                    ChatSession.user_id == current_user.id,
+                    ChatSession.source_channel.notin_(["agent", "trigger"]),
+                    ChatSession.is_group == False,
+                    ChatMessage.role.in_(["assistant", "system", "tool_call"]),
+                    ChatMessage.created_at > func.coalesce(
+                        ChatSession.last_read_at_by_user,
+                        datetime(1970, 1, 1, tzinfo=tz.utc),
+                    ),
+                )
+                .group_by(ChatSession.id)
+            )
+            for row in unread_res.all():
+                unread_counts[str(row[0])] = int(row[1] or 0)
 
         # Collect IDs to resolve in bulk
         from app.models.user import Identity
@@ -165,6 +184,8 @@ async def list_sessions(
                 created_at=session.created_at.isoformat(),
                 last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                 message_count=count,
+                unread_count=unread_counts.get(str(session.id), 0),
+                is_primary=bool(session.is_primary),
                 peer_agent_id=peer_agent_id,
                 peer_agent_name=peer_agent_name,
                 participant_type="group" if session.is_group else participant_type,
@@ -187,17 +208,16 @@ async def list_sessions(
         sessions = result.scalars().all()
         out = []
 
-        # --- BULK FETCH: count user messages and total messages in one query ---
-        from sqlalchemy import case
+        # --- BULK FETCH: count total messages and unread messages in two compact queries ---
         session_ids = [str(s.id) for s in sessions]
+        session_uuid_ids = [s.id for s in sessions]
 
-        user_msg_counts: dict[str, int] = {}
         total_counts: dict[str, int] = {}
+        unread_counts: dict[str, int] = {}
         if session_ids:
             counts_res = await db.execute(
                 select(
                     ChatMessage.conversation_id,
-                    func.sum(case((ChatMessage.role == "user", 1), else_=0)),
                     func.count(ChatMessage.id)
                 ).where(
                     ChatMessage.conversation_id.in_(session_ids),
@@ -205,13 +225,25 @@ async def list_sessions(
                 ).group_by(ChatMessage.conversation_id)
             )
             for row in counts_res.all():
-                user_msg_counts[row[0]] = int(row[1] or 0)
-                total_counts[row[0]] = int(row[2] or 0)
+                total_counts[row[0]] = int(row[1] or 0)
+
+            unread_res = await db.execute(
+                select(ChatSession.id, func.count(ChatMessage.id))
+                .join(ChatMessage, ChatMessage.conversation_id == cast(ChatSession.id, String))
+                .where(
+                    ChatSession.id.in_(session_uuid_ids),
+                    ChatMessage.role.in_(["assistant", "system", "tool_call"]),
+                    ChatMessage.created_at > func.coalesce(
+                        ChatSession.last_read_at_by_user,
+                        datetime(1970, 1, 1, tzinfo=tz.utc),
+                    ),
+                )
+                .group_by(ChatSession.id)
+            )
+            for row in unread_res.all():
+                unread_counts[str(row[0])] = int(row[1] or 0)
 
         for session in sessions:
-            user_msg_count = user_msg_counts.get(str(session.id), 0)
-            if user_msg_count == 0:
-                continue  # hide empty or orphan sessions
             count = total_counts.get(str(session.id), 0)
             out.append(SessionOut(
                 id=str(session.id),
@@ -222,6 +254,8 @@ async def list_sessions(
                 created_at=session.created_at.isoformat(),
                 last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                 message_count=count,
+                unread_count=unread_counts.get(str(session.id), 0),
+                is_primary=bool(session.is_primary),
             ))
         return out
 
@@ -244,6 +278,7 @@ async def create_session(
         user_id=current_user.id,
         title=body.title or f"Session {now.strftime('%m-%d %H:%M')}",
         source_channel="web",
+        is_primary=False,
         created_at=now,
     )
     db.add(session)
@@ -258,6 +293,8 @@ async def create_session(
         created_at=session.created_at.isoformat(),
         last_message_at=None,
         message_count=0,
+        unread_count=0,
+        is_primary=False,
         participant_type="user",
         is_group=False,
     )
@@ -271,8 +308,8 @@ async def rename_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Rename a session. Owner, or org/platform admin (others' sessions)."""
-    await check_agent_access(db, current_user, agent_id)
+    """Rename a session. Owner, agent creator, or admin may rename others' sessions."""
+    agent, _ = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
     )
@@ -280,7 +317,7 @@ async def rename_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user):
+    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user, agent):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     session.title = body.title
@@ -295,8 +332,8 @@ async def delete_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a chat session and its messages. Owner, or org/platform admin (others' sessions)."""
-    await check_agent_access(db, current_user, agent_id)
+    """Delete a chat session and its messages. Owner, agent creator, or admin may delete others' sessions."""
+    agent, _ = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
     )
@@ -304,7 +341,7 @@ async def delete_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user):
+    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user, agent):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     # Delete associated messages first
@@ -323,7 +360,7 @@ async def get_session_messages(
     db: AsyncSession = Depends(get_db),
 ):
     """Get chat messages for a specific session."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _ = await check_agent_access(db, current_user, agent_id)
     # Allow looking up sessions where agent_id OR peer_agent_id matches
     result = await db.execute(
         select(ChatSession).where(
@@ -335,8 +372,8 @@ async def get_session_messages(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Permission: session owner, or any user with manage access to the viewed agent.
-    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user):
+    # Permission: session owner, agent creator, or admin.
+    if str(session.user_id) != str(current_user.id) and not _can_view_all_agent_chat_sessions(current_user, agent):
         raise HTTPException(status_code=403, detail="Not authorized to view this session")
 
     # Query messages by conversation_id only (agent-to-agent uses session_agent_id)
@@ -355,6 +392,11 @@ async def get_session_messages(
         .order_by(ChatMessage.created_at.asc())
     )
     messages = msgs_result.scalars().all()
+
+    # Reading your own first-party/channel session should clear its unread state.
+    if str(session.user_id) == str(current_user.id) and not session.is_group and session.source_channel not in ("agent", "trigger"):
+        session.last_read_at_by_user = datetime.now(tz.utc)
+        await db.commit()
 
     # Resolve sender names for agent sessions
     sender_cache: dict = {}

@@ -262,6 +262,7 @@ export default function Login() {
         feishu: { label: 'Feishu', icon: '/feishu.png' },
         dingtalk: { label: 'DingTalk', icon: '/dingtalk.png' },
         wecom: { label: 'WeCom', icon: '/wecom.png' },
+        google_workspace: { label: 'Google', icon: '/google.svg' },
     };
 
     return (
@@ -404,7 +405,7 @@ export default function Login() {
                                                 onClick={() => window.location.href = p.url}
                                             >
                                                 {meta.icon ? (
-                                                    <img src={meta.icon} alt={meta.label} width={18} height={18} style={{ borderRadius: '4px' }} />
+                                                    <img src={meta.icon} alt={meta.label} width={18} height={18} />
                                                 ) : (
                                                     <span style={{ width: 18, height: 18, borderRadius: 4, background: 'var(--bg-tertiary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10 }}>
                                                         {(meta.label || '').slice(0, 1).toUpperCase()}

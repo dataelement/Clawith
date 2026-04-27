@@ -2,6 +2,7 @@
 node_modules/
 dist/
 *.zip
+.vite/
 build/
 __pycache__/
 *.pyc

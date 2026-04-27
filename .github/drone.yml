@@ -1,0 +1,452 @@
+# ============================================================
+# Clawith CI/CD Pipeline
+# 基于 Drone CI 的自动化构建、部署测试和升级测试 (私有服务器环境)
+#
+# 三个 Pipeline:
+#   1. build-and-test  — 构建新旧版本镜像并传输到服务器
+#   2. deploy-test     — 全新部署测试 (docker compose 完整流程)
+#   3. upgrade-test    — 版本升级测试 (旧版→新版，验证数据库迁移)
+
+# ============================================================
+# Pipeline 1: 构建镜像
+# ============================================================
+kind: pipeline
+type: docker
+name: build-and-test
+
+workspace:
+  path: /drone/src
+
+clone:
+  disable: true
+
+steps:
+  # --------------------------------------------------------
+  # Step 1: 代码克隆 (获取完整历史和 tags)
+  # --------------------------------------------------------
+  - name: clone
+    image: alpine/git
+    pull: if-not-exists
+    environment:
+      http_proxy:
+        from_secret: PROXY
+      https_proxy:
+        from_secret: PROXY
+    commands:
+      - git config --global core.compression 0
+      - git config --global http.postBuffer 524288000
+      - git clone --no-single-branch https://github.com/dataelement/Clawith.git .
+      - git fetch --tags
+      - git checkout $DRONE_COMMIT
+      - echo "当前 commit $(git log --oneline -1)"
+      - echo "上一个 tag $(git describe --tags --abbrev=0 2>/dev/null || echo '无 tag')"
+
+  # --------------------------------------------------------
+  # Step 2: 构建新旧版本 Docker 镜像
+  # --------------------------------------------------------
+  - name: build-images
+    image: docker:24.0.6
+    pull: if-not-exists
+    privileged: true
+    volumes:
+      - name: docker-socket
+        path: /var/run/docker.sock
+      - name: docker-cache
+        path: /var/cache/docker
+    environment:
+      http_proxy:
+        from_secret: PROXY
+      https_proxy:
+        from_secret: PROXY
+    commands:
+      - echo "========================================"
+      - echo "开始构建 Docker 镜像"
+      - echo "事件 $DRONE_BUILD_EVENT"
+      - echo "目标分支 $DRONE_BRANCH"
+      - echo "提交 $DRONE_COMMIT_SHORT"
+      - echo "========================================"
+
+      # 获取上一个 tag
+      - PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+      - |
+        if [ -z "$PREV_TAG" ]; then
+          echo "警告: 未找到历史 tag，升级测试将被跳过"
+          echo "SKIP_UPGRADE_TEST=true" > .env.drone
+          # 仅构建当前版本
+          docker build -t clawith-backend:new --build-arg CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -f backend/Dockerfile ./backend
+          docker build -t clawith-frontend:new -f frontend/Dockerfile ./frontend
+          docker save -o clawith-backend-new.tar clawith-backend:new
+          docker save -o clawith-frontend-new.tar clawith-frontend:new
+          chmod 644 clawith-backend-new.tar clawith-frontend-new.tar
+          echo "当前版本镜像构建完成"
+          exit 0
+        fi
+      - echo "上一个 tag $PREV_TAG"
+      - |
+        echo "SKIP_UPGRADE_TEST=false" > .env.drone
+
+      # --- 构建旧版本镜像 ---
+      - echo "--- 构建旧版本镜像 ($PREV_TAG) ---"
+      - git checkout $PREV_TAG
+      - docker build -t clawith-backend:old --build-arg CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -f backend/Dockerfile ./backend
+      - docker build -t clawith-frontend:old -f frontend/Dockerfile ./frontend
+      - docker save -o clawith-backend-old.tar clawith-backend:old
+      - docker save -o clawith-frontend-old.tar clawith-frontend:old
+      - echo "旧版本镜像构建完成"
+
+      # --- 构建当前版本镜像 ---
+      - echo "--- 构建当前版本镜像 ($DRONE_COMMIT_SHORT) ---"
+      - git checkout $DRONE_COMMIT
+      - docker build -t clawith-backend:new --build-arg CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -f backend/Dockerfile ./backend
+      - docker build -t clawith-frontend:new -f frontend/Dockerfile ./frontend
+      - docker save -o clawith-backend-new.tar clawith-backend:new
+      - docker save -o clawith-frontend-new.tar clawith-frontend:new
+      - echo "当前版本镜像构建完成"
+
+      # --- 输出文件清单 ---
+      - echo "--- 镜像文件清单 ---"
+      - chmod 644 *.tar
+      - ls -lh *.tar
+      - cat .env.drone
+
+  # --------------------------------------------------------
+  # Step 3: 传输镜像文件到私有服务器
+  # --------------------------------------------------------
+  - name: scp-images
+    image: appleboy/drone-scp
+    pull: if-not-exists
+    settings:
+      host:
+        from_secret: PRIVATE_SERVER_IP
+      username: root
+      password:
+        from_secret: sshpwd
+      port: 22
+      command_timeout: 15m
+      target: /opt/server/clawith-ci/
+      source:
+        - clawith-backend-new.tar
+        - clawith-frontend-new.tar
+        - clawith-backend-old.tar
+        - clawith-frontend-old.tar
+        - docker-compose.yml
+        - .env.drone
+      rm: false
+
+trigger:
+  branch:
+    - main
+    - release
+    - feat-devops
+  event:
+    - push
+    - pull_request
+
+volumes:
+  - name: docker-socket
+    host:
+      path: /var/run/docker.sock
+  - name: docker-cache
+    host:
+      path: /var/cache/docker
+
+---
+# ============================================================
+# Pipeline 2: 部署测试
+# 验证当前分支代码能否通过 docker compose 完整部署并正常启动
+# ============================================================
+kind: pipeline
+type: docker
+name: deploy-test
+
+depends_on:
+  - build-and-test
+
+workspace:
+  path: /drone/src
+
+clone:
+  disable: true
+
+steps:
+  - name: deploy-test
+    image: appleboy/drone-ssh
+    pull: if-not-exists
+    settings:
+      host:
+        from_secret: PRIVATE_SERVER_IP
+      username: root
+      password:
+        from_secret: sshpwd
+      command_timeout: 10m
+      script:
+        - echo "========================================"
+        - echo "部署测试 全新部署验证"
+        - echo "========================================"
+        - CI_DIR=/opt/server/clawith-ci
+        - DEPLOY_DIR=/opt/server/clawith-private
+        - cd $DEPLOY_DIR || exit 1
+
+        # --- 加载新版镜像 ---
+        - echo "加载新版镜像..."
+        - docker load -i $CI_DIR/clawith-backend-new.tar
+        - docker load -i $CI_DIR/clawith-frontend-new.tar
+        - rm -f $CI_DIR/clawith-backend-new.tar $CI_DIR/clawith-frontend-new.tar
+
+        # --- 清理旧环境 ---
+        - echo "清理旧环境..."
+        - docker compose down -v --remove-orphans 2>/dev/null || true
+
+        # --- 启动全部服务 ---
+        - echo "启动全部服务 (postgres/redis/backend/frontend)..."
+        - docker compose up -d --no-build
+        - sleep 5
+
+        # --- 等待基础设施就绪 ---
+        - echo "等待 postgres 和 redis 健康检查通过..."
+        - timeout 30s bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" $(docker compose ps -q postgres) 2>/dev/null)" = "healthy" ]; do sleep 2; done' || (echo "postgres 启动超时" && docker compose logs postgres && exit 1)
+        - timeout 30s bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" $(docker compose ps -q redis) 2>/dev/null)" = "healthy" ]; do sleep 2; done' || (echo "redis 启动超时" && docker compose logs redis && exit 1)
+        - echo "基础设施就绪"
+
+        # --- 核心验证: backend 启动 ---
+        - echo "等待 backend 启动 (最多 90 秒)..."
+        - timeout 90s bash -c 'until docker compose logs --tail=200 backend 2>&1 | grep -q "Application startup complete"; do sleep 3; done'
+        - RESULT=$?
+        - |
+          if [ $RESULT -ne 0 ]; then
+            echo "❌ 部署测试失败: backend 启动超时"
+            echo "--- backend 最近日志 ---"
+            docker compose logs --tail=100 backend
+            exit 1
+          fi
+        - echo "✅ backend 启动成功"
+
+        # --- 检查迁移是否失败 ---
+        - echo "检查数据库迁移状态..."
+        - |
+          MIGRATION_LOG=$(docker compose logs --tail=200 backend 2>&1)
+          if echo "$MIGRATION_LOG" | grep -Eqi "migration.*FAIL|alembic.*error"; then
+            echo "❌ 部署测试失败: 检测到数据库迁移失败"
+            echo "$MIGRATION_LOG" | grep -Ei "migration|alembic|error|FAIL"
+            exit 1
+          fi
+        - echo "✅ 数据库迁移正常"
+
+        # --- 验证 health endpoint ---
+        - echo "验证 health endpoint..."
+        - timeout 10s bash -c 'until curl -sf http://localhost:8000/api/health > /dev/null 2>&1; do sleep 2; done' || (echo "❌ health endpoint 不可达" && exit 1)
+        - echo "✅ health endpoint 正常"
+
+        # --- 查看服务状态 ---
+        - echo "--- 服务状态 ---"
+        - docker compose ps
+
+        # --- 清理环境 ---
+        - echo "清理测试环境..."
+        - docker compose down -v --remove-orphans
+        - echo "========================================"
+        - echo "✅ 部署测试通过"
+        - echo "========================================"
+
+trigger:
+  branch:
+    - main
+    - release
+    - feat-devops
+  event:
+    - push
+    - pull_request
+
+---
+# ============================================================
+# Pipeline 3: 升级测试
+# 验证从上一个 tag 版本升级到当前代码时数据库迁移是否正常
+# ============================================================
+kind: pipeline
+type: docker
+name: upgrade-test
+
+depends_on:
+  - build-and-test
+
+workspace:
+  path: /drone/src
+
+clone:
+  disable: true
+
+steps:
+  - name: upgrade-test
+    image: appleboy/drone-ssh
+    pull: if-not-exists
+    settings:
+      host:
+        from_secret: PRIVATE_SERVER_IP
+      username: root
+      password:
+        from_secret: sshpwd
+      command_timeout: 15m
+      script:
+        - echo "========================================"
+        - echo "升级测试 旧版 → 新版数据库迁移验证"
+        - echo "========================================"
+        - CI_DIR=/opt/server/clawith-ci
+
+        # 检查是否需要跳过 (构建阶段若无历史 tag 会标记跳过)
+        - |
+          if [ -f "$CI_DIR/.env.drone" ] && grep -q "SKIP_UPGRADE_TEST=true" "$CI_DIR/.env.drone"; then
+            echo "⚠️ 未找到历史 tag，跳过升级测试"
+            rm -f $CI_DIR/.env.drone $CI_DIR/clawith-*.tar
+            exit 0
+          fi
+
+        # --- 加载镜像 ---
+        - echo "加载旧版和新版镜像..."
+        - docker load -i $CI_DIR/clawith-backend-old.tar
+        - docker load -i $CI_DIR/clawith-frontend-old.tar
+        - docker load -i $CI_DIR/clawith-backend-new.tar
+        - docker load -i $CI_DIR/clawith-frontend-new.tar
+        - rm -f $CI_DIR/clawith-*.tar $CI_DIR/.env.drone
+
+        # --- 清理旧环境 ---
+        - echo "清理旧环境..."
+        - docker compose -f /opt/server/clawith-private/docker-compose.yml down -v --remove-orphans 2>/dev/null || true
+        - docker rm -f backend-upgrade-test 2>/dev/null || true
+
+        # ==============================================
+        # 阶段 1: 部署旧版本
+        # ==============================================
+        - echo ""
+        - echo "=========================================="
+        - echo "阶段 1 部署旧版本"
+        - echo "=========================================="
+        - cd /opt/server/clawith-private
+
+        # 仅启动基础设施
+        - echo "启动 postgres 和 redis..."
+        - docker compose up -d postgres redis
+        - sleep 5
+
+        # 等待基础设施健康
+        - echo "等待 postgres 和 redis 就绪..."
+        - timeout 30s bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" $(docker compose ps -q postgres) 2>/dev/null)" = "healthy" ]; do sleep 2; done' || (echo "postgres 启动超时" && docker compose logs postgres && exit 1)
+        - timeout 30s bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" $(docker compose ps -q redis) 2>/dev/null)" = "healthy" ]; do sleep 2; done' || (echo "redis 启动超时" && docker compose logs redis && exit 1)
+        - echo "基础设施就绪"
+
+        # 启动旧版 backend (纯镜像运行，无 volume mounts)
+        - echo "启动旧版 backend..."
+        - |
+          docker run -d --name backend-upgrade-test \
+            --network clawith_network \
+            -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith \
+            -e REDIS_URL=redis://redis:6379/0 \
+            -e AGENT_DATA_DIR=/data/agents \
+            -e AGENT_TEMPLATE_DIR=/app/agent_template \
+            -e SECRET_KEY=ci-test-secret \
+            -e JWT_SECRET_KEY=ci-test-jwt-secret \
+            -e CORS_ORIGINS='["*"]' \
+            clawith-backend:old
+
+        # 等待旧版启动
+        - echo "等待旧版 backend 启动 (最多 90 秒)..."
+        - timeout 90s bash -c 'until docker logs backend-upgrade-test 2>&1 | grep -q "Application startup complete"; do sleep 3; done'
+        - RESULT=$?
+        - |
+          if [ $RESULT -ne 0 ]; then
+            echo "❌ 升级测试失败: 旧版 backend 启动超时"
+            echo "--- 旧版 backend 日志 ---"
+            docker logs --tail=100 backend-upgrade-test
+            docker rm -f backend-upgrade-test
+            docker compose down -v --remove-orphans
+            exit 1
+          fi
+        - echo "✅ 旧版 backend 启动成功"
+
+        # 记录旧版数据库 schema 状态
+        - echo "记录旧版数据库 migration 版本..."
+        - docker exec backend-upgrade-test alembic history 2>&1 | head -5 || true
+
+        # 停止旧版 backend
+        - echo "停止旧版 backend..."
+        - docker stop backend-upgrade-test
+        - docker rm backend-upgrade-test
+
+        # ==============================================
+        # 阶段 2: 升级到新版本
+        # ==============================================
+        - echo ""
+        - echo "=========================================="
+        - echo "阶段 2 升级到新版本"
+        - echo "=========================================="
+
+        # 启动新版 backend (连接同一个 postgres)
+        - echo "启动新版 backend (将执行 alembic upgrade head)..."
+        - |
+          docker run -d --name backend-upgrade-test \
+            --network clawith_network \
+            -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith \
+            -e REDIS_URL=redis://redis:6379/0 \
+            -e AGENT_DATA_DIR=/data/agents \
+            -e AGENT_TEMPLATE_DIR=/app/agent_template \
+            -e SECRET_KEY=ci-test-secret \
+            -e JWT_SECRET_KEY=ci-test-jwt-secret \
+            -e CORS_ORIGINS='["*"]' \
+            clawith-backend:new
+
+        # 等待新版启动 (包含迁移时间)
+        - echo "等待新版 backend 启动 (最多 120 秒，含迁移时间)..."
+        - timeout 120s bash -c 'until docker logs backend-upgrade-test 2>&1 | grep -q "Application startup complete"; do sleep 3; done'
+        - RESULT=$?
+        - |
+          if [ $RESULT -ne 0 ]; then
+            echo "❌ 升级测试失败: 新版 backend 启动超时"
+            echo "--- 新版 backend 完整日志 ---"
+            docker logs --tail=200 backend-upgrade-test
+            docker rm -f backend-upgrade-test
+            docker compose down -v --remove-orphans
+            exit 1
+          fi
+        - echo "✅ 新版 backend 启动成功"
+
+        # --- 检查迁移是否失败 ---
+        - echo "检查数据库迁移状态..."
+        - |
+          UPGRADE_LOG=$(docker logs --tail=300 backend-upgrade-test 2>&1)
+          if echo "$UPGRADE_LOG" | grep -Eqi "migration.*FAIL|alembic.*error|WARNING.*migration"; then
+            echo "❌ 升级测试失败: 检测到数据库迁移异常"
+            echo "--- 迁移相关日志 ---"
+            echo "$UPGRADE_LOG" | grep -Ei "migration|alembic|error|FAIL|WARNING"
+            docker rm -f backend-upgrade-test
+            docker compose down -v --remove-orphans
+            exit 1
+          fi
+        - echo "✅ 数据库迁移正常"
+
+        # --- 验证 health endpoint ---
+        - echo "验证 health endpoint..."
+        - timeout 10s bash -c 'until curl -sf http://localhost:8000/api/health > /dev/null 2>&1; do sleep 2; done' || (echo "❌ health endpoint 不可达" && docker rm -f backend-upgrade-test && docker compose down -v --remove-orphans && exit 1)
+        - echo "✅ health endpoint 正常"
+
+        # --- 查看新版 migration 状态 ---
+        - echo "新版数据库 migration 版本:"
+        - docker exec backend-upgrade-test alembic history 2>&1 | head -5 || true
+        - docker exec backend-upgrade-test alembic current 2>&1 || true
+
+        # --- 清理环境 ---
+        - echo ""
+        - echo "清理测试环境..."
+        - docker rm -f backend-upgrade-test
+        - docker compose down -v --remove-orphans
+        - docker image prune -af --filter "until=168h" 2>/dev/null || true
+        - echo "========================================"
+        - echo "✅ 升级测试通过"
+        - echo "========================================"
+
+trigger:
+  branch:
+    - main
+    - release
+    - feat-devops
+  event:
+    - push
+    - pull_request

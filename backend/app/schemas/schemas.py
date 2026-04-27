@@ -262,10 +262,12 @@ class AgentOut(BaseModel):
     timezone: str | None = None
     expires_at: datetime | None = None
     is_expired: bool = False
+    is_system: bool = False
     llm_calls_today: int = 0
     max_llm_calls_per_day: int = 100
     agent_type: str = "native"
     openclaw_last_seen: datetime | None = None
+    unread_count: int = 0
     has_api_key: bool = False
     api_key_hash: str | None = None
     created_at: datetime
@@ -432,6 +434,7 @@ class ChannelConfigOut(BaseModel):
     app_id: str | None = None
     app_secret: str | None = None
     encrypt_key: str | None = None
+    verification_token: str | None = None
     is_configured: bool
     is_connected: bool
     last_tested_at: datetime | None = None

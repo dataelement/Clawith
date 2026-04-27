@@ -972,7 +972,7 @@ async def bind_identity(
         user_info = await auth_provider.get_user_info(access_token)
 
         # Check if identity is already linked to another user
-        lookup_provider_user_id = user_info.provider_union_id or user_info.provider_user_id
+        lookup_provider_user_id = user_info.provider_user_id
         existing_user = await sso_service.check_duplicate_identity(
             db,
             provider,
@@ -1093,6 +1093,7 @@ async def resend_verification(
     db: AsyncSession = Depends(get_db),
 ):
     """Resend email verification link."""
+    from app.config import get_settings
     from app.services.system_email_service import resolve_email_config_async
 
     # Always return success to prevent email enumeration
@@ -1100,6 +1101,7 @@ async def resend_verification(
         "ok": True,
         "message": "If an account with that email exists, a verification email has been sent.",
     }
+    settings = get_settings()
 
     # Check if email is configured (DB-only, no env fallback)
     email_config = await resolve_email_config_async(db)

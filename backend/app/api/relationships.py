@@ -4,17 +4,19 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
+from app.core.permissions import build_visible_agents_query, check_agent_access
 from app.core.security import get_current_user
-from app.core.permissions import check_agent_access
 from app.database import get_db
+from app.models.agent import Agent
 from app.models.org import AgentRelationship, AgentAgentRelationship, OrgMember
+from app.services.org_sync_adapter import derive_member_department_paths
 from app.models.user import User
 
 settings = get_settings()
@@ -61,6 +63,22 @@ class AgentRelationshipBatchIn(BaseModel):
     relationships: list[AgentRelationshipIn]
 
 
+def _dedupe_human_relationships(items: list[RelationshipIn]) -> list[RelationshipIn]:
+    deduped: dict[str, RelationshipIn] = {}
+    for item in items:
+        deduped[item.member_id] = item
+    return list(deduped.values())
+
+
+def _dedupe_agent_relationships(items: list[AgentRelationshipIn], agent_id: uuid.UUID) -> list[AgentRelationshipIn]:
+    deduped: dict[str, AgentRelationshipIn] = {}
+    for item in items:
+        if item.target_agent_id == str(agent_id):
+            continue
+        deduped[item.target_agent_id] = item
+    return list(deduped.values())
+
+
 # ─── Human Relationships (existing) ───────────────────
 
 @router.get("/")
@@ -79,6 +97,10 @@ async def get_relationships(
         .options(selectinload(AgentRelationship.member))
     )
     rows = result.all()
+    member_paths = await derive_member_department_paths(
+        db,
+        [r.member for r, _provider_name in rows if r.member],
+    )
     return [
         {
             "id": str(r.id),
@@ -89,7 +111,7 @@ async def get_relationships(
             "member": {
                 "name": r.member.name,
                 "title": r.member.title,
-                "department_path": r.member.department_path,
+                "department_path": member_paths.get(r.member.id, r.member.department_path),
                 "avatar_url": r.member.avatar_url,
                 "email": r.member.email,
                 "provider_name": provider_name,
@@ -109,11 +131,20 @@ async def save_relationships(
     """Replace all human relationships for this agent."""
     await check_agent_access(db, current_user, agent_id)
 
+    deduped_relationships: list[RelationshipIn] = []
+    seen_member_ids: set[str] = set()
+    for relationship in data.relationships:
+        member_id = str(uuid.UUID(relationship.member_id))
+        if member_id in seen_member_ids:
+            continue
+        seen_member_ids.add(member_id)
+        deduped_relationships.append(relationship)
+
     await db.execute(
         delete(AgentRelationship).where(AgentRelationship.agent_id == agent_id)
     )
 
-    for r in data.relationships:
+    for r in _dedupe_human_relationships(data.relationships):
         db.add(AgentRelationship(
             agent_id=agent_id,
             member_id=uuid.UUID(r.member_id),
@@ -153,6 +184,39 @@ async def delete_relationship(
 
 # ─── Agent-to-Agent Relationships (new) ───────────────
 
+@router.get("/agent-candidates")
+async def search_visible_agents(
+    agent_id: uuid.UUID,
+    search: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search visible agent candidates for relationship creation."""
+    source_agent, _ = await check_agent_access(db, current_user, agent_id)
+
+    stmt = build_visible_agents_query(current_user, tenant_id=source_agent.tenant_id).where(Agent.id != agent_id)
+    if search:
+        stmt = stmt.where(
+            or_(
+                Agent.name.ilike(f"%{search}%"),
+                Agent.role_description.ilike(f"%{search}%"),
+            )
+        )
+
+    result = await db.execute(stmt.order_by(Agent.created_at.desc()).limit(50))
+    agents = result.scalars().all()
+    return [
+        {
+            "id": str(agent.id),
+            "name": agent.name,
+            "role_description": agent.role_description or "",
+            "avatar_url": agent.avatar_url or "",
+            "creator_id": str(agent.creator_id),
+        }
+        for agent in agents
+    ]
+
+
 @router.get("/agents")
 async def get_agent_relationships(
     agent_id: uuid.UUID,
@@ -185,6 +249,21 @@ async def get_agent_relationships(
     ]
 
 
+@router.get("/agents/candidates")
+async def get_agent_relationship_candidates(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Backward-compatible alias for searchable agent candidates."""
+    return await search_visible_agents(
+        agent_id=agent_id,
+        search=None,
+        current_user=current_user,
+        db=db,
+    )
+
+
 @router.put("/agents")
 async def save_agent_relationships(
     agent_id: uuid.UUID,
@@ -193,16 +272,20 @@ async def save_agent_relationships(
     db: AsyncSession = Depends(get_db),
 ):
     """Replace all agent-to-agent relationships."""
-    await check_agent_access(db, current_user, agent_id)
+    source_agent, _ = await check_agent_access(db, current_user, agent_id)
 
     await db.execute(
         delete(AgentAgentRelationship).where(AgentAgentRelationship.agent_id == agent_id)
     )
 
-    for r in data.relationships:
+    for r in _dedupe_agent_relationships(data.relationships, agent_id):
         target_id = uuid.UUID(r.target_agent_id)
-        if target_id == agent_id:
-            continue  # skip self-reference
+        target_result = await db.execute(
+            build_visible_agents_query(current_user, tenant_id=source_agent.tenant_id).where(Agent.id == target_id)
+        )
+        visible_target = target_result.scalar_one_or_none()
+        if not visible_target:
+            raise HTTPException(status_code=403, detail="Target agent is not visible to the current user")
         db.add(AgentAgentRelationship(
             agent_id=agent_id,
             target_agent_id=target_id,

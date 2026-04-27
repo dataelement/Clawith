@@ -4,7 +4,7 @@ FROM python:3.12-slim AS deps
 
 WORKDIR /app
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    apt-get install -y --no-install-recommends gcc libpq-dev libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 shared-mime-info pango1.0-tools && \
     rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
@@ -23,7 +23,7 @@ FROM python:3.12-slim AS production
 
 WORKDIR /app
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpq5 curl shadowsocks-libev gosu && \
+    apt-get install -y --no-install-recommends libpq5 curl shadowsocks-libev gosu bubblewrap libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 shared-mime-info pango1.0-tools fonts-wqy-microhei fonts-wqy-zenhei && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from deps stage
