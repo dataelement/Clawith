@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { IconPlus, IconX } from '@tabler/icons-react';
+import { IconPlus, IconSearch, IconX } from '@tabler/icons-react';
 import { agentApi } from '../services/api';
 import PostHireSettingsModal from './PostHireSettingsModal';
+import { translateTemplate } from '../i18n/templateTranslations';
 
 interface Template {
     id: string;
@@ -49,6 +50,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
     // stays mounted behind so the user can cancel and pick someone else.
     const [pendingTemplate, setPendingTemplate] = useState<Template | null>(null);
     const [activeTab, setActiveTab] = useState<TabId>('popular');
+    const [searchQuery, setSearchQuery] = useState('');
 
     const { data: templates = [], isLoading } = useQuery({
         queryKey: ['agent-templates'],
@@ -75,10 +77,32 @@ export default function TalentMarketModal({ open, onClose }: Props) {
 
     if (!open) return null;
 
-    const builtins = templates.filter((t: Template) => t.is_builtin);
-    const visibleTemplates = activeTab === 'popular'
-        ? builtins.filter((tpl: Template) => FEATURED_TEMPLATE_NAMES.has(tpl.name))
-        : builtins.filter((tpl: Template) => tpl.category === activeTab);
+    const builtins: Template[] = templates.filter((t: Template) => t.is_builtin);
+    const trimmedQuery = searchQuery.trim().toLowerCase();
+    const isSearching = trimmedQuery.length > 0;
+
+    // When searching, ignore the active tab and show matches across all
+    // categories. Otherwise filter by the selected tab. Search matches against
+    // both the canonical (English) name + description AND the localized
+    // versions returned by translateTemplate, so a Chinese keyword like
+    // "前端" finds the Frontend Developer card.
+    const visibleTemplates: Template[] = isSearching
+        ? builtins.filter((tpl) => {
+            const localized = translateTemplate(tpl, isChinese);
+            const haystack = [
+                tpl.name,
+                tpl.description,
+                ...(tpl.capability_bullets || []),
+                localized.name,
+                localized.description,
+                ...localized.bullets,
+                tpl.category,
+            ].join(' ').toLowerCase();
+            return haystack.includes(trimmedQuery);
+        })
+        : activeTab === 'popular'
+            ? builtins.filter((tpl) => FEATURED_TEMPLATE_NAMES.has(tpl.name))
+            : builtins.filter((tpl) => tpl.category === activeTab);
 
     return (
         <div
@@ -101,15 +125,53 @@ export default function TalentMarketModal({ open, onClose }: Props) {
             >
                 {/* Header */}
                 <div style={{
-                    padding: '24px 28px 12px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+                    padding: '24px 28px 12px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px',
                 }}>
-                    <div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
                         <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 600 }}>
                             {t('talentMarket.title', isChinese ? '人才市场' : 'Talent Market')}
                         </h2>
                         <p style={{ margin: '6px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
                             {t('talentMarket.subtitle', isChinese ? '挑选一位专业成员加入你的公司' : 'Pick a professional to join your company')}
                         </p>
+                    </div>
+                    {/* Search box */}
+                    <div style={{
+                        display: 'flex', alignItems: 'center', gap: '8px',
+                        padding: '8px 12px',
+                        background: 'var(--bg-secondary)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: '8px',
+                        width: '260px', maxWidth: '40vw',
+                    }}>
+                        <IconSearch size={15} stroke={1.6} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                        <input
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder={t(
+                                'talentMarket.searchPlaceholder',
+                                isChinese ? '搜索 Agent 名称或能力…' : 'Search agents by name or skill…',
+                            )}
+                            style={{
+                                flex: 1, minWidth: 0,
+                                background: 'transparent', border: 'none', outline: 'none',
+                                color: 'var(--text-primary)', fontSize: '13px',
+                            }}
+                            aria-label={t('talentMarket.searchLabel', isChinese ? '搜索 Agent' : 'Search agents')}
+                        />
+                        {searchQuery && (
+                            <button
+                                onClick={() => setSearchQuery('')}
+                                title={t('common.clear', isChinese ? '清空' : 'Clear')}
+                                style={{
+                                    background: 'transparent', border: 'none', cursor: 'pointer',
+                                    color: 'var(--text-tertiary)', padding: '0', display: 'flex',
+                                }}
+                            >
+                                <IconX size={14} stroke={1.6} />
+                            </button>
+                        )}
                     </div>
                     <button
                         onClick={onClose}
@@ -134,13 +196,13 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                     }}
                 >
                     {tabs.map((tab) => {
-                        const isActive = activeTab === tab.id;
+                        const isActive = !isSearching && activeTab === tab.id;
                         return (
                             <button
                                 key={tab.id}
                                 role="tab"
                                 aria-selected={isActive}
-                                onClick={() => setActiveTab(tab.id)}
+                                onClick={() => { setSearchQuery(''); setActiveTab(tab.id); }}
                                 onMouseEnter={(e) => {
                                     if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)';
                                 }}
@@ -184,7 +246,9 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                     )}
                     {!isLoading && visibleTemplates.length === 0 && (
                         <div style={{ gridColumn: '1 / -1', padding: '40px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                            {t('talentMarket.empty', isChinese ? '这个分类下还没有模板' : 'No templates in this category yet')}
+                            {isSearching
+                                ? t('talentMarket.emptySearch', isChinese ? `没有匹配 "${trimmedQuery}" 的 Agent` : `No agents match "${trimmedQuery}"`)
+                                : t('talentMarket.empty', isChinese ? '这个分类下还没有模板' : 'No templates in this category yet')}
                         </div>
                     )}
                     {!isLoading && visibleTemplates.map((tpl: Template) => (
@@ -192,6 +256,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                             key={tpl.id}
                             tpl={tpl}
                             hiring={false}
+                            isChinese={isChinese}
                             onHire={() => setPendingTemplate(tpl)}
                         />
                     ))}
@@ -221,11 +286,17 @@ export default function TalentMarketModal({ open, onClose }: Props) {
     );
 }
 
-function TemplateCard({ tpl, hiring, onHire }: { tpl: Template; hiring: boolean; onHire: () => void }) {
+function TemplateCard({ tpl, hiring, isChinese, onHire }: {
+    tpl: Template;
+    hiring: boolean;
+    isChinese: boolean;
+    onHire: () => void;
+}) {
     const { t } = useTranslation();
-    const bullets = tpl.capability_bullets?.length
-        ? tpl.capability_bullets
-        : [tpl.description].filter(Boolean);
+    const localized = translateTemplate(tpl, isChinese);
+    const bullets = localized.bullets.length
+        ? localized.bullets
+        : [localized.description].filter(Boolean);
 
     return (
         <div style={{
@@ -238,12 +309,13 @@ function TemplateCard({ tpl, hiring, onHire }: { tpl: Template; hiring: boolean;
                 width: '40px', height: '40px', borderRadius: '8px',
                 background: 'var(--bg-secondary)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: '16px', fontWeight: 600, marginBottom: '14px',
+                fontSize: '13px', fontWeight: 600, marginBottom: '14px',
+                letterSpacing: '0.04em',
             }}>
-                {tpl.icon || '🤖'}
+                {tpl.icon || 'AI'}
             </div>
             <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '2px' }}>
-                {tpl.name}
+                {localized.name}
             </div>
             <div style={{
                 fontSize: '10px', fontWeight: 500, letterSpacing: '0.06em',
@@ -269,7 +341,7 @@ function TemplateCard({ tpl, hiring, onHire }: { tpl: Template; hiring: boolean;
                 disabled={hiring}
                 style={{ marginTop: '16px', width: '100%' }}
             >
-                {hiring ? t('talentMarket.hiring', 'Hiring...') : t('talentMarket.hire', '聘用')}
+                {hiring ? t('talentMarket.hiring', isChinese ? '聘用中…' : 'Hiring...') : t('talentMarket.hire', isChinese ? '聘用' : 'Hire')}
             </button>
         </div>
     );

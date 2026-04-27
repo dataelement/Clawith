@@ -102,12 +102,34 @@ def _render_welcoming(
     )
 
 
+# Map of frontend lang code → human language name we paste into the prompt.
+# Frontend currently only sends "zh" or "en"; expand here when more locales
+# are surfaced.
+_LANG_NAMES = {
+    "zh": "Chinese (Simplified)",
+    "en": "English",
+}
+
+
+def _locale_directive(user_locale: str) -> str:
+    """One-line system instruction to prepend so the greeting turn lands in
+    the user's interface language. Subsequent turns fall through to the
+    soul's standard language-detection rule."""
+    lang_name = _LANG_NAMES.get((user_locale or "en").lower()[:2], "English")
+    return (
+        f"[Interface locale: {lang_name}. On the greeting turn (user_turns == 0), "
+        f"reply in {lang_name}. From user_turns >= 1, follow your soul's "
+        f"language-detection rule and match the language the user just used.]\n\n"
+    )
+
+
 async def resolve_onboarding_prompt(
     db: AsyncSession,
     agent: Agent,
     user_id: uuid.UUID,
     *,
     user_name: str = "there",
+    user_locale: str = "en",
 ) -> OnboardingInjection | None:
     """Decide what system prompt to inject for this (user, agent) turn.
 
@@ -169,6 +191,12 @@ async def resolve_onboarding_prompt(
         )
     else:
         prompt = _render_welcoming(agent, capability_bullets, user_turns, user_name)
+
+    # Prepend a locale directive so the greeting turn lands in the user's
+    # interface language (Chinese vs English). Without this, the agent would
+    # only see an empty user message on Turn 0 and fall back to English by
+    # the soul's "ambiguous → English" rule.
+    prompt = _locale_directive(user_locale) + prompt
 
     # Lock once the deliverable turn starts streaming (user_turns >= 1 at that
     # point). The greeting turn (user_turns == 0) intentionally doesn't lock

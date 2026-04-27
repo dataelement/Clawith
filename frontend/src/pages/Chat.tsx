@@ -454,7 +454,8 @@ export default function Chat() {
         const connect = () => {
             if (cancelled) return;
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/chat/${id}?token=${token}`;
+            const lang = (i18n.language || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+            const wsUrl = `${protocol}//${window.location.host}/ws/chat/${id}?token=${token}&lang=${lang}`;
             const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {

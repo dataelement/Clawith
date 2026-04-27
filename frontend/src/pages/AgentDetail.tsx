@@ -2024,7 +2024,8 @@ function AgentDetailInner() {
             }, 2000);
         };
 
-        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat/${agentId}?token=${authToken}${sessionParam}`);
+        const lang = (i18n.language || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat/${agentId}?token=${authToken}${sessionParam}&lang=${lang}`);
         wsMapRef.current[key] = ws;
         ws.onopen = () => {
             if (reconnectDisabledRef.current[key]) {
