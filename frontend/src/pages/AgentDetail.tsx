@@ -1698,14 +1698,20 @@ function AgentDetailInner() {
         staleTime: 5 * 60 * 1000,
     });
 
-    // Chat-side picker. Initial value = agent.primary_model_id; changing it
-    // persists via PATCH so the agent's saved default and the dropdown stay
-    // in sync. Settings page and chat picker now show the same value.
+    // Chat-side picker. Source-of-truth is agent.primary_model_id; the
+    // picker mirrors it bidirectionally:
+    //   - User picks model in chat → handleModelChange PATCHes the agent.
+    //   - Agent's saved default changes elsewhere (settings page, tenant
+    //     default migration) → useEffect below pulls the new value in.
+    // Earlier draft only synced on first mount (`overrideModelId === null`)
+    // which left the chat picker stuck on a stale value when the agent
+    // default was updated by another path.
     const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
     useEffect(() => {
-        if (agent?.primary_model_id && overrideModelId === null) {
+        if (agent?.primary_model_id && agent.primary_model_id !== overrideModelId) {
             setOverrideModelId(agent.primary_model_id);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [agent?.primary_model_id]);
 
     const handleModelChange = useCallback(async (newModelId: string | null) => {

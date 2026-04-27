@@ -309,17 +309,21 @@ export default function Chat() {
         staleTime: 5 * 60 * 1000,
     });
 
-    // Chat-side selected model. Sourced from agent.primary_model_id and
-    // bound back to it: changing the picker now persists via PATCH so the
-    // agent's saved default and this dropdown stay in sync (no more silent
-    // session-only override that reset on next visit).
+    // Chat-side selected model. Source-of-truth is agent.primary_model_id;
+    // the picker mirrors it bidirectionally:
+    //   - User picks model in chat → handleModelChange PATCHes the agent.
+    //   - Agent's saved default changes elsewhere (settings page, tenant
+    //     default migration) → useEffect below pulls the new value in.
+    // Also re-syncs when wsSessionId changes so "new conversation" lands
+    // on the agent's current default rather than a stale prior pick.
     const queryClient = useQueryClient();
     const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
     useEffect(() => {
-        if (agent?.primary_model_id && overrideModelId === null) {
+        if (agent?.primary_model_id && agent.primary_model_id !== overrideModelId) {
             setOverrideModelId(agent.primary_model_id);
         }
-    }, [agent?.primary_model_id]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [agent?.primary_model_id, wsSessionId]);
 
     const handleModelChange = useCallback(async (newModelId: string | null) => {
         // Optimistic UI: update local state immediately so the dropdown
