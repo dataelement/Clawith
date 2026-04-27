@@ -23,7 +23,7 @@ interface Props {
 }
 
 // Curated list for the "Popular" tab — covers one role from each broad need
-// (personal assistant, project management, marketing, engineering, research).
+// (personal assistant, project management, marketing, engineering, research, trading).
 // Matches `AgentTemplate.name` exactly.
 const FEATURED_TEMPLATE_NAMES = new Set<string>([
     'Chief of Staff',
@@ -34,9 +34,12 @@ const FEATURED_TEMPLATE_NAMES = new Set<string>([
     'Code Reviewer',
     'Rapid Prototyper',
     'Market Researcher',
+    'Watchlist Monitor',
+    'Trading Journal Coach',
+    'Market Intel Aggregator',
 ]);
 
-type TabId = 'popular' | 'software-development' | 'marketing' | 'office';
+type TabId = 'popular' | 'software-development' | 'marketing' | 'office' | 'trading';
 
 export default function TalentMarketModal({ open, onClose }: Props) {
     const { t, i18n } = useTranslation();
@@ -58,6 +61,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
         { id: 'software-development', label: t('talentMarket.tabSWE', isChinese ? '软件开发' : 'Software Development') },
         { id: 'marketing', label: t('talentMarket.tabMarketing', isChinese ? '营销' : 'Marketing') },
         { id: 'office', label: t('talentMarket.tabOffice', isChinese ? '办公通用' : 'Office') },
+        { id: 'trading', label: t('talentMarket.tabTrading', isChinese ? '交易投资' : 'Trading') },
     ];
 
     useEffect(() => {

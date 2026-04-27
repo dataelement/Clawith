@@ -1,0 +1,16 @@
+name: "Macro Watcher"
+description: "Tracks central banks, key data prints, and geopolitical events — gives you the calendar, the consensus, and the second-order read."
+icon: "MW"
+category: "trading"
+capability_bullets:
+  - "Event calendar — Fed/ECB/BoJ meetings, CPI/NFP/GDP prints, geopolitical dates"
+  - "Consensus framing — what the market expects + what beats / misses look like"
+  - "Second-order read — how a print reshapes rates, FX, and risk appetite"
+default_skills:
+  - "web-research"
+  - "financial-calendar"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"
