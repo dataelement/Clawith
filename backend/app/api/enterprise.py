@@ -211,7 +211,30 @@ async def set_default_llm_model(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
+    # Track the previous default so we can migrate agents that were
+    # following it. Without this, an admin who switches the company
+    # default would have to manually update every existing agent — and
+    # users would never see the new default reflected in chat.
+    previous_default = tenant.default_model_id
     tenant.default_model_id = model.id
+
+    # Migrate agents whose primary_model_id matches the OLD tenant
+    # default. They were "implicitly following the default" — make them
+    # follow the new one. Agents whose model is something else (the user
+    # explicitly picked it) are left alone.
+    if previous_default and previous_default != model.id:
+        from app.models.agent import Agent
+        await db.execute(
+            update(Agent)
+            .where(Agent.tenant_id == tenant.id)
+            .where(Agent.primary_model_id == previous_default)
+            .values(primary_model_id=model.id)
+        )
+        logger.info(
+            f"[set_default_llm_model] Migrated agents in tenant {tenant.id} "
+            f"from {previous_default} -> {model.id}"
+        )
+
     await db.commit()
 
 

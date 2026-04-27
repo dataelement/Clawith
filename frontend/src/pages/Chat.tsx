@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
@@ -309,15 +309,31 @@ export default function Chat() {
         staleTime: 5 * 60 * 1000,
     });
 
-    // Per-session model override. Lives in component state — remounting Chat
-    // (new agent / new session) resets it. Initialized from the agent's
-    // configured primary_model_id once the agent record loads.
+    // Chat-side selected model. Sourced from agent.primary_model_id and
+    // bound back to it: changing the picker now persists via PATCH so the
+    // agent's saved default and this dropdown stay in sync (no more silent
+    // session-only override that reset on next visit).
+    const queryClient = useQueryClient();
     const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
     useEffect(() => {
         if (agent?.primary_model_id && overrideModelId === null) {
             setOverrideModelId(agent.primary_model_id);
         }
     }, [agent?.primary_model_id]);
+
+    const handleModelChange = useCallback(async (newModelId: string | null) => {
+        // Optimistic UI: update local state immediately so the dropdown
+        // closes / reflects the choice without waiting on the server.
+        setOverrideModelId(newModelId);
+        if (!id || !newModelId || newModelId === agent?.primary_model_id) return;
+        try {
+            await agentApi.update(id, { primary_model_id: newModelId });
+            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+        } catch (e) {
+            // Roll back local state on failure so the picker shows reality.
+            setOverrideModelId(agent?.primary_model_id || null);
+        }
+    }, [id, agent?.primary_model_id, queryClient]);
 
     const { data: llmModels = [] } = useQuery({
         queryKey: ['llm-models'],
@@ -1004,7 +1020,7 @@ export default function Chat() {
                         <div style={{ padding: '0 8px', marginTop: '4px' }}>
                             <ModelSwitcher
                                 value={overrideModelId}
-                                onChange={setOverrideModelId}
+                                onChange={handleModelChange}
                                 tenantDefaultId={myTenant?.default_model_id}
                                 disabled={!connected}
                             />

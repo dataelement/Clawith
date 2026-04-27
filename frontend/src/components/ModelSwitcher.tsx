@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { IconChevronDown, IconCheck } from '@tabler/icons-react';
@@ -26,6 +27,11 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
     const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
+    const buttonRef = useRef<HTMLButtonElement>(null);
+    const popoverRef = useRef<HTMLDivElement>(null);
+    // Anchor coords for the portal-rendered popover. Recomputed when opening
+    // and on scroll/resize so the dropdown follows the button.
+    const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
 
     const { data: models = [] } = useQuery({
         queryKey: ['llm-models'],
@@ -35,13 +41,42 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
     const enabled = (models as Model[]).filter(m => m.enabled !== false);
     const selected = enabled.find(m => m.id === value) || enabled[0] || null;
 
+    // Click-outside to close. Includes the popover so clicking inside doesn't
+    // close (which is important since the popover is portaled — `ref` doesn't
+    // contain it via DOM).
     useEffect(() => {
         if (!open) return;
         const handler = (e: MouseEvent) => {
-            if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+            const inTrigger = ref.current?.contains(e.target as Node);
+            const inPopover = popoverRef.current?.contains(e.target as Node);
+            if (!inTrigger && !inPopover) setOpen(false);
         };
         window.addEventListener('mousedown', handler);
         return () => window.removeEventListener('mousedown', handler);
+    }, [open]);
+
+    // Recompute popover position whenever it opens, and again if the page
+    // scrolls or the window resizes while it's open.
+    useLayoutEffect(() => {
+        if (!open) return;
+        const recompute = () => {
+            const btn = buttonRef.current;
+            if (!btn) return;
+            const r = btn.getBoundingClientRect();
+            setCoords({
+                // viewport coordinates (`position: fixed` so no scroll math needed)
+                top: r.top,
+                left: r.left,
+                width: r.width,
+            });
+        };
+        recompute();
+        window.addEventListener('scroll', recompute, true);
+        window.addEventListener('resize', recompute);
+        return () => {
+            window.removeEventListener('scroll', recompute, true);
+            window.removeEventListener('resize', recompute);
+        };
     }, [open]);
 
     if (enabled.length === 0) return null;
@@ -51,6 +86,7 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
     return (
         <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
             <button
+                ref={buttonRef}
                 type="button"
                 onClick={() => !disabled && setOpen(o => !o)}
                 disabled={disabled}
@@ -72,14 +108,24 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
                 </span>
                 <IconChevronDown size={12} stroke={2} />
             </button>
-            {open && (
-                <div style={{
-                    position: 'absolute', bottom: 'calc(100% + 4px)', left: 0,
-                    minWidth: '220px', maxHeight: '280px', overflowY: 'auto',
-                    background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
-                    borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-                    zIndex: 1000, padding: '4px',
-                }}>
+            {open && coords && createPortal(
+                <div
+                    ref={popoverRef}
+                    style={{
+                        // `fixed` so the popover escapes any ancestor's
+                        // overflow:hidden (the chat input bar clips it
+                        // otherwise). Anchored to the button via getBBox.
+                        position: 'fixed',
+                        // Open upward — bottom of popover sits 4px above button top.
+                        bottom: `calc(100vh - ${coords.top}px + 4px)`,
+                        left: coords.left,
+                        minWidth: Math.max(220, coords.width),
+                        maxHeight: '280px', overflowY: 'auto',
+                        background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
+                        borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+                        zIndex: 10001, padding: '4px',
+                    }}
+                >
                     {enabled.map(m => {
                         const isSelected = selected?.id === m.id;
                         const isDefault = tenantDefaultId && m.id === tenantDefaultId;
@@ -116,7 +162,8 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
                             </button>
                         );
                     })}
-                </div>
+                </div>,
+                document.body,
             )}
         </div>
     );

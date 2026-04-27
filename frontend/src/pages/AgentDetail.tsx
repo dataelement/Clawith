@@ -1356,15 +1356,26 @@ function AgentDetailInner() {
         staleTime: 5 * 60 * 1000,
     });
 
-    // Session-scoped per-chat model override. Initial value = agent's configured
-    // primary_model_id (which on creation equals the tenant default). Remount
-    // resets it, matching the "just for this session" intent.
+    // Chat-side picker. Initial value = agent.primary_model_id; changing it
+    // persists via PATCH so the agent's saved default and the dropdown stay
+    // in sync. Settings page and chat picker now show the same value.
     const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
     useEffect(() => {
         if (agent?.primary_model_id && overrideModelId === null) {
             setOverrideModelId(agent.primary_model_id);
         }
     }, [agent?.primary_model_id]);
+
+    const handleModelChange = useCallback(async (newModelId: string | null) => {
+        setOverrideModelId(newModelId);
+        if (!id || !newModelId || newModelId === agent?.primary_model_id) return;
+        try {
+            await agentApi.update(id, { primary_model_id: newModelId });
+            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+        } catch {
+            setOverrideModelId(agent?.primary_model_id || null);
+        }
+    }, [id, agent?.primary_model_id]);
 
     // Track onboarding kickoff per (agent, session) so the agent only greets
     // once per session. The agent opens the conversation itself — no visible
@@ -4777,7 +4788,7 @@ function AgentDetailInner() {
                                                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
                                                 <ModelSwitcher
                                                     value={overrideModelId}
-                                                    onChange={setOverrideModelId}
+                                                    onChange={handleModelChange}
                                                     tenantDefaultId={myTenant?.default_model_id}
                                                     disabled={!wsConnected}
                                                 />
