@@ -3088,8 +3088,19 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
         from app.services.mcp_client import MCPClient
 
         async with async_session() as db:
+            # Primary lookup: clawith-prefixed name (e.g.
+            # mcp_shibui_finance_unlock_financial_analysis).
             result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
             tool = result.scalar_one_or_none()
+
+            # Fallback: LLM sometimes drops the mcp_<server>_ prefix and calls
+            # the bare MCP-side tool name (e.g. unlock_financial_analysis).
+            # Resolve by mcp_tool_name when the prefixed name doesn't match.
+            if not tool:
+                result = await db.execute(
+                    select(Tool).where(Tool.mcp_tool_name == tool_name, Tool.type == "mcp")
+                )
+                tool = result.scalar_one_or_none()
 
             if not tool:
                 logger.warning(f"[MCP] Unknown tool: {tool_name}")
