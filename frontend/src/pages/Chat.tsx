@@ -1025,7 +1025,11 @@ export default function Chat() {
                             <ModelSwitcher
                                 value={overrideModelId}
                                 onChange={handleModelChange}
-                                tenantDefaultId={myTenant?.default_model_id}
+                                /* "默认" badge marks the agent's current saved
+                                   default (= primary_model_id), so it stays in
+                                   sync with whatever the picker / settings page
+                                   reports as the default. */
+                                tenantDefaultId={agent?.primary_model_id || null}
                                 disabled={!connected}
                             />
                         </div>

@@ -30,8 +30,13 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
     const buttonRef = useRef<HTMLButtonElement>(null);
     const popoverRef = useRef<HTMLDivElement>(null);
     // Anchor coords for the portal-rendered popover. Recomputed when opening
-    // and on scroll/resize so the dropdown follows the button.
-    const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+    // and on scroll/resize so the dropdown follows the button. `placement`
+    // says whether the popover sits above or below the button — chosen
+    // based on which side has more room so the menu is never cut by the
+    // viewport edge.
+    const [coords, setCoords] = useState<
+        { top: number; bottom: number; left: number; width: number; placement: 'above' | 'below'; maxHeight: number } | null
+    >(null);
 
     const { data: models = [] } = useQuery({
         queryKey: ['llm-models'],
@@ -56,18 +61,36 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
     }, [open]);
 
     // Recompute popover position whenever it opens, and again if the page
-    // scrolls or the window resizes while it's open.
+    // scrolls or the window resizes while it's open. Picks the side
+    // (above / below the button) with more vertical room so the popover
+    // never spills off the viewport edge.
     useLayoutEffect(() => {
         if (!open) return;
+        const PREFERRED_HEIGHT = 280;
+        const GAP = 4;
+        const VIEWPORT_PADDING = 8;
         const recompute = () => {
             const btn = buttonRef.current;
             if (!btn) return;
             const r = btn.getBoundingClientRect();
+            const vh = window.innerHeight;
+            const spaceAbove = r.top - VIEWPORT_PADDING - GAP;
+            const spaceBelow = vh - r.bottom - VIEWPORT_PADDING - GAP;
+            // Prefer above (matches the original up-pointing chevron flow)
+            // unless below clearly has more room.
+            const placeAbove = spaceAbove >= PREFERRED_HEIGHT
+                || spaceAbove >= spaceBelow;
+            const maxHeight = Math.min(
+                PREFERRED_HEIGHT,
+                Math.max(120, placeAbove ? spaceAbove : spaceBelow),
+            );
             setCoords({
-                // viewport coordinates (`position: fixed` so no scroll math needed)
                 top: r.top,
+                bottom: r.bottom,
                 left: r.left,
                 width: r.width,
+                placement: placeAbove ? 'above' : 'below',
+                maxHeight,
             });
         };
         recompute();
@@ -113,14 +136,14 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
                     ref={popoverRef}
                     style={{
                         // `fixed` so the popover escapes any ancestor's
-                        // overflow:hidden (the chat input bar clips it
-                        // otherwise). Anchored to the button via getBBox.
+                        // overflow:hidden. Anchor + side picked at open time.
                         position: 'fixed',
-                        // Open upward — bottom of popover sits 4px above button top.
-                        bottom: `calc(100vh - ${coords.top}px + 4px)`,
+                        ...(coords.placement === 'above'
+                            ? { bottom: `calc(100vh - ${coords.top}px + 4px)` }
+                            : { top: `${coords.bottom + 4}px` }),
                         left: coords.left,
                         minWidth: Math.max(220, coords.width),
-                        maxHeight: '280px', overflowY: 'auto',
+                        maxHeight: `${coords.maxHeight}px`, overflowY: 'auto',
                         background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
                         borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
                         zIndex: 10001, padding: '4px',
