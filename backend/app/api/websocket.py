@@ -19,7 +19,7 @@ from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.chat_session_service import ensure_primary_platform_session
-from app.services.history_window import truncate_by_message_count
+from app.services.history_window import truncate_by_token_budget
 from app.services.llm import call_llm, call_llm_with_failover
 
 router = APIRouter(tags=["websocket"])
@@ -214,7 +214,9 @@ async def websocket_chat(
             role_description = agent.role_description or ""
             welcome_message = agent.welcome_message or ""
             ctx_size = agent.context_window_size or 100
-            logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}, ctx: {ctx_size}")
+            from app.models.agent import DEFAULT_CONTEXT_WINDOW_TOKENS
+            tok_budget = getattr(agent, "context_window_tokens", None) or DEFAULT_CONTEXT_WINDOW_TOKENS
+            logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}, ctx: {ctx_size}msg/{tok_budget}tok")
 
             # Load the agent's primary model
             if agent.primary_model_id:
@@ -300,11 +302,14 @@ async def websocket_chat(
                     logger.info(f"[WS] Selected primary session {conv_id}")
 
             try:
+                # Load extra raw material so the app-level token-aware helper
+                # (truncate_by_token_budget below) has room to choose from.
+                _db_load_cap = max(ctx_size, 500)
                 history_result = await db.execute(
                     select(ChatMessage)
                     .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
                     .order_by(ChatMessage.created_at.desc())
-                    .limit(ctx_size)
+                    .limit(_db_load_cap)
                 )
                 history_messages = list(reversed(history_result.scalars().all()))
                 logger.info(f"[WS] Loaded {len(history_messages)} history messages for session {conv_id}")
@@ -663,12 +668,30 @@ async def websocket_chat(
                         async def _on_failover(reason: str):
                             await websocket.send_json({"type": "info", "content": f"Primary model error, {reason}"})
 
-                        # Pair-aware truncation: keep the last `ctx_size` messages while
-                        # preserving assistant.tool_calls ↔ role=tool blocks atomically.
-                        # Naive [-ctx_size:] slicing can leave orphan tool messages at the
-                        # head when the cut lands mid-pair, which OpenAI rejects with
-                        # "No tool call found for function call output" (issue #446).
-                        _truncated = truncate_by_message_count(conversation, ctx_size)
+                        # Pair-aware truncation with a token budget plus a message-count
+                        # safety cap. Either bound stops the walk; pairs (assistant.tool_calls
+                        # ↔ role=tool) are kept atomic. Token budget protects against
+                        # one-tool-result-eats-the-window scenarios; message cap protects
+                        # against pathological tiny-message floods. The pair guard fixes
+                        # the orphan-tool failure mode reported in #446.
+                        #
+                        # The current user message (just appended at line ~416) is excluded
+                        # from truncation and re-appended after — otherwise a single huge
+                        # input (large paste, base64 image_data) could push past the budget
+                        # and cause the helper to drop the very message we're answering.
+                        # If the input itself exceeds the model's context, the provider will
+                        # surface a clear error rather than silently dropping it here.
+                        _current = (
+                            conversation[-1]
+                            if conversation and conversation[-1].get("role") == "user"
+                            else None
+                        )
+                        _history = conversation[:-1] if _current is not None else conversation
+                        _truncated = truncate_by_token_budget(
+                            _history, tok_budget, message_cap=ctx_size,
+                        )
+                        if _current is not None:
+                            _truncated.append(_current)
 
                         return await call_llm_with_failover(
                             primary_model=llm_model,

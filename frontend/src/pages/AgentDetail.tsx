@@ -2214,6 +2214,7 @@ function AgentDetailInner() {
         primary_model_id: '',
         fallback_model_id: '',
         context_window_size: 100,
+        context_window_tokens: 50000,
         max_tool_rounds: 50,
         max_tokens_per_day: '' as string | number,
         max_tokens_per_month: '' as string | number,
@@ -2233,6 +2234,7 @@ function AgentDetailInner() {
                 primary_model_id: agent.primary_model_id || '',
                 fallback_model_id: agent.fallback_model_id || '',
                 context_window_size: agent.context_window_size ?? 100,
+                context_window_tokens: (agent as any).context_window_tokens ?? 50000,
                 max_tool_rounds: (agent as any).max_tool_rounds ?? 50,
                 max_tokens_per_day: agent.max_tokens_per_day || '',
                 max_tokens_per_month: agent.max_tokens_per_month || '',
@@ -5741,6 +5743,7 @@ function AgentDetailInner() {
                             settingsForm.primary_model_id !== (agent?.primary_model_id || '') ||
                             settingsForm.fallback_model_id !== (agent?.fallback_model_id || '') ||
                             settingsForm.context_window_size !== (agent?.context_window_size ?? 100) ||
+                            settingsForm.context_window_tokens !== ((agent as any)?.context_window_tokens ?? 50000) ||
                             settingsForm.max_tool_rounds !== ((agent as any)?.max_tool_rounds ?? 50) ||
                             String(settingsForm.max_tokens_per_day) !== String(agent?.max_tokens_per_day || '') ||
                             String(settingsForm.max_tokens_per_month) !== String(agent?.max_tokens_per_month || '') ||
@@ -5757,6 +5760,7 @@ function AgentDetailInner() {
                                     primary_model_id: settingsForm.primary_model_id || null,
                                     fallback_model_id: settingsForm.fallback_model_id || null,
                                     context_window_size: settingsForm.context_window_size,
+                                    context_window_tokens: settingsForm.context_window_tokens,
                                     max_tool_rounds: settingsForm.max_tool_rounds,
                                     max_tokens_per_day: settingsForm.max_tokens_per_day ? Number(settingsForm.max_tokens_per_day) : null,
                                     max_tokens_per_month: settingsForm.max_tokens_per_month ? Number(settingsForm.max_tokens_per_month) : null,
@@ -5884,6 +5888,20 @@ function AgentDetailInner() {
                                                 style={{ width: '120px' }}
                                             />
                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.roundsDesc')}</div>
+                                        </div>
+                                        <div style={{ marginTop: '12px' }}>
+                                            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxTokens')}</label>
+                                            <input
+                                                className="input"
+                                                type="number"
+                                                min={1000}
+                                                max={500000}
+                                                step={1000}
+                                                value={settingsForm.context_window_tokens}
+                                                onChange={(e) => setSettingsForm(f => ({ ...f, context_window_tokens: Math.max(1000, Math.min(500000, parseInt(e.target.value) || 50000)) }))}
+                                                style={{ width: '120px' }}
+                                            />
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.tokensDesc')}</div>
                                         </div>
                                     </div>
 

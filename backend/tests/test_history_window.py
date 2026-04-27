@@ -1,11 +1,14 @@
 """Unit tests for pair-aware conversation history truncation.
 
-Validates that ``truncate_by_message_count`` preserves
-``assistant.tool_calls`` ↔ ``role="tool"`` blocks atomically — never produces
-orphan tool messages that would trigger the OpenAI #446 failure mode.
+Validates that ``truncate_by_message_count`` and ``truncate_by_token_budget``
+preserve ``assistant.tool_calls`` ↔ ``role="tool"`` blocks atomically — never
+produces orphan tool messages that would trigger the OpenAI #446 failure mode.
 """
 
-from app.services.history_window import truncate_by_message_count
+from app.services.history_window import (
+    truncate_by_message_count,
+    truncate_by_token_budget,
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -256,6 +259,135 @@ def test_system_message_treated_as_normal_block():
     out = truncate_by_message_count(msgs, 2)
     # Walk from end: a (size 1), u (size 1). budget 2: take both. system dropped.
     assert _roles(out) == ["user", "assistant"]
+
+
+# ── Token-budget mode ───────────────────────────────────────────────────
+
+
+def test_token_budget_empty_or_zero():
+    assert truncate_by_token_budget([], 1000) == []
+    assert truncate_by_token_budget([_u("hi")], 0) == []
+    assert truncate_by_token_budget([_u("hi")], -10) == []
+
+
+def test_token_budget_short_messages_within_budget():
+    msgs = [_u("hi"), _a("hello"), _u("ok")]
+    out = truncate_by_token_budget(msgs, 10000)
+    assert out == msgs
+
+
+def test_token_budget_huge_message_dropped():
+    """One enormous tool result should not push other messages out of context;
+    the huge block just doesn't fit and is dropped."""
+    huge_payload = "x" * 60000  # ~20K tokens via chars/3
+    msgs = [
+        _u("u1"),
+        _a(None, tool_calls=[_tc("X")]),
+        _t("X", content=huge_payload),
+        _u("u2"),
+    ]
+    out = truncate_by_token_budget(msgs, 5000)
+    # u2 fits (small). Pair is huge → doesn't fit → break. u1 not visited (after pair).
+    assert _roles(out) == ["user"]
+    assert out[0]["content"] == "u2"
+
+
+def test_token_budget_preserves_pair_when_both_fit():
+    msgs = [
+        _u("u1"),
+        _a(None, tool_calls=[_tc("X")]),
+        _t("X", content="small result"),
+        _u("u2"),
+    ]
+    out = truncate_by_token_budget(msgs, 5000)
+    assert _roles(out) == ["user", "assistant", "tool", "user"]
+
+
+def test_token_budget_drops_huge_tail_message_caller_must_protect():
+    """The helper walks tail-to-head. If the LAST message (often the current
+    user input that just arrived) alone exceeds the budget, the walker can't
+    fit it and breaks — leaving NOTHING. Callers that pass the current user
+    message INTO truncation must hold it OUT and re-append afterward (see
+    api/websocket.py for the pattern). This test pins the contract so call
+    sites don't silently regress.
+    """
+    msgs = [
+        _u("history msg 1"),
+        _a("history msg 2"),
+        _u("x" * 60000),  # current input — alone >> 5000 token budget
+    ]
+    out = truncate_by_token_budget(msgs, token_budget=5000)
+    # Walker visits the huge user msg first (tail), can't fit → BREAK.
+    # Nothing else gets a chance because the loop short-circuits on first miss.
+    assert out == []
+
+
+def test_token_budget_with_message_cap_message_wins():
+    """100 small messages fit token budget but message_cap=10 binds first."""
+    msgs = [_u(f"m{k}") for k in range(100)]
+    out = truncate_by_token_budget(msgs, 100000, message_cap=10)
+    assert len(out) == 10
+    # Last 10 messages, in order
+    assert [m["content"] for m in out] == [f"m{k}" for k in range(90, 100)]
+
+
+def test_token_budget_with_message_cap_token_wins():
+    """20 fat messages, message_cap loose, token budget binds first."""
+    msgs = [_u("x" * 1500) for _ in range(20)]  # JSON-serialized ~1527 chars → ~509 tokens
+    out = truncate_by_token_budget(msgs, 2000, message_cap=100)
+    # Token budget binds first (well below message_cap=100). Exact count depends
+    # on JSON overhead but is small enough that several messages don't fit.
+    assert 0 < len(out) < 10
+    assert len(out) < len(msgs)
+
+
+def test_token_budget_orphan_tool_dropped():
+    msgs = [
+        _t("ORPHAN_X", content="ghost"),
+        _u("u1"),
+        _a("ok"),
+    ]
+    out = truncate_by_token_budget(msgs, 100000)
+    # Orphan dropped regardless of budget
+    assert "tool" not in _roles(out)
+
+
+def test_token_budget_drops_large_pair_atomically():
+    """Pair size 2 with first half tiny but second half huge — drop both."""
+    huge = "x" * 9000  # ~3000 tokens
+    msgs = [
+        _u("u1"),
+        _a(None, tool_calls=[_tc("X")]),
+        _t("X", content=huge),
+        _u("u2"),
+    ]
+    out = truncate_by_token_budget(msgs, 1000)  # fits u2 (~5 tokens), not pair
+    assert _roles(out) == ["user"]
+
+
+def test_token_budget_zero_message_cap():
+    msgs = [_u("hi")]
+    assert truncate_by_token_budget(msgs, 1000, message_cap=0) == []
+
+
+def test_token_budget_invariant_no_orphan_in_realistic_long_chat():
+    """End-to-end with mixed message sizes — verify no orphan tool leaks."""
+    msgs: list[dict] = [_u("start")]
+    for k in range(15):
+        msgs.append(_a(None, tool_calls=[_tc(f"call_{k}")]))
+        msgs.append(_t(f"call_{k}", content=f"result of call {k}"))
+        msgs.append(_u(f"followup {k}"))
+    out = truncate_by_token_budget(msgs, 1500, message_cap=20)
+
+    # No orphan tool
+    assistant_call_ids: set[str] = set()
+    for m in out:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
+                assistant_call_ids.add(tc["id"])
+    for m in out:
+        if m.get("role") == "tool":
+            assert m["tool_call_id"] in assistant_call_ids
 
 
 def test_realistic_long_conversation_truncation():
