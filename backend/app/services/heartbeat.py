@@ -256,7 +256,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 
         # Call LLM with tools using unified client
         from app.services.llm import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
-        from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
+        from app.services.agent_tools import get_agent_tools_for_llm
 
         try:
             client = create_llm_client(
@@ -324,67 +324,31 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                     reasoning_content=response.reasoning_content,
                 ))
 
-                # Tools that require arguments — if LLM sends empty args, skip and ask to retry
-                # (aligned with call_llm in websocket.py)
-                _TOOLS_REQUIRING_ARGS = {
-                    "write_file", "read_file", "delete_file", "read_document",
-                    "send_message_to_agent", "send_feishu_message", "send_email",
-                    "web_search", "jina_search", "jina_read",
-                }
-
-                for tc in response.tool_calls:
-                    fn = tc["function"]
-                    tool_name = fn["name"]
-                    raw_args = fn.get("arguments", "{}")
-                    logger.info(f"[Heartbeat] Raw arguments for {tool_name} (len={len(raw_args) if raw_args else 0}): {repr(raw_args[:300]) if raw_args else 'None'}")
-                    try:
-                        args = json.loads(raw_args) if raw_args else {}
-                    except json.JSONDecodeError as je:
-                        logger.warning(f"[Heartbeat] JSON parse failed for {tool_name}: {je}. Raw: {repr(raw_args[:200])}")
-                        args = {}
-
-                    # Guard: if a tool that requires arguments received empty args,
-                    # return an error to LLM instead of executing
-                    if not args and tool_name in _TOOLS_REQUIRING_ARGS:
-                        logger.warning(f"[Heartbeat] Empty arguments for {tool_name}, asking LLM to retry")
-                        llm_messages.append(LLMMessage(
-                            role="tool",
-                            tool_call_id=tc["id"],
-                            content=f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments.",
-                        ))
-                        continue
-
-                    # ── Hard rate limits for plaza actions ──
+                # Plaza rate-limiting: per-tick budget enforced via pre-execute hook.
+                # Plaza tools are NOT in TOOLS_PARALLELIZABLE so they run serially —
+                # closure-captured counters are race-free.
+                def _hb_plaza_hook(tool_name: str, _args: dict) -> str | None:
+                    nonlocal plaza_posts_made, plaza_comments_made
                     if tool_name == "plaza_create_post":
                         if plaza_posts_made >= 1:
-                            tool_result = "[BLOCKED] You have already made 1 plaza post this heartbeat. Do not post again."
-                        else:
-                            tool_result = await execute_tool(tool_name, args, agent_id, agent_creator_id)
-                            plaza_posts_made += 1
+                            return "[BLOCKED] You have already made 1 plaza post this heartbeat. Do not post again."
+                        plaza_posts_made += 1
                     elif tool_name == "plaza_add_comment":
                         if plaza_comments_made >= 2:
-                            tool_result = "[BLOCKED] You have already made 2 comments this heartbeat. Do not comment again."
-                        else:
-                            tool_result = await execute_tool(tool_name, args, agent_id, agent_creator_id)
-                            plaza_comments_made += 1
-                    else:
-                        tool_result = await execute_tool(tool_name, args, agent_id, agent_creator_id)
+                            return "[BLOCKED] You have already made 2 comments this heartbeat. Do not comment again."
+                        plaza_comments_made += 1
+                    return None
 
-                    # Spill oversized tool results to disk; keep in-context bounded
-                    _hb_content: str | list = str(tool_result)
-                    if agent_id:
-                        from pathlib import Path as _HbPath
-                        from app.config import get_settings as _hb_get_settings
-                        from app.services.tool_result_truncation import maybe_truncate_tool_result as _hb_trunc
-                        _hb_ws = _HbPath(_hb_get_settings().AGENT_DATA_DIR) / str(agent_id)
-                        _hb_content = _hb_trunc(
-                            _hb_content, call_id=tc["id"], agent_workspace=_hb_ws,
-                        )
-                    llm_messages.append(LLMMessage(
-                        role="tool",
-                        tool_call_id=tc["id"],
-                        content=_hb_content,
-                    ))
+                from app.services.tool_loop import ToolExecutionContext, execute_tool_calls
+                _hb_tool_messages = await execute_tool_calls(
+                    response.tool_calls,
+                    ToolExecutionContext(
+                        agent_id=agent_id,
+                        user_id=agent_creator_id,
+                        pre_execute_hook=_hb_plaza_hook,
+                    ),
+                )
+                llm_messages.extend(_hb_tool_messages)
             else:
                 reply = response.content or ""
                 break

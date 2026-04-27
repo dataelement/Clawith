@@ -12,9 +12,7 @@ All paths now support:
 
 from __future__ import annotations
 
-import json
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -22,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
-from app.services.agent_tools import AGENT_TOOLS, execute_tool, get_agent_tools_for_llm
+from app.services.agent_tools import AGENT_TOOLS, get_agent_tools_for_llm
 from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
 
 from .client import LLMError
@@ -34,10 +32,10 @@ if TYPE_CHECKING:
     from app.models.llm import LLMModel
 
 
-TOOLS_REQUIRING_ARGS = frozenset({
-    "write_file", "read_file", "delete_file", "read_document",
-    "send_message_to_agent", "send_feishu_message", "send_email"
-})
+# Tool classification (TOOLS_REQUIRING_ARGS, TOOLS_PARALLELIZABLE) and the
+# shared execution loop now live in app.services.tool_loop. Importing them
+# here would create a redundant alias; callers that need the constants
+# should import from tool_loop directly.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -186,114 +184,6 @@ def _convert_messages_for_vision(
     return new_messages
 
 
-def _check_tool_requires_args(tool_name: str, args: dict) -> tuple[bool, str]:
-    """Check if tool requires arguments and return (should_execute, result_or_error)."""
-    if not args and tool_name in TOOLS_REQUIRING_ARGS:
-        return False, f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments."
-    return True, ""
-
-
-async def _process_tool_call(
-    tc: dict,
-    api_messages: list,
-    agent_id,
-    user_id,
-    session_id: str,
-    supports_vision: bool,
-    on_tool_call,
-    full_reasoning_content: str,
-) -> str:
-    """Process a single tool call and return result."""
-    fn = tc["function"]
-    tool_name = fn["name"]
-    raw_args = fn.get("arguments", "{}")
-    logger.info(f"[LLM] Calling tool: {tool_name}({json.dumps(raw_args, ensure_ascii=False)[:100]})")
-
-    try:
-        args = json.loads(raw_args) if raw_args else {}
-    except json.JSONDecodeError:
-        args = {}
-
-    # Guard: check if tool requires arguments
-    should_execute, error_msg = _check_tool_requires_args(tool_name, args)
-    if not should_execute:
-        return error_msg
-
-    # Notify client about tool call (in-progress)
-    if on_tool_call:
-        try:
-            await on_tool_call({
-                "name": tool_name,
-                "call_id": tc.get("id", ""),
-                "args": args,
-                "status": "running",
-                "reasoning_content": full_reasoning_content
-            })
-        except Exception:
-            pass
-
-    # Execute tool
-    result = await execute_tool(
-        tool_name, args,
-        agent_id=agent_id,
-        user_id=user_id or agent_id,
-        session_id=session_id,
-    )
-    logger.debug(f"[LLM] Tool result: {result[:100]}")
-
-    # Resolve agent workspace path once — needed by vision injection and
-    # tool-result truncation below. Path resolution is sandbox-relevant, so
-    # keep it tied to AGENT_DATA_DIR / str(agent_id).
-    ws_path: Path | None = None
-    if agent_id:
-        from app.config import get_settings
-        settings = get_settings()
-        ws_path = Path(settings.AGENT_DATA_DIR) / str(agent_id)
-
-    # ── Vision injection for screenshot tools ──
-    tool_content: str | list = str(result)
-    if supports_vision and ws_path is not None:
-        try:
-            from app.services.vision_inject import try_inject_screenshot_vision
-            vision_content = try_inject_screenshot_vision(tool_name, str(result), ws_path)
-            if vision_content:
-                tool_content = vision_content
-                logger.info(f"[LLM] Injected screenshot vision for {tool_name}")
-        except Exception as e:
-            logger.warning(f"[LLM] Vision injection failed for {tool_name}: {e}")
-
-    # ── Tool-result truncation: spill oversized payloads to disk ──
-    # Vision-injected list payloads pass through unchanged; large strings get
-    # head-excerpted with a marker pointing the model at _tool_results/<id>.txt.
-    if ws_path is not None:
-        from app.services.tool_result_truncation import maybe_truncate_tool_result
-        tool_content = maybe_truncate_tool_result(
-            tool_content, call_id=tc["id"], agent_workspace=ws_path,
-        )
-
-    # Notify client about tool call result
-    if on_tool_call:
-        try:
-            await on_tool_call({
-                "name": tool_name,
-                "call_id": tc.get("id", ""),
-                "args": args,
-                "status": "done",
-                "result": result,
-                "reasoning_content": full_reasoning_content
-            })
-        except Exception:
-            pass
-
-    api_messages.append(LLMMessage(
-        role="tool",
-        tool_call_id=tc["id"],
-        content=tool_content,
-    ))
-    return ""
-
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Core LLM Call Functions
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -436,23 +326,22 @@ async def call_llm(
 
         full_reasoning_content = response.reasoning_content or ""
 
-        for tc in response.tool_calls:
-            tool_error = await _process_tool_call(
-                tc=tc,
-                api_messages=api_messages,
+        # Run all tool calls via the shared loop helper. Whitelisted reads
+        # (read_file, search_jina, web_fetch, ...) execute concurrently;
+        # everything else serializes in original order. See app.services.tool_loop.
+        from app.services.tool_loop import ToolExecutionContext, execute_tool_calls
+        _tool_messages = await execute_tool_calls(
+            response.tool_calls,
+            ToolExecutionContext(
                 agent_id=agent_id,
                 user_id=user_id,
                 session_id=session_id,
                 supports_vision=supports_vision,
                 on_tool_call=on_tool_call,
                 full_reasoning_content=full_reasoning_content,
-            )
-            if tool_error:
-                api_messages.append(LLMMessage(
-                    role="tool",
-                    content=tool_error,
-                    tool_call_id=tc.get("id", ""),
-                ))
+            ),
+        )
+        api_messages.extend(_tool_messages)
 
     # Record tokens even on "too many rounds" exit
     if agent_id and _accumulated_tokens > 0:
@@ -770,36 +659,24 @@ async def call_agent_llm_with_tools(
                     reasoning_content=response.reasoning_content,
                 ))
 
-                for tc in response.tool_calls:
-                    fn = tc["function"]
-                    tool_name = fn["name"]
-                    raw_args = fn.get("arguments", "{}")
-                    try:
-                        args = json.loads(raw_args) if raw_args else {}
-                    except json.JSONDecodeError:
-                        args = {}
-
+                # Any tool execution disqualifies model failover (side-effect
+                # could be sent twice). Conservative: set on entry to the loop.
+                if response.tool_calls:
                     tool_executed = True
-                    result = await execute_tool(
-                        tool_name, args,
+
+                # Use the shared loop helper — same parallel-reads + serial-writes
+                # behavior as call_llm. Truncation, args-guard, and order
+                # preservation all happen inside execute_tool_calls.
+                from app.services.tool_loop import ToolExecutionContext, execute_tool_calls
+                _tool_messages = await execute_tool_calls(
+                    response.tool_calls,
+                    ToolExecutionContext(
                         agent_id=agent_id,
                         user_id=agent.creator_id,
                         session_id=session_id,
-                    )
-                    # Spill oversized tool results to disk; keep in-context bounded
-                    _tool_content: str | list = str(result)
-                    if agent_id:
-                        from app.config import get_settings
-                        from app.services.tool_result_truncation import maybe_truncate_tool_result
-                        _ws = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
-                        _tool_content = maybe_truncate_tool_result(
-                            _tool_content, call_id=tc["id"], agent_workspace=_ws,
-                        )
-                    api_messages.append(LLMMessage(
-                        role="tool",
-                        tool_call_id=tc["id"],
-                        content=_tool_content,
-                    ))
+                    ),
+                )
+                api_messages.extend(_tool_messages)
 
             if agent_id and _accumulated_tokens > 0:
                 await record_token_usage(agent_id, _accumulated_tokens)
