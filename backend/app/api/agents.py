@@ -358,8 +358,13 @@ async def create_agent(
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_text(sf.content, encoding="utf-8")
 
-    # Start container
-    await agent_manager.start_container(db, agent)
+    if agent.agent_type == "openclaw":
+        # Start container
+        await agent_manager.start_container(db, agent)
+    else:
+        # Native Agent. No container needs to be started
+        agent.status = "idle"
+        agent.last_active_at = datetime.now(timezone.utc)
     await db.flush()
 
     from app.services.okr_agent_hook import hook_new_agent
