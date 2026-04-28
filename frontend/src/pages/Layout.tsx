@@ -269,7 +269,7 @@ export default function Layout() {
         refetchInterval: 30000,
         enabled: !!user,
     });
-    const { data: notifications = [], refetch: refetchNotifications } = useQuery({
+    const { data: notifications = [] } = useQuery({
         queryKey: ['notifications', notifCategory],
         queryFn: () => fetchJson<any[]>(`/notifications?limit=50${notifCategory !== 'all' ? `&category=${notifCategory}` : ''}`),
         enabled: !!user && showNotifications,
@@ -731,7 +731,7 @@ export default function Layout() {
                             }} title={theme === 'dark' ? t('common.lightMode') : t('common.darkMode')}>
                                 {theme === 'dark' ? SidebarIcons.sun : SidebarIcons.moon}
                             </button>
-                            <button className="btn btn-ghost" onClick={() => { setShowNotifications(v => !v); if (!showNotifications) refetchNotifications(); }} style={{
+                            <button className="btn btn-ghost" onClick={() => setShowNotifications(v => !v)} style={{
                                 padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative',
                             }} title={isChinese ? '通知' : 'Notifications'}>
                                 {SidebarIcons.bell}
