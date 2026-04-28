@@ -370,10 +370,20 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                     else:
                         tool_result = await execute_tool(tool_name, args, agent_id, agent_creator_id)
 
+                    # Spill oversized tool results to disk; keep in-context bounded
+                    _hb_content: str | list = str(tool_result)
+                    if agent_id:
+                        from pathlib import Path as _HbPath
+                        from app.config import get_settings as _hb_get_settings
+                        from app.services.tool_result_truncation import maybe_truncate_tool_result as _hb_trunc
+                        _hb_ws = _HbPath(_hb_get_settings().AGENT_DATA_DIR) / str(agent_id)
+                        _hb_content = _hb_trunc(
+                            _hb_content, call_id=tc["id"], agent_workspace=_hb_ws,
+                        )
                     llm_messages.append(LLMMessage(
                         role="tool",
                         tool_call_id=tc["id"],
-                        content=str(tool_result),
+                        content=_hb_content,
                     ))
             else:
                 reply = response.content or ""

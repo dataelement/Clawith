@@ -36,6 +36,7 @@ export interface Agent {
     last_heartbeat_at?: string;
     timezone?: string;
     context_window_size?: number;
+    context_window_tokens?: number;
     agent_type?: 'native' | 'openclaw';
     openclaw_last_seen?: string;
     unread_count?: number;

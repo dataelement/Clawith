@@ -241,20 +241,35 @@ async def _process_tool_call(
     )
     logger.debug(f"[LLM] Tool result: {result[:100]}")
 
+    # Resolve agent workspace path once — needed by vision injection and
+    # tool-result truncation below. Path resolution is sandbox-relevant, so
+    # keep it tied to AGENT_DATA_DIR / str(agent_id).
+    ws_path: Path | None = None
+    if agent_id:
+        from app.config import get_settings
+        settings = get_settings()
+        ws_path = Path(settings.AGENT_DATA_DIR) / str(agent_id)
+
     # ── Vision injection for screenshot tools ──
     tool_content: str | list = str(result)
-    if supports_vision and agent_id:
+    if supports_vision and ws_path is not None:
         try:
             from app.services.vision_inject import try_inject_screenshot_vision
-            from app.config import get_settings
-            settings = get_settings()
-            ws_path = Path(settings.AGENT_DATA_DIR) / str(agent_id)
             vision_content = try_inject_screenshot_vision(tool_name, str(result), ws_path)
             if vision_content:
                 tool_content = vision_content
                 logger.info(f"[LLM] Injected screenshot vision for {tool_name}")
         except Exception as e:
             logger.warning(f"[LLM] Vision injection failed for {tool_name}: {e}")
+
+    # ── Tool-result truncation: spill oversized payloads to disk ──
+    # Vision-injected list payloads pass through unchanged; large strings get
+    # head-excerpted with a marker pointing the model at _tool_results/<id>.txt.
+    if ws_path is not None:
+        from app.services.tool_result_truncation import maybe_truncate_tool_result
+        tool_content = maybe_truncate_tool_result(
+            tool_content, call_id=tc["id"], agent_workspace=ws_path,
+        )
 
     # Notify client about tool call result
     if on_tool_call:
@@ -269,7 +284,7 @@ async def _process_tool_call(
             })
         except Exception:
             pass
-    
+
     api_messages.append(LLMMessage(
         role="tool",
         tool_call_id=tc["id"],
@@ -771,10 +786,19 @@ async def call_agent_llm_with_tools(
                         user_id=agent.creator_id,
                         session_id=session_id,
                     )
+                    # Spill oversized tool results to disk; keep in-context bounded
+                    _tool_content: str | list = str(result)
+                    if agent_id:
+                        from app.config import get_settings
+                        from app.services.tool_result_truncation import maybe_truncate_tool_result
+                        _ws = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+                        _tool_content = maybe_truncate_tool_result(
+                            _tool_content, call_id=tc["id"], agent_workspace=_ws,
+                        )
                     api_messages.append(LLMMessage(
                         role="tool",
                         tool_call_id=tc["id"],
-                        content=str(result),
+                        content=_tool_content,
                     ))
 
             if agent_id and _accumulated_tokens > 0:

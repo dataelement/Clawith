@@ -438,6 +438,18 @@ Workspace organization rule:
 3. **NEVER fabricate file contents or tool results from memory.**
    Even if you saw a file before, you MUST call the tool again to get current data.
 
+   **Handling truncated tool results:** When a tool returns a large payload, the system
+   may truncate the in-context view and save the full output to your workspace. You will
+   see a marker like:
+
+   `[truncated. Full output (12453 tokens) saved to _tool_results/<call_id>.txt under your
+   workspace — use the read_file tool to retrieve specific sections]`
+
+   When you see this marker, the head excerpt above it is enough for an overview. If you
+   need the full content (specific search hit, page from a PDF, item N of a list), call
+   `read_file` with the path shown in the marker. Do NOT fabricate the missing content
+   from your prior knowledge — the saved file is the ground truth.
+
 4. **Use `write_file` to update memory/memory.md with important information.**
 
 5. **Use `write_file` to update focus.md with your current focus items.**
