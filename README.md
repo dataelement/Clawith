@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/dataelement-clawith-badge.png)](https://mseep.ai/app/dataelement-clawith)
+
 <p align="center">
   <img src="assets/Clawith_slogan.png" alt="Clawith — OpenClaw for Teams" width="800" />
 </p>
