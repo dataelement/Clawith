@@ -15,6 +15,11 @@ from app.database import Base
 # (see: https://github.com/dataelement/Clawith/issues/238).
 DEFAULT_CONTEXT_WINDOW_SIZE = 100
 
+# Default token budget for in-context history. Conservative for 128K-context
+# models after system prompt + soul/memory injection (~5-15K tokens). Per-agent
+# override via Agent.context_window_tokens.
+DEFAULT_CONTEXT_WINDOW_TOKENS = 50000
+
 
 class Agent(Base):
     """Digital employee (Agent) instance.
@@ -81,6 +86,24 @@ class Agent(Base):
     last_monthly_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tokens_used_total: Mapped[int] = mapped_column(Integer, default=0)
     context_window_size: Mapped[int] = mapped_column(Integer, default=100)
+    # Token-aware secondary bound on history sent to the LLM. Truncation uses
+    # the smaller of context_window_size (message count) and this token budget,
+    # preserving assistant.tool_calls ↔ role=tool pairs intact.
+    #
+    # ``server_default`` matters: alembic/versions/0000_initial_schema.py uses
+    # ``Base.metadata.create_all`` which reads model state at runtime. Without
+    # a server_default, fresh-DB bootstrap would create this column NOT NULL
+    # without a DDL DEFAULT — and the ``ADD COLUMN IF NOT EXISTS`` migration
+    # later in the chain would short-circuit, leaving direct-SQL inserts
+    # broken. ``server_default="50000"`` ensures the DDL has the default
+    # whether the column was created by create_all or by the explicit
+    # migration.
+    context_window_tokens: Mapped[int] = mapped_column(
+        Integer,
+        default=DEFAULT_CONTEXT_WINDOW_TOKENS,
+        server_default=str(DEFAULT_CONTEXT_WINDOW_TOKENS),
+        nullable=False,
+    )
     max_tool_rounds: Mapped[int] = mapped_column(Integer, default=50)
 
     # Trigger limits (per-agent, configurable from Settings UI)

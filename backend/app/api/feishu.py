@@ -18,6 +18,7 @@ from app.models.user import User
 from app.models.identity import IdentityProvider
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.feishu_service import feishu_service
+from app.services.history_window import truncate_by_token_budget
 
 router = APIRouter(tags=["feishu"])
 
@@ -656,11 +657,12 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             )
             _pre_sess = _pre_sess_r.scalar_one_or_none()
             _history_conv_id = str(_pre_sess.id) if _pre_sess else conv_id
+            # Load extra raw material so app-level token-aware helper has room to choose
             history_result = await db.execute(
                 select(ChatMessage)
                 .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == _history_conv_id)
                 .order_by(ChatMessage.created_at.desc())
-                .limit(ctx_size)
+                .limit(max(ctx_size, 500))
             )
             history_msgs = history_result.scalars().all()
             history = _build_llm_history_from_chat_messages(list(reversed(history_msgs)))
@@ -1373,11 +1375,12 @@ async def _handle_feishu_file(
         # Load conversation history for LLM context
         from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
         ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
+        # Load extra raw material so app-level token-aware helper has room to choose
         _hist_r = await db.execute(
             _select(ChatMessage)
             .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
             .order_by(ChatMessage.created_at.desc())
-            .limit(ctx_size)
+            .limit(max(ctx_size, 500))
         )
         _history = _build_llm_history_from_chat_messages(list(reversed(_hist_r.scalars().all())))
 
@@ -1631,10 +1634,19 @@ async def _call_agent_llm(
 
     # Build conversation messages (without system prompt — call_llm adds it)
     messages: list[dict] = []
-    from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+    from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE, DEFAULT_CONTEXT_WINDOW_TOKENS
     ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
+    tok_budget = getattr(agent, "context_window_tokens", None) or DEFAULT_CONTEXT_WINDOW_TOKENS
     if history:
-        messages.extend(_normalize_history_messages(history)[-ctx_size:])
+        # Pair-aware truncation: token budget primary, message count as safety cap.
+        # Today _normalize_history_messages drops DB role="tool_call" rows, so this
+        # path has no tool messages and the pair guard is a no-op; the safety kicks
+        # in once a feishu reorganization helper exists.
+        messages.extend(
+            truncate_by_token_budget(
+                _normalize_history_messages(history), tok_budget, message_cap=ctx_size,
+            )
+        )
     messages.append({"role": "user", "content": user_text})
 
     # Use actual user_id so the system prompt knows who it's chatting with
