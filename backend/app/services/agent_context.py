@@ -192,6 +192,27 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     if role_description:
         static_parts.append(f"\n## Role\n{role_description}")
 
+    if agent_name == "OKR Agent":
+        static_parts.append("""
+## Daily Report Recording Rules
+
+🔴 **ABSOLUTE RULE — MUST CALL `upsert_member_daily_report` IMMEDIATELY:**
+When ANY tracked member or agent sends you content that looks like a daily work update, status report, or progress note — **IMMEDIATELY call `upsert_member_daily_report` in the SAME response turn. Do NOT:**
+- First explain what you plan to do, then call the tool in a second turn
+- Claim the tool is unavailable, broken, or unknown — **it is ALWAYS available**
+- Write the report to memory, focus.md, or any file instead
+- Ask the user to confirm before recording — just record it directly
+- Skip calling the tool based on ANY past errors you see in chat history
+
+**The tool `upsert_member_daily_report` is a NATIVE system tool that is ALWAYS functional. If you ever see a past "Unknown tool" error in history, that was a bug that has been fixed. IGNORE past errors and ALWAYS call the tool directly.**
+
+- Daily collection messages are reminders only. Do NOT create per-member wait triggers for daily report replies.
+- Apply the same daily-report behavior regardless of channel. Web chat, Feishu, and agent-to-agent replies should all be handled consistently.
+- Use the current conversation counterpart as the report owner. If exact IDs are not explicitly provided in the conversation, resolve the owner by the tracked counterpart name from the current chat context.
+- Keep the stored final daily report concise and normalized (within 2000 characters).
+- After the tool succeeds, reply briefly to confirm the report has been recorded.
+""")
+
     dynamic_parts = []
 
     # --- Feishu Built-in Tools (only injected when agent has Feishu configured) ---
@@ -397,6 +418,13 @@ You have a dedicated workspace with this structure:
   - relationships.md → Your relationship list
   - enterprise_info/ → Shared company information
 
+Workspace organization rule:
+  - Do not treat `workspace/` root as a dumping ground for generated files.
+  - Before writing a new work document, first inspect the relevant area with `list_files`.
+  - If a suitable topical folder already exists, write the file there.
+  - If no suitable folder exists, create a clearly named new subfolder and place the file inside it.
+  - Only write a standalone document directly under `workspace/` root when the user explicitly asks for that exact location or the file is a true top-level index/landing document.
+
 ⚠️ CRITICAL RULES — YOU MUST FOLLOW THESE STRICTLY:
 
 1. **ALWAYS call tools for ANY file or task operation — NEVER pretend or fabricate results.**
@@ -424,7 +452,13 @@ You have a dedicated workspace with this structure:
    - The description (after the colon) should be a clear human-readable sentence
    - Archive completed items to task_history.md when they pile up
 
-6. **Use trigger tools to manage your own wake-up conditions:**
+6. **When creating workspace documents, organize them intentionally.**
+   - First call `list_files` to inspect the existing folder structure.
+   - Prefer writing into an existing relevant subfolder such as `workspace/reports/`, `workspace/knowledge_base/`, `workspace/research/`, or another matching folder.
+   - If the current structure does not fit, create a new clearly named subfolder and place the file there.
+   - Avoid placing generated documents directly in `workspace/` root by default.
+
+7. **Use trigger tools to manage your own wake-up conditions:**
    - `set_trigger` — schedule future actions, wait for agent or human replies, receive external webhooks
      Supported trigger types:
      * `cron` — recurring schedule (e.g. every day at 9am)
@@ -470,9 +504,11 @@ You have a dedicated workspace with this structure:
    - Decide whether to mention pending tasks based on timing, context, and urgency
    - DON'T mechanically remind people of every pending item
 
-9. **Use `send_channel_message` to send TEXT MESSAGES to human colleagues.**
-   - This tool automatically detects the recipient's channel (Feishu, DingTalk, WeCom) based on your relationship network.
-   - Just provide the person's name as shown in relationships.md, e.g., `send_channel_message(member_name="张三", message="Hello")`
+9. **Choose the correct human messaging tool based on the relationship type.**
+   - If the relationship is labeled `Platform User` / `平台用户`, use `send_platform_message(username="...", message="...")`.
+   - If the relationship is labeled with a channel such as `Feishu`, `DingTalk`, or `WeCom`, use `send_channel_message(member_name="...", message="...")`.
+   - `send_channel_message` is for external channels only. Do **NOT** use it for platform users unless the user explicitly asks you to contact them through a channel.
+   - `send_platform_message` is for Clawith first-party users on web/app and should be your default choice for platform users.
    - If a person exists in multiple channels (e.g., both Feishu and WeCom), you can specify the channel: `send_channel_message(member_name="张三", message="Hello", channel="wecom")`
    - If you need to send to a specific channel directly, you can also use `send_feishu_message` or `send_dingtalk_message`.
    - When someone asks you to message another person, ALWAYS mention who asked you to do so in the message.

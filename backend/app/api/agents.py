@@ -8,13 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import build_visible_agents_query, check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission
+from app.models.audit import ChatMessage
+from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
 
@@ -105,6 +107,46 @@ async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
     return changed
 
 
+async def _build_unread_count_by_agent(
+    db: AsyncSession,
+    agents: list[Agent],
+    current_user: User,
+) -> dict[str, int]:
+    """Return unread assistant/system/tool message counts for the current user per agent.
+
+    The sidebar only needs user-facing unread state, so we scope strictly to sessions owned by
+    the current platform user and ignore agent-to-agent / trigger-only threads.
+    """
+
+    if not agents:
+        return {}
+
+    agent_ids = [agent.id for agent in agents]
+    result = await db.execute(
+        select(ChatSession.agent_id, func.count(ChatMessage.id))
+        .join(ChatMessage, ChatMessage.conversation_id == cast(ChatSession.id, String))
+        .where(
+            ChatSession.agent_id.in_(agent_ids),
+            ChatSession.user_id == current_user.id,
+            ChatSession.is_group == False,
+            ChatSession.source_channel.notin_(["agent", "trigger"]),
+            ChatMessage.role.in_(["assistant", "system", "tool_call"]),
+            ChatMessage.created_at > func.coalesce(
+                ChatSession.last_read_at_by_user,
+                datetime(1970, 1, 1, tzinfo=timezone.utc),
+            ),
+        )
+        .group_by(ChatSession.agent_id)
+    )
+    return {str(row[0]): int(row[1] or 0) for row in result.all()}
+
+
+def _serialize_agent_out(agent: Agent, unread_count: int = 0) -> AgentOut:
+    payload = AgentOut.model_validate(agent).model_dump()
+    payload["unread_count"] = unread_count
+    return AgentOut.model_validate(payload)
+
+
 @router.get("/templates")
 async def list_templates(
     current_user: User = Depends(get_current_user),
@@ -139,47 +181,20 @@ async def list_agents(
     db: AsyncSession = Depends(get_db),
 ):
     """List all agents the current user has access to."""
-    # platform_admin & org_admin see all agents (optionally filtered by tenant)
-    if current_user.role in ("platform_admin", "org_admin"):
-        stmt = select(Agent)
-        if tenant_id:
-            stmt = stmt.where(Agent.tenant_id == tenant_id)
-        result = await db.execute(stmt.order_by(Agent.created_at.desc()))
-        agents = result.scalars().all()
-        # Lazy reset token counters
-        needs_flush = False
-        for a in agents:
-            if await _lazy_reset_token_counters(a, db):
-                needs_flush = True
-        if needs_flush:
-            await db.commit()
-        return [AgentOut.model_validate(a) for a in agents]
-
-    # agent_admin sees their own created agents + permitted
-    # member sees only permitted
-    # All scoped to user's tenant
-    user_tenant = current_user.tenant_id
-
-    # Get agents user created (within their tenant)
-    created = select(Agent).where(Agent.creator_id == current_user.id, Agent.tenant_id == user_tenant)
-
-    # Get agents user has permission to (within their tenant)
-    permitted_ids = (
-        select(AgentPermission.agent_id)
-        .where(
-            (AgentPermission.scope_type == "company")
-            | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
+    if tenant_id and tenant_id != current_user.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Can only list agents in your own company",
         )
-    )
-    permitted = select(Agent).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
 
-    # Union
-    from sqlalchemy import union_all
+    requested_tenant_id = current_user.tenant_id
 
-    combined = union_all(created, permitted).subquery()
-    result = await db.execute(
-        select(Agent).where(Agent.id.in_(select(combined.c.id))).order_by(Agent.created_at.desc())
-    )
+    stmt = build_visible_agents_query(
+        current_user,
+        tenant_id=requested_tenant_id,
+    ).order_by(Agent.created_at.desc())
+
+    result = await db.execute(stmt)
     agents = result.scalars().all()
     # Lazy reset token counters
     needs_flush = False
@@ -188,7 +203,8 @@ async def list_agents(
             needs_flush = True
     if needs_flush:
         await db.commit()
-    return [AgentOut.model_validate(a) for a in agents]
+    unread_by_agent = await _build_unread_count_by_agent(db, agents, current_user)
+    return [_serialize_agent_out(a, unread_by_agent.get(str(a.id), 0)) for a in agents]
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -290,6 +306,12 @@ async def create_agent(
         agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         agent.status = "idle"
         await db.commit()
+
+        from app.services.okr_agent_hook import hook_new_agent
+        if agent.tenant_id:
+            await hook_new_agent(db, agent.id, agent.tenant_id)
+            await db.commit()
+
         out = AgentOut.model_validate(agent).model_dump()
         out["api_key"] = raw_key  # Return once on creation
         return out
@@ -339,6 +361,11 @@ async def create_agent(
     # Start container
     await agent_manager.start_container(db, agent)
     await db.flush()
+
+    from app.services.okr_agent_hook import hook_new_agent
+    if agent.tenant_id:
+        await hook_new_agent(db, agent.id, agent.tenant_id)
+        await db.commit()
 
     return AgentOut.model_validate(agent)
 
@@ -565,6 +592,14 @@ async def delete_agent(
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent) and current_user.role not in ("super_admin", "org_admin", "platform_admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator or admin can delete agent")
+
+    # System agents (OKR Agent, etc.) cannot be deleted — they are seeded by the
+    # platform and required for core features. Disable them via settings instead.
+    if agent.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="System agents cannot be deleted. Disable the related feature (e.g. OKR) in Company Settings instead.",
+        )
 
     # Stop container and archive files (best effort)
     from app.services.agent_manager import agent_manager

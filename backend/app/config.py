@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     FEISHU_APP_SECRET: str = ""
     FEISHU_REDIRECT_URI: str = ""
     PUBLIC_BASE_URL: str = ""
+    HTTP_PROXY: str = ""
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]

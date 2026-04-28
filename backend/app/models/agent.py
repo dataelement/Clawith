@@ -92,6 +92,10 @@ class Agent(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_expired: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # System agent flag — system agents (e.g. OKR Agent) cannot be deleted by users
+    # and their system triggers are protected from user deletion.
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     # Daily LLM call limit
     llm_calls_today: Mapped[int] = mapped_column(Integer, default=0)
     max_llm_calls_per_day: Mapped[int] = mapped_column(Integer, default=100)

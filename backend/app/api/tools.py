@@ -332,7 +332,14 @@ async def get_agent_tools(
 ):
     """Get tools for a specific agent with their enabled status."""
     from app.services.agent_tools import _agent_has_feishu
+    from app.models.agent import Agent as AgentModel
     has_feishu = await _agent_has_feishu(agent_id)
+
+    # Determine if this is a system agent (e.g. OKR Agent).
+    # System agents can see all tools; regular agents cannot see okr_agent_only tools.
+    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent_obj = agent_r.scalar_one_or_none()
+    is_system_agent = bool(agent_obj and agent_obj.is_system)
 
     # All available tools
     all_tools_r = await db.execute(select(Tool).where(Tool.enabled == True).order_by(Tool.category, Tool.name))
@@ -346,6 +353,11 @@ async def get_agent_tools(
     for t in all_tools:
         # Hide feishu tools for agents without Feishu channel
         if t.category == "feishu" and not has_feishu:
+            continue
+        # Hide OKR Agent-exclusive tools from regular agents.
+        # These tools (create_objective, collect_okr_progress, etc.) should only
+        # appear in the tool panel of system agents such as the OKR Agent.
+        if (t.config or {}).get("okr_agent_only") and not is_system_agent:
             continue
         tid = str(t.id)
         at = assignments.get(tid)
@@ -660,7 +672,13 @@ async def get_agent_tools_with_config(
     the agent-level UI can show the inherited key hint.
     """
     from app.services.agent_tools import _agent_has_feishu
+    from app.models.agent import Agent as AgentModel
     has_feishu = await _agent_has_feishu(agent_id)
+
+    # Determine if this is a system agent (e.g. OKR Agent).
+    agent_r2 = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent_obj2 = agent_r2.scalar_one_or_none()
+    is_system_agent2 = bool(agent_obj2 and agent_obj2.is_system)
 
     all_tools_r = await db.execute(select(Tool).where(Tool.enabled == True).order_by(Tool.category, Tool.name))
     all_tools = all_tools_r.scalars().all()
@@ -680,6 +698,9 @@ async def get_agent_tools_with_config(
     for t in all_tools:
         # Hide feishu tools for agents without Feishu channel
         if t.category == "feishu" and not has_feishu:
+            continue
+        # Hide OKR Agent-exclusive tools from regular agents.
+        if (t.config or {}).get("okr_agent_only") and not is_system_agent2:
             continue
         tid = str(t.id)
         at = assignments.get(tid)

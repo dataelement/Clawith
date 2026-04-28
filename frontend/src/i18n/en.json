@@ -53,7 +53,8 @@
     "newAgent": "New Digital Employee",
     "enterprise": "Company Settings",
     "language": "Language",
-    "plaza": "Plaza"
+    "plaza": "Plaza",
+    "okr": "OKR"
   },
   "auth": {
     "login": "Login",
@@ -187,12 +188,12 @@
       "creating": "Creating",
       "error": "Error",
       "disconnected": "Disconnected",
-      "24hActions": "⏰ 24h Actions",
+      "24hActions": "24h Actions",
       "24hActionsTooltip": "Total recorded operations in the past 24 hours, including chats, tool calls, task executions, etc.",
-      "llmCallsToday": "🤖 LLM Calls Today",
+      "llmCallsToday": "LLM Calls Today",
       "max": "Max",
-      "totalToken": "📊 Total Token",
-      "pending": "⏳ Pending"
+      "totalToken": "Total Token",
+      "pending": "Pending"
     },
     "tabs": {
       "status": "Status",
@@ -210,26 +211,26 @@
     },
     "fields": {
       "name": "Name",
-      "role": "👤 Role",
+      "role": "Role",
       "avatar": "Avatar",
       "personality": "Personality",
       "boundaries": "Boundaries",
       "lastActive": "Last Active",
       "tasksInProgress": "In Progress",
       "supervisions": "Supervisions",
-      "createdBy": "👨‍💼 Created by"
+      "createdBy": "Created by"
     },
     "profile": {
-      "title": "📋 Agent Profile",
-      "created": "📅 Created",
-      "lastActive": "⏰ Last Active",
-      "timezone": "🌐 Timezone"
+      "title": "Agent Profile",
+      "created": "Created",
+      "lastActive": "Last Active",
+      "timezone": "Timezone"
     },
     "modelConfig": {
-      "title": "🤖 Model Config",
-      "model": "🧠 Model",
-      "provider": "🏢 Provider",
-      "contextRounds": "🔄 Context Window"
+      "title": "Model Config",
+      "model": "Model",
+      "provider": "Provider",
+      "contextRounds": "Context Window"
     },
     "actions": {
       "start": "Start",
@@ -246,8 +247,11 @@
       "humanRelationships": "Human Relationships",
       "agentRelationships": "Agent Relationships",
       "searchMembers": "Search org members...",
+      "searchAgents": "Search visible agents...",
+      "noSearchResults": "No available results",
       "noRelationships": "No relationships",
       "addRelationship": "Add Relationship",
+      "alreadyAdded": "Already added",
       "supervisor": "Supervisor",
       "colleague": "Colleague",
       "subordinate": "Subordinate",
@@ -620,7 +624,8 @@
       "code": "Code & Execution",
       "discovery": "Discovery",
       "feishu": "Feishu / Lark",
-      "agentbay": "AgentBay"
+      "agentbay": "AgentBay",
+      "okr": "OKR"
     },
     "upload": {
       "success": "Upload successful",
@@ -652,7 +657,7 @@
     "credentials": {
       "title": "Credentials",
       "add": "Add",
-      "description": "Store login credentials and cookies for websites. Cookies are automatically injected when the agent opens a browser via AgentBay.",
+      "description": "Store website session cookies. Cookies are automatically injected when the agent opens a browser via AgentBay.",
       "empty": "No credentials configured",
       "loading": "Loading...",
       "error": "Failed to load credentials",
@@ -703,13 +708,6 @@
           "social": "Social",
           "api_key": "API Key"
         },
-        "username": "Username",
-        "usernamePlaceholder": "Login username or email",
-        "password": "Password",
-        "passwordHint": "(leave empty to keep current)",
-        "passwordPlaceholder": "Login password",
-        "loginUrl": "Login URL",
-        "loginUrlPlaceholder": "https://example.com/login",
         "cookies": "Cookies JSON",
         "cookiesHint": "(leave empty to keep current)",
         "cookiesPlaceholder": "[\n  { \"name\": \"session\", \"value\": \"abc123\", \"domain\": \".example.com\", \"path\": \"/\" }\n]",
@@ -1107,7 +1105,7 @@
         "list_triggers": "List Triggers",
         "send_file_to_agent": "Send File",
         "send_feishu_message": "Feishu Message",
-        "send_web_message": "Web Message",
+        "send_platform_message": "Platform Message",
         "send_message_to_agent": "Agent Message",
         "web_search": "Web Search",
         "jina_search": "Jina Search",
@@ -1166,7 +1164,7 @@
         "list_triggers": "List all your active triggers with details.",
         "send_file_to_agent": "Send a file to a specific person or back to the current conversation.",
         "send_feishu_message": "Send a message to a Feishu user or group.",
-        "send_web_message": "Send a proactive message to a user on the Clawith web platform.",
+        "send_platform_message": "Send a proactive message to a user on the Clawith platform (web or app).",
         "send_message_to_agent": "Send a message to a digital employee colleague and receive a reply.",
         "web_search": "Search the internet using a configurable search engine.",
         "jina_search": "Search the internet using Jina AI.",
@@ -1323,6 +1321,7 @@
         "feishu": "Feishu: Requires app_id, app_secret. Optional: encrypt_key, verification_token.",
         "dingtalk": "DingTalk: Requires app_key, app_secret.",
         "wecom": "WeCom: Requires corp_id, secret, agent_id.",
+        "google_workspace": "Google Workspace: one Client ID, one Client Secret, and one Redirect URL for both SSO and admin-authorized directory sync.",
         "oauth2": "OAuth2: Enter App ID, App Secret, Authorize URL, Token URL, User Info URL",
         "saml": "SAML: Requires entry_point, issuer, cert (public key).",
         "microsoft_teams": "Microsoft Teams: Requires client_id, client_secret, tenant_id."
@@ -1342,6 +1341,10 @@
         "dingtalk": {
           "name": "DingTalk",
           "desc": "DingTalk App Integration"
+        },
+        "google_workspace": {
+          "name": "Google",
+          "desc": "Google Directory Sync + SSO"
         },
         "oauth2": {
           "name": "OAuth2",
@@ -1479,6 +1482,8 @@
       "discord": "Discord",
       "slack": "Slack",
       "teams": "Microsoft Teams",
+      "wechat": "WeChat",
+      "whatsapp": "WhatsApp",
       "dingtalk": "DingTalk",
       "wecom": "WeCom"
     },
@@ -1599,6 +1604,20 @@
       "ws_step5": "Copy the Bot ID and Secret that are generated → paste them above → click Save Config",
       "ws_step6": "Find the bot in WeCom and send a test message",
       "ws_note": "WebSocket mode requires no public IP, callback URL, or domain verification (ICP). The connection is managed automatically."
+    },
+    "wechat": {
+      "step1": "Click Generate QR Code below to request a fresh WeChat iLink login QR.",
+      "step2": "Open WeChat on your phone and scan the QR code, then confirm the bot login on the device.",
+      "step3": "After confirmation, Clawith stores the returned bot token and starts the getupdates long-poll worker automatically.",
+      "step4": "Send a direct message to the linked WeChat iLink bot to verify inbound polling and outbound replies.",
+      "note": "This channel follows the iLink Bot protocol: QR login, token-based long polling, and replies bound to the incoming context_token."
+    },
+    "whatsapp": {
+      "step1": "Create a Meta app and enable the WhatsApp product in the Meta App Dashboard.",
+      "step2": "Copy the Phone Number ID and generate a permanent Access Token with WhatsApp permissions.",
+      "step3": "Set a Verify Token you control. Optionally fill App Secret to enable X-Hub-Signature-256 verification.",
+      "step4": "Copy the Webhook URL below into the WhatsApp webhook configuration in Meta and complete verification.",
+      "step5": "Subscribe the app to WhatsApp message webhooks so inbound messages are delivered to this agent."
     }
   },
   "platformDashboard": {

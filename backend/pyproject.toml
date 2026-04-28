@@ -1,7 +1,7 @@
 [project]
 name = "clawith-backend"
 version = "0.1.0"
-description = "Clawith - Enterprise Digital Employee Platform Backend"
+description = "Backend workspace for the Clawith enterprise digital employee platform."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.115.0",
@@ -39,6 +39,9 @@ dependencies = [
     "pypinyin>=0.52.0",
     "anyascii>=0.3.2",
     "Pillow>=10.0.0",
+    "weasyprint>=62.0",
+    "markdown>=3.6",
+    "beautifulsoup4>=4.12.0",
 ]
 
 [project.optional-dependencies]

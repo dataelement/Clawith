@@ -16,6 +16,7 @@ from app.services.auth_provider import (
     FeishuAuthProvider,
     GitHubAuthProvider,
     GoogleAuthProvider,
+    GoogleWorkspaceAuthProvider,
     MicrosoftTeamsAuthProvider,
     WeComAuthProvider,
 )

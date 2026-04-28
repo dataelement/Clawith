@@ -314,10 +314,13 @@ export default function Layout() {
         const data = await res.json();
         if (data.redirect_url) {
             localStorage.setItem('token', data.access_token);
-            window.location.href = data.redirect_url;
+            const targetUrl = new URL(data.redirect_url, window.location.origin);
+            targetUrl.pathname = '/';
+            targetUrl.hash = '';
+            window.location.href = targetUrl.toString();
         } else if (data.access_token) {
             localStorage.setItem('token', data.access_token);
-            window.location.reload();
+            window.location.href = '/';
         }
     };
 
@@ -559,6 +562,17 @@ export default function Layout() {
                             <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.home}</span>
                             <span className="sidebar-item-text">{t('nav.dashboard')}</span>
                         </NavLink>
+                        <NavLink to="/okr" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                {/* OKR target icon */}
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <circle cx="12" cy="12" r="6"/>
+                                    <circle cx="12" cy="12" r="2"/>
+                                </svg>
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.okr', 'OKR')}</span>
+                        </NavLink>
                     </div>
                 </div>
                 
@@ -607,6 +621,7 @@ export default function Layout() {
                         const renderAgent = (agent: any) => {
                             const badge = getAgentBadgeStatus(agent);
                             const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
+                            const unreadCount = Number(agent.unread_count || 0);
                             return (
                             <div key={agent.id} style={{ position: 'relative' }} className={`sidebar-agent-item${agent.creator_id === user?.id ? ' owned' : ''}`}>
                                 <NavLink
@@ -622,6 +637,28 @@ export default function Layout() {
                                             </span>
                                         )}
                                         {badge && <span className={`agent-avatar-badge ${badge}`} />}
+                                        {unreadCount > 0 && (
+                                            <span style={{
+                                                position: 'absolute',
+                                                right: '-7px',
+                                                top: '-6px',
+                                                minWidth: unreadCount > 9 ? '18px' : '14px',
+                                                height: unreadCount > 9 ? '18px' : '14px',
+                                                padding: unreadCount > 9 ? '0 4px' : '0',
+                                                borderRadius: '999px',
+                                                background: 'var(--text-primary)',
+                                                color: 'var(--bg-primary)',
+                                                fontSize: '10px',
+                                                fontWeight: 600,
+                                                lineHeight: 1,
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                boxShadow: '0 0 0 2px var(--bg-primary)',
+                                            }}>
+                                                {unreadCount > 99 ? '99+' : unreadCount}
+                                            </span>
+                                        )}
                                     </span>
                                     <span className="sidebar-item-text">{agent.name}</span>
                                 </NavLink>

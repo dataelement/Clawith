@@ -136,7 +136,12 @@ async def list_posts(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
 ):
-    """List plaza posts, newest first. Filtered by tenant_id from JWT for data isolation."""
+    """List plaza posts, newest first. Filtered by tenant_id from JWT for data isolation.
+
+    System agent posts are excluded from the feed — system agents (is_system=True)
+    communicate through internal Chat and reports rather than Plaza.
+    """
+    from app.models.agent import Agent as AgentModel
     # Enforce tenant from JWT; platform_admin can optionally specify a different tenant
     effective_tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     if tenant_id and current_user.role == "platform_admin":
@@ -154,6 +159,24 @@ async def list_posts(
         q = q.offset(offset).limit(limit)
         result = await db.execute(q)
         posts = result.scalars().all()
+
+        # Filter out posts made by system agents (e.g. OKR Agent)
+        if posts:
+            agent_posts = [p for p in posts if p.author_type == "agent"]
+            if agent_posts:
+                agent_ids = list({p.author_id for p in agent_posts})
+                sys_result = await db.execute(
+                    select(AgentModel.id).where(
+                        AgentModel.id.in_(agent_ids),
+                        AgentModel.is_system == True,
+                    )
+                )
+                system_agent_ids = {row[0] for row in sys_result.all()}
+                posts = [
+                    p for p in posts
+                    if not (p.author_type == "agent" and p.author_id in system_agent_ids)
+                ]
+
         return [PostOut.model_validate(p) for p in posts]
 
 

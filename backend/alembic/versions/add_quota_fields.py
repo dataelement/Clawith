@@ -6,7 +6,7 @@ Idempotent — uses IF NOT EXISTS for all ALTER statements.
 from alembic import op
 
 revision = "add_quota_fields"
-down_revision = None
+down_revision = "initial_schema"
 branch_labels = None
 depends_on = None
 

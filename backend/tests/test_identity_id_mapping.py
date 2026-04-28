@@ -1,4 +1,10 @@
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
 from app.services.channel_user_service import ChannelUserService
+from app.services.channel_user_service import ChannelUserResolutionError
 from app.services.sso_service import sso_service
 
 
@@ -74,3 +80,59 @@ def test_channel_user_service_keeps_feishu_user_id_out_of_unionid():
     assert union_id == "on_union_456"
     assert open_id == "ou_open_123"
     assert external_id == "u_emp_789"
+
+
+@pytest.mark.asyncio
+async def test_channel_user_service_uses_feishu_open_id_for_existing_member_lookup():
+    service = ChannelUserService()
+    db = AsyncMock()
+    expected_member = SimpleNamespace(id="member-1")
+    db.execute.return_value.scalar_one_or_none.return_value = expected_member
+
+    member = await service._find_org_member(
+        db,
+        provider_id="provider-1",
+        channel_type="feishu",
+        external_user_id=None,
+        extra_info={"open_id": "ou_open_123"},
+    )
+
+    assert member is expected_member
+    db.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_channel_user_service_rejects_feishu_open_id_only_lazy_registration():
+    service = ChannelUserService()
+    db = AsyncMock()
+    db.get.return_value = None
+    agent = SimpleNamespace(tenant_id="tenant-1")
+
+    service._ensure_provider = AsyncMock(return_value=SimpleNamespace(id="provider-1"))
+    service._find_org_member = AsyncMock(return_value=None)
+
+    with pytest.raises(ChannelUserResolutionError):
+        await service.resolve_channel_user(
+            db=db,
+            agent=agent,
+            channel_type="feishu",
+            external_user_id=None,
+            extra_info={"open_id": "ou_open_123"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_channel_user_service_skips_dingtalk_lookup_when_ids_missing():
+    service = ChannelUserService()
+    db = AsyncMock()
+
+    member = await service._find_org_member(
+        db,
+        provider_id="provider-1",
+        channel_type="dingtalk",
+        external_user_id=None,
+        extra_info={},
+    )
+
+    assert member is None
+    db.execute.assert_not_awaited()

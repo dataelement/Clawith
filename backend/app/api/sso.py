@@ -140,6 +140,21 @@ async def get_sso_config(sid: uuid.UUID, request: Request, db: AsyncSession = De
                 redir = f"{public_base}/api/auth/wecom/callback"
                 url = f"https://open.work.weixin.qq.com/wwopen/sso/qrConnect?appid={corp_id}&agentid={agent_id}&redirect_uri={quote(redir)}&state={sid}"
                 auth_urls.append({"provider_type": "wecom", "name": p.name, "url": url})
+        elif p.provider_type == "google_workspace":
+            from app.services.auth_registry import auth_provider_registry
+            from app.services.google_workspace_oauth import (
+                GOOGLE_SSO_STATE_KIND,
+                get_google_redirect_uri,
+                sign_google_oauth_state,
+            )
+            auth_provider = await auth_provider_registry.get_provider(
+                db, "google_workspace", str(session.tenant_id) if session.tenant_id else None
+            )
+            if auth_provider:
+                redir = await get_google_redirect_uri(db, p, request)
+                auth_provider.config["redirect_uri"] = redir
+                state = sign_google_oauth_state(GOOGLE_SSO_STATE_KIND, sid)
+                url = await auth_provider.get_authorization_url(redir, state)
+                auth_urls.append({"provider_type": "google_workspace", "name": p.name, "url": url})
 
     return auth_urls
-

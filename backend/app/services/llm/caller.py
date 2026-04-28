@@ -224,6 +224,7 @@ async def _process_tool_call(
         try:
             await on_tool_call({
                 "name": tool_name,
+                "call_id": tc.get("id", ""),
                 "args": args,
                 "status": "running",
                 "reasoning_content": full_reasoning_content
@@ -260,6 +261,7 @@ async def _process_tool_call(
         try:
             await on_tool_call({
                 "name": tool_name,
+                "call_id": tc.get("id", ""),
                 "args": args,
                 "status": "done",
                 "result": result,
@@ -291,6 +293,7 @@ async def call_llm(
     session_id: str = "",
     on_chunk=None,
     on_tool_call=None,
+    on_tool_delta=None,
     on_thinking=None,
     supports_vision=False,
     max_tool_rounds_override: int | None = None,
@@ -370,6 +373,7 @@ async def call_llm(
                 temperature=model.temperature,
                 max_tokens=max_tokens,
                 on_chunk=on_chunk,
+                on_tool_delta=on_tool_delta,
                 on_thinking=on_thinking,
             )
         except LLMError as e:
@@ -454,6 +458,7 @@ async def call_llm_with_failover(
     on_chunk=None,
     on_thinking=None,
     on_tool_call=None,
+    on_tool_delta=None,
     supports_vision=False,
     on_failover=None,
 ) -> str:
@@ -492,6 +497,7 @@ async def call_llm_with_failover(
         session_id=session_id,
         on_chunk=_wrapped_on_chunk,
         on_tool_call=_wrapped_on_tool_call,
+        on_tool_delta=on_tool_delta,
         on_thinking=on_thinking,
         supports_vision=supports_vision,
     )
@@ -552,6 +558,7 @@ async def call_llm_with_failover(
         session_id=session_id,
         on_chunk=_fallback_on_chunk,
         on_tool_call=_fallback_on_tool_call,
+        on_tool_delta=on_tool_delta,
         on_thinking=on_thinking,
         supports_vision=getattr(fallback_model, 'supports_vision', False),
     )

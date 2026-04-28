@@ -165,7 +165,6 @@ class SSOService:
         Returns:
             User if found via OrgMember, None otherwise
         """
-        from app.models.org import OrgMember
 
         # Get provider
         query = select(IdentityProvider).where(IdentityProvider.provider_type == provider_type)
@@ -228,9 +227,15 @@ class SSOService:
 
         external_id = None
         if provider_type == "feishu":
-            external_id = payload.get("user_id")
+            # payload.get() only works when provider_user_id is a JSON string.
+            # For SSO path, provider_user_id=None so payload={}, but identity_data
+            # (raw SSO response) always contains the stable user_id.
+            external_id = payload.get("user_id") or (identity_data or {}).get("user_id")
         elif provider_type == "dingtalk":
-            external_id = payload.get("userid") or payload.get("staffId")
+            external_id = (
+                payload.get("userid") or payload.get("staffId")
+                or (identity_data or {}).get("userid") or (identity_data or {}).get("staffId")
+            )
         elif provider_type == "wecom":
             external_id = provider_user_id
 
@@ -263,16 +268,7 @@ class SSOService:
         add("unionid", raw_union_id)
         add("external_id", raw_external_id)
         add("open_id", raw_open_id)
-
-        if not lookup_chain:
-            fallback_id = (provider_user_id or "").strip()
-            if provider_type == "wecom":
-                add("external_id", fallback_id)
-            else:
-                add("unionid", fallback_id)
-                add("external_id", fallback_id)
-                add("open_id", fallback_id)
-
+        
         return lookup_chain
 
     async def _find_identity_member(

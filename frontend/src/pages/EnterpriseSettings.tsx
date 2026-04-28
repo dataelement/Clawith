@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi, skillApi } from '../services/api';
@@ -536,10 +536,28 @@ function OrgTab({ tenant }: { tenant: any }) {
         }
     };
 
+    const handleGoogleAdminAuthorize = async (providerId: string) => {
+        const res = await fetchJson<{ authorization_url: string }>(`/enterprise/identity-providers/${providerId}/google-workspace-sync/authorize-url`);
+        const popup = window.open(res.authorization_url, 'google-workspace-sync', 'width=640,height=760');
+        if (!popup) {
+            window.location.href = res.authorization_url;
+            return;
+        }
+
+        const onMessage = (event: MessageEvent) => {
+            if (event.data?.type === 'google-workspace-sync-authorized') {
+                window.removeEventListener('message', onMessage);
+                qc.invalidateQueries({ queryKey: ['identity-providers'] });
+            }
+        };
+        window.addEventListener('message', onMessage);
+    };
+
     const IDP_TYPES = [
         { type: 'feishu', name: 'Feishu', desc: 'Feishu / Lark Integration', icon: <img src="/feishu.png" width="20" height="20" alt="Feishu" /> },
         { type: 'wecom', name: 'WeCom', desc: 'WeChat Work Integration', icon: <img src="/wecom.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="WeCom" /> },
         { type: 'dingtalk', name: 'DingTalk', desc: 'DingTalk App Integration', icon: <img src="/dingtalk.png" width="20" height="20" style={{ borderRadius: '4px' }} alt="DingTalk" /> },
+        { type: 'google_workspace', name: 'Google', desc: 'Google Admin Directory Sync', icon: <img src="/google.svg" width="20" height="20" alt="Google" /> },
         { type: 'oauth2', name: 'OAuth2', desc: 'Generic OIDC Provider', icon: <div style={{ width: 20, height: 20, background: 'var(--accent-primary)', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 700 }}>O</div> }
     ];
 
@@ -559,8 +577,12 @@ function OrgTab({ tenant }: { tenant: any }) {
                 feishu: { app_id: '', app_secret: '', corp_id: '' },
                 dingtalk: { app_key: '', app_secret: '', corp_id: '' },
                 wecom: { corp_id: '', secret: '', agent_id: '', app_secret: '', bot_id: '', bot_secret: '', verify_token: '', verify_aes_key: '' },
+                google_workspace: {
+                    client_id: '',
+                    client_secret: '',
+                },
             };
-            const nameMap: Record<string, string> = { feishu: 'Feishu', wecom: 'WeCom', dingtalk: 'DingTalk', oauth2: 'OAuth2' };
+            const nameMap: Record<string, string> = { feishu: 'Feishu', wecom: 'WeCom', dingtalk: 'DingTalk', google_workspace: 'Google', oauth2: 'OAuth2' };
             setForm({
                 provider_type: type,
                 name: nameMap[type] || type,
@@ -574,10 +596,19 @@ function OrgTab({ tenant }: { tenant: any }) {
     };
 
     const renderForm = (type: string, existingProvider?: any) => {
+        const providerBaseUrl = (() => {
+            const rawDomain = existingProvider?.sso_domain || tenant?.sso_domain || '';
+            if (rawDomain) {
+                return rawDomain.startsWith('http') ? rawDomain : `https://${rawDomain}`;
+            }
+            return window.location.origin;
+        })();
+        const providerCallbackUrl = `${providerBaseUrl}/api/auth/${type}/callback`;
+
         return (
             <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
                 {/* Setup Guide moved to the top */}
-                {['feishu', 'dingtalk'].includes(type) && (
+                {['feishu', 'dingtalk', 'google_workspace'].includes(type) && (
                     <div style={{ background: 'var(--bg-primary)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-subtle)', marginBottom: '20px', fontSize: '12px' }}>
                         <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '8px', color: 'var(--text-primary)' }}>
                             👉 {t('enterprise.org.syncSetupGuide', 'Setup Guide & Required Permissions')}
@@ -615,6 +646,15 @@ function OrgTab({ tenant }: { tenant: any }) {
                                             {i + 1}. {t(`enterprise.org.syncGuide.dingtalk.step${i + 1}`)}
                                         </div>
                                     ))}
+                                </>
+                            )}
+                            {type === 'google_workspace' && (
+                                <>
+                                    <div style={{ marginBottom: '6px' }}>1. 在 Google Cloud 创建 OAuth Web App，并填入 Client ID 与 Client Secret。</div>
+                                    <div style={{ marginBottom: '6px' }}>2. 将下方同一个 Redirect URL 配置到 Google Cloud 的 Authorized redirect URIs。</div>
+                                    <div style={{ marginBottom: '6px' }}>3. SSO 登录直接使用这套配置。</div>
+                                    <div style={{ marginBottom: '6px' }}>4. 组织同步时，使用有 Directory 读取权限的 Google Workspace 管理员账号点击授权。</div>
+                                    <div style={{ marginBottom: '6px' }}>5. 后端会加密保存管理员 refresh token，后续定时同步会自动刷新 access token。</div>
                                 </>
                             )}
                             {type === 'wecom' && (
@@ -717,6 +757,93 @@ function OrgTab({ tenant }: { tenant: any }) {
                             <input className="form-input" type="password" value={form.config.app_secret || ''} onChange={e => setForm({ ...form, config: { ...form.config, app_secret: e.target.value } })} />
                         </div>
                     </div>
+                ) : type === 'google_workspace' ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        <div style={{ padding: '14px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)' }}>
+                            <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '10px' }}>Google OAuth</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                                <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                        {t('enterprise.identity.providerHints.google_workspace', 'Google Workspace: use one Client ID and Client Secret for both SSO and admin-authorized directory sync.')}
+                                    </div>
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Client ID</label>
+                                    <input
+                                        className="form-input"
+                                        value={form.config.client_id || ''}
+                                        onChange={e => setForm({ ...form, config: { ...form.config, client_id: e.target.value } })}
+                                        placeholder="xxxxxxxx.apps.googleusercontent.com"
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Client Secret</label>
+                                    <input
+                                        className="form-input"
+                                        type="password"
+                                        value={form.config.client_secret || ''}
+                                        onChange={e => setForm({ ...form, config: { ...form.config, client_secret: e.target.value } })}
+                                    />
+                                </div>
+                                <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                                    <label className="form-label">{t('enterprise.identity.callbackUrl', 'Redirect URL (paste this in your app settings)')}</label>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <div style={{
+                                            flex: 1,
+                                            padding: '8px 12px',
+                                            background: 'var(--bg-elevated)',
+                                            border: '1px solid var(--border-subtle)',
+                                            borderRadius: '6px',
+                                            fontSize: '12px',
+                                            color: 'var(--text-primary)',
+                                            fontFamily: 'monospace',
+                                            whiteSpace: 'nowrap',
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis'
+                                        }}>
+                                            {providerCallbackUrl}
+                                        </div>
+                                        <LinearCopyButton
+                                            className="btn btn-ghost btn-sm"
+                                            style={{ fontSize: '11px', width: 'auto', minWidth: '70px', height: '33px' }}
+                                            textToCopy={providerCallbackUrl}
+                                            label={t('common.copy', 'Copy')}
+                                            copiedLabel="Copied"
+                                        />
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                        {t('enterprise.identity.callbackUrlHint', "Add this URL as the OAuth redirect URI in your identity provider's app configuration.")}
+                                    </div>
+                                </div>
+                                <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                                    <label className="form-label">Directory Sync Authorization</label>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                        <button
+                                            className="btn btn-secondary btn-sm"
+                                            type="button"
+                                            onClick={() => existingProvider && handleGoogleAdminAuthorize(existingProvider.id)}
+                                            disabled={!existingProvider}
+                                        >
+                                            {existingProvider?.config?.google_admin_authorized_email ? 'Re-authorize Admin Sync' : 'Authorize Admin Sync'}
+                                        </button>
+                                        {!existingProvider && (
+                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                Please save the provider first.
+                                            </span>
+                                        )}
+                                        {existingProvider?.config?.google_admin_authorized_email && (
+                                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                                                Authorized as {existingProvider.config.google_admin_authorized_email}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                        Sign in with a Google Workspace admin account to grant directory read access. Clawith will securely store a refresh token and use it for scheduled sync.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 ) : type === 'feishu' ? (
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
@@ -807,7 +934,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                     <div style={{ fontWeight: 500, fontSize: '14px' }}>{t('enterprise.org.orgBrowser', 'Organization Browser')}</div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
-                        {['feishu', 'dingtalk'].includes(p.provider_type) && (
+                        {['feishu', 'dingtalk', 'google_workspace'].includes(p.provider_type) && (
                             <button className="btn btn-secondary btn-sm" style={{ fontSize: '12px' }} onClick={() => triggerSync(p.id)} disabled={!!syncing}>
                                 {syncing === p.id ? 'Syncing...' : 'Sync Directory'}
                             </button>
@@ -919,7 +1046,7 @@ function OrgTab({ tenant }: { tenant: any }) {
                                         {renderForm(idp.type, existingProvider)}
 
                                         {/* Per-channel SSO Login URLs & Toggle */}
-                                        {['feishu', 'dingtalk', 'oauth2'].includes(idp.type) && (
+                                        {['feishu', 'dingtalk', 'google_workspace', 'oauth2'].includes(idp.type) && (
                                             <SsoChannelSection
                                                 idpType={idp.type}
                                                 existingProvider={existingProvider}
@@ -966,8 +1093,10 @@ function ThemeColorPicker() {
     };
 
     return (
-        <div className="card" style={{ marginTop: '16px', marginBottom: '16px' }}>
-            <h4 style={{ marginBottom: '12px' }}>{t('enterprise.config.themeColor')}</h4>
+        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '10px' }}>
+                {t('enterprise.config.themeColor')}
+            </div>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
                 {PRESET_COLORS.map(c => (
                     <div
@@ -1545,6 +1674,9 @@ function CompanyNameEditor() {
 
     return (
         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '10px' }}>
+                {t('enterprise.companyName.title', 'Company Name')}
+            </div>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                 <input
                     className="form-input"
@@ -1564,52 +1696,76 @@ function CompanyNameEditor() {
 }
 
 
-// ─── Company Timezone Editor ───────────────────────
-const COMMON_TIMEZONES = [
-    'UTC',
-    'Asia/Shanghai',
-    'Asia/Tokyo',
-    'Asia/Seoul',
-    'Asia/Singapore',
-    'Asia/Kolkata',
-    'Asia/Dubai',
-    'Europe/London',
-    'Europe/Paris',
-    'Europe/Berlin',
-    'Europe/Moscow',
-    'America/New_York',
-    'America/Chicago',
-    'America/Denver',
-    'America/Los_Angeles',
-    'America/Sao_Paulo',
-    'Australia/Sydney',
-    'Pacific/Auckland',
+// ─── Company Region Editor ───────────────────────
+const COMPANY_REGIONS = [
+    { code: '001', zh: '全球 / UTC', en: 'Global / UTC', timezone: 'UTC' },
+    { code: 'CN', zh: '中国', en: 'China', timezone: 'Asia/Shanghai' },
+    { code: 'HK', zh: '中国香港', en: 'Hong Kong, China', timezone: 'Asia/Hong_Kong' },
+    { code: 'MO', zh: '中国澳门', en: 'Macao, China', timezone: 'Asia/Macau' },
+    { code: 'TW', zh: '中国台湾', en: 'Taiwan, China', timezone: 'Asia/Taipei' },
+    { code: 'JP', zh: '日本', en: 'Japan', timezone: 'Asia/Tokyo' },
+    { code: 'KR', zh: '大韩民国', en: 'Republic of Korea', timezone: 'Asia/Seoul' },
+    { code: 'SG', zh: '新加坡', en: 'Singapore', timezone: 'Asia/Singapore' },
+    { code: 'IN', zh: '印度', en: 'India', timezone: 'Asia/Kolkata' },
+    { code: 'AE', zh: '阿拉伯联合酋长国', en: 'United Arab Emirates', timezone: 'Asia/Dubai' },
+    { code: 'GB', zh: '大不列颠及北爱尔兰联合王国', en: 'United Kingdom of Great Britain and Northern Ireland', timezone: 'Europe/London' },
+    { code: 'FR', zh: '法国', en: 'France', timezone: 'Europe/Paris' },
+    { code: 'DE', zh: '德国', en: 'Germany', timezone: 'Europe/Berlin' },
+    { code: 'IT', zh: '意大利', en: 'Italy', timezone: 'Europe/Rome' },
+    { code: 'ES', zh: '西班牙', en: 'Spain', timezone: 'Europe/Madrid' },
+    { code: 'NL', zh: '荷兰', en: 'Netherlands', timezone: 'Europe/Amsterdam' },
+    { code: 'CH', zh: '瑞士', en: 'Switzerland', timezone: 'Europe/Zurich' },
+    { code: 'SE', zh: '瑞典', en: 'Sweden', timezone: 'Europe/Stockholm' },
+    { code: 'US', zh: '美利坚合众国', en: 'United States of America', timezone: 'America/New_York' },
+    { code: 'CA', zh: '加拿大', en: 'Canada', timezone: 'America/Toronto' },
+    { code: 'MX', zh: '墨西哥', en: 'Mexico', timezone: 'America/Mexico_City' },
+    { code: 'BR', zh: '巴西', en: 'Brazil', timezone: 'America/Sao_Paulo' },
+    { code: 'AU', zh: '澳大利亚', en: 'Australia', timezone: 'Australia/Sydney' },
+    { code: 'NZ', zh: '新西兰', en: 'New Zealand', timezone: 'Pacific/Auckland' },
 ];
 
 function CompanyTimezoneEditor() {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const user = useAuthStore((s) => s.user);
     const tenantId = user?.tenant_id || localStorage.getItem('current_tenant_id') || '';
     const [timezone, setTimezone] = useState('UTC');
+    const [countryRegion, setCountryRegion] = useState('001');
+    const [regionInput, setRegionInput] = useState('');
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [error, setError] = useState('');
+    const zh = i18n.language?.startsWith('zh');
+    const regionLabel = (r: typeof COMPANY_REGIONS[number]) => zh ? r.zh : r.en;
+
+    useEffect(() => {
+        const selected = COMPANY_REGIONS.find(r => r.code === countryRegion) || COMPANY_REGIONS[0];
+        setRegionInput(regionLabel(selected));
+    }, [countryRegion, zh]);
 
     useEffect(() => {
         if (!tenantId) return;
         fetchJson<any>(`/tenants/${tenantId}`)
-            .then(d => { if (d?.timezone) setTimezone(d.timezone); })
+            .then(d => {
+                if (d?.timezone) setTimezone(d.timezone);
+                if (d?.country_region) setCountryRegion(d.country_region);
+            })
             .catch((e: any) => setError(e.message || 'Failed to load timezone'));
     }, [tenantId]);
 
-    const handleSave = async (tz: string) => {
+    const handleSave = async (regionCode: string) => {
         if (!tenantId) return;
-        setTimezone(tz);
+        const region = COMPANY_REGIONS.find(r => r.code === regionCode) || COMPANY_REGIONS[0];
+        setCountryRegion(region.code);
+        setTimezone(region.timezone);
         setSaving(true);
         setError('');
         try {
             await fetchJson(`/tenants/${tenantId}`, {
-                method: 'PUT', body: JSON.stringify({ timezone: tz }),
+                method: 'PUT',
+                body: JSON.stringify({
+                    country_region: region.code,
+                    timezone: region.timezone,
+                }),
             });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
@@ -1621,35 +1777,150 @@ function CompanyTimezoneEditor() {
 
     return (
         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
-            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '4px' }}>🌐 {t('enterprise.timezone.title', 'Company Timezone')}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                        {t('enterprise.timezone.description', 'Default timezone for all agents. Agents can override individually.')}
+            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                {zh ? '公司所在国家或地区' : 'Company Country or Region'}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                {zh
+                    ? `用于自动设置公司默认时区和 OKR 休息日规则。当前时区：${timezone}`
+                    : `Used to set the company timezone and OKR non-workday rules. Current timezone: ${timezone}`}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '10px', width: '100%' }}>
+                <input
+                    className="form-input"
+                    list="company-region-options"
+                    value={regionInput}
+                    onChange={e => {
+                        const value = e.target.value;
+                        setRegionInput(value);
+                        const matched = COMPANY_REGIONS.find(r => regionLabel(r) === value || r.code === value);
+                        if (matched) handleSave(matched.code);
+                    }}
+                    onBlur={() => {
+                        const selected = COMPANY_REGIONS.find(r => r.code === countryRegion) || COMPANY_REGIONS[0];
+                        setRegionInput(regionLabel(selected));
+                    }}
+                    placeholder={zh ? '搜索国家或地区' : 'Search country or region'}
+                    style={{ width: 'min(420px, 100%)', fontSize: '13px' }}
+                    disabled={saving || !tenantId}
+                />
+                <datalist id="company-region-options">
+                    {COMPANY_REGIONS.map(region => (
+                        <option key={region.code} value={regionLabel(region)} label={`${region.code} · ${region.timezone}`} />
+                    ))}
+                </datalist>
+                {(saved || error || !tenantId) && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minHeight: '16px', flexWrap: 'wrap' }}>
+                        {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>已保存</span>}
+                        {error && (
+                            <div style={{ fontSize: '11px', color: 'var(--error)' }}>
+                                {error}
+                            </div>
+                        )}
+                        {!tenantId && (
+                            <div style={{ fontSize: '11px', color: 'var(--error)' }}>
+                                {t('enterprise.timezone.noTenant', 'No company selected. Please refresh the page or contact support.')}
+                            </div>
+                        )}
                     </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+
+function A2AAsyncToggle() {
+    const { t, i18n } = useTranslation();
+    const user = useAuthStore((s) => s.user);
+    const tenantId = user?.tenant_id || localStorage.getItem('current_tenant_id') || '';
+    const [enabled, setEnabled] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState('');
+    const zh = i18n.language?.startsWith('zh');
+
+    useEffect(() => {
+        if (!tenantId) return;
+        fetchJson<any>(`/tenants/${tenantId}`)
+            .then(d => setEnabled(!!d?.a2a_async_enabled))
+            .catch((e: any) => setError(e.message || 'Failed to load A2A setting'));
+    }, [tenantId]);
+
+    const handleToggle = async () => {
+        if (!tenantId || saving) return;
+        const next = !enabled;
+        setEnabled(next);
+        setSaving(true);
+        setError('');
+        try {
+            await fetchJson(`/tenants/${tenantId}`, {
+                method: 'PUT',
+                body: JSON.stringify({ a2a_async_enabled: next }),
+            });
+        } catch (e: any) {
+            setEnabled(!next);
+            setError(e.message || 'Failed to save A2A setting');
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                {zh ? 'Agent 异步协作（Beta）' : 'Agent Async Collaboration (Beta)'}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                {zh
+                    ? '开启后，数字员工之间可使用 notify / task_delegate 等异步协作模式。关闭后，Agent 间消息统一走同步 consult。'
+                    : 'When enabled, agents can use async notify and task_delegate modes. When disabled, agent-to-agent messaging falls back to synchronous consult.'}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '12px' }}>
+                <div style={{ width: '100%' }}>
                     {error && (
-                        <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
-                            ⚠ {error}
-                        </div>
-                    )}
-                    {!tenantId && (
-                        <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
-                            ⚠ {t('enterprise.timezone.noTenant', 'No company selected. Please refresh the page or contact support.')}
+                        <div style={{ fontSize: '11px', color: 'var(--error)' }}>
+                            {error}
                         </div>
                     )}
                 </div>
-                <select
-                    className="form-input"
-                    value={timezone}
-                    onChange={e => handleSave(e.target.value)}
-                    style={{ width: '220px', fontSize: '13px' }}
-                    disabled={saving || !tenantId}
-                >
-                    {COMMON_TIMEZONES.map(tz => (
-                        <option key={tz} value={tz}>{tz}</option>
-                    ))}
-                </select>
-                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅</span>}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', flexShrink: 0, opacity: saving ? 0.6 : 1 }}>
+                        <input
+                            type="checkbox"
+                            checked={enabled}
+                            onChange={handleToggle}
+                            disabled={saving || !tenantId}
+                            style={{ opacity: 0, width: 0, height: 0 }}
+                        />
+                        <span style={{
+                            position: 'absolute', inset: 0,
+                            borderRadius: '999px',
+                            cursor: saving ? 'not-allowed' : 'pointer',
+                            background: enabled ? 'var(--accent-primary)' : 'var(--border-subtle)',
+                            transition: '0.2s',
+                        }}>
+                            <span style={{
+                                position: 'absolute',
+                                top: '2px',
+                                left: enabled ? '20px' : '2px',
+                                width: '18px',
+                                height: '18px',
+                                borderRadius: '50%',
+                                background: '#fff',
+                                transition: '0.2s',
+                                boxShadow: '0 1px 2px rgba(0,0,0,0.12)',
+                            }} />
+                        </span>
+                    </label>
+                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        {enabled ? (zh ? '已开启' : 'Enabled') : (zh ? '已关闭' : 'Disabled')}
+                    </span>
+                </div>
+            </div>
+            <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-tertiary)', maxWidth: '640px' }}>
+                {zh
+                    ? '说明：OKR 日报收集本身会优先使用更稳的同步方式，不依赖这里的异步开关。'
+                    : 'Note: OKR daily collection itself uses the more reliable synchronous path and does not depend on this toggle.'}
             </div>
         </div>
     );
@@ -1749,12 +2020,447 @@ function BroadcastSection() {
 }
 
 
-// ─── Identity Providers Tab ──────────────────────────
+// ─── OKR Tab ──────────────────────────────────────────
+function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
+    const qc = useQueryClient();
+    const { i18n } = useTranslation();
+    // Derive language from i18n — same pattern as OKR.tsx
+    const zh = i18n.language?.startsWith('zh');
+    const okrSaveTimerRef = useRef<number | null>(null);
+    const [okrSaveState, setOkrSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+    const [okrSaveError, setOkrSaveError] = useState('');
+    const [dailyTestState, setDailyTestState] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
+    const [dailyTestMessage, setDailyTestMessage] = useState('');
+
+    const { data: settings, isLoading } = useQuery({
+        queryKey: ['okr-settings', tenantId],
+        queryFn: () => fetchJson<any>('/okr/settings')
+    });
+    const { data: tenantInfo } = useQuery({
+        queryKey: ['tenant-timezone', tenantId],
+        queryFn: () => fetchJson<any>(`/tenants/${tenantId}`),
+        enabled: !!tenantId,
+    });
+    const updateSettings = useMutation({
+        mutationFn: (data: any) => fetchJson('/okr/settings', { method: 'PUT', body: JSON.stringify(data) }),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['okr-settings'] });
+            setOkrSaveState('saved');
+            if (okrSaveTimerRef.current) window.clearTimeout(okrSaveTimerRef.current);
+            okrSaveTimerRef.current = window.setTimeout(() => {
+                setOkrSaveState('idle');
+                okrSaveTimerRef.current = null;
+            }, 1800);
+        },
+        onError: (error: any) => {
+            setOkrSaveState('error');
+            setOkrSaveError(error?.message || (zh ? '保存失败，请重试' : 'Save failed, please retry'));
+        },
+    });
+
+    useEffect(() => () => {
+        if (okrSaveTimerRef.current) window.clearTimeout(okrSaveTimerRef.current);
+    }, []);
+
+    const saveOkrSettings = (nextSettings: any) => {
+        if (okrSaveTimerRef.current) {
+            window.clearTimeout(okrSaveTimerRef.current);
+            okrSaveTimerRef.current = null;
+        }
+        setOkrSaveError('');
+        setOkrSaveState('saving');
+        updateSettings.mutate(nextSettings);
+    };
+
+    const runDailyCollectionTest = async () => {
+        setDailyTestState('running');
+        setDailyTestMessage('');
+        try {
+            const result = await fetchJson<any>('/okr/trigger-daily-collection', { method: 'POST' });
+            setDailyTestState('success');
+            setDailyTestMessage(
+                result?.message || (zh ? '测试收集已触发。' : 'Daily collection test triggered.')
+            );
+            qc.invalidateQueries({ queryKey: ['okr-members-without-okr-settings'] });
+        } catch (error: any) {
+            setDailyTestState('error');
+            setDailyTestMessage(error?.message || (zh ? '测试触发失败，请重试。' : 'Failed to trigger the test collection.'));
+        }
+    };
+
+    // Fetch members-without-okr to get okr_agent_id and company_okr_exists for the guidance card
+    const { data: membersData } = useQuery({
+        queryKey: ['okr-members-without-okr-settings', tenantId],
+        queryFn: () => fetchJson<any>('/okr/members-without-okr'),
+        enabled: !!settings?.enabled,
+        retry: false,
+    });
+
+    if (isLoading) return <div style={{ padding: '20px' }}>{t('common.loading', 'Loading...')}</div>;
+    const s = settings || { enabled: false, first_enabled_at: null, daily_report_enabled: false, daily_report_time: '18:00', daily_report_skip_non_workdays: true, weekly_report_enabled: false, weekly_report_day: 0, period_frequency: 'quarterly', period_length_days: null, period_frequency_locked: false };
+    const periodFrequencyLocked = !!s.period_frequency_locked || !!s.first_enabled_at;
+    const effectiveTimezone = tenantInfo?.timezone || 'UTC';
+
+    // Primary source: /settings now embeds okr_agent_id directly.
+    // Fallback to members-without-okr response for backward compat.
+    const okrAgentId: string | null = settings?.okr_agent_id ?? membersData?.okr_agent_id ?? null;
+    const companyOkrExists = membersData?.company_okr_exists ?? false;
+
+    return (
+        <div style={{ maxWidth: '800px' }}>
+            <div className="card" style={{ marginBottom: '24px' }}>
+                {/* Toggle row */}
+                <div style={{ padding: '20px', borderBottom: s.enabled ? '1px solid var(--border-subtle)' : 'none' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                            <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--text-primary)', marginBottom: '4px' }}>
+                                {zh ? 'OKR 系统开关' : 'OKR System'}
+                            </div>
+                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                {zh
+                                    ? '启用后，组织内成员和数字员工均可使用 OKR 功能管理目标。Agent 将主动跟进并报告进展。'
+                                    : 'When enabled, all members and AI agents in the organization can use OKR to manage objectives. The OKR Agent will proactively track and report progress.'
+                                }
+                            </div>
+                        </div>
+                        {/* Wider toggle so the knob has comfortable room */}
+                        <label style={{ position: 'relative', display: 'inline-block', width: '52px', height: '28px', flexShrink: 0 }}>
+                            <input
+                                type="checkbox"
+                                checked={s.enabled}
+                                onChange={(e) => saveOkrSettings({ ...s, enabled: e.target.checked })}
+                                style={{ opacity: 0, width: 0, height: 0 }}
+                            />
+                            <span style={{
+                                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: '28px', cursor: 'pointer',
+                                background: s.enabled ? 'var(--accent-primary)' : 'var(--border-subtle)', transition: '0.2s'
+                            }}>
+                                <span style={{
+                                    position: 'absolute', left: s.enabled ? '26px' : '2px', top: '2px', width: '24px', height: '24px',
+                                    borderRadius: '50%', background: '#fff', transition: '0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.15)'
+                                }} />
+                            </span>
+                        </label>
+                    </div>
+                    {!s.enabled && !periodFrequencyLocked && (
+                        <div style={{ marginTop: '20px' }}>
+                            <div style={{ fontWeight: 500, marginBottom: '8px', fontSize: '13px' }}>
+                                {zh ? '首次启用前选择 OKR 周期' : 'Choose OKR cadence before first enablement'}
+                            </div>
+                            <div style={{ marginBottom: '10px', fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, maxWidth: '560px' }}>
+                                {zh
+                                    ? '请选择季度或月度。首次启用 OKR 后，周期频率将被锁定，避免历史 OKR 和报表口径混乱。'
+                                    : 'Choose quarterly or monthly. After OKR is enabled for the first time, this cadence will be locked to keep history and reports consistent.'}
+                            </div>
+                            <select
+                                className="form-input"
+                                value={s.period_frequency}
+                                onChange={(e) => saveOkrSettings({ ...s, period_frequency: e.target.value })}
+                                style={{ maxWidth: '300px', cursor: 'pointer' }}
+                            >
+                                <option value="quarterly">{zh ? '按季度' : 'Quarterly'}</option>
+                                <option value="monthly">{zh ? '按月' : 'Monthly'}</option>
+                            </select>
+                        </div>
+                    )}
+                </div>
+
+                {okrSaveState !== 'idle' && (
+                    <div
+                        style={{
+                            padding: '10px 20px 0',
+                            fontSize: '12px',
+                            color: okrSaveState === 'error'
+                                ? 'var(--danger, #dc2626)'
+                                : okrSaveState === 'saved'
+                                    ? 'var(--success, #16a34a)'
+                                    : 'var(--text-tertiary)',
+                        }}
+                    >
+                        {okrSaveState === 'saving' && (zh ? '正在保存 OKR 设置...' : 'Saving OKR settings...')}
+                        {okrSaveState === 'saved' && (zh ? 'OKR 设置已保存' : 'OKR settings saved')}
+                        {okrSaveState === 'error' && okrSaveError}
+                    </div>
+                )}
+
+                {s.enabled && (
+                    <div style={{ padding: '20px' }}>
+                        {/* Phase 1 Onboarding Guidance Card */}
+                        <div style={{
+                            marginBottom: '24px',
+                            padding: '16px 20px',
+                            borderRadius: '10px',
+                            background: companyOkrExists ? 'rgba(34,197,94,0.06)' : 'rgba(99,102,241,0.06)',
+                            border: `1px solid ${companyOkrExists ? 'rgba(34,197,94,0.2)' : 'rgba(99,102,241,0.2)'}`,
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px' }}>
+                                {/* Status icon */}
+                                <div style={{
+                                    width: 36, height: 36, borderRadius: '8px', flexShrink: 0,
+                                    background: companyOkrExists ? 'rgba(34,197,94,0.15)' : 'rgba(99,102,241,0.12)',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                }}>
+                                    {companyOkrExists ? (
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                            <polyline points="20 6 9 17 4 12"/>
+                                        </svg>
+                                    ) : (
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                                        </svg>
+                                    )}
+                                </div>
+
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{
+                                        fontWeight: 600, fontSize: '14px',
+                                        color: companyOkrExists ? '#22c55e' : 'var(--text-primary)',
+                                        marginBottom: '4px',
+                                    }}>
+                                        {companyOkrExists
+                                            ? (zh ? '公司 OKR 已设定' : 'Company OKR is set')
+                                            : (zh ? '第一步：设定公司 OKR' : 'Step 1: Set company OKR')
+                                        }
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                        {companyOkrExists
+                                            ? (zh
+                                                ? '公司目标已记录到当前周期。你可以在 OKR 页面查看详情，或催促成员设定个人 OKR。'
+                                                : 'Company objectives are recorded for the current period. Visit the OKR page to view details or nudge members to set their individual OKRs.')
+                                            : (zh
+                                                ? '开启 OKR 后的第一步是让 OKR Agent 帮你记录公司的目标。点击右侧按钮，跳转到 OKR Agent 的对话页面，告诉它本周期公司的目标，它会帮你创建。'
+                                                : 'The first step after enabling OKR is to let the OKR Agent record your company objectives. Click the button to open a chat with the OKR Agent and describe your goals for this period.')
+                                        }
+                                    </div>
+                                </div>
+
+                                {/* Action button — links to OKR Agent chat (agent detail page at /agents/{id}) */}
+                                {okrAgentId ? (
+                                    <a
+                                        id="okr-chat-agent-btn"
+                                        href={`/agents/${okrAgentId}#chat`}
+                                        style={{
+                                            display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                            padding: '7px 14px', borderRadius: '6px',
+                                            background: companyOkrExists ? 'var(--bg-secondary)' : 'var(--accent-primary)',
+                                            color: companyOkrExists ? 'var(--text-secondary)' : '#fff',
+                                            border: companyOkrExists ? '1px solid var(--border-subtle)' : 'none',
+                                            fontSize: '12px', fontWeight: 500, textDecoration: 'none',
+                                            whiteSpace: 'nowrap', flexShrink: 0,
+                                            transition: 'opacity 0.15s',
+                                        }}
+                                    >
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                                        </svg>
+                                        {companyOkrExists
+                                            ? (zh ? '继续和 OKR Agent 对话' : 'Chat with OKR Agent')
+                                            : (zh ? '前往 OKR Agent 对话' : 'Open OKR Agent Chat')
+                                        }
+                                    </a>
+                                ) : (
+                                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', flexShrink: 0 }}>
+                                        {zh ? 'OKR Agent 未找到' : 'OKR Agent not found'}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Sync Relationship Network */}
+                        <div style={{
+                            marginBottom: '24px',
+                            padding: '14px 18px',
+                            borderRadius: '8px',
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border-subtle)',
+                            display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap',
+                        }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '2px' }}>
+                                    {zh ? '同步关系网络' : 'Sync Relationship Network'}
+                                </div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                    {zh
+                                        ? '将组织架构中的成员和公司可见的 Agent 自动关联到 OKR Agent'
+                                        : 'Auto-link all org members and company-visible agents to OKR Agent'}
+                                </div>
+                            </div>
+                            <button
+                                id="okr-sync-relationships-btn"
+                                onClick={async () => {
+                                    try {
+                                        const token = localStorage.getItem('token');
+                                        const res = await fetch('/api/okr/sync-relationships', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                        });
+                                        if (res.ok) {
+                                            alert(zh ? '关系网络同步成功！' : 'Relationships synced successfully!');
+                                            qc.invalidateQueries({ queryKey: ['okr-members-without-okr-settings'] });
+                                        } else {
+                                            const err = await res.json().catch(() => ({}));
+                                            alert(`Error: ${err.detail || res.status}`);
+                                        }
+                                    } catch (e) {
+                                        alert(zh ? '同步失败，请重试' : 'Sync failed, please retry');
+                                    }
+                                }}
+                                style={{
+                                    padding: '6px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: 500,
+                                    background: 'var(--accent-primary)', color: '#fff', border: 'none', cursor: 'pointer',
+                                    whiteSpace: 'nowrap', flexShrink: 0,
+                                }}
+                            >
+                                {zh ? '立即同步' : 'Sync Now'}
+                            </button>
+                        </div>
+
+                        {/* Period preference */}
+                        <div style={{ marginBottom: '24px' }}>
+                            <div style={{ fontWeight: 500, marginBottom: '12px', fontSize: '13px' }}>
+                                {zh ? '周期偏好' : 'Period Preference'}
+                            </div>
+                            <select
+                                className="form-input"
+                                value={s.period_frequency}
+                                disabled={periodFrequencyLocked}
+                                title={periodFrequencyLocked
+                                    ? (zh ? 'OKR 周期已锁定，不能修改' : 'OKR cadence is locked and cannot be changed')
+                                    : undefined}
+                                onChange={(e) => saveOkrSettings({ ...s, period_frequency: e.target.value })}
+                                style={{
+                                    maxWidth: '300px',
+                                    opacity: periodFrequencyLocked ? 0.65 : 1,
+                                    cursor: periodFrequencyLocked ? 'not-allowed' : 'pointer',
+                                }}
+                            >
+                                <option value="quarterly">{zh ? '按季度' : 'Quarterly'}</option>
+                                <option value="monthly">{zh ? '按月' : 'Monthly'}</option>
+                            </select>
+                            {periodFrequencyLocked && (
+                                <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+                                    {zh
+                                        ? 'OKR 周期在首次启用后会被锁定，以保证历史 OKR、报表和催办逻辑使用同一套口径。'
+                                        : 'The OKR cadence is locked after first enablement so history, reports, and nudges keep one consistent meaning.'}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Daily report */}
+                        <div style={{ marginBottom: '24px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={s.daily_report_enabled}
+                                    onChange={(e) => saveOkrSettings({ ...s, daily_report_enabled: e.target.checked })}
+                                />
+                                <div>
+                                    <div style={{ fontWeight: 500, fontSize: '13px' }}>
+                                        {zh ? '启用成员日报收集' : 'Enable Member Daily Collection'}
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                        {zh
+                                            ? '成员只提交日报。公司日报会在次日 09:00 自动生成，周报和月报也会自动汇总。'
+                                            : 'Members only submit daily reports. The company daily report is generated at 09:00 the next day, and weekly/monthly summaries are generated automatically.'
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+                            {s.daily_report_enabled && (
+                                <div style={{ marginLeft: '28px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '12px' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={s.daily_report_skip_non_workdays ?? true}
+                                            onChange={(e) => saveOkrSettings({ ...s, daily_report_skip_non_workdays: e.target.checked })}
+                                        />
+                                        {zh ? '自动跳过休息日' : 'Skip non-workdays automatically'}
+                                    </label>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                        {zh ? '开始收集时间:' : 'Collection time:'}
+                                    </div>
+                                    <input
+                                        type="time"
+                                        className="form-input"
+                                        value={s.daily_report_time}
+                                        onChange={(e) => saveOkrSettings({ ...s, daily_report_time: e.target.value })}
+                                        style={{ width: '120px' }}
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        onClick={runDailyCollectionTest}
+                                        disabled={dailyTestState === 'running'}
+                                        style={{ padding: '6px 12px', fontSize: '12px' }}
+                                    >
+                                        {dailyTestState === 'running'
+                                            ? (zh ? '测试中...' : 'Testing...')
+                                            : (zh ? '立即测试收集' : 'Test Collection Now')}
+                                    </button>
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6, maxWidth: '560px' }}>
+                                        {zh
+                                            ? `当前按公司时区 ${effectiveTimezone} 执行定时收集。`
+                                            : `Scheduled collection currently follows the company timezone: ${effectiveTimezone}.`}
+                                    </div>
+                                    {effectiveTimezone === 'UTC' && (
+                                        <div style={{ fontSize: '12px', color: 'var(--warning, #d97706)', lineHeight: 1.6, maxWidth: '560px' }}>
+                                            {zh
+                                                ? '你当前公司时区还是 UTC。如果你希望按中国时间触发，请先到“公司信息”里把国家/地区调整为中国或把公司时区改成 Asia/Shanghai。'
+                                                : 'Your company timezone is still UTC. If you expect China local time, update Company Info to China / Asia/Shanghai first.'}
+                                        </div>
+                                    )}
+                                    {dailyTestState !== 'idle' && (
+                                        <div
+                                            style={{
+                                                fontSize: '12px',
+                                                color: dailyTestState === 'error'
+                                                    ? 'var(--danger, #dc2626)'
+                                                    : dailyTestState === 'success'
+                                                        ? 'var(--success, #16a34a)'
+                                                        : 'var(--text-tertiary)',
+                                                lineHeight: 1.6,
+                                                maxWidth: '560px',
+                                            }}
+                                        >
+                                            {dailyTestMessage || (dailyTestState === 'running'
+                                                ? (zh ? '正在触发一次测试收集...' : 'Triggering a test collection...')
+                                                : '')}
+                                        </div>
+                                    )}
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.6, maxWidth: '560px' }}>
+                                        {zh
+                                            ? '每天到这个时间后，OKR Agent 会开始向成员收集当天日报。公司日报固定在次日 09:00 生成；公司周报固定在周一 09:00 生成；公司月报固定在每月 1 日 09:00 生成。'
+                                            : 'At this time each day, the OKR Agent starts collecting member daily reports. The company daily report is generated at 09:00 the next day, the weekly report at 09:00 every Monday, and the monthly report at 09:00 on the 1st of each month.'}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
 
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
     const qc = useQueryClient();
-    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users' | 'invites'>('info');
+    type TabKey = 'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users' | 'invites' | 'okr';
+    const VALID_TABS: TabKey[] = ['info', 'llm', 'tools', 'skills', 'okr', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit'];
+    const getTabFromHash = (): TabKey => {
+        const hash = window.location.hash.replace('#', '') as TabKey;
+        return VALID_TABS.includes(hash) ? hash : 'info';
+    };
+    const [activeTab, setActiveTab] = useState<TabKey>(getTabFromHash);
+
+    // Sync hash ↔ activeTab: hashchange navigation (back/forward) updates state
+    useEffect(() => {
+        const handler = () => setActiveTab(getTabFromHash());
+        window.addEventListener('hashchange', handler);
+        return () => window.removeEventListener('hashchange', handler);
+    }, []);
 
     // Track selected tenant as state so page refreshes on company switch
     const [selectedTenantId, setSelectedTenantId] = useState(localStorage.getItem('current_tenant_id') || '');
@@ -2038,12 +2744,22 @@ export default function EnterpriseSettings() {
                 </div>
 
                 <div className="tabs">
-                    {(['info', 'llm', 'tools', 'skills', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit'] as const).map(tab => (
-                        <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
-                            {tab === 'quotas' ? t('enterprise.tabs.quotas', 'Quotas') : tab === 'users' ? t('enterprise.tabs.users', 'Users') : tab === 'invites' ? t('enterprise.tabs.invites', 'Invitations') : t(`enterprise.tabs.${tab}`)}
+                    {(['info', 'llm', 'tools', 'skills', 'okr', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit'] as const).map(tab => (
+                        <div
+                            key={tab}
+                            className={`tab ${activeTab === tab ? 'active' : ''}`}
+                            onClick={() => {
+                                // Update URL hash so each tab has a bookmarkable address
+                                window.location.hash = tab;
+                                setActiveTab(tab);
+                            }}
+                        >
+                            {tab === 'quotas' ? t('enterprise.tabs.quotas', 'Quotas') : tab === 'users' ? t('enterprise.tabs.users', 'Users') : tab === 'invites' ? t('enterprise.tabs.invites', 'Invitations') : tab === 'okr' ? t('nav.okr', 'OKR') : t(`enterprise.tabs.${tab}`)}
                         </div>
                     ))}
                 </div>
+
+                {activeTab === 'okr' && <OkrTab tenantId={selectedTenantId} t={t} />}
 
                 {/* ── LLM Model Pool ── */}
                 {activeTab === 'llm' && (
@@ -2430,20 +3146,15 @@ export default function EnterpriseSettings() {
                 {/* ── Company Management ── */}
                 {activeTab === 'info' && (
                     <div>
-
-                        {/* ── 0. Company Name ── */}
-                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyName.title', 'Company Name')}</h3>
                         <CompanyNameEditor key={`name-${selectedTenantId}`} />
-
-                        {/* ── 0.5. Company Timezone ── */}
                         <CompanyTimezoneEditor key={`tz-${selectedTenantId}`} />
-
-                        {/* ── 2. Company Intro ── */}
-                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyIntro.title', 'Company Intro')}</h3>
-                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                            {t('enterprise.companyIntro.description', 'Describe your company\'s mission, products, and culture. This information is included in every agent conversation as context.')}
-                        </p>
                         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                                {t('enterprise.companyIntro.title', 'Company Intro')}
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                {t('enterprise.companyIntro.description', 'Describe your company\'s mission, products, and culture. This information is included in every agent conversation as context.')}
+                            </div>
                             <textarea
                                 className="form-input"
                                 value={companyIntro}
@@ -2465,112 +3176,17 @@ export default function EnterpriseSettings() {
                                 </span>
                             </div>
                         </div>
-
-                        {/* ── 2. Company Knowledge Base ── */}
-                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.kb.title')}</h3>
-                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                            {t('enterprise.kb.description', 'Shared files accessible to all agents via enterprise_info/ directory.')}
-                        </p>
                         <div className="card" style={{ marginBottom: '24px', padding: '16px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                                {t('enterprise.kb.title')}
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                {t('enterprise.kb.description', 'Shared files accessible to all agents via enterprise_info/ directory.')}
+                            </div>
                             <EnterpriseKBBrowser onRefresh={() => setInfoRefresh((v: number) => v + 1)} refreshKey={infoRefresh} />
                         </div>
-
-
-
-                        {/* ── Theme Color ── */}
                         <ThemeColorPicker />
-
-                        {/* ── Broadcast ── */}
-                        <BroadcastSection />
-
-                        {/* ── A2A Async Communication (Beta) ── */}
-                        <div style={{ marginTop: '24px', marginBottom: '24px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                                <h3 style={{ margin: 0 }}>
-                                    {t('enterprise.a2aAsync.title', 'Agent-to-Agent Async Communication')}
-                                </h3>
-                                <span style={{
-                                    fontSize: '11px', padding: '2px 8px', borderRadius: '10px',
-                                    background: 'var(--warning-bg, #fef3cd)', color: 'var(--warning-text, #856404)',
-                                    fontWeight: 500, letterSpacing: '0.3px',
-                                }}>
-                                    BETA
-                                </span>
-                            </div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px', lineHeight: 1.6 }}>
-                                {t('enterprise.a2aAsync.description',
-                                    'Enable agents to communicate asynchronously with three modes: notify (one-way announcement), task_delegate (delegate work and get results back), and consult (synchronous question). When disabled, all agent-to-agent messages use synchronous consult mode — the same behavior as before this feature was introduced.'
-                                )}
-                            </p>
-                            <div className="card" style={{ padding: '16px', display: 'flex', alignItems: 'center', gap: '16px' }}>
-                                <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
-                                    <input type="checkbox"
-                                        checked={!!currentTenant?.a2a_async_enabled}
-                                        onChange={async (e) => {
-                                            const wantEnable = e.target.checked;
-                                            if (wantEnable) {
-                                                const confirmed = window.confirm(
-                                                    t('enterprise.a2aAsync.enableWarning',
-                                                        [
-                                                            '⚠️ You are about to enable the A2A Async Communication feature (Beta).',
-                                                            '',
-                                                            'This feature allows agents to communicate asynchronously via notify and task_delegate modes.',
-                                                            '',
-                                                            'Known potential issues:',
-                                                            '• Agent replies may contain internal technical terms (trigger names, focus items, etc.)',
-                                                            '• task_delegate callbacks may occasionally be delayed or dropped due to rate limiting',
-                                                            '• Token consumption will increase because each async message triggers a separate agent session',
-                                                            '• Agent loops may occur if triggers are not properly configured',
-                                                            '',
-                                                            'If you encounter any issues, please return to this page and disable the toggle to restore stable synchronous behavior.',
-                                                            '',
-                                                            'Are you sure you want to enable this feature?'
-                                                        ].join('\n')
-                                                    )
-                                                );
-                                                if (!confirmed) return;
-                                            }
-                                            try {
-                                                await fetchJson(`/tenants/${selectedTenantId}`, {
-                                                    method: 'PUT',
-                                                    body: JSON.stringify({ a2a_async_enabled: wantEnable }),
-                                                });
-                                                qc.invalidateQueries({ queryKey: ['tenant', selectedTenantId] });
-                                            } catch (err: any) {
-                                                alert(err.message || 'Update failed');
-                                            }
-                                        }}
-                                        style={{ opacity: 0, width: 0, height: 0 }}
-                                    />
-                                    <span style={{
-                                        position: 'absolute', inset: 0,
-                                        background: currentTenant?.a2a_async_enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                                        borderRadius: '11px', transition: 'background 0.2s',
-                                    }}>
-                                        <span style={{
-                                            position: 'absolute',
-                                            left: currentTenant?.a2a_async_enabled ? '20px' : '2px',
-                                            top: '2px', width: '18px', height: '18px',
-                                            background: '#fff', borderRadius: '50%', transition: 'left 0.2s',
-                                        }} />
-                                    </span>
-                                </label>
-                                <div>
-                                    <span style={{ fontSize: '13px', fontWeight: 500 }}>
-                                        {currentTenant?.a2a_async_enabled
-                                            ? t('enterprise.a2aAsync.enabled', 'Enabled')
-                                            : t('enterprise.a2aAsync.disabled', 'Disabled')
-                                        }
-                                    </span>
-                                    <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', margin: '2px 0 0 0' }}>
-                                        {currentTenant?.a2a_async_enabled
-                                            ? t('enterprise.a2aAsync.enabledHint', 'Agents can use notify, task_delegate, and consult modes.')
-                                            : t('enterprise.a2aAsync.disabledHint', 'All agent messages use synchronous consult mode.')
-                                        }
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
+                        <A2AAsyncToggle key={`a2a-${selectedTenantId}`} />
 
                         {/* ── Danger Zone: Delete Company ── */}
                         <div style={{ marginTop: '32px', padding: '16px', border: '1px solid var(--status-error, #e53e3e)', borderRadius: '8px' }}>

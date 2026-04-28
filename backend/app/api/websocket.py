@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from datetime import datetime, timezone as tz
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from loguru import logger
@@ -14,8 +15,10 @@ from app.core.permissions import check_agent_access, is_agent_expired
 from app.database import async_session
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
+from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.user import User
+from app.services.chat_session_service import ensure_primary_platform_session
 from app.services.llm import call_llm, call_llm_with_failover
 
 router = APIRouter(tags=["websocket"])
@@ -25,24 +28,24 @@ class ConnectionManager:
     """Manage WebSocket connections per agent."""
 
     def __init__(self):
-        # agent_id_str -> list of (WebSocket, session_id_str | None)
+        # agent_id_str -> list of (WebSocket, session_id_str | None, user_id_str | None)
         self.active_connections: dict[str, list[tuple]] = {}
 
-    async def connect(self, agent_id: str, websocket: WebSocket, session_id: str = None):
+    async def connect(self, agent_id: str, websocket: WebSocket, session_id: str = None, user_id: str | None = None):
         await websocket.accept()
         if agent_id not in self.active_connections:
             self.active_connections[agent_id] = []
-        self.active_connections[agent_id].append((websocket, session_id))
+        self.active_connections[agent_id].append((websocket, session_id, user_id))
 
     def disconnect(self, agent_id: str, websocket: WebSocket):
         if agent_id in self.active_connections:
             self.active_connections[agent_id] = [
-                (ws, sid) for ws, sid in self.active_connections[agent_id] if ws != websocket
+                (ws, sid, uid) for ws, sid, uid in self.active_connections[agent_id] if ws != websocket
             ]
 
     async def send_message(self, agent_id: str, message: dict):
         if agent_id in self.active_connections:
-            for ws, _sid in self.active_connections[agent_id]:
+            for ws, _sid, _uid in self.active_connections[agent_id]:
                 try:
                     await ws.send_json(message)
                 except Exception:
@@ -51,8 +54,18 @@ class ConnectionManager:
     async def send_to_session(self, agent_id: str, session_id: str, message: dict):
         """Send message only to WebSocket connections matching the given session_id."""
         if agent_id in self.active_connections:
-            for ws, sid in self.active_connections[agent_id]:
+            for ws, sid, _uid in self.active_connections[agent_id]:
                 if sid == session_id:
+                    try:
+                        await ws.send_json(message)
+                    except Exception:
+                        pass
+
+    async def send_to_user(self, agent_id: str, user_id: str, message: dict):
+        """Send message to all live WebSocket sessions of a given platform user for an agent."""
+        if agent_id in self.active_connections:
+            for ws, _sid, uid in self.active_connections[agent_id]:
+                if uid == user_id:
                     try:
                         await ws.send_json(message)
                     except Exception:
@@ -62,10 +75,38 @@ class ConnectionManager:
         """Return distinct session IDs for all active WS connections of an agent."""
         if agent_id not in self.active_connections:
             return []
-        return list(set(sid for _ws, sid in self.active_connections[agent_id] if sid))
+        return list(set(sid for _ws, sid, _uid in self.active_connections[agent_id] if sid))
+
+    def is_user_viewing_session(self, agent_id: str, session_id: str, user_id: str) -> bool:
+        """Return True if the given platform user currently has this exact session open."""
+        if agent_id not in self.active_connections:
+            return False
+        for _ws, sid, uid in self.active_connections[agent_id]:
+            if sid == session_id and uid == user_id:
+                return True
+        return False
 
 
 manager = ConnectionManager()
+
+
+async def maybe_mark_session_read_for_active_viewer(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    session_id: str,
+    user_id: uuid.UUID,
+) -> bool:
+    """Advance last_read_at_by_user if the owner is actively viewing this exact session."""
+    if not manager.is_user_viewing_session(str(agent_id), session_id, str(user_id)):
+        return False
+
+    session = await db.get(ChatSession, uuid.UUID(session_id))
+    if not session:
+        return False
+
+    session.last_read_at_by_user = datetime.now(tz.utc)
+    return True
 
 
 from fastapi import Depends
@@ -231,10 +272,18 @@ async def websocket_chat(
                         await websocket.close(code=4003)
                         return
             if not conv_id:
-                # Find most recent session for this user+agent
+                # Prefer the user's designated primary platform session. This keeps agent-initiated
+                # conversations and ongoing long-form context anchored in one stable thread, while
+                # user-created side sessions remain temporary.
                 _sr = await db.execute(
                     _sel(ChatSession)
-                    .where(ChatSession.agent_id == agent_id, ChatSession.user_id == user_id)
+                    .where(
+                        ChatSession.agent_id == agent_id,
+                        ChatSession.user_id == user_id,
+                        ChatSession.source_channel == "web",
+                        ChatSession.is_group == False,
+                        ChatSession.is_primary == True,
+                    )
                     .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
                     .limit(1)
                 )
@@ -242,19 +291,12 @@ async def websocket_chat(
                 if _latest:
                     conv_id = str(_latest.id)
                 else:
-                    # Create a default session
-                    now = _dt.now(_tz.utc)
-                    _new_session = ChatSession(
-                        agent_id=agent_id, user_id=user_id,
-                        title=f"Session {now.strftime('%m-%d %H:%M')}",
-                        source_channel="web",
-                        created_at=now,
-                    )
-                    db.add(_new_session)
+                    # Lazily elect or create the primary session only when it is actually needed.
+                    _new_session = await ensure_primary_platform_session(db, agent_id, user_id)
                     await db.commit()
                     await db.refresh(_new_session)
                     conv_id = str(_new_session.id)
-                    logger.info(f"[WS] Created default session {conv_id}")
+                    logger.info(f"[WS] Selected primary session {conv_id}")
 
             try:
                 history_result = await db.execute(
@@ -278,7 +320,7 @@ async def websocket_chat(
     agent_id_str = str(agent_id)
     if agent_id_str not in manager.active_connections:
         manager.active_connections[agent_id_str] = []
-    manager.active_connections[agent_id_str].append((websocket, conv_id))
+    manager.active_connections[agent_id_str].append((websocket, conv_id, str(user_id)))
     logger.info(f"[WS] Ready! Agent={agent_name}")
 
     # Send session_id to frontend so Take Control can reference the correct session.
@@ -439,8 +481,32 @@ async def websocket_chat(
             # Track thinking content for storage (initialize before condition)
             thinking_content = []
 
+            # Reload model config on every message so Settings changes take effect
+            # immediately without requiring a page refresh / WebSocket reconnect.
+            async with async_session() as _mdb:
+                _agent_r = await _mdb.execute(select(Agent).where(Agent.id == agent_id))
+                _agent_cur = _agent_r.scalar_one_or_none()
+                if _agent_cur:
+                    if _agent_cur.primary_model_id:
+                        _m_r = await _mdb.execute(select(LLMModel).where(LLMModel.id == _agent_cur.primary_model_id))
+                        _m = _m_r.scalar_one_or_none()
+                        llm_model = _m if (_m and _m.enabled) else None
+                    else:
+                        llm_model = None
+                    if _agent_cur.fallback_model_id:
+                        _fb_r = await _mdb.execute(select(LLMModel).where(LLMModel.id == _agent_cur.fallback_model_id))
+                        _fb = _fb_r.scalar_one_or_none()
+                        fallback_llm_model = _fb if (_fb and _fb.enabled) else None
+                    else:
+                        fallback_llm_model = None
+                    # Config-level fallback: primary missing → use fallback immediately
+                    if not llm_model and fallback_llm_model:
+                        llm_model = fallback_llm_model
+                        fallback_llm_model = None
+
             # Call LLM with streaming
             if llm_model:
+
                 try:
                     logger.info(f"[WS] Calling LLM {llm_model.model} (streaming)...")
                     
@@ -476,6 +542,41 @@ async def websocket_chat(
                             except Exception as _lp_err:
                                 logger.warning(f"[WS][LivePreview] Embed failed: {_lp_err}")
 
+                            # Attach workspace_activity so the frontend WorkspaceOperationPanel
+                            # auto-opens when the agent writes, edits, or converts a file.
+                            # PR #419 added the frontend logic but the backend never emitted
+                            # this event — this is the missing piece.
+                            _WORKSPACE_TOOL_ACTIONS: dict[str, str] = {
+                                "write_file": "write",
+                                "edit_file": "edit",
+                                "delete_file": "delete",
+                                "convert_markdown_to_docx": "convert",
+                                "convert_csv_to_xlsx": "convert",
+                                "convert_markdown_to_pdf": "convert",
+                                "convert_html_to_pdf": "convert",
+                                "convert_html_to_pptx": "convert",
+                            }
+                            _done_tool_name = data.get("name", "")
+                            if _done_tool_name in _WORKSPACE_TOOL_ACTIONS:
+                                _ws_args = data.get("args") or {}
+                                if isinstance(_ws_args, str):
+                                    try:
+                                        import json as _json_wsa
+                                        _ws_args = _json_wsa.loads(_ws_args)
+                                    except Exception:
+                                        _ws_args = {}
+                                _ws_path = _ws_args.get("output_path") or _ws_args.get("path", "")
+                                _ws_result = str(data.get("result") or "")
+                                _pending_approval = "requires approval" in _ws_result.lower()
+                                data["workspace_activity"] = {
+                                    "action": _WORKSPACE_TOOL_ACTIONS[_done_tool_name],
+                                    "path": _ws_path,
+                                    "tool": _done_tool_name,
+                                    "ok": not _pending_approval,
+                                    "pendingApproval": _pending_approval,
+                                }
+                                logger.info(f"[WS][Workspace] activity: {_done_tool_name} → {_ws_path}")
+
                         await websocket.send_json({"type": "tool_call", **data})
                         # Save completed tool calls to DB so they persist in chat history
                         if data.get("status") == "done":
@@ -496,6 +597,12 @@ async def websocket_chat(
                                         conversation_id=conv_id,
                                     )
                                     _tc_db.add(tc_msg)
+                                    await maybe_mark_session_read_for_active_viewer(
+                                        _tc_db,
+                                        agent_id=agent_id,
+                                        session_id=conv_id,
+                                        user_id=user_id,
+                                    )
                                     await _tc_db.commit()
                             except Exception as _tc_err:
                                 logger.warning(f"[WS] Failed to save tool_call: {_tc_err}")
@@ -507,6 +614,46 @@ async def websocket_chat(
                         """Send thinking chunks to client for collapsible display."""
                         thinking_content.append(text)
                         await websocket.send_json({"type": "thinking", "content": text})
+
+                    _workspace_draft_cache: dict[str, str] = {}
+
+                    async def tool_delta_to_ws(data: dict):
+                        """Stream workspace file-operation drafts while tool args are still arriving."""
+                        tool_name = data.get("name", "")
+                        if tool_name not in {
+                            "write_file",
+                            "edit_file",
+                            "delete_file",
+                            "convert_markdown_to_docx",
+                            "convert_csv_to_xlsx",
+                            "convert_markdown_to_pdf",
+                            "convert_html_to_pdf",
+                            "convert_html_to_pptx",
+                        }:
+                            return
+
+                        raw_args = data.get("arguments", "")
+                        if isinstance(raw_args, (dict, list)):
+                            raw_args = json.dumps(raw_args, ensure_ascii=False)
+                        elif raw_args is None:
+                            raw_args = ""
+                        else:
+                            raw_args = str(raw_args)
+
+                        draft_id = str(data.get("id") or f"draft-{data.get('index', 0)}")
+                        if _workspace_draft_cache.get(draft_id) == raw_args:
+                            return
+                        _workspace_draft_cache[draft_id] = raw_args
+
+                        await websocket.send_json(
+                            {
+                                "type": "workspace_draft",
+                                "id": draft_id,
+                                "index": data.get("index", 0),
+                                "name": tool_name,
+                                "arguments": raw_args,
+                            }
+                        )
 
                     import asyncio as _aio
 
@@ -531,6 +678,7 @@ async def websocket_chat(
                             session_id=conv_id,
                             on_chunk=stream_to_ws,
                             on_tool_call=tool_call_to_ws,
+                            on_tool_delta=tool_delta_to_ws,
                             on_thinking=thinking_to_ws,
                             supports_vision=getattr(llm_model, 'supports_vision', False),
                             on_failover=_on_failover,
@@ -575,6 +723,14 @@ async def websocket_chat(
                     else:
                         assistant_response = await llm_task
                         logger.info(f"[WS] LLM response: {assistant_response[:80]}")
+
+                    # call_llm returns error strings instead of raising — detect and
+                    # re-raise so the fallback model logic below can trigger correctly.
+                    _LLM_ERROR_PREFIXES = ("[LLM Error]", "[LLM call error]", "[Error]")
+                    if not aborted and assistant_response and any(
+                        assistant_response.startswith(p) for p in _LLM_ERROR_PREFIXES
+                    ):
+                        raise RuntimeError(assistant_response)
 
                     # Update last_active_at
                     from datetime import datetime, timezone as tz
@@ -647,6 +803,12 @@ async def websocket_chat(
                     thinking="".join(thinking_content) if thinking_content else None,
                 )
                 db.add(assistant_msg)
+                await maybe_mark_session_read_for_active_viewer(
+                    db,
+                    agent_id=agent_id,
+                    session_id=conv_id,
+                    user_id=user_id,
+                )
                 await db.commit()
             logger.info("[WS] Assistant message saved")
 

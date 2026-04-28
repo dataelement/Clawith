@@ -35,7 +35,8 @@
     "adminCompanies": "公司管理",
     "platformSettings": "平台设置",
     "language": "语言",
-    "plaza": "广场"
+    "plaza": "广场",
+    "okr": "OKR"
   },
   "plaza": {
     "title": "智能体广场",
@@ -194,12 +195,12 @@
       "creating": "创建中",
       "error": "异常",
       "disconnected": "已断开",
-      "24hActions": "⏰ 24h 活动",
+      "24hActions": "24h 活动",
       "24hActionsTooltip": "过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等",
-      "llmCallsToday": "🤖 今日 LLM 调用",
+      "llmCallsToday": "今日 LLM 调用",
       "max": "上限",
-      "totalToken": "📊 总 Token",
-      "pending": "⏳ 待处理"
+      "totalToken": "总 Token",
+      "pending": "待处理"
     },
     "tabs": {
       "status": "状态",
@@ -217,26 +218,26 @@
     },
     "fields": {
       "name": "名称",
-      "role": "👤 角色",
+      "role": "角色",
       "avatar": "头像",
       "personality": "人格设定",
       "boundaries": "行为边界",
       "lastActive": "最后活跃",
       "tasksInProgress": "进行中",
       "supervisions": "督办",
-      "createdBy": "👨‍💼 创建者"
+      "createdBy": "创建者"
     },
     "profile": {
-      "title": "📋 Agent 档案",
-      "created": "📅 创建时间",
-      "lastActive": "⏰ 最后活跃",
-      "timezone": "🌐 时区"
+      "title": "Agent 档案",
+      "created": "创建时间",
+      "lastActive": "最后活跃",
+      "timezone": "时区"
     },
     "modelConfig": {
-      "title": "🤖 模型配置",
-      "model": "🧠 模型",
-      "provider": "🏢 提供商",
-      "contextRounds": "🔄 上下文窗口"
+      "title": "模型配置",
+      "model": "模型",
+      "provider": "提供商",
+      "contextRounds": "上下文窗口"
     },
     "actions": {
       "start": "启动",
@@ -253,8 +254,11 @@
       "humanRelationships": "人类关系",
       "agentRelationships": "数字员工关系",
       "searchMembers": "搜索组织架构成员...",
+      "searchAgents": "搜索可见数字员工...",
+      "noSearchResults": "没有可添加的结果",
       "noRelationships": "暂无关系",
       "addRelationship": "添加关系",
+      "alreadyAdded": "已添加",
       "supervisor": "上级",
       "colleague": "同事",
       "subordinate": "下级",
@@ -602,7 +606,8 @@
         "code": "代码与执行",
         "discovery": "发现",
         "feishu": "飞书",
-        "agentbay": "AgentBay"
+        "agentbay": "AgentBay",
+        "okr": "OKR"
       },
       "upload": {
         "success": "上传成功",
@@ -701,7 +706,8 @@
       "code": "代码与执行",
       "discovery": "发现",
       "feishu": "飞书",
-      "agentbay": "AgentBay"
+      "agentbay": "AgentBay",
+      "okr": "OKR"
     },
     "upload": {
       "success": "上传成功",
@@ -733,7 +739,7 @@
     "credentials": {
       "title": "凭据",
       "add": "添加",
-      "description": "存储网站的登录凭据和 Cookie。当数字员工通过 AgentBay 打开浏览器时，Cookie 会自动注入。",
+      "description": "存储网站的会话 Cookie。当数字员工通过 AgentBay 打开浏览器时，Cookie 会自动注入。",
       "empty": "未配置凭据",
       "loading": "加载中...",
       "error": "加载凭据失败",
@@ -784,13 +790,6 @@
           "social": "社交",
           "api_key": "API 密钥"
         },
-        "username": "用户名",
-        "usernamePlaceholder": "登录用户名或邮箱",
-        "password": "密码",
-        "passwordHint": "（留空则保持当前密码）",
-        "passwordPlaceholder": "登录密码",
-        "loginUrl": "登录 URL",
-        "loginUrlPlaceholder": "https://example.com/login",
         "cookies": "Cookie JSON",
         "cookiesHint": "（留空则保持当前 Cookie）",
         "cookiesPlaceholder": "[\n  { \"name\": \"session\", \"value\": \"abc123\", \"domain\": \".example.com\", \"path\": \"/\" }\n]",
@@ -1220,7 +1219,7 @@
         "list_triggers": "列出触发器",
         "send_file_to_agent": "发送文件",
         "send_feishu_message": "飞书消息",
-        "send_web_message": "网页消息",
+        "send_platform_message": "平台消息",
         "send_message_to_agent": "数字员工消息",
         "web_search": "网络搜索",
         "jina_search": "Jina 搜索",
@@ -1279,7 +1278,7 @@
         "list_triggers": "列出所有活动触发器的详细信息。",
         "send_file_to_agent": "将文件发送给特定人员或返回当前对话。",
         "send_feishu_message": "向飞书用户或群组发送消息。",
-        "send_web_message": "在 Clawith 网页平台上向用户发送主动消息。",
+        "send_platform_message": "在 Clawith 平台（网页或 App）上向用户发送主动消息。",
         "send_message_to_agent": "向数字员工同事发送消息并接收回复。",
         "web_search": "使用可配置的搜索引擎搜索互联网。",
         "jina_search": "使用 Jina AI 搜索互联网。",
@@ -1501,6 +1500,10 @@
           "name": "钉钉",
           "desc": "钉钉应用集成"
         },
+        "google_workspace": {
+          "name": "Google",
+          "desc": "Google 目录同步 + SSO"
+        },
         "oauth2": {
           "name": "OAuth2",
           "desc": "通用 OIDC 提供商"
@@ -1510,6 +1513,7 @@
         "feishu": "飞书：需填写 app_id, app_secret（可选：encrypt_key, verification_token）",
         "dingtalk": "钉钉：需填写 app_key, app_secret",
         "wecom": "企业微信：传统模式需 corp_id, secret, agent_id；智能机器人模式需 bot_id, bot_secret",
+        "google_workspace": "Google Workspace：同一套 Client ID、Client Secret 和同一个 Redirect URL 同时用于 SSO 与管理员授权的目录同步",
         "oauth2": "OAuth2：填写 App ID、App Secret、授权地址、Token地址、用户信息地址",
         "saml": "SAML：需填写 entry_point, issuer, cert (公钥)",
         "microsoft_teams": "Microsoft Teams：需填写 client_id, client_secret, tenant_id"
@@ -1571,6 +1575,8 @@
       "discord": "Discord",
       "slack": "Slack",
       "teams": "Microsoft Teams",
+      "wechat": "微信",
+      "whatsapp": "WhatsApp",
       "dingtalk": "钉钉",
       "wecom": "企业微信"
     },
@@ -1772,6 +1778,20 @@
       "ws_step5": "复制生成的 Bot ID 和 Secret → 填入上方 → 点击保存配置",
       "ws_step6": "在企业微信中找到机器人，发送消息测试",
       "ws_note": "WebSocket 长连接模式无需公网 IP、回调地址或域名备案（ICP），连接由系统自动管理。"
+    },
+    "wechat": {
+      "step1": "点击下方“Generate QR Code”，申请新的微信 iLink 登录二维码。",
+      "step2": "用手机微信扫码，并在手机端确认 Bot 登录。",
+      "step3": "确认后，Clawith 会保存返回的 bot token，并自动启动 getupdates 长轮询。",
+      "step4": "给该微信 iLink Bot 发送一条私信，验证入站轮询和出站回复是否正常。",
+      "note": "该通道遵循 iLink Bot 协议：二维码登录、token 长轮询，以及基于入站 context_token 的回复路由。"
+    },
+    "whatsapp": {
+      "step1": "在 Meta 开发者后台创建应用，并启用 WhatsApp 产品。",
+      "step2": "复制 Phone Number ID，并生成具备 WhatsApp 权限的永久 Access Token。",
+      "step3": "填写你自定义的 Verify Token；如需启用 X-Hub-Signature-256 签名校验，可选填写 App Secret。",
+      "step4": "将下方 Webhook URL 粘贴到 Meta 的 WhatsApp Webhook 配置中并完成验证。",
+      "step5": "为应用订阅 WhatsApp message webhook，让入站消息能送达这个智能体。"
     }
   },
   "identity": {
@@ -1786,6 +1806,7 @@
       "feishu": "飞书：需填写 app_id, app_secret（可选：encrypt_key, verification_token）",
       "dingtalk": "钉钉：需填写 app_key, app_secret",
       "wecom": "企业微信：传统模式需 corp_id, secret, agent_id；智能机器人模式需 bot_id, bot_secret",
+      "google_workspace": "Google Workspace：同一套 Client ID 和 Client Secret 同时用于 SSO 与管理员授权的目录同步",
       "oauth2": "OAuth2：填写 App ID、App Secret、授权地址、Token地址、用户信息地址",
       "saml": "SAML：需填写 entry_point, issuer, cert (公钥)",
       "microsoft_teams": "Microsoft Teams：需填写 client_id, client_secret, tenant_id"

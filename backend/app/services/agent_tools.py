@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import uuid
+import unicodedata
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,6 +37,11 @@ from app.models.user import User as UserModel
 from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
+from app.services.workspace_collaboration import (
+    delete_workspace_file,
+    read_text_if_exists,
+    write_workspace_file,
+)
 from app.config import get_settings
 
 
@@ -175,7 +181,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files and folders in a directory within my workspace. Can also list enterprise_info/ for shared company information.",
+            "description": "List files and folders in a directory within my workspace. Use this before writing new workspace documents so you can inspect the current folder structure, reuse existing topical subfolders when appropriate, and avoid dumping files directly into the workspace root unless there is a clear reason. Can also list enterprise_info/ for shared company information.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -216,13 +222,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Create or fully overwrite a file in the workspace. Use this when writing a new file or replacing the entire content. For targeted edits to an existing file (change one section without rewriting everything), prefer edit_file instead. Can update memory/memory.md, focus.md, task_history.md, create documents in workspace/, create skills in skills/.",
+            "description": "Create or fully overwrite a file in the workspace. Use this when writing a new file or replacing the entire content. For targeted edits to an existing file (change one section without rewriting everything), prefer edit_file instead. Before creating a new document under workspace/, first inspect the relevant directories with list_files, prefer an existing topical subfolder (for example workspace/reports/, workspace/knowledge_base/, workspace/research/) over the workspace root, and create a new subfolder when the content belongs to a new category. Avoid placing standalone document files directly in workspace/ root unless the user explicitly wants that. Can update memory/memory.md, focus.md, task_history.md, create documents in workspace/, create skills in skills/.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path, e.g.: memory/memory.md, workspace/report.md, skills/data_analysis.md",
+                        "description": "File path, e.g.: memory/memory.md, workspace/reports/report.md, workspace/knowledge_base/notes.md, skills/data_analysis.md. Prefer a meaningful subfolder instead of writing loose files into workspace/ root.",
                     },
                     "content": {
                         "type": "string",
@@ -478,9 +484,10 @@ AGENT_TOOLS = [
         "function": {
             "name": "send_channel_message",
             "description": (
-                "Send a message to a colleague via their configured channel (Feishu, DingTalk, WeCom). "
-                "Automatically detects the recipient's channel based on their org relationship. "
-                "Use this as the primary method to send messages to colleagues in your relationship network."
+                "Send a message to a colleague via their configured external channel "
+                "(Feishu, DingTalk, WeCom). Automatically detects the recipient's channel "
+                "based on their org relationship. Use this only for channel users. "
+                "For relationships labeled Platform User / 平台用户, use send_platform_message instead."
             ),
             "parameters": {
                 "type": "object",
@@ -506,8 +513,8 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "send_web_message",
-            "description": "Send a message to a user on the Clawith web platform. The message will appear in their web chat history and be pushed in real-time if they are online. Use this to proactively notify web users.",
+            "name": "send_platform_message",
+            "description": "Send a message to a user on the Clawith first-party platform (web or app). The message will appear in their platform chat history and be pushed in real-time if they are online. Use this to proactively notify platform users.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -907,6 +914,43 @@ AGENT_TOOLS = [
         },
     },
     # ── Feishu Document Tools ──────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "feishu_doc_search",
+            "description": (
+                "Search Feishu cloud documents by keyword using the official Feishu document search API. "
+                "Use this when a wiki folder or knowledge base contains too many documents for feishu_wiki_list to be practical. "
+                "Returns matching titles, document tokens, and document types so you can then read, share, or delete the target file."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search keyword, e.g. '恩菲', '客户周报', or '项目章程'",
+                    },
+                    "docs_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["doc", "docx", "sheet", "bitable", "file", "folder", "mindnote", "slides"],
+                        },
+                        "description": "Optional file type filter. Omit to search across all supported Feishu document types.",
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of results to return (default 10, max 50).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Result offset for pagination (default 0).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -1638,6 +1682,7 @@ _FEISHU_TOOL_NAMES = {
     "bitable_create_record",
     "bitable_update_record",
     "bitable_delete_record",
+    "feishu_doc_search",
     "feishu_wiki_list",
     "feishu_doc_read",
     "feishu_doc_create",
@@ -2027,13 +2072,16 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
 
 # ─── Tool Executors ─────────────────────────────────────────────
 
-# Mapping from tool_name to autonomy action_type
+# Mapping from tool_name to autonomy action_type used for policy lookup and notifications.
+# Each tool name maps to the action_type key in the agent's autonomy_policy dict.
+# Using the tool's own name avoids misleading notification titles (e.g. showing
+# "send_feishu_message" when the agent actually called send_message_to_agent).
 _TOOL_AUTONOMY_MAP = {
     "write_file": "write_workspace_files",
     "delete_file": "delete_files",
     "send_feishu_message": "send_feishu_message",
-    "send_message_to_agent": "send_feishu_message",
-    "send_file_to_agent": "send_feishu_message",
+    "send_message_to_agent": "send_message_to_agent",  # A2A messaging — distinct from feishu
+    "send_file_to_agent": "send_file_to_agent",          # A2A file transfer
     "web_search": "web_search",
     "execute_code": "execute_code",
     "execute_code_e2b": "execute_code",
@@ -2119,6 +2167,18 @@ async def execute_tool(
         session_id: The ChatSession ID, used to isolate AgentBay instances
                     per conversation. Passed through to agentbay_* tools.
     """
+    if not isinstance(tool_name, str):
+        tool_name = str(tool_name or "")
+    tool_name = (
+        tool_name
+        .replace("`", "")
+        .replace("\u200b", "")
+        .replace("\u200c", "")
+        .replace("\u200d", "")
+        .replace("\ufeff", "")
+        .strip()
+    )
+
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
     ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
@@ -2187,10 +2247,54 @@ async def execute_tool(
                 return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
             if content is None:
                 return "❌ Missing required argument 'content' for write_file"
-            result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            if path.startswith("enterprise_info"):
+                result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            else:
+                async with async_session() as _wdb:
+                    write_result = await write_workspace_file(
+                        _wdb,
+                        agent_id=agent_id,
+                        base_dir=ws,
+                        path=path,
+                        content=content,
+                        actor_type="agent",
+                        actor_id=agent_id,
+                        operation="write",
+                        session_id=session_id,
+                        enforce_human_lock=True,
+                    )
+                    await _wdb.commit()
+                result = (
+                    f"✅ Written to {write_result.path} ({len(content)} chars)"
+                    if write_result.ok
+                    else f"❌ {write_result.message}"
+                )
         elif tool_name == "delete_file":
-            result = _delete_file(ws, arguments.get("path", ""))
+            path = arguments.get("path", "")
+            async with async_session() as _wdb:
+                delete_result = await delete_workspace_file(
+                    _wdb,
+                    agent_id=agent_id,
+                    base_dir=ws,
+                    path=path,
+                    actor_type="agent",
+                    actor_id=agent_id,
+                    session_id=session_id,
+                    enforce_human_lock=True,
+                )
+                await _wdb.commit()
+            result = f"✅ Deleted {delete_result.path}" if delete_result.ok else f"❌ {delete_result.message}"
         # --- Enhanced file management tools ---
+        elif tool_name == "convert_csv_to_xlsx":
+            result = await _convert_csv_to_xlsx(agent_id, ws, arguments)
+        elif tool_name == "convert_html_to_pdf":
+            result = await _convert_html_to_pdf(agent_id, ws, arguments)
+        elif tool_name == "convert_html_to_pptx":
+            result = await _convert_html_to_pptx(agent_id, ws, arguments)
+        elif tool_name == "convert_markdown_to_docx":
+            result = await _convert_markdown_to_docx(agent_id, ws, arguments)
+        elif tool_name == "convert_markdown_to_pdf":
+            result = await _convert_markdown_to_pdf(agent_id, ws, arguments)
         elif tool_name == "edit_file":
             path = arguments.get("path")
             old_string = arguments.get("old_string")
@@ -2202,7 +2306,46 @@ async def execute_tool(
             if new_string is None:
                 return "❌ Missing required argument 'new_string' for edit_file"
             replace_all = arguments.get("replace_all", False)
-            result = _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id)
+            if path.startswith("enterprise_info"):
+                result = _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id)
+            else:
+                file_path = (ws / path).resolve()
+                if not str(file_path).startswith(str(ws.resolve())):
+                    result = "Access denied for this path"
+                elif not file_path.exists():
+                    result = f"File not found: {path}"
+                elif not file_path.is_file():
+                    result = f"Not a file: {path}"
+                else:
+                    content = await read_text_if_exists(file_path) or ""
+                    if old_string not in content:
+                        result = f"❌ 'old_string' not found in {path}. Please check the exact text including whitespace and newlines."
+                    else:
+                        count = content.count(old_string)
+                        if count > 1 and not replace_all:
+                            result = f"❌ 'old_string' appears {count} times in {path}. Use replace_all=true or provide more context to make the match unique."
+                        else:
+                            new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+                            async with async_session() as _wdb:
+                                write_result = await write_workspace_file(
+                                    _wdb,
+                                    agent_id=agent_id,
+                                    base_dir=ws,
+                                    path=path,
+                                    content=new_content,
+                                    actor_type="agent",
+                                    actor_id=agent_id,
+                                    operation="edit",
+                                    session_id=session_id,
+                                    enforce_human_lock=True,
+                                )
+                                await _wdb.commit()
+                            replaced = count if replace_all else 1
+                            result = (
+                                f"✅ Replaced {replaced} occurrence(s) in {write_result.path}"
+                                if write_result.ok
+                                else f"❌ {write_result.message}"
+                            )
         elif tool_name == "search_files":
             pattern = arguments.get("pattern")
             if not pattern:
@@ -2228,7 +2371,12 @@ async def execute_tool(
         elif tool_name == "manage_tasks":
             result = await _manage_tasks(agent_id, user_id, ws, arguments)
         elif tool_name == "set_trigger":
-            result = await _handle_set_trigger(agent_id, arguments)
+            result = await _handle_set_trigger(
+                agent_id,
+                arguments,
+                session_id=session_id,
+                user_id=user_id,
+            )
         elif tool_name == "update_trigger":
             result = await _handle_update_trigger(agent_id, arguments)
         elif tool_name == "cancel_trigger":
@@ -2237,8 +2385,8 @@ async def execute_tool(
             result = await _handle_list_triggers(agent_id)
         elif tool_name == "send_feishu_message":
             result = await _send_feishu_message(agent_id, arguments)
-        elif tool_name == "send_web_message":
-            result = await _send_web_message(agent_id, arguments)
+        elif tool_name == "send_platform_message":
+            result = await _send_platform_message(agent_id, arguments)
         elif tool_name == "send_channel_message":
             result = await _send_channel_message(agent_id, arguments)
         elif tool_name == "send_message_to_agent":
@@ -2302,6 +2450,8 @@ async def execute_tool(
         elif tool_name == "bitable_delete_record":
             result = await _bitable_delete_record(agent_id, arguments)
         # ── Feishu Document Tools ──
+        elif tool_name == "feishu_doc_search":
+            result = await _feishu_doc_search(agent_id, arguments)
         elif tool_name == "feishu_wiki_list":
             result = await _feishu_wiki_list(agent_id, arguments)
         elif tool_name == "feishu_doc_read":
@@ -2391,7 +2541,40 @@ async def execute_tool(
             result = await _search_clawhub(agent_id, arguments)
         elif tool_name == "install_skill":
             result = await _install_skill(agent_id, ws, arguments)
+        # ── OKR Tools ──
+        elif tool_name == "get_okr":
+            result = await _get_okr(agent_id, arguments)
+        elif tool_name == "get_my_okr":
+            result = await _get_my_okr(agent_id, arguments)
+        elif tool_name == "update_kr_content":
+            result = await _update_kr_content(agent_id, user_id, arguments)
+        elif tool_name == "update_kr_progress":
+            result = await _update_kr_progress(agent_id, user_id, arguments)
+        # collect_okr_progress: batch-read all focus.md files and sync progress to DB
+        elif tool_name == "collect_okr_progress":
+            result = await _collect_okr_progress(agent_id)
+        # generate_okr_report: build daily/weekly structured report and store it
+        elif tool_name == "generate_okr_report":
+            result = await _generate_okr_report(agent_id, arguments)
+        # get_okr_settings: read tenant OKR configuration for scheduling decisions
+        elif tool_name == "get_okr_settings":
+            result = await _get_okr_settings_tool(agent_id)
+        # ── OKR Management Tools (OKR Agent exclusive) ──
+        elif tool_name == "create_objective":
+            result = await _create_objective(agent_id, user_id, arguments)
+        elif tool_name == "create_key_result":
+            result = await _create_key_result(agent_id, user_id, arguments)
+        elif tool_name == "update_objective":
+            result = await _update_objective(agent_id, user_id, arguments)
+        elif tool_name == "update_any_kr_progress":
+            result = await _update_any_kr_progress(agent_id, user_id, arguments)
+        # generate_monthly_okr_report: produce the monthly summary report
+        elif tool_name == "generate_monthly_okr_report":
+            result = await _generate_monthly_okr_report(agent_id)
+        elif tool_name == "upsert_member_daily_report":
+            result = await _upsert_member_daily_report(agent_id, arguments)
         else:
+
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
 
@@ -3335,6 +3518,54 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
         return f"❌ Auto-recovery failed: {str(e)[:200]}"
 
 
+def _normalize_tool_rel_path(rel_path: str) -> str:
+    normalized = unicodedata.normalize("NFC", (rel_path or "").strip()).replace("\\", "/")
+    normalized = re.sub(r"/+", "/", normalized).lstrip("./")
+    return normalized
+
+
+def _collapse_filename_for_match(name: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFC", name or "")).casefold()
+
+
+def _allowed_root_for_tool_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> tuple[Path, str]:
+    normalized = _normalize_tool_rel_path(rel_path)
+    if normalized.startswith("enterprise_info"):
+        enterprise_root = (
+            (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+            if tenant_id
+            else (WORKSPACE_ROOT / "enterprise_info").resolve()
+        )
+        sub = normalized[len("enterprise_info"):].lstrip("/")
+        return enterprise_root, sub
+    return ws.resolve(), normalized
+
+
+def _resolve_tool_source_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> Path:
+    root, normalized = _allowed_root_for_tool_path(ws, rel_path, tenant_id=tenant_id)
+    candidate = (root / normalized).resolve() if normalized else root
+    if not str(candidate).startswith(str(root)):
+        raise ValueError("Access denied for this path")
+    if candidate.exists():
+        return candidate
+
+    parent = candidate.parent
+    if parent.exists():
+        wanted = _collapse_filename_for_match(candidate.name)
+        for sibling in parent.iterdir():
+            if _collapse_filename_for_match(sibling.name) == wanted:
+                return sibling
+    return candidate
+
+
+def _resolve_tool_target_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> Path:
+    root, normalized = _allowed_root_for_tool_path(ws, rel_path, tenant_id=tenant_id)
+    candidate = (root / normalized).resolve() if normalized else root
+    if not str(candidate).startswith(str(root)):
+        raise ValueError("❌ Access denied.")
+    return candidate
+
+
 def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
@@ -3404,20 +3635,10 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
     Returns:
         File content with line numbers, or error message
     """
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
-    if rel_path and rel_path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
-        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(file_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
-    else:
-        file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+    try:
+        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
+    except ValueError as exc:
+        return str(exc)
 
     if not file_path.exists():
         return f"File not found: {rel_path}"
@@ -3457,20 +3678,10 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
 
 async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
     """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
-    if rel_path and rel_path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
-        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(file_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
-    else:
-        file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+    try:
+        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
+    except ValueError as exc:
+        return str(exc)
 
     if not file_path.exists():
         return f"File not found: {rel_path}"
@@ -3580,6 +3791,337 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
         return f"Missing dependency: {e}. Install: pip install pdfplumber python-docx openpyxl python-pptx"
     except Exception as e:
         return f"Document read failed: {str(e)[:200]}"
+
+
+# ─── Format Conversion Tools ────────────────────────────────────
+
+async def _convert_csv_to_xlsx(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    source_path = arguments.get("source_path")
+    target_path = arguments.get("target_path")
+    if not source_path or not target_path:
+        return "❌ Missing 'source_path' or 'target_path'."
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
+    if not src_file.exists(): return f"❌ Source file not found: {source_path}"
+    
+    try:
+        import csv
+        from openpyxl import Workbook
+
+        text = src_file.read_text(encoding="utf-8-sig")
+        lines = [line.strip() for line in text.splitlines() if line.strip()][:10]
+        candidates = [",", "，", ";", "\t", "|"]
+        delimiter = ","
+        if lines:
+            scores = {candidate: sum(line.count(candidate) for line in lines) for candidate in candidates}
+            if any(scores.values()):
+                delimiter = max(scores, key=scores.get)
+        
+        wb = Workbook()
+        ws_sheet = wb.active
+        with src_file.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f, delimiter=delimiter)
+            for row in reader:
+                values = list(row)
+                while values and not str(values[-1] or "").strip():
+                    values.pop()
+                if values:
+                    ws_sheet.append(values)
+        
+        tgt_file.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(str(tgt_file))
+        return f"✅ Successfully converted CSV to Excel: {target_path}"
+    except Exception as e:
+        logger.exception(f"Convert CSV to XLSX failed: {e}")
+        return f"❌ Conversion failed: {e}"
+
+async def _convert_html_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    source_path = arguments.get("source_path")
+    target_path = arguments.get("target_path")
+    if not source_path or not target_path:
+        return "❌ Missing 'source_path' or 'target_path'."
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
+    if not src_file.exists(): return f"❌ Source file not found: {source_path}"
+    
+    try:
+        from weasyprint import HTML
+        tgt_file.parent.mkdir(parents=True, exist_ok=True)
+        HTML(filename=str(src_file)).write_pdf(str(tgt_file))
+        return f"✅ Successfully converted HTML to PDF: {target_path}"
+    except Exception as e:
+        logger.exception(f"Convert HTML to PDF failed: {e}")
+        return f"❌ Conversion failed: {e}"
+
+async def _convert_html_to_pptx(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    source_path = arguments.get("source_path")
+    target_path = arguments.get("target_path")
+    if not source_path or not target_path: return "❌ Missing paths."
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
+    if not src_file.exists(): return "❌ Source file not found."
+    
+    try:
+        from bs4 import BeautifulSoup
+        from pptx import Presentation
+        
+        html_content = src_file.read_text(encoding="utf-8")
+        soup = BeautifulSoup(html_content, "html.parser")
+        
+        prs = Presentation()
+        title_slide_layout = prs.slide_layouts[0]
+        bullet_slide_layout = prs.slide_layouts[1]
+        
+        sections = soup.find_all(['h1', 'h2'])
+        if not sections:
+            slide = prs.slides.add_slide(title_slide_layout)
+            slide.shapes.title.text = "Presentation"
+        else:
+            for header in sections:
+                slide = prs.slides.add_slide(bullet_slide_layout)
+                slide.shapes.title.text = header.get_text(strip=True)
+                tf = slide.shapes.placeholders[1].text_frame
+                
+                curr = header.find_next_sibling()
+                while curr and curr.name not in ['h1', 'h2']:
+                    if curr.name in ['p', 'li']:
+                        text = curr.get_text(strip=True)
+                        if text:
+                            p = tf.add_paragraph()
+                            p.text = text
+                            p.level = 0
+                    curr = curr.find_next_sibling()
+                    
+        tgt_file.parent.mkdir(parents=True, exist_ok=True)
+        prs.save(str(tgt_file))
+        return f"✅ Successfully converted HTML to PPTX: {target_path}"
+    except Exception as e:
+        logger.exception(f"Convert HTML to PPTX failed: {e}")
+        return f"❌ Conversion failed: {e}"
+
+async def _convert_markdown_to_docx(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    source_path = arguments.get("source_path")
+    target_path = arguments.get("target_path")
+    if not source_path or not target_path: return "❌ Missing paths."
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
+    if not src_file.exists(): return "❌ Source file not found."
+
+    try:
+        from docx import Document
+        md_text = src_file.read_text(encoding="utf-8")
+        doc = Document()
+
+        def flush_paragraph(lines: list[str]) -> None:
+            text = " ".join(line.strip() for line in lines if line.strip()).strip()
+            if text:
+                doc.add_paragraph(text)
+
+        paragraph_lines: list[str] = []
+        lines = md_text.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip()
+            stripped = line.strip()
+
+            if not stripped:
+                flush_paragraph(paragraph_lines)
+                paragraph_lines = []
+                i += 1
+                continue
+
+            heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+            if heading_match:
+                flush_paragraph(paragraph_lines)
+                paragraph_lines = []
+                level = min(len(heading_match.group(1)), 6)
+                doc.add_heading(heading_match.group(2).strip(), level=level)
+                i += 1
+                continue
+
+            bullet_match = re.match(r"^[-*+]\s+(.*)$", stripped)
+            ordered_match = re.match(r"^\d+\.\s+(.*)$", stripped)
+            if bullet_match or ordered_match:
+                flush_paragraph(paragraph_lines)
+                paragraph_lines = []
+                text = (bullet_match or ordered_match).group(1).strip()
+                if text:
+                    doc.add_paragraph(text, style="List Bullet" if bullet_match else "List Number")
+                i += 1
+                continue
+
+            if "|" in stripped:
+                table_lines: list[str] = []
+                flush_paragraph(paragraph_lines)
+                paragraph_lines = []
+                while i < len(lines) and "|" in lines[i]:
+                    candidate = lines[i].strip()
+                    if candidate:
+                        table_lines.append(candidate)
+                    i += 1
+                data_rows = []
+                for raw in table_lines:
+                    cells = [cell.strip() for cell in raw.strip("|").split("|")]
+                    if cells and all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells):
+                        continue
+                    if any(cell for cell in cells):
+                        data_rows.append(cells)
+                if data_rows:
+                    table = doc.add_table(rows=len(data_rows), cols=max(len(row) for row in data_rows))
+                    table.style = "Table Grid"
+                    for row_idx, row in enumerate(data_rows):
+                        for col_idx, cell in enumerate(row):
+                            table.cell(row_idx, col_idx).text = cell
+                continue
+
+            paragraph_lines.append(stripped)
+            i += 1
+
+        flush_paragraph(paragraph_lines)
+
+        tgt_file.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(tgt_file))
+        return f"✅ Successfully converted Markdown to Word: {target_path}"
+    except Exception as e:
+        logger.exception(f"Convert MD to Docx failed: {e}")
+        return f"❌ Conversion failed: {e}"
+
+async def _convert_markdown_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    source_path = arguments.get("source_path")
+    target_path = arguments.get("target_path")
+    if not source_path or not target_path: return "❌ Missing paths."
+    try:
+        src_file = _resolve_tool_source_path(ws, source_path)
+        tgt_file = _resolve_tool_target_path(ws, target_path)
+    except ValueError as exc:
+        return str(exc)
+    if not src_file.exists(): return "❌ Source file not found."
+
+    try:
+        from weasyprint import HTML
+
+        md_text = src_file.read_text(encoding="utf-8")
+
+        def escape_html(text: str) -> str:
+            return (
+                text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+            )
+
+        def render_inline(text: str) -> str:
+            text = escape_html(text)
+            text = re.sub(r"\*\*\*(.*?)\*\*\*", r"<strong><em>\1</em></strong>", text)
+            text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text)
+            text = re.sub(r"__(.*?)__", r"<strong>\1</strong>", text)
+            text = re.sub(r"\*(.*?)\*", r"<em>\1</em>", text)
+            text = re.sub(r"_(.*?)_", r"<em>\1</em>", text)
+            text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+            text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+            return text
+
+        def is_table_separator(line: str) -> bool:
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+        html_parts: list[str] = []
+        lines = md_text.splitlines()
+        in_list = False
+        i = 0
+        while i < len(lines):
+            raw_line = lines[i]
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if not stripped:
+                if in_list:
+                    html_parts.append("</ul>")
+                    in_list = False
+                i += 1
+                continue
+
+            heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+            if heading_match:
+                if in_list:
+                    html_parts.append("</ul>")
+                    in_list = False
+                level = len(heading_match.group(1))
+                html_parts.append(f"<h{level}>{render_inline(heading_match.group(2).strip())}</h{level}>")
+                i += 1
+                continue
+
+            bullet_match = re.match(r"^[-*+]\s+(.*)$", stripped)
+            if bullet_match:
+                if not in_list:
+                    html_parts.append("<ul>")
+                    in_list = True
+                html_parts.append(f"<li>{render_inline(bullet_match.group(1).strip())}</li>")
+                i += 1
+                continue
+
+            if "|" in stripped and i + 1 < len(lines) and is_table_separator(lines[i + 1].strip()):
+                if in_list:
+                    html_parts.append("</ul>")
+                    in_list = False
+                header_cells = [render_inline(cell.strip()) for cell in stripped.strip("|").split("|")]
+                table_rows: list[list[str]] = []
+                i += 2
+                while i < len(lines) and "|" in lines[i].strip():
+                    row = [render_inline(cell.strip()) for cell in lines[i].strip().strip("|").split("|")]
+                    table_rows.append(row)
+                    i += 1
+                html_parts.append("<table><thead><tr>" + "".join(f"<th>{cell}</th>" for cell in header_cells) + "</tr></thead><tbody>")
+                html_parts.extend(
+                    "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+                    for row in table_rows
+                )
+                html_parts.append("</tbody></table>")
+                continue
+
+            if in_list:
+                html_parts.append("</ul>")
+                in_list = False
+            html_parts.append(f"<p>{render_inline(stripped)}</p>")
+            i += 1
+
+        if in_list:
+            html_parts.append("</ul>")
+
+        html_text = "\n".join(html_parts)
+
+        full_html = (
+            "<html><head><meta charset='utf-8'><style>"
+            "body{font-family:'WenQuanYi Micro Hei','Noto Sans CJK SC',sans-serif;line-height:1.65;padding:2em;color:#111827;}"
+            "h1,h2,h3{line-height:1.25;margin:1.2em 0 .55em;}"
+            "p{margin:.55em 0;}"
+            "table{width:100%;border-collapse:collapse;margin:1em 0;font-size:12px;}"
+            "th,td{border:1px solid #d8dee9;padding:7px 9px;text-align:left;vertical-align:top;}"
+            "th{background:#f3f4f6;font-weight:700;}"
+            "code{background:#f3f4f6;padding:1px 4px;border-radius:4px;}"
+            "a{color:#2563eb;text-decoration:none;}"
+            "</style></head><body>"
+            f"{html_text}"
+            "</body></html>"
+        )
+
+        tgt_file.parent.mkdir(parents=True, exist_ok=True)
+        HTML(string=full_html, base_url=str(ws.resolve())).write_pdf(str(tgt_file))
+        return f"✅ Successfully converted Markdown to PDF: {target_path}"
+    except Exception as e:
+        logger.exception(f"Convert MD to PDF failed: {e}")
+        return f"❌ Conversion failed: {e}"
 
 
 def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = None) -> str:
@@ -4111,12 +4653,41 @@ async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
 
             # 2. Determine channel based on provider type
             if not provider_type:
+                # Platform-only relationships are stored as provider-less OrgMembers that
+                # still point at a platform User. In that case, transparently route to the
+                # platform message tool so model tool-choice mistakes do not break delivery.
+                if target_member.user_id:
+                    user_result = await db.execute(
+                        select(UserModel).where(UserModel.id == target_member.user_id)
+                    )
+                    platform_user = user_result.scalar_one_or_none()
+                    if platform_user:
+                        platform_identifier = (
+                            platform_user.display_name
+                            or platform_user.username
+                            or member_name
+                        )
+                        logger.info(
+                            "[ChannelMessage] %s is a platform user; rerouting send_channel_message -> send_platform_message",
+                            member_name,
+                        )
+                        return await _send_platform_message(
+                            agent_id,
+                            {
+                                "username": platform_identifier,
+                                "message": message_text,
+                            },
+                        )
+
                 # Fallback: check which channel configs exist and has user info
                 if target_member.external_id or target_member.open_id:
                     # Try Feishu as default
                     provider_type = "feishu"
                 else:
-                    return f"❌ {member_name} has no linked channel (no provider info)"
+                    return (
+                        f"❌ {member_name} has no linked channel. "
+                        "If they are a platform user, use send_platform_message instead."
+                    )
 
             logger.info(f"[ChannelMessage] Sending to {member_name} via {provider_type}")
 
@@ -4321,8 +4892,8 @@ async def _send_wecom_message(
         return f"❌ WeCom message error: {str(e)[:200]}"
 
 
-async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
-    """Send a proactive message to a web platform user."""
+async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
+    """Send a proactive message to a first-party platform user."""
     username = args.get("username", "").strip()
     message_text = args.get("message", "").strip()
 
@@ -4363,27 +4934,12 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
                 names = [f"{r.display_name or r.username}" for r in all_r.all()]
                 return f"❌ No user named '{username}' found in your organization. Available users: {', '.join(names) if names else 'none'}"
 
-            # Find or create a web session between the agent and this user
-            sess_r = await db.execute(
-                select(ChatSession).where(
-                    ChatSession.agent_id == agent_id,
-                    ChatSession.user_id == target_user.id,
-                    ChatSession.source_channel == "web",
-                ).order_by(ChatSession.created_at.desc()).limit(1)
-            )
-            session = sess_r.scalar_one_or_none()
+            # Agent-initiated platform messages should always go to the long-lived primary session
+            # for this agent+user pair, so trigger-driven outreach does not fragment into dozens of
+            # tiny one-off web sessions.
+            from app.services.chat_session_service import ensure_primary_platform_session
 
-            if not session:
-                # Create a new session for this user
-                session = ChatSession(
-                    agent_id=agent_id,
-                    user_id=target_user.id,
-                    title=f"[Agent Message] {_dt.now(_tz.utc).strftime('%m-%d %H:%M')}",
-                    source_channel="web",
-                    created_at=_dt.now(_tz.utc),
-                )
-                db.add(session)
-                await db.flush()
+            session = await ensure_primary_platform_session(db, agent_id, target_user.id)
 
             # Save the message
             db.add(ChatMessage(
@@ -4394,22 +4950,32 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
                 conversation_id=str(session.id),
             ))
             session.last_message_at = _dt.now(_tz.utc)
+            try:
+                from app.api.websocket import maybe_mark_session_read_for_active_viewer
+
+                await maybe_mark_session_read_for_active_viewer(
+                    db,
+                    agent_id=agent_id,
+                    session_id=str(session.id),
+                    user_id=target_user.id,
+                )
+            except Exception:
+                pass
             await db.commit()
 
             # Push via WebSocket if user has an active connection
             try:
                 from app.api.websocket import manager as ws_manager
-                agent_id_str = str(agent_id)
-                if agent_id_str in ws_manager.active_connections:
-                    for ws, sid in list(ws_manager.active_connections[agent_id_str]):
-                        try:
-                            await ws.send_json({
-                                "type": "trigger_notification",
-                                "content": message_text,
-                                "triggers": ["web_message"],
-                            })
-                        except Exception:
-                            pass
+                await ws_manager.send_to_user(
+                    str(agent_id),
+                    str(target_user.id),
+                    {
+                        "type": "trigger_notification",
+                        "content": message_text,
+                        "triggers": ["web_message"],
+                        "session_id": str(session.id),
+                    },
+                )
             except Exception:
                 pass
 
@@ -4784,6 +5350,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     agent_name = args.get("agent_name", "").strip()
     message_text = args.get("message", "").strip()
     msg_type = args.get("msg_type", "notify").strip().lower()
+    force_async = bool(args.get("force_async"))
 
     if not agent_name or not message_text:
         return "❌ Please provide target agent name and message content"
@@ -4939,7 +5506,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                         _a2a_async = getattr(_tenant, "a2a_async_enabled", False)
                 except Exception:
                     pass
-            if not _a2a_async:
+            if not _a2a_async and not force_async:
                 if msg_type in ("notify", "task_delegate"):
                     msg_type = "consult"
 
@@ -5342,7 +5909,12 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
 
 
 async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
-    """Create a new post in the Agent Plaza."""
+    """Create a new post in the Agent Plaza.
+
+    System agents (is_system=True) are intentionally excluded from Plaza to
+    keep the social feed clean — the OKR Agent communicates through Chat and
+    reports, not through Plaza posts.
+    """
     from app.models.plaza import PlazaPost
     from app.models.agent import Agent as AgentModel
 
@@ -5354,11 +5926,18 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
 
     try:
         async with async_session() as db:
-            # Get agent name
+            # Get agent and check is_system
             ar = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent = ar.scalar_one_or_none()
             if not agent:
                 return "Error: Agent not found."
+
+            # System agents (e.g. OKR Agent) must not post to Plaza
+            if agent.is_system:
+                return (
+                    "System agents are not allowed to post to Plaza. "
+                    "Use send_platform_message to communicate with users directly."
+                )
 
             post = PlazaPost(
                 author_id=agent_id,
@@ -5809,13 +6388,20 @@ MAX_TRIGGERS_PER_AGENT = 20
 VALID_TRIGGER_TYPES = {"cron", "once", "interval", "poll", "on_message", "webhook"}
 
 
-async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _handle_set_trigger(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    session_id: str = "",
+    user_id: uuid.UUID | None = None,
+) -> str:
     """Create a new trigger for the agent."""
     from app.models.trigger import AgentTrigger
+    from app.models.chat_session import ChatSession
 
     name = arguments.get("name", "").strip()
     ttype = arguments.get("type", "").strip()
-    config = arguments.get("config", {})
+    config = dict(arguments.get("config", {}) or {})
     reason = arguments.get("reason", "").strip()
     focus_ref = arguments.get("focus_ref", "") or arguments.get("agenda_ref", "")  # backward compat
 
@@ -5872,6 +6458,28 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         import secrets
         token = secrets.token_urlsafe(8)  # ~11 chars, URL-safe
         config["token"] = token
+
+    # Record the session that created this trigger so trigger results can later be routed to
+    # the correct destination instead of being broadcast to every live web session.
+    if session_id:
+        try:
+            async with async_session() as _ctx_db:
+                _session_result = await _ctx_db.execute(
+                    select(ChatSession).where(ChatSession.id == uuid.UUID(session_id))
+                )
+                origin_session = _session_result.scalar_one_or_none()
+                if origin_session:
+                    config["_origin_session_id"] = str(origin_session.id)
+                    config["_origin_source_channel"] = origin_session.source_channel
+                    if origin_session.source_channel == "agent" and origin_session.peer_agent_id:
+                        config["_origin_peer_agent_id"] = str(origin_session.peer_agent_id)
+                    elif origin_session.source_channel != "trigger":
+                        config["_origin_user_id"] = str(origin_session.user_id)
+                elif user_id:
+                    config["_origin_user_id"] = str(user_id)
+        except Exception:
+            if user_id:
+                config["_origin_user_id"] = str(user_id)
 
     try:
         async with async_session() as db:
@@ -7121,6 +7729,91 @@ async def _feishu_wiki_get_node(token_str: str, auth_token: str) -> dict | None:
         "title": node.get("title", ""),
         "node_token": node.get("node_token", token_str),
     }
+
+
+async def _feishu_doc_search(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Search Feishu documents by keyword using the official document search API."""
+    import httpx
+
+    query = (arguments.get("query") or arguments.get("search_key") or "").strip()
+    if not query:
+        return "❌ Missing required argument 'query'"
+
+    count = max(1, min(int(arguments.get("count", 10)), 50))
+    offset = max(0, int(arguments.get("offset", 0)))
+    docs_types = arguments.get("docs_types") or []
+    if docs_types and not isinstance(docs_types, list):
+        return "❌ 'docs_types' must be an array of strings."
+
+    app_id, app_secret = await _get_feishu_credentials(agent_id)
+    if not app_id or not app_secret:
+        return "❌ Agent has no Feishu channel configured."
+
+    from app.services.feishu_service import feishu_service
+
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+    payload: dict[str, object] = {
+        "search_key": query,
+        "count": count,
+        "offset": offset,
+    }
+    if docs_types:
+        payload["docs_types"] = docs_types
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            "https://open.feishu.cn/open-apis/suite/docs-api/search/object",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+
+    data = resp.json()
+    err = _check_feishu_err(data)
+    if err:
+        return err
+
+    result = data.get("data", {})
+    entities = result.get("docs_entities", []) or []
+    total = result.get("total", len(entities))
+    has_more = bool(result.get("has_more", False))
+    if not entities:
+        return (
+            f"🔎 未找到与 `{query}` 匹配的飞书文档。"
+            "\n可以尝试："
+            "\n1. 缩短关键词"
+            "\n2. 换同义词"
+            "\n3. 指定 docs_types 过滤，例如 ['docx'] 或 ['bitable']"
+        )
+
+    lines = [
+        f"🔎 飞书文档搜索结果：关键词 `{query}`",
+        f"返回 {len(entities)} 条，total={total}，offset={offset}，has_more={str(has_more).lower()}",
+        "",
+    ]
+    for idx, item in enumerate(entities, start=offset + 1):
+        title = item.get("title") or "(无标题)"
+        docs_token = item.get("docs_token") or ""
+        docs_type = item.get("docs_type") or "unknown"
+        owner_id = item.get("owner_id") or ""
+        lines.append(
+            f"{idx}. **{title}**\n"
+            f"   - docs_type: `{docs_type}`\n"
+            f"   - docs_token: `{docs_token}`\n"
+            f"   - owner_id: `{owner_id}`"
+        )
+
+    lines.append("")
+    lines.append("💡 后续操作建议：")
+    lines.append("- 读取普通文档/知识库页：`feishu_doc_read(document_token=\"...\")`")
+    lines.append("- 管理权限：`feishu_drive_share(document_token=\"...\", doc_type=\"...\", action=\"list|add|remove\")`")
+    lines.append("- 删除文件：`feishu_drive_delete(file_token=\"...\", file_type=\"...\")`")
+    if has_more:
+        lines.append(f"- 下一页：`feishu_doc_search(query=\"{query}\", offset={offset + len(entities)}, count={count})`")
+
+    return "\n".join(lines)
 
 
 async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -8517,13 +9210,13 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
     except Exception as e:
         return f"Failed to publish: {e}"
 
-    # Build public URL.
-    # _publish_page is called from a tool handler — there is no HTTP request
-    # object available, so platform_service.get_public_base_url() would fall
-    # back to the hardcoded 'https://try.clawith.ai' when PUBLIC_BASE_URL is
-    # not set. Instead, read the env var directly and surface a clear error
-    # when it is missing, so source-code deployers know exactly what to fix.
-    public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    # Build public URL from the same settings loader used by the app. Reading
+    # os.environ directly misses values that come from the local .env file.
+    try:
+        from app.config import get_settings as _get_publish_settings
+        public_base = (_get_publish_settings().PUBLIC_BASE_URL or os.environ.get("PUBLIC_BASE_URL", "")).rstrip("/")
+    except Exception:
+        public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
     if not public_base:
         # Relative path works inside the same deployment; include a note so
         # the user can configure PUBLIC_BASE_URL for a fully-qualified link.
@@ -8550,6 +9243,11 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
 async def _list_published_pages(agent_id: uuid.UUID) -> str:
     """List all published pages for this agent."""
     from app.models.published_page import PublishedPage
+    try:
+        from app.config import get_settings as _get_publish_settings
+        public_base = (_get_publish_settings().PUBLIC_BASE_URL or os.environ.get("PUBLIC_BASE_URL", "")).rstrip("/")
+    except Exception:
+        public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
     try:
         async with async_session() as db:
@@ -8565,8 +9263,9 @@ async def _list_published_pages(agent_id: uuid.UUID) -> str:
 
         lines = [f"Published pages ({len(pages)} total):\n"]
         for p in pages:
+            url = f"{public_base}/p/{p.short_id}" if public_base else f"/p/{p.short_id}"
             lines.append(f"- {p.title or 'Untitled'}")
-            lines.append(f"  URL: /p/{p.short_id}")
+            lines.append(f"  URL: {url}")
             lines.append(f"  Source: {p.source_path}")
             lines.append(f"  Views: {p.view_count}")
             lines.append("")
@@ -9687,3 +10386,1090 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
     except Exception as e:
         logger.exception(f"[AgentBay] File transfer failed for agent {agent_id}")
         return f"File transfer failed: {str(e)[:200]}"
+
+
+# ─── OKR Tools ───────────────────────────────────────────────────────────────
+
+
+async def _get_agent_owner_info(agent_id: uuid.UUID) -> tuple[str, str]:
+    """Return (owner_type, owner_id_str) for the calling agent.
+
+    Used by get_my_okr and update_kr_progress to scope queries to the
+    correct owner without requiring the caller to pass their own ID.
+    """
+    from app.database import async_session
+    from app.models.agent import Agent
+    from sqlalchemy import select as _select
+
+    async with async_session() as db:
+        result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+        agent = result.scalar_one_or_none()
+    if not agent:
+        return "agent", str(agent_id)
+    return "agent", str(agent_id)
+
+
+def _compute_okr_period_bounds(frequency: str, length_days: int | None):
+    """Return the current OKR period using the tenant's configured cadence."""
+    from datetime import date, timedelta
+
+    today = date.today()
+    if frequency == "monthly":
+        start = today.replace(day=1)
+        if today.month == 12:
+            end = today.replace(month=12, day=31)
+        else:
+            end = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+    elif frequency == "custom" and length_days:
+        epoch = date(1970, 1, 1)
+        days_since_epoch = (today - epoch).days
+        period_index = days_since_epoch // length_days
+        start = epoch + timedelta(days=period_index * length_days)
+        end = start + timedelta(days=length_days - 1)
+    else:
+        quarter = (today.month - 1) // 3 + 1
+        start = date(today.year, (quarter - 1) * 3 + 1, 1)
+        if quarter == 4:
+            end = date(today.year, 12, 31)
+        else:
+            end = date(today.year, quarter * 3 + 1, 1) - timedelta(days=1)
+    return start, end
+
+
+async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
+    """Return the full OKR board for the current period as formatted text.
+
+    Includes company-level O+KR and every member's individual O+KR.
+    This is a read-only tool available to all agents.
+    """
+    import json
+    import httpx
+
+    # Resolve tenant_id from the calling agent
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    try:
+        from app.database import async_session
+        from app.models.agent import Agent
+        from app.models.okr import OKRObjective, OKRKeyResult, OKRSettings
+        from app.models.org import OrgMember
+        from app.models.user import User
+        from sqlalchemy import select as _select
+        from datetime import date, timedelta
+
+        async with async_session() as db:
+            # Look up the agent's tenant
+            agent_result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+            agent = agent_result.scalar_one_or_none()
+            if not agent:
+                return "Agent not found."
+
+            tenant_id = agent.tenant_id
+
+            # Get OKR settings to determine period
+            settings_result = await db.execute(
+                _select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
+            )
+            settings = settings_result.scalar_one_or_none()
+
+            if not settings or not settings.enabled:
+                return "OKR is not enabled for your organization."
+
+            # Compute period bounds
+            period_start = arguments.get("period_start")
+            period_end = arguments.get("period_end")
+            if period_start and period_end:
+                ps = date.fromisoformat(period_start)
+                pe = date.fromisoformat(period_end)
+            else:
+                ps, pe = _compute_okr_period_bounds(
+                    settings.period_frequency,
+                    settings.period_length_days,
+                )
+
+            # Fetch all active objectives
+            obj_result = await db.execute(
+                _select(OKRObjective).where(
+                    OKRObjective.tenant_id == tenant_id,
+                    OKRObjective.period_start >= ps,
+                    OKRObjective.period_end <= pe,
+                    OKRObjective.status != "archived",
+                ).order_by(OKRObjective.owner_type, OKRObjective.created_at)
+            )
+            objectives = obj_result.scalars().all()
+
+            if not objectives:
+                return f"No OKRs found for the current period ({ps} – {pe})."
+
+            # Fetch all KRs
+            obj_ids = [o.id for o in objectives]
+            kr_result = await db.execute(
+                _select(OKRKeyResult)
+                .where(OKRKeyResult.objective_id.in_(obj_ids))
+                .order_by(OKRKeyResult.created_at)
+            )
+            all_krs = kr_result.scalars().all()
+
+            krs_by_obj: dict = {}
+            for kr in all_krs:
+                krs_by_obj.setdefault(str(kr.objective_id), []).append(kr)
+
+            # Resolve readable owner names so the OKR Agent can reason about
+            # members by display name instead of raw UUIDs.
+            user_owner_ids = [
+                o.owner_id for o in objectives
+                if o.owner_type == "user" and o.owner_id
+            ]
+            agent_owner_ids = [
+                o.owner_id for o in objectives
+                if o.owner_type == "agent" and o.owner_id
+            ]
+
+            user_names: dict[uuid.UUID, str] = {}
+            if user_owner_ids:
+                u_result = await db.execute(
+                    _select(User.id, User.display_name).where(User.id.in_(user_owner_ids))
+                )
+                user_names = {
+                    row.id: (row.display_name or "")
+                    for row in u_result.fetchall()
+                }
+
+                unresolved_ids = [oid for oid in user_owner_ids if oid not in user_names]
+                if unresolved_ids:
+                    m_result = await db.execute(
+                        _select(OrgMember.id, OrgMember.name).where(
+                            OrgMember.id.in_(unresolved_ids)
+                        )
+                    )
+                    for row in m_result.fetchall():
+                        user_names[row.id] = row.name or ""
+
+            agent_names: dict[uuid.UUID, str] = {}
+            if agent_owner_ids:
+                a_result = await db.execute(
+                    _select(Agent.id, Agent.name).where(Agent.id.in_(agent_owner_ids))
+                )
+                agent_names = {
+                    row.id: (row.name or "")
+                    for row in a_result.fetchall()
+                }
+
+            def _resolve_owner_label(obj: OKRObjective) -> str:
+                if obj.owner_type == "company":
+                    return "Company"
+                if not obj.owner_id:
+                    return f"{obj.owner_type}:unassigned"
+                if obj.owner_type == "user":
+                    return user_names.get(obj.owner_id) or f"user:{obj.owner_id}"
+                if obj.owner_type == "agent":
+                    return agent_names.get(obj.owner_id) or f"agent:{obj.owner_id}"
+                return f"{obj.owner_type}:{obj.owner_id}"
+
+        # Format output
+        lines = [f"# OKR Board — {ps} to {pe}\n"]
+
+        company_objs = [o for o in objectives if o.owner_type == "company"]
+        member_objs = [o for o in objectives if o.owner_type != "company"]
+
+        if company_objs:
+            lines.append("## Company Objectives")
+            for o in company_objs:
+                krs = krs_by_obj.get(str(o.id), [])
+                pct = 0
+                if krs:
+                    pct = int(sum(min(k.current_value / k.target_value, 1) for k in krs) / len(krs) * 100)
+                lines.append(f"\n**O: {o.title}** [{pct}%]")
+                for kr in krs:
+                    lines.append(
+                        f"  - KR ({kr.status}): {kr.title}  "
+                        f"[{kr.current_value}/{kr.target_value} {kr.unit or ''}]  "
+                        f" kr_id={kr.id}"
+                    )
+
+        if member_objs:
+            lines.append("\n## Member Objectives")
+            for o in member_objs:
+                owner_label = _resolve_owner_label(o)
+                krs = krs_by_obj.get(str(o.id), [])
+                lines.append(f"\n**{owner_label}** | O: {o.title}")
+                for kr in krs:
+                    lines.append(
+                        f"  - KR ({kr.status}): {kr.title}  "
+                        f"[{kr.current_value}/{kr.target_value} {kr.unit or ''}]  "
+                        f" kr_id={kr.id}"
+                    )
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"[OKR] get_okr failed for agent {agent_id}")
+        return f"Failed to retrieve OKR data: {str(e)[:200]}"
+
+
+async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
+    """Return the calling agent's own Objectives and KRs.
+
+    Includes objective_id and kr_id values so the agent can update existing OKRs
+    instead of accidentally creating duplicate ones.
+    """
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    try:
+        from app.database import async_session
+        from app.models.agent import Agent
+        from app.models.okr import OKRObjective, OKRKeyResult, OKRSettings
+        from sqlalchemy import select as _select
+        from datetime import date, timedelta
+
+        async with async_session() as db:
+            agent_result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+            agent = agent_result.scalar_one_or_none()
+            if not agent:
+                return "Agent not found."
+
+            settings_result = await db.execute(
+                _select(OKRSettings).where(OKRSettings.tenant_id == agent.tenant_id)
+            )
+            settings = settings_result.scalar_one_or_none()
+            if not settings or not settings.enabled:
+                return "OKR is not enabled for your organization."
+
+            ps, pe = _compute_okr_period_bounds(
+                settings.period_frequency,
+                settings.period_length_days,
+            )
+
+            obj_result = await db.execute(
+                _select(OKRObjective).where(
+                    OKRObjective.tenant_id == agent.tenant_id,
+                    OKRObjective.owner_type == "agent",
+                    OKRObjective.owner_id == agent_id,
+                    OKRObjective.period_start >= ps,
+                    OKRObjective.period_end <= pe,
+                    OKRObjective.status != "archived",
+                )
+            )
+            objectives = obj_result.scalars().all()
+
+            if not objectives:
+                return (
+                    f"You have no OKRs set for the current period ({ps} – {pe}). "
+                    "Contact the OKR Agent to set up your Objectives and Key Results."
+                )
+
+            obj_ids = [o.id for o in objectives]
+            kr_result = await db.execute(
+                _select(OKRKeyResult)
+                .where(OKRKeyResult.objective_id.in_(obj_ids))
+                .order_by(OKRKeyResult.created_at)
+            )
+            all_krs = kr_result.scalars().all()
+
+            krs_by_obj: dict = {}
+            for kr in all_krs:
+                krs_by_obj.setdefault(str(kr.objective_id), []).append(kr)
+
+        lines = [
+            f"# My OKRs — {ps} to {pe}\n",
+            "If you need to revise an existing OKR, reuse the IDs below:",
+            "- change Objective title/description/status with update_objective(objective_id=...)",
+            "- change KR title/target/unit/focus/status with update_kr_content(kr_id=...)",
+            "- change KR numeric progress with update_kr_progress(kr_id=...)",
+            "",
+        ]
+        for o in objectives:
+            krs = krs_by_obj.get(str(o.id), [])
+            lines.append(f"**O: {o.title}**  objective_id={o.id}")
+            if o.description:
+                lines.append(f"  {o.description}")
+            for kr in krs:
+                lines.append(
+                    f"  - [{kr.status}] {kr.title}  "
+                    f"Progress: {kr.current_value}/{kr.target_value} {kr.unit or ''}  "
+                    f"  kr_id={kr.id}"
+                )
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"[OKR] get_my_okr failed for agent {agent_id}")
+        return f"Failed to retrieve your OKR: {str(e)[:200]}"
+
+
+async def _load_okr_request_context(
+    db,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+) -> dict:
+    from app.models.agent import Agent as AgentModel
+    from app.models.user import User as UserModel
+
+    ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent = ag_res.scalar_one_or_none()
+    requester = None
+    if user_id:
+        user_res = await db.execute(select(UserModel).where(UserModel.id == user_id))
+        requester = user_res.scalar_one_or_none()
+
+    return {
+        "agent": agent,
+        "tenant_id": getattr(agent, "tenant_id", None),
+        "agent_is_system": bool(agent and agent.is_system),
+        "requester": requester,
+        "requester_user_id": user_id,
+        "requester_is_admin": bool(requester and requester.role in ("org_admin", "platform_admin")),
+    }
+
+
+def _okr_permission_denied(message: str) -> str:
+    return f"Permission denied: {message}"
+
+
+def _can_access_existing_okr_target(ctx: dict, owner_type: str, owner_id: uuid.UUID | None) -> str | None:
+    if ctx["agent_is_system"]:
+        if ctx["requester_is_admin"]:
+            return None
+        if owner_type != "user" or owner_id != ctx["requester_user_id"]:
+            return _okr_permission_denied(
+                "non-admin requests may only create or modify the requester's own personal OKRs. "
+                "Do not create or edit company OKRs or other members' OKRs."
+            )
+        return None
+
+    if owner_type != "agent" or owner_id != ctx["agent"].id:
+        return _okr_permission_denied(
+            "you can only create or modify your own agent OKRs."
+        )
+    return None
+
+
+def _can_create_okr_target(ctx: dict, owner_type: str, owner_id: uuid.UUID | None) -> str | None:
+    if ctx["agent_is_system"]:
+        if ctx["requester_is_admin"]:
+            return None
+        if owner_type != "user" or owner_id != ctx["requester_user_id"]:
+            return _okr_permission_denied(
+                "non-admin requests may only create the requester's own personal OKRs. "
+                "Creating company OKRs or other members' OKRs requires an org admin."
+            )
+        return None
+
+    if owner_type != "agent" or owner_id != ctx["agent"].id:
+        return _okr_permission_denied(
+            "you can only create OKRs for yourself."
+        )
+    return None
+
+
+async def _update_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
+    """Update a KR's current_value. Only the owning agent may call this.
+
+    Automatically writes an OKRProgressLog entry for history tracking.
+    """
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    kr_id_str = arguments.get("kr_id", "").strip()
+    value = arguments.get("value")
+    note = arguments.get("note")
+
+    if not kr_id_str:
+        return "Missing required argument 'kr_id'. Call get_my_okr first to get your KR IDs."
+    if value is None:
+        return "Missing required argument 'value'."
+
+    try:
+        kr_id = uuid.UUID(kr_id_str)
+    except ValueError:
+        return f"Invalid kr_id format: {kr_id_str}"
+
+    try:
+        from app.models.okr import OKRObjective, OKRKeyResult, OKRProgressLog
+        from sqlalchemy import select as _select
+        from datetime import datetime
+
+        async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
+            result = await db.execute(
+                _select(OKRKeyResult, OKRObjective)
+                .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
+                .where(
+                    OKRKeyResult.id == kr_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            row = result.first()
+            if not row:
+                return f"Key Result {kr_id_str} not found in your organization."
+
+            kr, obj = row
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
+
+            prev_value = kr.current_value
+            kr.current_value = float(value)
+            kr.last_updated_at = datetime.utcnow()
+
+            # Auto-determine status based on progress ratio
+            ratio = kr.current_value / kr.target_value if kr.target_value else 0
+            if ratio >= 1.0:
+                kr.status = "completed"
+            elif ratio >= 0.7:
+                kr.status = "on_track"
+            elif ratio >= 0.4:
+                kr.status = "at_risk"
+            else:
+                kr.status = "behind"
+
+            log = OKRProgressLog(
+                kr_id=kr_id,
+                previous_value=prev_value,
+                new_value=float(value),
+                source="self_report",
+                note=note,
+            )
+            db.add(log)
+            await db.commit()
+
+        return (
+            f"KR updated: {kr.title}\n"
+            f"  {prev_value} → {value} {kr.unit or ''} (status: {kr.status})"
+        )
+
+    except Exception as e:
+        logger.exception(f"[OKR] update_kr_progress failed for agent {agent_id}")
+        return f"Failed to update KR progress: {str(e)[:200]}"
+
+
+async def _update_kr_content(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
+    """Update metadata/content fields of one of the caller's own KRs."""
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    kr_id_str = arguments.get("kr_id", "").strip()
+    if not kr_id_str:
+        return "Missing required argument 'kr_id'. Call get_my_okr first to get your KR IDs."
+
+    try:
+        kr_id = uuid.UUID(kr_id_str)
+    except ValueError:
+        return f"Invalid kr_id format: {kr_id_str}"
+
+    supported_fields = {
+        "title": arguments.get("title"),
+        "target_value": arguments.get("target_value"),
+        "unit": arguments.get("unit"),
+        "focus_ref": arguments.get("focus_ref"),
+        "status": arguments.get("status"),
+    }
+    provided_updates = {key: value for key, value in supported_fields.items() if value is not None}
+    if not provided_updates:
+        return "No KR content fields provided. You can update: title, target_value, unit, focus_ref, status."
+
+    try:
+        from app.models.okr import OKRObjective, OKRKeyResult
+        from sqlalchemy import select as _select
+
+        async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
+            result = await db.execute(
+                _select(OKRKeyResult, OKRObjective)
+                .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
+                .where(
+                    OKRKeyResult.id == kr_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            row = result.first()
+            if not row:
+                return f"Key Result {kr_id_str} not found in your organization."
+
+            kr, obj = row
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
+
+            changed_fields: list[str] = []
+            if "title" in provided_updates:
+                kr.title = str(provided_updates["title"]).strip()
+                changed_fields.append("title")
+            if "target_value" in provided_updates:
+                kr.target_value = float(provided_updates["target_value"])
+                changed_fields.append("target_value")
+            if "unit" in provided_updates:
+                kr.unit = str(provided_updates["unit"]).strip() or None
+                changed_fields.append("unit")
+            if "focus_ref" in provided_updates:
+                kr.focus_ref = str(provided_updates["focus_ref"]).strip() or None
+                changed_fields.append("focus_ref")
+            if "status" in provided_updates:
+                kr.status = str(provided_updates["status"]).strip()
+                changed_fields.append("status")
+
+            await db.commit()
+
+        return (
+            f"KR content updated: {kr.title}\n"
+            f"Changed fields: {', '.join(changed_fields)}"
+        )
+
+    except Exception as e:
+        logger.exception(f"[OKR] update_kr_content failed for agent {agent_id}")
+        return f"Failed to update KR content: {str(e)[:200]}"
+
+
+async def _collect_okr_progress(agent_id: uuid.UUID | None) -> str:
+    """Batch-collect KR progress from all team members' focus.md files.
+
+    Delegates to okr_scheduler.collect_all_focus_updates(). The calling agent
+    must be the OKR Agent — we look up its tenant from the DB.
+    """
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    try:
+        from app.models.agent import Agent as AgentModel
+        from app.services.okr_scheduler import collect_all_focus_updates
+
+        async with async_session() as db:
+            agent_result = await db.execute(
+                select(AgentModel).where(AgentModel.id == agent_id)
+            )
+            agent = agent_result.scalar_one_or_none()
+            if not agent:
+                return "Agent not found."
+
+        return await collect_all_focus_updates(
+            tenant_id=agent.tenant_id,
+            okr_agent_id=agent_id,
+        )
+
+    except Exception as e:
+        logger.exception(f"[OKR] collect_okr_progress failed for agent {agent_id}")
+        return f"Failed to collect OKR progress: {str(e)[:200]}"
+
+
+async def _generate_okr_report(agent_id: uuid.UUID | None, arguments: dict) -> str:
+    """Generate a daily or weekly OKR report.
+
+    Writes to WorkReport table and returns the markdown content for posting.
+    """
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    report_type = arguments.get("report_type", "daily").lower()
+    if report_type not in ("daily", "weekly"):
+        return "Invalid report_type. Must be 'daily' or 'weekly'."
+
+    try:
+        from app.models.agent import Agent as AgentModel
+        from app.services.okr_scheduler import generate_daily_report, generate_weekly_report
+
+        async with async_session() as db:
+            agent_result = await db.execute(
+                select(AgentModel).where(AgentModel.id == agent_id)
+            )
+            agent = agent_result.scalar_one_or_none()
+            if not agent:
+                return "Agent not found."
+
+        if report_type == "daily":
+            return await generate_daily_report(
+                tenant_id=agent.tenant_id,
+                okr_agent_id=agent_id,
+            )
+        else:
+            return await generate_weekly_report(
+                tenant_id=agent.tenant_id,
+                okr_agent_id=agent_id,
+            )
+
+    except Exception as e:
+        logger.exception(f"[OKR] generate_okr_report failed for agent {agent_id}")
+        return f"Failed to generate OKR report: {str(e)[:200]}"
+
+
+async def _generate_monthly_okr_report(agent_id: uuid.UUID | None) -> str:
+    """Generate the monthly OKR summary report for the agent's tenant.
+
+    Writes a WorkReport (report_type='monthly') and returns the Markdown
+    content. The OKR Agent should forward this to admins via send_platform_message.
+    Also triggered automatically by the monthly_okr_report system cron trigger.
+    """
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    try:
+        from app.models.agent import Agent as AgentModel
+        from app.services.okr_scheduler import generate_monthly_report
+
+        async with async_session() as db:
+            agent_result = await db.execute(
+                select(AgentModel).where(AgentModel.id == agent_id)
+            )
+            agent = agent_result.scalar_one_or_none()
+            if not agent:
+                return "Agent not found."
+
+        return await generate_monthly_report(
+            tenant_id=agent.tenant_id,
+            okr_agent_id=agent_id,
+        )
+
+    except Exception as e:
+        logger.exception(f"[OKR] generate_monthly_okr_report failed for agent {agent_id}")
+        return f"Failed to generate monthly OKR report: {str(e)[:200]}"
+
+
+async def _get_okr_settings_tool(agent_id: uuid.UUID | None) -> str:
+    """Return OKR settings for the agent's tenant as a formatted string.
+
+    The OKR Agent uses this to determine report schedule and period config
+    without needing to make HTTP calls to its own API.
+    """
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    try:
+        from app.models.agent import Agent as AgentModel
+        from app.services.okr_scheduler import get_okr_settings_for_agent
+        import json as _json
+
+        async with async_session() as db:
+            agent_result = await db.execute(
+                select(AgentModel).where(AgentModel.id == agent_id)
+            )
+            agent = agent_result.scalar_one_or_none()
+            if not agent:
+                return "Agent not found."
+
+        settings = await get_okr_settings_for_agent(agent.tenant_id)
+        return _json.dumps(settings, indent=2, ensure_ascii=False)
+
+    except Exception as e:
+        logger.exception(f"[OKR] get_okr_settings failed for agent {agent_id}")
+        return f"Failed to get OKR settings: {str(e)[:200]}"
+
+
+async def _create_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
+    if not agent_id:
+        return "OKR tools require agent context."
+    try:
+        from app.models.agent import Agent as AgentModel
+        from app.models.okr import OKRObjective
+        from app.models.user import User as UserModel
+        from app.models.org import OrgMember
+        async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            ag = ctx["agent"]
+            if not ag:
+                return "Agent not found."
+
+            title = arguments.get("title")
+            owner_type = arguments.get("owner_type")
+            period_start = arguments.get("period_start")
+            period_end = arguments.get("period_end")
+            if not all([title, owner_type, period_start, period_end]):
+                return "Missing required fields: title, owner_type, period_start, period_end"
+
+            from datetime import date
+            p_start = date.fromisoformat(period_start)
+            p_end = date.fromisoformat(period_end)
+
+            owner_id_str = arguments.get("owner_id")
+            owner_name_hint = arguments.get("owner_name")  # optional name-based fallback
+            owner_id: uuid.UUID | None = None
+
+            if owner_id_str:
+                try:
+                    owner_id = uuid.UUID(owner_id_str)
+                except ValueError:
+                    owner_id = None
+
+                if owner_id:
+                    owner_exists = False
+                    if owner_type == "agent":
+                        res = await db.execute(select(AgentModel.id).where(AgentModel.id == owner_id))
+                        owner_exists = res.scalar_one_or_none() is not None
+                    elif owner_type == "user":
+                        from app.models.user import User as UserModel
+                        from app.models.org import OrgMember
+                        res = await db.execute(select(UserModel.id).where(UserModel.id == owner_id))
+                        owner_exists = res.scalar_one_or_none() is not None
+                        if not owner_exists:
+                            # Maybe agent passed OrgMember.id — resolve to linked User.id when available
+                            res = await db.execute(
+                                select(OrgMember.id, OrgMember.user_id).where(OrgMember.id == owner_id)
+                            )
+                            member_row = res.first()
+                            if member_row:
+                                owner_exists = True
+                                if member_row.user_id:
+                                    # Resolve OrgMember.id → User.id so name lookup in list_objectives works
+                                    owner_id = member_row.user_id
+                                    logger.info(
+                                        f"[OKR] _create_objective: resolved OrgMember.id {owner_id_str} "
+                                        f"→ user_id {owner_id}"
+                                    )
+                                # else: channel-only member, keep OrgMember.id as owner_id
+
+                    if not owner_exists:
+                        owner_id = None
+                        if not owner_name_hint:
+                            return f"owner_id '{owner_id_str}' was not found. Provide a valid UUID, or pass owner_name instead."
+
+            if owner_type != "company" and not owner_id and owner_name_hint:
+                # If we don't have a valid UUID but we have a name, look it up
+                if owner_type == "agent":
+                    res = await db.execute(select(AgentModel.id).where(AgentModel.tenant_id == ag.tenant_id, AgentModel.name == owner_name_hint))
+                    owner_id = res.scalar_one_or_none()
+                elif owner_type == "user":
+                    from app.models.org import OrgMember
+                    from app.models.user import User as UserModel
+                    # Try platform User.display_name first
+                    res = await db.execute(select(UserModel.id).where(UserModel.display_name == owner_name_hint, UserModel.tenant_id == ag.tenant_id))
+                    owner_id = res.scalar_one_or_none()
+                    if not owner_id:
+                        # Fall back to OrgMember.name (Feishu/channel-only users)
+                        res = await db.execute(select(OrgMember.id).where(OrgMember.name == owner_name_hint, OrgMember.tenant_id == ag.tenant_id))
+                        owner_id = res.scalar_one_or_none()
+
+                if not owner_id:
+                    return f"Failed: Could not resolve a valid system UUID for the {owner_type} named '{owner_name_hint}'."
+
+            if owner_type != "company" and not owner_id:
+               return f"Failed: owner_id or owner_name is required for {owner_type} OKRs."
+
+            if not ctx["agent_is_system"] and owner_type == "agent" and owner_id is None:
+                owner_id = agent_id
+
+            permission_error = _can_create_okr_target(ctx, owner_type, owner_id)
+            if permission_error:
+                return permission_error
+
+            obj = OKRObjective(
+                tenant_id=ag.tenant_id,
+                title=title,
+                description=arguments.get("description"),
+                owner_type=owner_type,
+                owner_id=owner_id,
+                period_start=p_start,
+                period_end=p_end,
+                status="active"
+            )
+            db.add(obj)
+            await db.commit()
+            owner_info = f"owner={owner_name_hint or owner_id_str or 'unattributed'}"
+            return f"Successfully created Objective '{obj.title}' (ID: {obj.id}, {owner_info})"
+    except Exception as e:
+        logger.exception(f"[OKR] create_objective failed")
+        return f"Failed to create objective: {str(e)[:200]}"
+
+
+async def _create_key_result(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
+    if not agent_id:
+        return "OKR tools require agent context."
+    try:
+        from app.models.okr import OKRObjective, OKRKeyResult
+        async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
+            obj_id_str = arguments.get("objective_id")
+            if not obj_id_str:
+                return "Missing objective_id"
+            try:
+                obj_id = uuid.UUID(obj_id_str)
+            except ValueError:
+                return "Invalid formatted objective_id (must be UUID)"
+
+            # Verify objective exists
+            obj_res = await db.execute(
+                select(OKRObjective).where(
+                    OKRObjective.id == obj_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            obj = obj_res.scalar_one_or_none()
+            if not obj:
+                return f"Objective {obj_id} not found."
+
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
+
+            kr = OKRKeyResult(
+                objective_id=obj_id,
+                title=arguments.get("title"),
+                target_value=float(arguments.get("target_value", 100)),
+                current_value=0.0,
+                unit=arguments.get("unit"),
+                focus_ref=arguments.get("focus_ref")
+            )
+            db.add(kr)
+            await db.commit()
+            return f"Successfully created Key Result '{kr.title}' (ID: {kr.id})"
+    except Exception as e:
+        logger.exception(f"[OKR] create_key_result failed")
+        return f"Failed to create key result: {str(e)[:200]}"
+
+
+async def _update_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
+    """Update Objective metadata.
+
+    Permission rules:
+    - Regular agents: can only modify Objectives they own (owner_type='agent', owner_id=agent_id).
+    - System agents are constrained by the requesting user's role: admins can modify any OKR,
+      non-admins may only modify their own personal OKRs.
+    """
+    if not agent_id:
+        return "OKR tools require agent context."
+    try:
+        from app.models.okr import OKRObjective
+        async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
+            obj_id_str = arguments.get("objective_id")
+            if not obj_id_str:
+                return "Missing objective_id"
+            try:
+                obj_id = uuid.UUID(obj_id_str)
+            except ValueError:
+                return "Invalid formatted objective_id (must be UUID)"
+
+            obj_res = await db.execute(
+                select(OKRObjective).where(
+                    OKRObjective.id == obj_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            obj = obj_res.scalar_one_or_none()
+            if not obj:
+                return f"Objective {obj_id} not found."
+
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
+
+            updates = []
+            if "title" in arguments:
+                obj.title = arguments["title"]
+                updates.append("title")
+            if "description" in arguments:
+                obj.description = arguments["description"]
+                updates.append("description")
+            if "status" in arguments:
+                obj.status = arguments["status"]
+                updates.append("status")
+            if "period_start" in arguments:
+                from datetime import date
+                obj.period_start = date.fromisoformat(arguments["period_start"])
+                updates.append("period_start")
+            if "period_end" in arguments:
+                from datetime import date
+                obj.period_end = date.fromisoformat(arguments["period_end"])
+                updates.append("period_end")
+
+            if not updates:
+                return "No supported fields provided to update."
+
+            await db.commit()
+            return f"Successfully updated Objective {obj.id}. Changed fields: {', '.join(updates)}"
+    except Exception as e:
+        logger.exception(f"[OKR] update_objective failed")
+        return f"Failed to update objective: {str(e)[:200]}"
+
+
+async def _update_any_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID | None, arguments: dict) -> str:
+    """OKR Agent exclusive version of update_kr_progress."""
+    if not agent_id:
+        return "OKR tools require agent context."
+    try:
+        from app.models.okr import OKRKeyResult, OKRObjective, OKRProgressLog
+        async with async_session() as db:
+            ctx = await _load_okr_request_context(db, agent_id, user_id)
+            if not ctx["agent"]:
+                return "Agent not found."
+
+            kr_id_str = arguments.get("kr_id")
+            val = arguments.get("value")
+            if not kr_id_str or val is None:
+                return "Missing kr_id or value"
+            try:
+                kr_id = uuid.UUID(kr_id_str)
+            except ValueError:
+                return "Invalid formatted kr_id (must be UUID)"
+
+            kr_res = await db.execute(
+                select(OKRKeyResult, OKRObjective)
+                .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
+                .where(
+                    OKRKeyResult.id == kr_id,
+                    OKRObjective.tenant_id == ctx["tenant_id"],
+                )
+            )
+            row = kr_res.first()
+            if not row:
+                return f"Key Result {kr_id} not found in your organization."
+
+            kr, obj = row
+            permission_error = _can_access_existing_okr_target(ctx, obj.owner_type, obj.owner_id)
+            if permission_error:
+                return permission_error
+
+            old_val = kr.current_value
+            kr.current_value = float(val)
+
+            # Auto-compute status if not explicitly given
+            explicit_status = arguments.get("status")
+            if explicit_status:
+                kr.status = explicit_status
+            else:
+                progress = kr.current_value / kr.target_value if kr.target_value != 0 else 0
+                if progress >= 1.0:
+                    kr.status = "completed"
+                elif progress >= 0.7:
+                    kr.status = "on_track"
+                elif progress >= 0.4:
+                    kr.status = "at_risk"
+                else:
+                    kr.status = "behind"
+
+            from datetime import datetime
+            kr.last_updated_at = datetime.utcnow()
+
+            note = arguments.get("note", "Updated by OKR Agent after check-in")
+            log_entry = OKRProgressLog(
+                kr_id=kr.id,
+                previous_value=old_val,
+                new_value=kr.current_value,
+                source="okr_agent" if ctx["agent_is_system"] else "agent",
+                note=note
+            )
+            db.add(log_entry)
+            await db.commit()
+
+            return f"Successfully updated KR '{kr.title}'. Progress: {old_val} -> {kr.current_value} {kr.unit or ''}. Status: {kr.status}"
+    except Exception as e:
+        logger.exception(f"[OKR] update_any_kr_progress failed")
+        return f"Failed to update kr progress: {str(e)[:200]}"
+
+
+async def _upsert_member_daily_report(agent_id: uuid.UUID | None, arguments: dict) -> str:
+    """OKR Agent exclusive tool for creating or revising a member daily report."""
+    if not agent_id:
+        return "OKR tools require agent context."
+
+    try:
+        from datetime import date as date_cls
+        from app.models.agent import Agent as AgentModel
+        from app.models.okr import MemberDailyReport
+        from app.services.okr_reporting import (
+            list_tracked_okr_members,
+            upsert_member_daily_report as _upsert,
+        )
+
+        report_date_raw = arguments.get("report_date")
+        content = (arguments.get("content") or "").strip()
+        member_type = arguments.get("member_type") or "user"
+        member_id_raw = arguments.get("member_id")
+        member_name = (arguments.get("member_name") or "").strip()
+        source = (arguments.get("source") or "okr_agent_assisted").strip() or "okr_agent_assisted"
+
+        if not report_date_raw or not content:
+            return "Missing report_date or content"
+
+        try:
+            report_date = date_cls.fromisoformat(report_date_raw)
+        except ValueError:
+            return "Invalid report_date format. Use YYYY-MM-DD."
+
+        async with async_session() as db:
+            ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            ag = ag_res.scalar_one_or_none()
+            if not ag:
+                return "Agent not found."
+            if not ag.is_system:
+                return "Permission denied: only the OKR Agent can upsert member daily reports."
+
+            target_member_id: uuid.UUID | None = None
+            if member_id_raw:
+                try:
+                    target_member_id = uuid.UUID(member_id_raw)
+                except ValueError:
+                    return "Invalid member_id format. Use a UUID."
+
+            if not target_member_id:
+                if not member_name:
+                    return "Provide either member_id or member_name."
+                members = await list_tracked_okr_members(ag.tenant_id)
+                lowered = member_name.casefold()
+                exact_matches = [
+                    member for member in members
+                    if member.member_type == member_type and member.display_name.casefold() == lowered
+                ]
+                if len(exact_matches) == 1:
+                    target_member_id = exact_matches[0].member_id
+                    member_name = exact_matches[0].display_name
+                elif len(exact_matches) > 1:
+                    return f"Multiple {member_type} members matched '{member_name}'. Please provide member_id."
+                else:
+                    fuzzy_matches = [
+                        member for member in members
+                        if member.member_type == member_type and lowered in member.display_name.casefold()
+                    ]
+                    if len(fuzzy_matches) == 1:
+                        target_member_id = fuzzy_matches[0].member_id
+                        member_name = fuzzy_matches[0].display_name
+                    elif len(fuzzy_matches) > 1:
+                        options = ", ".join(member.display_name for member in fuzzy_matches[:5])
+                        return f"Multiple {member_type} members matched '{member_name}': {options}. Please provide member_id."
+                    else:
+                        return f"No {member_type} member matched '{member_name}'."
+
+            existing_res = await db.execute(
+                select(MemberDailyReport).where(
+                    MemberDailyReport.tenant_id == ag.tenant_id,
+                    MemberDailyReport.member_type == member_type,
+                    MemberDailyReport.member_id == target_member_id,
+                    MemberDailyReport.report_date == report_date,
+                )
+            )
+            existing = existing_res.scalar_one_or_none()
+            previous_content = existing.content if existing else ""
+
+        report = await _upsert(
+            tenant_id=ag.tenant_id,
+            member_type=member_type,
+            member_id=target_member_id,
+            report_date=report_date,
+            content=content,
+            source=source,
+        )
+
+        resolved_name = member_name or str(target_member_id)
+        action = "Updated" if previous_content else "Created"
+        details = [
+            f"{action} daily report for {resolved_name} on {report.report_date.isoformat()}.",
+            f"Stored length: {len(report.content)} characters.",
+            f"Status: {report.status}.",
+        ]
+        if previous_content:
+            details.append(f"Previous content: {previous_content}")
+        details.append(f"Current content: {report.content}")
+        return " ".join(details)
+    except Exception as e:
+        logger.exception("[OKR] upsert_member_daily_report failed")
+        return f"Failed to upsert member daily report: {str(e)[:200]}"

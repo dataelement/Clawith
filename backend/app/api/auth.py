@@ -972,7 +972,7 @@ async def bind_identity(
         user_info = await auth_provider.get_user_info(access_token)
 
         # Check if identity is already linked to another user
-        lookup_provider_user_id = user_info.provider_union_id or user_info.provider_user_id
+        lookup_provider_user_id = user_info.provider_user_id
         existing_user = await sso_service.check_duplicate_identity(
             db,
             provider,

@@ -39,6 +39,8 @@ class Tenant(Base):
 
     # Default timezone for all agents in this company (IANA format, e.g. "Asia/Shanghai")
     timezone: Mapped[str] = mapped_column(String(50), default="UTC")
+    # Company country/region code used to derive default timezone and business calendar.
+    country_region: Mapped[str] = mapped_column(String(10), default="001")
 
     # SSO configuration
     sso_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -52,4 +54,3 @@ class Tenant(Base):
     # A2A async communication (notify / task_delegate)
     # When False, all agent-to-agent messages use synchronous consult mode
     a2a_async_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-

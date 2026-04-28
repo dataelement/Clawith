@@ -10,7 +10,9 @@ import ChannelConfig from '../components/ChannelConfig';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
-import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
+import type { LivePreviewState } from '../components/AgentBayLivePanel';
+import AgentSidePanel, { SidePanelTab } from '../components/AgentSidePanel';
+import type { WorkspaceActivity, WorkspaceLiveDraft } from '../components/WorkspaceOperationPanel';
 import AgentCredentials from '../components/AgentCredentials';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
@@ -21,6 +23,82 @@ import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 
 const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+
+const WORKSPACE_TOOLS = new Set([
+    'write_file',
+    'edit_file',
+    'delete_file',
+    'convert_markdown_to_docx',
+    'convert_csv_to_xlsx',
+    'convert_markdown_to_pdf',
+    'convert_html_to_pdf',
+    'convert_html_to_pptx',
+]);
+
+function workspaceActionForTool(tool: string): WorkspaceLiveDraft['action'] {
+    if (tool === 'edit_file') return 'edit';
+    if (tool === 'delete_file') return 'delete';
+    if (tool.startsWith('convert_')) return 'convert';
+    return 'write';
+}
+
+function decodeJsonStringFragment(value: string): string {
+    try {
+        return JSON.parse(`"${value.replace(/"/g, '\\"')}"`);
+    } catch {
+        return value.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
+}
+
+function readPartialJsonString(raw: string, key: string): string | undefined {
+    const marker = `"${key}"`;
+    const markerIdx = raw.indexOf(marker);
+    if (markerIdx < 0) return undefined;
+    const colonIdx = raw.indexOf(':', markerIdx + marker.length);
+    if (colonIdx < 0) return undefined;
+    const firstQuote = raw.indexOf('"', colonIdx + 1);
+    if (firstQuote < 0) return undefined;
+    let escaped = false;
+    let value = '';
+    for (let i = firstQuote + 1; i < raw.length; i += 1) {
+        const ch = raw[i];
+        if (escaped) {
+            value += `\\${ch}`;
+            escaped = false;
+            continue;
+        }
+        if (ch === '\\') {
+            escaped = true;
+            continue;
+        }
+        if (ch === '"') break;
+        value += ch;
+    }
+    return decodeJsonStringFragment(value);
+}
+
+function parseWorkspaceDraftArgs(tool: string, raw: string): Pick<WorkspaceLiveDraft, 'path' | 'content'> {
+    let parsed: any = null;
+    try {
+        parsed = JSON.parse(raw || '{}');
+    } catch {
+        parsed = null;
+    }
+    const getString = (key: string) => {
+        const parsedValue = parsed?.[key];
+        if (typeof parsedValue === 'string') return parsedValue;
+        return readPartialJsonString(raw || '', key);
+    };
+    const sourcePath = getString('source_path');
+    const path = getString('path') || getString('target_path') || sourcePath;
+    let content = getString('content');
+    if (tool === 'edit_file') content = getString('new_string') || content;
+    return { path, content };
+}
+
+function workspaceFileName(path: string): string {
+    return path.replace(/^workspace\//, '') || path;
+}
 
 // Format large token numbers with K/M suffixes
 const formatTokens = (n: number) => {
@@ -748,7 +826,25 @@ function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     return fetch(`/api${url}`, {
         ...options,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    }).then(r => r.json());
+    }).then(async (r) => {
+        if (!r.ok) {
+            const bodyText = await r.text();
+            let detail: unknown;
+            try {
+                detail = bodyText ? JSON.parse(bodyText)?.detail : undefined;
+            } catch {
+                detail = bodyText;
+            }
+            const message = typeof detail === 'string'
+                ? detail
+                : bodyText?.trim() || `HTTP ${r.status}`;
+            const error: any = new Error(message);
+            error.status = r.status;
+            error.detail = detail;
+            throw error;
+        }
+        return r.json();
+    });
 }
 
 // ── Pulse LED keyframe (shared with Chat.tsx, guarded by ID) ──────────────
@@ -1012,26 +1108,57 @@ function AnalysisCard({
 
 
 function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; readOnly?: boolean }) {
-    const { t } = useTranslation();
-    const qc = useQueryClient();
+    const { t, i18n } = useTranslation();
+    const isChinese = i18n.language?.startsWith('zh');
+    const humanSearchRef = useRef<HTMLDivElement>(null);
+    const agentSearchRef = useRef<HTMLDivElement>(null);
+    const getHumanMemberSourceLabel = useCallback((member: any) => {
+        if (member?.provider_name) return member.provider_name;
+        return isChinese ? '平台用户' : 'Platform User';
+    }, [isChinese]);
+
+    const renderHumanMemberSourceBadge = useCallback((member: any) => {
+        const isPlatformUser = !member?.provider_name;
+        return (
+            <span
+                style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '1px 6px',
+                    borderRadius: '999px',
+                    fontSize: '10px',
+                    fontWeight: 600,
+                    marginRight: '6px',
+                    background: isPlatformUser ? 'rgba(99,102,241,0.10)' : 'rgba(16,185,129,0.10)',
+                    color: isPlatformUser ? 'rgb(79,70,229)' : 'rgb(16,185,129)',
+                    border: isPlatformUser ? '1px solid rgba(99,102,241,0.18)' : '1px solid rgba(16,185,129,0.18)',
+                }}
+            >
+                {getHumanMemberSourceLabel(member)}
+            </span>
+        );
+    }, [getHumanMemberSourceLabel]);
+
     const [search, setSearch] = useState('');
+    const [showHumanForm, setShowHumanForm] = useState(false);
     const [searchResults, setSearchResults] = useState<any[]>([]);
-    const [adding, setAdding] = useState<any>(null);
+    const [showMemberDropdown, setShowMemberDropdown] = useState(false);
+    const [selectedMembers, setSelectedMembers] = useState<any[]>([]);
     const [relation, setRelation] = useState('collaborator');
     const [description, setDescription] = useState('');
-    // Agent relationships state
-    const [addingAgent, setAddingAgent] = useState(false);
+    const [agentSearch, setAgentSearch] = useState('');
+    const [showAgentForm, setShowAgentForm] = useState(false);
+    const [agentSearchResults, setAgentSearchResults] = useState<any[]>([]);
+    const [showAgentDropdown, setShowAgentDropdown] = useState(false);
+    const [selectedAgents, setSelectedAgents] = useState<any[]>([]);
     const [agentRelation, setAgentRelation] = useState('collaborator');
     const [agentDescription, setAgentDescription] = useState('');
-    const [selectedAgentId, setSelectedAgentId] = useState('');
-    // Editing state
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editRelation, setEditRelation] = useState('');
     const [editDescription, setEditDescription] = useState('');
     const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
     const [editAgentRelation, setEditAgentRelation] = useState('');
     const [editAgentDescription, setEditAgentDescription] = useState('');
-    // Track which rows are being deleted (for optimistic UI)
     const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
     const { data: relationships = [], refetch } = useQuery({
@@ -1042,47 +1169,133 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         queryKey: ['agent-relationships', agentId],
         queryFn: () => fetchAuth<any[]>(`/agents/${agentId}/relationships/agents`),
     });
-    const { data: allAgents = [] } = useQuery({
-        queryKey: ['agents-for-rel'],
-        queryFn: () => fetchAuth<any[]>(`/agents/`),
-    });
-    const availableAgents = allAgents.filter((a: any) => a.id !== agentId);
+
+    const relatedMemberIds = useMemo(() => new Set(relationships.map((r: any) => r.member_id)), [relationships]);
+    const relatedAgentIds = useMemo(() => new Set(agentRelationships.map((r: any) => r.target_agent_id)), [agentRelationships]);
+    const selectedMemberIds = useMemo(() => new Set(selectedMembers.map((m: any) => m.id)), [selectedMembers]);
+    const selectedAgentIds = useMemo(() => new Set(selectedAgents.map((a: any) => a.id)), [selectedAgents]);
+
+    const visibleMemberResults = useMemo(
+        () => searchResults.filter((m: any) => !relatedMemberIds.has(m.id)),
+        [searchResults, relatedMemberIds],
+    );
+    const visibleAgentResults = useMemo(
+        () => agentSearchResults.filter((a: any) => !relatedAgentIds.has(a.id)),
+        [agentSearchResults, relatedAgentIds],
+    );
+
+    const loadOrgMembers = async (keyword = '') => {
+        const query = keyword.trim() ? `?search=${encodeURIComponent(keyword.trim())}` : '';
+        const results = await fetchAuth<any[]>(`/enterprise/org/members${query}`);
+        setSearchResults(results);
+    };
+
+    const loadAgentCandidates = async (keyword = '') => {
+        const query = keyword.trim() ? `?search=${encodeURIComponent(keyword.trim())}` : '';
+        const results = await fetchAuth<any[]>(`/agents/${agentId}/relationships/agent-candidates${query}`);
+        setAgentSearchResults(results);
+    };
 
     useEffect(() => {
         if (!search || search.length < 1) { setSearchResults([]); return; }
-        const t = setTimeout(() => {
-            fetchAuth<any[]>(`/enterprise/org/members?search=${encodeURIComponent(search)}`).then(setSearchResults);
+        const timer = setTimeout(() => {
+            loadOrgMembers(search);
         }, 300);
-        return () => clearTimeout(t);
+        return () => clearTimeout(timer);
     }, [search]);
 
+    useEffect(() => {
+        if (!agentSearch || agentSearch.length < 1) { setAgentSearchResults([]); return; }
+        const timer = setTimeout(() => {
+            loadAgentCandidates(agentSearch);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [agentId, agentSearch]);
+
+    useEffect(() => {
+        const handleClickOutside = (e: MouseEvent) => {
+            const target = e.target as Node;
+            if (showMemberDropdown && humanSearchRef.current && !humanSearchRef.current.contains(target)) {
+                setShowMemberDropdown(false);
+            }
+            if (showAgentDropdown && agentSearchRef.current && !agentSearchRef.current.contains(target)) {
+                setShowAgentDropdown(false);
+            }
+        };
+        if (showMemberDropdown || showAgentDropdown) {
+            document.addEventListener('mousedown', handleClickOutside);
+        }
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showMemberDropdown, showAgentDropdown]);
+
+    const resetHumanDraft = () => {
+        setShowHumanForm(false);
+        setSearch('');
+        setSearchResults([]);
+        setShowMemberDropdown(false);
+        setSelectedMembers([]);
+        setRelation('collaborator');
+        setDescription('');
+    };
+
+    const resetAgentDraft = () => {
+        setShowAgentForm(false);
+        setAgentSearch('');
+        setAgentSearchResults([]);
+        setShowAgentDropdown(false);
+        setSelectedAgents([]);
+        setAgentRelation('collaborator');
+        setAgentDescription('');
+    };
+
+    const toggleMemberSelection = (member: any) => {
+        setSelectedMembers(prev =>
+            prev.some((item: any) => item.id === member.id)
+                ? prev.filter((item: any) => item.id !== member.id)
+                : [...prev, member]
+        );
+    };
+
+    const toggleAgentSelection = (agent: any) => {
+        setSelectedAgents(prev =>
+            prev.some((item: any) => item.id === agent.id)
+                ? prev.filter((item: any) => item.id !== agent.id)
+                : [...prev, agent]
+        );
+    };
+
     const addRelationship = async () => {
-        if (!adding) return;
-        const existing = relationships.map((r: any) => ({ member_id: r.member_id, relation: r.relation, description: r.description }));
-        existing.push({ member_id: adding.id, relation, description });
-        await fetchAuth(`/agents/${agentId}/relationships/`, { method: 'PUT', body: JSON.stringify({ relationships: existing }) });
-        setAdding(null); setSearch(''); setRelation('collaborator'); setDescription('');
+        if (!selectedMembers.length) return;
+        const existing = new Map(
+            relationships.map((r: any) => [r.member_id, { member_id: r.member_id, relation: r.relation, description: r.description }])
+        );
+        selectedMembers.forEach((member: any) => {
+            existing.set(member.id, { member_id: member.id, relation, description });
+        });
+        await fetchAuth(`/agents/${agentId}/relationships/`, { method: 'PUT', body: JSON.stringify({ relationships: Array.from(existing.values()) }) });
+        resetHumanDraft();
         refetch();
     };
+
     const removeRelationship = async (relId: string) => {
-        // Optimistic update: mark as deleting immediately so the row fades out
         setDeletingIds(prev => new Set(prev).add(relId));
         try {
             await fetchAuth(`/agents/${agentId}/relationships/${relId}`, { method: 'DELETE' });
             refetch();
         } catch {
-            // Rollback on failure
             setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
             refetch();
         } finally {
             setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
         }
     };
+
     const startEditRelationship = (r: any) => {
         setEditingId(r.id);
         setEditRelation(r.relation || 'collaborator');
         setEditDescription(r.description || '');
     };
+
     const saveEditRelationship = async (targetId: string) => {
         const updated = relationships.map((r: any) => ({
             member_id: r.member_id,
@@ -1093,33 +1306,39 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         setEditingId(null);
         refetch();
     };
+
     const addAgentRelationship = async () => {
-        if (!selectedAgentId) return;
-        const existing = agentRelationships.map((r: any) => ({ target_agent_id: r.target_agent_id, relation: r.relation, description: r.description }));
-        existing.push({ target_agent_id: selectedAgentId, relation: agentRelation, description: agentDescription });
-        await fetchAuth(`/agents/${agentId}/relationships/agents`, { method: 'PUT', body: JSON.stringify({ relationships: existing }) });
-        setAddingAgent(false); setSelectedAgentId(''); setAgentRelation('collaborator'); setAgentDescription('');
+        if (!selectedAgents.length) return;
+        const existing = new Map(
+            agentRelationships.map((r: any) => [r.target_agent_id, { target_agent_id: r.target_agent_id, relation: r.relation, description: r.description }])
+        );
+        selectedAgents.forEach((agent: any) => {
+            existing.set(agent.id, { target_agent_id: agent.id, relation: agentRelation, description: agentDescription });
+        });
+        await fetchAuth(`/agents/${agentId}/relationships/agents`, { method: 'PUT', body: JSON.stringify({ relationships: Array.from(existing.values()) }) });
+        resetAgentDraft();
         refetchAgentRels();
     };
+
     const removeAgentRelationship = async (relId: string) => {
-        // Optimistic update: mark as deleting immediately so the row fades out
         setDeletingIds(prev => new Set(prev).add(relId));
         try {
             await fetchAuth(`/agents/${agentId}/relationships/agents/${relId}`, { method: 'DELETE' });
             refetchAgentRels();
         } catch {
-            // Rollback on failure
             setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
             refetchAgentRels();
         } finally {
             setDeletingIds(prev => { const s = new Set(prev); s.delete(relId); return s; });
         }
     };
+
     const startEditAgentRelationship = (r: any) => {
         setEditingAgentId(r.id);
         setEditAgentRelation(r.relation || 'collaborator');
         setEditAgentDescription(r.description || '');
     };
+
     const saveEditAgentRelationship = async (targetId: string) => {
         const updated = agentRelationships.map((r: any) => ({
             target_agent_id: r.target_agent_id,
@@ -1133,7 +1352,6 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
 
     return (
         <div>
-            {/* ── Human Relationships ── */}
             <div className="card" style={{ marginBottom: '12px' }}>
                 <h4 style={{ marginBottom: '12px' }}>{t('agent.detail.humanRelationships')}</h4>
                 <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>{t('agent.detail.humanRelationships')}</p>
@@ -1141,19 +1359,18 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {relationships.map((r: any) => (
                             <div key={r.id} style={{
-                                    borderRadius: '8px', border: '1px solid var(--border-subtle)',
-                                    overflow: 'hidden',
-                                    // Fade out row while delete is in-flight
-                                    opacity: deletingIds.has(r.id) ? 0.4 : 1,
-                                    transition: 'opacity 0.2s ease',
-                                    pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
-                                }}>
+                                borderRadius: '8px', border: '1px solid var(--border-subtle)',
+                                overflow: 'hidden',
+                                opacity: deletingIds.has(r.id) ? 0.4 : 1,
+                                transition: 'opacity 0.2s ease',
+                                pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
+                            }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 600, flexShrink: 0 }}>{r.member?.name?.[0] || '?'}</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{ fontWeight: 600, fontSize: '13px' }}>{r.member?.name || '?'} <span className="badge" style={{ fontSize: '10px', marginLeft: '4px' }}>{r.relation_label}</span></div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                            {r.member?.provider_name && <span style={{ color: 'var(--accent-color)', fontWeight: 500, marginRight: '6px' }}>[{r.member.provider_name}]</span>}
+                                            {renderHumanMemberSourceBadge(r.member)}
                                             {r.member?.department_path || ''} · {r.member?.email || ''}
                                         </div>
                                         {r.description && editingId !== r.id && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{r.description}</div>}
@@ -1190,49 +1407,112 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                         ))}
                     </div>
                 )}
-                {!readOnly && !adding && (
-                    <div style={{ position: 'relative' }}>
-                        <input className="input" placeholder={t("agent.detail.searchMembers")} value={search} onChange={e => setSearch(e.target.value)} style={{ fontSize: '13px' }} />
-                        {searchResults.length > 0 && (
-                            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', marginTop: '4px', maxHeight: '200px', overflowY: 'auto', zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
-                                {searchResults.map((m: any) => (
-                                    <div key={m.id} style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', borderBottom: '1px solid var(--border-subtle)' }}
-                                        onClick={() => { setAdding(m); setSearch(''); setSearchResults([]); }}
-                                        onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-elevated)')}
-                                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                        <div style={{ fontWeight: 500 }}>{m.name}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                            {m.provider_name && <span style={{ color: 'var(--accent-color)', fontWeight: 500, marginRight: '6px' }}>[{m.provider_name}]</span>}
-                                            {m.department_path} · {m.email}
+                {!readOnly && !showHumanForm && (
+                    <button className="btn btn-secondary" type="button" onClick={() => setShowHumanForm(true)}>
+                        {t('agent.detail.addRelationship', 'Add Relationship')}
+                    </button>
+                )}
+                {!readOnly && showHumanForm && (
+                    <div
+                        style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}
+                        onMouseDownCapture={(e) => {
+                            const target = e.target as Node;
+                            if (humanSearchRef.current && !humanSearchRef.current.contains(target)) {
+                                setShowMemberDropdown(false);
+                            }
+                        }}
+                    >
+                        <div ref={humanSearchRef} style={{ position: 'relative', marginBottom: '8px' }}>
+                            <input
+                                className="input"
+                                placeholder={t('agent.detail.searchMembers')}
+                                value={search}
+                                onChange={e => {
+                                    setSearch(e.target.value);
+                                    setShowMemberDropdown(true);
+                                }}
+                                onFocus={() => {
+                                    setShowMemberDropdown(true);
+                                    if (!search.trim() && searchResults.length === 0) {
+                                        loadOrgMembers();
+                                    }
+                                }}
+                                style={{ fontSize: '13px' }}
+                            />
+                            {showMemberDropdown && visibleMemberResults.length > 0 && (
+                                <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', marginTop: '4px', maxHeight: '200px', overflowY: 'auto', zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
+                                    {visibleMemberResults.map((m: any) => {
+                                        const checked = selectedMemberIds.has(m.id);
+                                        return (
+                                            <div key={m.id} style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'flex-start', gap: '8px' }}
+                                                onClick={() => toggleMemberSelection(m)}
+                                                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-elevated)')}
+                                                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                                                <input type="checkbox" checked={checked} readOnly style={{ marginTop: '2px' }} />
+                                                <div style={{ minWidth: 0, flex: 1 }}>
+                                                    <div style={{ fontWeight: 500 }}>{m.name}</div>
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                        {renderHumanMemberSourceBadge(m)}
+                                                        {m.department_path} · {m.email}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                        {showMemberDropdown && search && visibleMemberResults.length === 0 && (
+                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                {t('agent.detail.noSearchResults', 'No available results')}
+                            </div>
+                        )}
+                        {selectedMembers.length > 0 && (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '10px' }}>
+                                {selectedMembers.map((member: any) => (
+                                    <div
+                                        key={member.id}
+                                        style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '8px',
+                                            border: '1px solid var(--border-subtle)',
+                                            borderRadius: '10px',
+                                            padding: '8px 10px',
+                                            background: 'var(--bg-primary)',
+                                            fontSize: '12px',
+                                            lineHeight: 1.2,
+                                        }}
+                                    >
+                                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '11px', flexShrink: 0 }}>
+                                            {member.name?.[0] || '?'}
                                         </div>
+                                        <div style={{ minWidth: 0 }}>
+                                            <div style={{ fontWeight: 600 }}>{member.name}</div>
+                                            <div style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>{member.department_path || member.email || ''}</div>
+                                        </div>
+                                        <button className="btn btn-ghost" type="button" style={{ fontSize: '12px', padding: 0, minWidth: 'auto', marginLeft: '2px' }} onClick={() => toggleMemberSelection(member)}>×</button>
                                     </div>
                                 ))}
                             </div>
                         )}
-                    </div>
-                )}
-                {!readOnly && adding && (
-                    <div style={{ border: '1px solid var(--accent-primary)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}>
-                        <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '8px' }}>
-                            {t('agent.detail.addRelationship')}: {adding.name}
-                            <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '8px' }}>
-                                ({adding.provider_name ? `[${adding.provider_name}] ` : ''}{adding.department_path} · {adding.email})
-                            </span>
-                        </div>
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                            <select className="input" value={relation} onChange={e => setRelation(e.target.value)} style={{ width: '140px', fontSize: '12px' }}>
+                            <select className="input" value={relation} onChange={e => setRelation(e.target.value)} style={{ width: '160px', fontSize: '12px' }}>
                                 {getRelationOptions(t).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
                             </select>
                         </div>
                         <textarea className="input" placeholder="" value={description} onChange={e => setDescription(e.target.value)} rows={2} style={{ fontSize: '12px', resize: 'vertical', marginBottom: '8px' }} />
                         <div style={{ display: 'flex', gap: '8px' }}>
-                            <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={addRelationship}>{t('common.confirm')}</button>
-                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => { setAdding(null); setDescription(''); }}>{t('common.cancel')}</button>
+                            <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={addRelationship} disabled={selectedMembers.length === 0}>
+                                {t('common.confirm')} {selectedMembers.length > 0 ? `(${selectedMembers.length})` : ''}
+                            </button>
+                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={resetHumanDraft}>
+                                {t('common.cancel')}
+                            </button>
                         </div>
                     </div>
                 )}
             </div>
-            {/* ── Agent-to-Agent Relationships ── */}
             <div className="card" style={{ marginBottom: '12px' }}>
                 <h4 style={{ marginBottom: '12px' }}>{t('agent.detail.agentRelationships')}</h4>
                 <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>{t('agent.detail.agentRelationships')}</p>
@@ -1240,13 +1520,12 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
                         {agentRelationships.map((r: any) => (
                             <div key={r.id} style={{
-                                    borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)',
-                                    background: 'rgba(16,185,129,0.05)', overflow: 'hidden',
-                                    // Fade out row while delete is in-flight
-                                    opacity: deletingIds.has(r.id) ? 0.4 : 1,
-                                    transition: 'opacity 0.2s ease',
-                                    pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
-                                }}>
+                                borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)',
+                                background: 'rgba(16,185,129,0.05)', overflow: 'hidden',
+                                opacity: deletingIds.has(r.id) ? 0.4 : 1,
+                                transition: 'opacity 0.2s ease',
+                                pointerEvents: deletingIds.has(r.id) ? 'none' : 'auto',
+                            }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px' }}>
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: 0 }}>A</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -1286,24 +1565,105 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                         ))}
                     </div>
                 )}
-                {!readOnly && !addingAgent && (
-                    <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setAddingAgent(true)}>+ {t('agent.detail.addRelationship')}</button>
+                {!readOnly && !showAgentForm && (
+                    <button className="btn btn-secondary" type="button" onClick={() => setShowAgentForm(true)}>
+                        {t('agent.detail.addRelationship', 'Add Relationship')}
+                    </button>
                 )}
-                {!readOnly && addingAgent && (
-                    <div style={{ border: '1px solid rgba(16,185,129,0.5)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}>
+                {!readOnly && showAgentForm && (
+                    <div
+                        style={{ border: '1px solid rgba(16,185,129,0.3)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}
+                        onMouseDownCapture={(e) => {
+                            const target = e.target as Node;
+                            if (agentSearchRef.current && !agentSearchRef.current.contains(target)) {
+                                setShowAgentDropdown(false);
+                            }
+                        }}
+                    >
+                        <div ref={agentSearchRef} style={{ position: 'relative', marginBottom: '8px' }}>
+                            <input
+                                className="input"
+                                placeholder={t('agent.detail.searchAgents', '搜索可见数字员工...')}
+                                value={agentSearch}
+                                onChange={e => {
+                                    setAgentSearch(e.target.value);
+                                    setShowAgentDropdown(true);
+                                }}
+                                onFocus={() => {
+                                    setShowAgentDropdown(true);
+                                    if (!agentSearch.trim() && agentSearchResults.length === 0) {
+                                        loadAgentCandidates();
+                                    }
+                                }}
+                                style={{ fontSize: '13px' }}
+                            />
+                            {showAgentDropdown && visibleAgentResults.length > 0 && (
+                                <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', marginTop: '4px', maxHeight: '200px', overflowY: 'auto', zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
+                                    {visibleAgentResults.map((agent: any) => {
+                                        const checked = selectedAgentIds.has(agent.id);
+                                        return (
+                                            <div key={agent.id} style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'flex-start', gap: '8px' }}
+                                                onClick={() => toggleAgentSelection(agent)}
+                                                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-elevated)')}
+                                                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                                                <input type="checkbox" checked={checked} readOnly style={{ marginTop: '2px' }} />
+                                                <div style={{ minWidth: 0, flex: 1 }}>
+                                                    <div style={{ fontWeight: 500 }}>{agent.name}</div>
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{agent.role_description || 'Agent'}</div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                        {showAgentDropdown && agentSearch && visibleAgentResults.length === 0 && (
+                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                {t('agent.detail.noSearchResults', 'No available results')}
+                            </div>
+                        )}
+                        {selectedAgents.length > 0 && (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '10px' }}>
+                                {selectedAgents.map((agent: any) => (
+                                    <div
+                                        key={agent.id}
+                                        style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '8px',
+                                            border: '1px solid rgba(16,185,129,0.24)',
+                                            borderRadius: '10px',
+                                            padding: '8px 10px',
+                                            background: 'var(--bg-primary)',
+                                            fontSize: '12px',
+                                            lineHeight: 1.2,
+                                        }}
+                                    >
+                                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: 'rgba(16,185,129,0.12)', color: 'rgb(16,185,129)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '11px', flexShrink: 0 }}>
+                                            {agent.name?.[0] || 'A'}
+                                        </div>
+                                        <div style={{ minWidth: 0 }}>
+                                            <div style={{ fontWeight: 600 }}>{agent.name}</div>
+                                            <div style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>{agent.role_description || 'Agent'}</div>
+                                        </div>
+                                        <button className="btn btn-ghost" type="button" style={{ fontSize: '12px', padding: 0, minWidth: 'auto', marginLeft: '2px' }} onClick={() => toggleAgentSelection(agent)}>×</button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                            <select className="input" value={selectedAgentId} onChange={e => setSelectedAgentId(e.target.value)} style={{ flex: 1, minWidth: 0, fontSize: '12px' }}>
-                                <option value="">— Select Agent —</option>
-                                {availableAgents.map((a: any) => <option key={a.id} value={a.id}>{a.name} — {a.role_description || 'Agent'}</option>)}
-                            </select>
-                            <select className="input" value={agentRelation} onChange={e => setAgentRelation(e.target.value)} style={{ width: '150px', flexShrink: 0, fontSize: '12px' }}>
+                            <select className="input" value={agentRelation} onChange={e => setAgentRelation(e.target.value)} style={{ width: '160px', flexShrink: 0, fontSize: '12px' }}>
                                 {getAgentRelationOptions(t).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
                             </select>
                         </div>
                         <textarea className="input" placeholder="" value={agentDescription} onChange={e => setAgentDescription(e.target.value)} rows={2} style={{ fontSize: '12px', resize: 'vertical', marginBottom: '8px' }} />
                         <div style={{ display: 'flex', gap: '8px' }}>
-                            <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={addAgentRelationship} disabled={!selectedAgentId}>{t('common.confirm')}</button>
-                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => { setAddingAgent(false); setAgentDescription(''); setSelectedAgentId(''); }}>{t('common.cancel')}</button>
+                            <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={addAgentRelationship} disabled={selectedAgents.length === 0}>
+                                {t('common.confirm')} {selectedAgents.length > 0 ? `(${selectedAgents.length})` : ''}
+                            </button>
+                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={resetAgentDraft}>
+                                {t('common.cancel')}
+                            </button>
                         </div>
                     </div>
                 )}
@@ -1494,6 +1854,8 @@ function AgentDetailInner() {
             id: String(sess.id),
             agent_id: sess.agent_id != null ? String(sess.agent_id) : sess.agent_id,
             user_id: rawUid,
+            unread_count: Number(sess.unread_count || 0),
+            is_primary: Boolean(sess.is_primary),
             source_channel:
                 typeof sess.source_channel === 'string' && sess.source_channel.trim()
                     ? sess.source_channel
@@ -1504,6 +1866,14 @@ function AgentDetailInner() {
                     : 'user',
             is_group: Boolean(sess.is_group),
         };
+    };
+
+    const clearUnreadForSession = (sessionId?: string | null) => {
+        if (!sessionId) return;
+        const sid = String(sessionId);
+        setSessions(prev => prev.map((item: any) => String(item.id) === sid ? { ...item, unread_count: 0 } : item));
+        setAllSessions(prev => prev.map((item: any) => String(item.id) === sid ? { ...item, unread_count: 0 } : item));
+        setActiveSession((prev: any) => prev && String(prev.id) === sid ? { ...prev, unread_count: 0 } : prev);
     };
 
     const isWritableSession = (sess: any, scopeOverride: 'mine' | 'all' = chatScope) => {
@@ -1674,6 +2044,10 @@ function AgentDetailInner() {
             } else {
                 setHistoryMsgs(preParsed);
             }
+            // The backend marks the session as read when the current user opens it. Mirror that
+            // immediately in local state so unread badges clear without waiting for the next poll.
+            clearUnreadForSession(String(sess.id));
+            queryClient.invalidateQueries({ queryKey: ['agents'] });
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
             console.error('Failed to load session messages:', err);
@@ -1764,6 +2138,9 @@ function AgentDetailInner() {
     };
     interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+    // Transient info banner (e.g. fallback model switch notification)
+    const [chatInfoMsg, setChatInfoMsg] = useState<string | null>(null);
+    const chatInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // Stable expanded-state map for tool groups — keyed by groupStartIndex.
     // Stored in a ref so it survives parent re-renders without causing extra renders.
     const toolGroupExpandedRef = useRef<Map<number, boolean>>(new Map());
@@ -1775,6 +2152,13 @@ function AgentDetailInner() {
     };
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [livePanelVisible, setLivePanelVisible] = useState(false);
+    const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('workspace');
+    const [workspaceActivePath, setWorkspaceActivePath] = useState<string | null>(null);
+    const [workspaceLockedPath, setWorkspaceLockedPath] = useState<string | null>(null);
+    const [workspaceActivities, setWorkspaceActivities] = useState<WorkspaceActivity[]>([]);
+    const [workspaceLiveDraft, setWorkspaceLiveDraft] = useState<WorkspaceLiveDraft | null>(null);
+    const workspaceEditingRef = useRef(false);
+    const workspaceLockedPathRef = useRef<string | null>(null);
     const [wsSessionId, setWsSessionId] = useState<string>('');
     const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
     const [chatInput, setChatInput] = useState('');
@@ -1783,13 +2167,47 @@ function AgentDetailInner() {
     const [isStreaming, setIsStreaming] = useState(false);
     const [chatUploadDrafts, setChatUploadDrafts] = useState<{ id: string; name: string; percent: number; previewUrl?: string; sizeBytes: number }[]>([]);
     const chatUploadAbortRef = useRef<Map<string, () => void>>(new Map());
-    const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string }[]>([]);
+    type AttachedFileRef = { name: string; text: string; path?: string; imageUrl?: string; source?: 'upload' | 'workspace_auto' };
+    type PendingChatMessage = {
+        runtimeKey: SessionRuntimeKey;
+        contentForLLM: string;
+        userMsg: string;
+        fileName: string;
+        imageUrl?: string;
+    };
+    const [attachedFiles, setAttachedFiles] = useState<AttachedFileRef[]>([]);
+    const dismissedWorkspaceRefPath = useRef<string | null>(null);
+    const pendingChatSendRef = useRef<PendingChatMessage | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const chatInputRef = useRef<HTMLTextAreaElement>(null);
     const chatInputAreaRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const workspacePreviewLocked = !!workspaceLockedPath;
+    useEffect(() => {
+        workspaceLockedPathRef.current = workspaceLockedPath;
+    }, [workspaceLockedPath]);
+    const allowWorkspaceAutoSwitch = useCallback((path?: string | null) => {
+        if (!path) return false;
+        if (workspaceEditingRef.current) return false;
+        if (!workspaceLockedPathRef.current) return true;
+        return workspaceLockedPathRef.current === path;
+    }, []);
+    const allowLivePanelAutoFocus = useCallback(() => {
+        return !workspaceEditingRef.current && !workspaceLockedPathRef.current;
+    }, []);
+    const handleWorkspaceSelectPath = useCallback((path: string) => {
+        setWorkspaceActivePath(path);
+        if (workspaceLockedPath) setWorkspaceLockedPath(path);
+    }, [workspaceLockedPath]);
+    const handleWorkspaceToggleLock = useCallback(() => {
+        setWorkspaceLockedPath((current) => current ? null : workspaceActivePath);
+    }, [workspaceActivePath]);
+    const handleWorkspaceEditingChange = useCallback((editing: boolean) => {
+        workspaceEditingRef.current = editing;
+    }, []);
 
     // Settings form local state
     const [settingsForm, setSettingsForm] = useState({
@@ -1896,6 +2314,12 @@ function AgentDetailInner() {
         setIsWaiting(false);
         setWsConnected(false);
         wsRef.current = null;
+        setWorkspaceLockedPath(null);
+        setWorkspaceActivePath(null);
+        setWorkspaceActivities([]);
+        setWorkspaceLiveDraft(null);
+        setLiveState({});
+        setSidePanelTab('workspace');
         setChatScope('mine');
         setAllUserFilter('');
         setSessions([]);
@@ -1969,6 +2393,12 @@ function AgentDetailInner() {
                 wsRef.current = ws;
                 setWsConnected(true);
             }
+            if (pendingChatSendRef.current?.runtimeKey === key) {
+                const pending = pendingChatSendRef.current;
+                pendingChatSendRef.current = null;
+                setChatInfoMsg(null);
+                dispatchChatMessage(ws, key, pending);
+            }
         };
         ws.onclose = (e) => {
             if (wsMapRef.current[key] === ws) delete wsMapRef.current[key];
@@ -2008,6 +2438,7 @@ function AgentDetailInner() {
             if (!isActiveRuntime) {
                 if (['done', 'error', 'quota_exceeded', 'trigger_notification'].includes(d.type)) {
                     fetchMySessions(true, agentId);
+                    queryClient.invalidateQueries({ queryKey: ['agents'] });
                 }
                 if (['done', 'error', 'quota_exceeded'].includes(d.type)) {
                     closeSessionSocket(key, true);
@@ -2035,7 +2466,53 @@ function AgentDetailInner() {
                     }
                     return [...prev, { role: 'assistant', content: '', thinking: d.content, _streaming: true } as any];
                 });
+            } else if (d.type === 'workspace_draft') {
+                if (WORKSPACE_TOOLS.has(d.name)) {
+                    const parsedDraft = parseWorkspaceDraftArgs(d.name, d.arguments || '');
+                    const draft: WorkspaceLiveDraft = {
+                        id: d.id || `${d.name}-${d.index || 0}`,
+                        tool: d.name,
+                        action: workspaceActionForTool(d.name),
+                        status: 'drafting',
+                        ...parsedDraft,
+                    };
+                    setWorkspaceLiveDraft(draft);
+                    if (allowWorkspaceAutoSwitch(draft.path)) {
+                        setWorkspaceActivePath(draft.path!);
+                    }
+                    if (allowLivePanelAutoFocus()) {
+                        setSidePanelTab('workspace');
+                        setLivePanelVisible(true);
+                        setSessionListCollapsed(true);
+                        useAppStore.setState({ sidebarCollapsed: true });
+                    }
+                }
             } else if (d.type === 'tool_call') {
+                if (WORKSPACE_TOOLS.has(d.name)) {
+                    if (d.status === 'running') {
+                        const rawArgs = typeof d.args === 'string' ? d.args : JSON.stringify(d.args || {});
+                        const parsedDraft = parseWorkspaceDraftArgs(d.name, rawArgs);
+                        const draft: WorkspaceLiveDraft = {
+                            id: d.id || `${d.name}-running`,
+                            tool: d.name,
+                            action: workspaceActionForTool(d.name),
+                            status: 'running',
+                            ...parsedDraft,
+                        };
+                        setWorkspaceLiveDraft(draft);
+                        if (allowWorkspaceAutoSwitch(draft.path)) {
+                            setWorkspaceActivePath(draft.path!);
+                        }
+                        if (allowLivePanelAutoFocus()) {
+                            setSidePanelTab('workspace');
+                            setLivePanelVisible(true);
+                            setSessionListCollapsed(true);
+                            useAppStore.setState({ sidebarCollapsed: true });
+                        }
+                    } else if (d.status === 'done') {
+                        setWorkspaceLiveDraft(null);
+                    }
+                }
                 if (d.live_preview) {
                     const lp = d.live_preview;
                     setLiveState(prev => {
@@ -2043,15 +2520,37 @@ function AgentDetailInner() {
                         if ((lp.env === 'desktop' || lp.env === 'browser') && lp.screenshot_url) {
                             if (lp.env === 'desktop') next.desktop = { screenshotUrl: lp.screenshot_url };
                             else next.browser = { screenshotUrl: lp.screenshot_url };
+                            if (allowLivePanelAutoFocus()) setSidePanelTab(lp.env === 'desktop' ? 'desktop' : 'browser');
                         } else if (lp.env === 'code' && lp.output) {
                             const existing = prev.code?.output || '';
                             next.code = { output: existing + (existing ? '\n---\n' : '') + lp.output };
+                            if (allowLivePanelAutoFocus()) setSidePanelTab('code');
                         }
                         return next;
                     });
-                    setLivePanelVisible(true);
-                    setSessionListCollapsed(true);
-                    useAppStore.setState({ sidebarCollapsed: true });
+                    if (allowLivePanelAutoFocus()) {
+                        setLivePanelVisible(true);
+                        setSessionListCollapsed(true);
+                        useAppStore.setState({ sidebarCollapsed: true });
+                    }
+                }
+                    if (d.workspace_activity) {
+                        const activity = d.workspace_activity as WorkspaceActivity;
+                        setWorkspaceLiveDraft(null);
+                        setWorkspaceActivities(prev => [activity, ...prev.filter(item => item.path !== activity.path)].slice(0, 20));
+                        if (activity.action === 'delete' && activity.ok !== false && !activity.pendingApproval) {
+                            handleWorkspacePathDeleted(activity.path);
+                        }
+                        if (activity.action !== 'delete' && activity.ok !== false && allowWorkspaceAutoSwitch(activity.path)) {
+                            setWorkspaceActivePath(activity.path);
+                        }
+                    if (allowLivePanelAutoFocus()) {
+                        setSidePanelTab('workspace');
+                        setLivePanelVisible(true);
+                        setSessionListCollapsed(true);
+                        useAppStore.setState({ sidebarCollapsed: true });
+                    }
+                    queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                 }
                 setChatMessages(prev => {
                     const toolMsg: ChatMsg = { role: 'tool_call', content: '', toolName: d.name, toolArgs: d.args, toolStatus: d.status, toolResult: d.result };
@@ -2062,6 +2561,11 @@ function AgentDetailInner() {
                     }
                     return [...prev, toolMsg];
                 });
+                if (d.status === 'done') {
+                    const currentSessionId = activeSessionIdRef.current ? String(activeSessionIdRef.current) : '';
+                    if (currentSessionId) clearUnreadForSession(currentSessionId);
+                    queryClient.invalidateQueries({ queryKey: ['agents'] });
+                }
             } else if (d.type === 'chunk') {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
@@ -2075,7 +2579,10 @@ function AgentDetailInner() {
                     if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), parseChatMsg({ role: 'assistant', content: d.content, thinking, timestamp: new Date().toISOString() })];
                     return [...prev, parseChatMsg({ role: d.role, content: d.content, timestamp: new Date().toISOString() })];
                 });
+                const currentSessionId = activeSessionIdRef.current ? String(activeSessionIdRef.current) : '';
+                if (currentSessionId) clearUnreadForSession(currentSessionId);
                 fetchMySessions(true, agentId);
+                queryClient.invalidateQueries({ queryKey: ['agents'] });
             } else if (d.type === 'error' || d.type === 'quota_exceeded') {
                 const msg = d.content || d.detail || d.message || 'Request denied';
                 setChatMessages(prev => {
@@ -2088,12 +2595,41 @@ function AgentDetailInner() {
                     if (msg.includes('expired')) setAgentExpired(true);
                 }
             } else if (d.type === 'trigger_notification') {
-                setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: d.content })]);
+                const targetSessionId = d.session_id ? String(d.session_id) : '';
+                const currentSessionId = activeSessionIdRef.current ? String(activeSessionIdRef.current) : '';
+                if (targetSessionId && currentSessionId === targetSessionId) {
+                    setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: d.content })]);
+                    clearUnreadForSession(targetSessionId);
+                }
                 fetchMySessions(true, agentId);
+                queryClient.invalidateQueries({ queryKey: ['agents'] });
+            } else if (d.type === 'info') {
+                // Subtle transient banner for system events (e.g. fallback model switch)
+                setChatInfoMsg(d.content || '');
+                if (chatInfoTimerRef.current) clearTimeout(chatInfoTimerRef.current);
+                chatInfoTimerRef.current = setTimeout(() => setChatInfoMsg(null), 6000);
             } else {
                 setChatMessages(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
             }
         };
+    };
+
+    const dispatchChatMessage = (socket: WebSocket, runtimeKey: SessionRuntimeKey, payload: PendingChatMessage) => {
+        setIsWaiting(true);
+        setIsStreaming(false);
+        setSessionUiState(runtimeKey, { isWaiting: true, isStreaming: false });
+        setChatMessages(prev => [...prev, parseChatMsg({
+            role: 'user',
+            content: payload.userMsg,
+            fileName: payload.fileName,
+            imageUrl: payload.imageUrl,
+            timestamp: new Date().toISOString()
+        })]);
+        socket.send(JSON.stringify({
+            content: payload.contentForLLM,
+            display_content: payload.userMsg,
+            file_name: payload.fileName
+        }));
     };
 
     useEffect(() => {
@@ -2110,6 +2646,43 @@ function AgentDetailInner() {
         ensureSessionSocket(activeSession, id, token);
         syncActiveSocketState(activeSession, id);
     }, [id, token, activeTab, activeSession?.id, chatScope, canViewAllAgentChatSessions]);
+
+    const handleWorkspacePathDeleted = useCallback((path: string) => {
+        let removedName = '';
+        setAttachedFiles((prev) => prev.filter((file) => {
+            const shouldRemove = file.source === 'workspace_auto' && file.path === path;
+            if (shouldRemove) removedName = file.name;
+            return !shouldRemove;
+        }));
+        setWorkspaceLockedPath((current) => current === path ? null : current);
+        dismissedWorkspaceRefPath.current = path;
+        if (removedName) {
+            setChatInfoMsg(`Removed attachment: ${removedName} (file was deleted).`);
+            if (chatInfoTimerRef.current) clearTimeout(chatInfoTimerRef.current);
+            chatInfoTimerRef.current = setTimeout(() => {
+                setChatInfoMsg(null);
+                chatInfoTimerRef.current = null;
+            }, 4000);
+        }
+    }, []);
+
+    useEffect(() => {
+        const shouldAutoReference = livePanelVisible && sidePanelTab === 'workspace' && !!workspaceActivePath;
+        if (!shouldAutoReference) {
+            dismissedWorkspaceRefPath.current = null;
+            setAttachedFiles((prev) => prev.filter((file) => file.source !== 'workspace_auto'));
+            return;
+        }
+        const path = workspaceActivePath!;
+        if (dismissedWorkspaceRefPath.current === path) return;
+        setAttachedFiles((prev) => {
+            const withoutAuto = prev.filter((file) => file.source !== 'workspace_auto');
+            return [
+                ...withoutAuto,
+                { name: workspaceFileName(path), text: '', path, source: 'workspace_auto' },
+            ];
+        });
+    }, [livePanelVisible, sidePanelTab, workspaceActivePath]);
 
     useEffect(() => {
         return () => {
@@ -2300,7 +2873,6 @@ function AgentDetailInner() {
         if (!id || !activeSession?.id) return;
         const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
         const activeSocket = wsMapRef.current[activeRuntimeKey];
-        if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
 
         let userMsg = chatInput.trim();
@@ -2321,7 +2893,11 @@ function AgentDetailInner() {
                     const wsPath = file.path || '';
                     const codePath = wsPath.replace(/^workspace\//, '');
                     const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)\n` : '';
-                    filesPrompt += `[File: ${file.name}]${fileLoc}\n${file.text}\n\n`;
+                    if (file.source === 'workspace_auto') {
+                        filesPrompt += `[Workspace reference: ${file.name}]${fileLoc}\nUse read_file or read_document if you need the file contents.\n\n`;
+                    } else {
+                        filesPrompt += `[File: ${file.name}]${fileLoc}\n${file.text}\n\n`;
+                    }
                 }
             });
 
@@ -2335,28 +2911,32 @@ function AgentDetailInner() {
             userMsg = userMsg ? `${displayFiles}\n${userMsg}` : displayFiles;
         }
 
-        setIsWaiting(true);
-        setIsStreaming(false);
-        setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
-        setChatMessages(prev => [...prev, parseChatMsg({
-            role: 'user',
-            content: userMsg,
+        const payload: PendingChatMessage = {
+            runtimeKey: activeRuntimeKey,
+            contentForLLM,
+            userMsg,
             fileName: attachedFiles.map(f => f.name).join(', '),
             imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
-            timestamp: new Date().toISOString()
-        })]);
-        activeSocket.send(JSON.stringify({
-            content: contentForLLM,
-            display_content: userMsg,
-            file_name: attachedFiles.map(f => f.name).join(', ')
-        }));
+        };
 
         setChatInput('');
         // Reset textarea height after clearing content
         if (chatInputRef.current) {
             chatInputRef.current.style.height = 'auto';
         }
-        setAttachedFiles([]);
+        dismissedWorkspaceRefPath.current = null;
+        setAttachedFiles((prev) => prev.filter((file) => file.source === 'workspace_auto'));
+
+        if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) {
+            pendingChatSendRef.current = payload;
+            if (token) ensureSessionSocket(activeSession, id, token);
+            setChatInfoMsg('Connection is reconnecting. Your message will be sent automatically.');
+            if (chatInfoTimerRef.current) clearTimeout(chatInfoTimerRef.current);
+            chatInfoTimerRef.current = setTimeout(() => setChatInfoMsg(null), 4000);
+            return;
+        }
+
+        dispatchChatMessage(activeSocket, activeRuntimeKey, payload);
     };
 
     const handleChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2888,19 +3468,19 @@ function AgentDetailInner() {
                             {/* Metric cards */}
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '24px' }}>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>📋 {t('agent.tabs.status')}</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.tabs.status')}</div>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                         <span className={`status-dot ${statusKey}`} />
                                         <span style={{ fontSize: '16px', fontWeight: 500 }}>{t(`agent.status.${statusKey}`)}</span>
                                     </div>
                                 </div>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>🗓️ {t('agent.settings.today')} Token</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.settings.today')} Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_today)}</div>
                                     {agent.max_tokens_per_day && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_day)}</div>}
                                 </div>
                                 <div className="card">
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>📅 {t('agent.settings.month')} Token</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.settings.month')} Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_month)}</div>
                                     {agent.max_tokens_per_month && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_month)}</div>}
                                 </div>
@@ -2918,7 +3498,7 @@ function AgentDetailInner() {
                                     {metrics && (
                                         <>
                                             <div className="card">
-                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>✅ {t('agent.tasks.done')}</div>
+                                                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.tasks.done')}</div>
                                                 <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.tasks?.done || 0}/{metrics.tasks?.total || 0}</div>
                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> {metrics.tasks?.completion_rate || 0}%</div>
                                             </div>
@@ -3035,7 +3615,7 @@ function AgentDetailInner() {
                             {activityLogs && activityLogs.length > 0 && (
                                 <div className="card">
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                        <h3 style={{ fontSize: '14px', fontWeight: 600 }}>📊 Recent Activity</h3>
+                                        <h3 style={{ fontSize: '14px', fontWeight: 600 }}>{t('agent.activity.recent', 'Recent Activity')}</h3>
                                         <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setActiveTab('activityLog')}>View All →</button>
                                     </div>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -3096,40 +3676,69 @@ function AgentDetailInner() {
 
                     // Helper: convert trigger config to natural language
                     const triggerToHuman = (trig: any): string => {
+                        const isZh = i18n.language?.startsWith('zh');
                         if (trig.type === 'cron' && trig.config?.expr) {
                             const expr = trig.config.expr;
                             const parts = expr.split(' ');
                             if (parts.length >= 5) {
-                                const [min, hour, , , dow] = parts;
+                                const [min, hour, dom, , dow] = parts;
                                 const timeStr = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
-                                if (dow === '*' && min !== '*' && hour !== '*') return `Every day at ${timeStr}`;
-                                if (dow === '1-5' && min !== '*' && hour !== '*') return `Weekdays at ${timeStr}`;
-                                if (dow === '0' || dow === '7') return `Sundays at ${timeStr}`;
-                                if (hour === '*' && min === '0') {
-                                    if (dow === '1-5') return 'Every hour on weekdays';
-                                    return 'Every hour';
+                                const dayNames = isZh
+                                    ? ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+                                    : ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                                if (dom !== '*' && dow === '*' && min !== '*' && hour !== '*') {
+                                    const days = dom.split(',').join(isZh ? '、' : ', ');
+                                    return isZh ? `每月 ${days} 日 ${timeStr}` : `Every month on day ${days} at ${timeStr}`;
                                 }
-                                if (hour === '*' && min !== '*') return `Every hour at :${min.padStart(2, '0')}`;
+                                if (dow === '*' && min !== '*' && hour !== '*') return isZh ? `每天 ${timeStr}` : `Every day at ${timeStr}`;
+                                if (dow === '1-5' && min !== '*' && hour !== '*') return isZh ? `工作日 ${timeStr}` : `Weekdays at ${timeStr}`;
+                                if ((dow === '0' || dow === '7') && min !== '*' && hour !== '*') return isZh ? `每周日 ${timeStr}` : `Sundays at ${timeStr}`;
+                                if (/^[1-6]$/.test(dow) && min !== '*' && hour !== '*') return isZh ? `每${dayNames[Number(dow)]} ${timeStr}` : `${dayNames[Number(dow)]}s at ${timeStr}`;
+                                if (hour === '*' && min === '0') {
+                                    if (dow === '1-5') return isZh ? '工作日每小时' : 'Every hour on weekdays';
+                                    return isZh ? '每小时' : 'Every hour';
+                                }
+                                if (hour === '*' && min !== '*') return isZh ? `每小时第 ${min.padStart(2, '0')} 分钟` : `Every hour at :${min.padStart(2, '0')}`;
                             }
-                            return `Cron: ${expr}`;
+                            return isZh ? `Cron：${expr}` : `Cron: ${expr}`;
                         }
                         if (trig.type === 'once' && trig.config?.at) {
                             try {
-                                return `Once at ${new Date(trig.config.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
-                            } catch { return `Once at ${trig.config.at}`; }
+                                return isZh
+                                    ? `一次性：${new Date(trig.config.at).toLocaleString()}`
+                                    : `Once at ${new Date(trig.config.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+                            } catch { return isZh ? `一次性：${trig.config.at}` : `Once at ${trig.config.at}`; }
                         }
                         if (trig.type === 'interval' && trig.config?.minutes) {
                             const m = trig.config.minutes;
-                            return m >= 60 ? `Every ${m / 60}h` : `Every ${m} min`;
+                            return isZh ? `每 ${m >= 60 ? `${m / 60} 小时` : `${m} 分钟`}` : (m >= 60 ? `Every ${m / 60}h` : `Every ${m} min`);
                         }
-                        if (trig.type === 'poll') return `Poll: ${trig.config?.url?.substring(0, 40) || 'URL'}`;
+                        if (trig.type === 'poll') return `${isZh ? '轮询' : 'Poll'}: ${trig.config?.url?.substring(0, 40) || 'URL'}`;
                         if (trig.type === 'on_message') {
-                            return `On message from ${trig.config?.from_agent_name || trig.config?.from_user_name || 'unknown'}`;
+                            const sender = trig.config?.from_agent_name || trig.config?.from_user_name || (isZh ? '未知对象' : 'unknown');
+                            return isZh ? `收到 ${sender} 的消息时` : `On message from ${sender}`;
                         }
                         if (trig.type === 'webhook') {
                             return `Webhook${trig.config?.token ? ` (${trig.config.token.substring(0, 6)}...)` : ''}`;
                         }
                         return trig.type;
+                    };
+
+                    const triggerReasonText = (trig: any): string | null => {
+                        if (!i18n.language?.startsWith('zh')) return trig.reason || null;
+                        if (trig.name === 'daily_okr_report') {
+                            return '系统触发器：如果启用了日报，收集成员进展、更新滞后的 KR，并生成日报。';
+                        }
+                        if (trig.name === 'weekly_okr_report') {
+                            return '系统触发器：如果启用了周报，收集成员进展、更新滞后的 KR，并生成周报。';
+                        }
+                        if (trig.name === 'biweekly_okr_checkin') {
+                            return '系统触发器：每月 1 日和 15 日进行 OKR 例行检查。';
+                        }
+                        if (trig.name === 'monthly_okr_report') {
+                            return '系统触发器：每月 1 日生成 OKR 月度进展汇报。';
+                        }
+                        return trig.reason || null;
                     };
 
                     // Group triggers by focus_ref
@@ -3236,7 +3845,9 @@ function AgentDetailInner() {
                                             background: 'var(--bg-secondary)',
                                             whiteSpace: 'nowrap',
                                         }}>
-                                            {itemTriggers.length} trigger{itemTriggers.length > 1 ? 's' : ''}
+                                            {i18n.language?.startsWith('zh')
+                                                ? `${itemTriggers.length} 个触发器`
+                                                : `${itemTriggers.length} trigger${itemTriggers.length > 1 ? 's' : ''}`}
                                         </span>
                                     )}
                                     {/* Expand arrow */}
@@ -3265,7 +3876,7 @@ function AgentDetailInner() {
                                                             <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)' }}>
                                                                 {triggerToHuman(trig)}
                                                             </div>
-                                                            {trig.reason && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{trig.reason}</div>}
+                                                            {triggerReasonText(trig) && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{triggerReasonText(trig)}</div>}
                                                             <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '2px', fontFamily: 'monospace' }}>
                                                                 {trig.type === 'cron' ? trig.config?.expr : ''}{' '}
                                                             </div>
@@ -3354,7 +3965,9 @@ function AgentDetailInner() {
                                     </div>
                                     {hasFocusItems && (
                                         <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                            {activeFocusItems.length} active{completedFocusItems.length > 0 ? ` · ${completedFocusItems.length} done` : ''}
+                                            {i18n.language?.startsWith('zh')
+                                                ? `${activeFocusItems.length} 个进行中${completedFocusItems.length > 0 ? ` · ${completedFocusItems.length} 个已完成` : ''}`
+                                                : `${activeFocusItems.length} active${completedFocusItems.length > 0 ? ` · ${completedFocusItems.length} done` : ''}`}
                                         </span>
                                     )}
                                 </div>
@@ -3422,7 +4035,9 @@ function AgentDetailInner() {
                                             <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.standaloneTriggers')}</h4>
                                         </div>
                                         <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                            {standaloneTriggers.length} trigger{standaloneTriggers.length > 1 ? 's' : ''}
+                                            {i18n.language?.startsWith('zh')
+                                                ? `${standaloneTriggers.length} 个触发器`
+                                                : `${standaloneTriggers.length} trigger${standaloneTriggers.length > 1 ? 's' : ''}`}
                                         </span>
                                     </div>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -3436,7 +4051,7 @@ function AgentDetailInner() {
                                             }}>
                                                 <div style={{ flex: 1 }}>
                                                     <div style={{ fontSize: '13px', fontWeight: 500 }}>{triggerToHuman(trig)}</div>
-                                                    {trig.reason && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{trig.reason}</div>}
+                                                    {triggerReasonText(trig) && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{triggerReasonText(trig)}</div>}
                                                     <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontFamily: 'monospace', marginTop: '2px' }}>
                                                         {trig.name}{trig.type === 'cron' ? ` · ${trig.config?.expr}` : ''}
                                                     </div>
@@ -4212,6 +4827,7 @@ function AgentDetailInner() {
                                                         feishu: t('common.channels.feishu'),
                                                         discord: t('common.channels.discord'),
                                                         slack: t('common.channels.slack'),
+                                                        wechat: t('common.channels.wechat'),
                                                         dingtalk: t('common.channels.dingtalk'),
                                                         wecom: t('common.channels.wecom'),
                                                     };
@@ -4225,6 +4841,37 @@ function AgentDetailInner() {
                                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
                                                                     <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{s.title}</div>
+                                                                    {s.is_primary && (
+                                                                        <span style={{
+                                                                            fontSize: '9px',
+                                                                            padding: '1px 4px',
+                                                                            borderRadius: '3px',
+                                                                            background: 'var(--bg-tertiary)',
+                                                                            color: 'var(--text-secondary)',
+                                                                            flexShrink: 0,
+                                                                            border: '1px solid var(--border-subtle)',
+                                                                        }}>
+                                                                            {i18n.language === 'zh' ? '主会话' : 'Primary'}
+                                                                        </span>
+                                                                    )}
+                                                                    {s.unread_count > 0 && (
+                                                                        <span style={{
+                                                                            minWidth: s.unread_count > 9 ? '18px' : '14px',
+                                                                            height: s.unread_count > 9 ? '18px' : '14px',
+                                                                            padding: s.unread_count > 9 ? '0 4px' : '0',
+                                                                            borderRadius: '999px',
+                                                                            background: 'var(--text-primary)',
+                                                                            color: 'var(--bg-primary)',
+                                                                            fontSize: '10px',
+                                                                            fontWeight: 600,
+                                                                            display: 'flex',
+                                                                            alignItems: 'center',
+                                                                            justifyContent: 'center',
+                                                                            flexShrink: 0,
+                                                                        }}>
+                                                                            {s.unread_count > 99 ? '99+' : s.unread_count}
+                                                                        </span>
+                                                                    )}
                                                                     {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -4276,6 +4923,7 @@ function AgentDetailInner() {
                                                             feishu: t('common.channels.feishu'),
                                                             discord: t('common.channels.discord'),
                                                             slack: t('common.channels.slack'),
+                                                            wechat: t('common.channels.wechat'),
                                                             dingtalk: t('common.channels.dingtalk'),
                                                             wecom: t('common.channels.wecom'),
                                                         };
@@ -4288,6 +4936,37 @@ function AgentDetailInner() {
                                                                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '1px' }}>
                                                                     <div style={{ fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1 }}>{s.title}</div>
+                                                                    {s.is_primary && (
+                                                                        <span style={{
+                                                                            fontSize: '9px',
+                                                                            padding: '1px 4px',
+                                                                            borderRadius: '3px',
+                                                                            background: 'var(--bg-tertiary)',
+                                                                            color: 'var(--text-secondary)',
+                                                                            flexShrink: 0,
+                                                                            border: '1px solid var(--border-subtle)',
+                                                                        }}>
+                                                                            {i18n.language === 'zh' ? '主会话' : 'Primary'}
+                                                                        </span>
+                                                                    )}
+                                                                    {s.unread_count > 0 && (
+                                                                        <span style={{
+                                                                            minWidth: s.unread_count > 9 ? '18px' : '14px',
+                                                                            height: s.unread_count > 9 ? '18px' : '14px',
+                                                                            padding: s.unread_count > 9 ? '0 4px' : '0',
+                                                                            borderRadius: '999px',
+                                                                            background: 'var(--text-primary)',
+                                                                            color: 'var(--bg-primary)',
+                                                                            fontSize: '10px',
+                                                                            fontWeight: 600,
+                                                                            display: 'flex',
+                                                                            alignItems: 'center',
+                                                                            justifyContent: 'center',
+                                                                            flexShrink: 0,
+                                                                        }}>
+                                                                            {s.unread_count > 99 ? '99+' : s.unread_count}
+                                                                        </span>
+                                                                    )}
                                                                     {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', gap: '4px' }}>
@@ -4305,7 +4984,7 @@ function AgentDetailInner() {
                             </div>
 
                             {/* ── Right: chat/message area ── */}
-                            <div className={`agent-chat-area ${ !!(liveState.desktop || liveState.browser || liveState.code) ? 'has-live-panel' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'row', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+                            <div className={`agent-chat-area ${livePanelVisible ? 'has-live-panel' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'row', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
                                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
                                     {sessionListCollapsed && (
                                         <button onClick={() => setSessionListCollapsed(false)} style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, width: '28px', height: '28px', borderRadius: '6px', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', cursor: 'pointer' }} title="Show chat sessions" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='var(--bg-elevated)'}>
@@ -4589,9 +5268,17 @@ function AgentDetailInner() {
                                         {showScrollBtn && (
                                             <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: `${chatScrollBtnBottom}px`, right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
                                         )}
+                                        {/* Transient info banner — e.g. fallback model switch */}
+                                        {chatInfoMsg && (
+                                            <div style={{ padding: '6px 14px', borderTop: '1px solid rgba(99,102,241,0.25)', background: 'rgba(99,102,241,0.07)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)', animation: 'fadeIn 0.2s ease' }}>
+                                                <span style={{ opacity: 0.7 }}>ℹ️</span>
+                                                <span style={{ flex: 1 }}>{chatInfoMsg}</span>
+                                                <button onClick={() => setChatInfoMsg(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '14px', lineHeight: 1, padding: '0 2px' }}>✕</button>
+                                            </div>
+                                        )}
                                         {agentExpired ? (
                                             <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
-                                                <span>u23f8</span>
+                                                <span>⏸</span>
                                                 <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
                                             </div>
                                         ) : !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
@@ -4635,7 +5322,11 @@ function AgentDetailInner() {
                                                         </div>
                                                     ))}
                                                     {attachedFiles.map((file, idx) => (
-                                                        <div key={`a-${idx}-${file.name}`} className="chat-file-pill">
+                                                        <div
+                                                            key={`a-${idx}-${file.name}`}
+                                                            className={`chat-file-pill ${file.source === 'workspace_auto' ? 'chat-file-pill--workspace' : ''}`}
+                                                            title={file.path || file.name}
+                                                        >
                                                             <div className="chat-file-pill__row">
                                                                 {file.imageUrl ? (
                                                                     <img className="chat-file-pill__thumb" src={file.imageUrl} alt="" />
@@ -4645,10 +5336,14 @@ function AgentDetailInner() {
                                                                     </span>
                                                                 )}
                                                                 <span className="chat-file-pill__name">{file.name}</span>
+                                                                {file.source === 'workspace_auto' && <span className="chat-file-pill__source">Workspace</span>}
                                                                 <button
                                                                     type="button"
                                                                     className="chat-file-pill__remove"
-                                                                    onClick={() => setAttachedFiles((prev) => prev.filter((_, i) => i !== idx))}
+                                                                    onClick={() => {
+                                                                        if (file.source === 'workspace_auto' && file.path) dismissedWorkspaceRefPath.current = file.path;
+                                                                        setAttachedFiles((prev) => prev.filter((_, i) => i !== idx));
+                                                                    }}
                                                                     title="Remove file"
                                                                 >
                                                                     ×
@@ -4730,25 +5425,41 @@ function AgentDetailInner() {
                                     </div>
                                 )}
                                 </div>
-                                {/* Live Panel */}
-                                {!!(liveState.desktop || liveState.browser || liveState.code) && (
-                                    <AgentBayLivePanel
-                                        liveState={liveState}
-                                        visible={livePanelVisible}
-                                        onToggle={() => setLivePanelVisible(v => !v)}
-                                        agentId={id}
-                                        sessionId={wsSessionId}
-                                        onLiveUpdate={(env, screenshotDataUri) => {
-                                            // Refresh the live preview with the final screenshot
-                                            // captured by TakeControlPanel on close, so the panel
-                                            // reflects the state the user left the browser in.
-                                            setLiveState(prev => ({
-                                                ...prev,
-                                                [env]: { screenshotUrl: screenshotDataUri },
-                                            }));
-                                        }}
-                                    />
-                                )}
+                                <AgentSidePanel
+                                    liveState={liveState}
+                                    workspaceActivePath={workspaceActivePath}
+                                    workspaceActivities={workspaceActivities}
+                                    workspaceLiveDraft={workspaceLiveDraft}
+                                    visible={livePanelVisible}
+                                    onToggle={() => {
+                                        if (!livePanelVisible) {
+                                            setSidePanelTab('workspace');
+                                            setLivePanelVisible(true);
+                                            setSessionListCollapsed(true);
+                                            useAppStore.setState({ sidebarCollapsed: true });
+                                        } else {
+                                            setLivePanelVisible(false);
+                                        }
+                                    }}
+                                    activeTab={sidePanelTab}
+                                    onTabChange={setSidePanelTab}
+                                    workspaceLocked={workspacePreviewLocked}
+                                    onWorkspaceSelectPath={handleWorkspaceSelectPath}
+                                    onWorkspaceToggleLock={handleWorkspaceToggleLock}
+                                    onWorkspaceEditingChange={handleWorkspaceEditingChange}
+                                    onWorkspacePathDeleted={handleWorkspacePathDeleted}
+                                    agentId={id}
+                                    sessionId={wsSessionId}
+                                    onLiveUpdate={(env, screenshotDataUri) => {
+                                        // Refresh the live preview with the final screenshot
+                                        // captured by TakeControlPanel on close, so the panel
+                                        // reflects the state the user left the browser in.
+                                        setLiveState(prev => ({
+                                            ...prev,
+                                            [env]: { screenshotUrl: screenshotDataUri },
+                                        }));
+                                    }}
+                                />
                             </div>
                         </div>
                     )
@@ -4882,11 +5593,19 @@ function AgentDetailInner() {
                     activeTab === 'approvals' && (() => {
                         const ApprovalsTab = () => {
                             const isChinese = i18n.language?.startsWith('zh');
-                            const { data: approvals = [], refetch: refetchApprovals } = useQuery({
+                            const {
+                                data: approvals = [],
+                                error: approvalsError,
+                                refetch: refetchApprovals,
+                            } = useQuery({
                                 queryKey: ['agent-approvals', id],
-                                queryFn: () => fetchAuth<any[]>(`/agents/${id}/approvals`),
+                                queryFn: async () => {
+                                    const data = await fetchAuth<any[]>(`/agents/${id}/approvals`);
+                                    return Array.isArray(data) ? data : [];
+                                },
                                 enabled: !!id,
                                 refetchInterval: 15000,
+                                retry: false,
                             });
                             const resolveMut = useMutation({
                                 mutationFn: async ({ approvalId, action }: { approvalId: string; action: string }) => {
@@ -4904,6 +5623,9 @@ function AgentDetailInner() {
                             });
                             const pending = (approvals as any[]).filter((a: any) => a.status === 'pending');
                             const resolved = (approvals as any[]).filter((a: any) => a.status !== 'pending');
+                            const approvalsErrorMessage = approvalsError instanceof Error
+                                ? approvalsError.message
+                                : (isChinese ? '审批记录加载失败' : 'Failed to load approval records');
                             const statusStyle = (s: string) => ({
                                 padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600,
                                 background: s === 'approved' ? 'rgba(0,180,120,0.12)' : s === 'rejected' ? 'rgba(255,80,80,0.12)' : 'rgba(255,180,0,0.12)',
@@ -4911,6 +5633,23 @@ function AgentDetailInner() {
                             });
                             return (
                                 <div style={{ padding: '20px 24px' }}>
+                                    {approvalsError && (
+                                        <div style={{
+                                            marginBottom: '16px',
+                                            padding: '14px 16px',
+                                            borderRadius: '8px',
+                                            background: 'rgba(255, 180, 0, 0.08)',
+                                            border: '1px solid rgba(255, 180, 0, 0.2)',
+                                            color: 'var(--text-secondary)',
+                                            fontSize: '13px',
+                                            lineHeight: 1.5,
+                                        }}>
+                                            <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--warning)' }}>
+                                                {isChinese ? '无法加载审批记录' : 'Unable to load approval records'}
+                                            </div>
+                                            <div>{approvalsErrorMessage}</div>
+                                        </div>
+                                    )}
                                     {/* Pending */}
                                     {pending.length > 0 && (
                                         <>

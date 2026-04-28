@@ -17,6 +17,7 @@ from app.database import async_session, get_db
 from app.models.org import OrgDepartment, OrgMember
 from app.models.identity import IdentityProvider
 from app.models.user import User
+from app.services.org_sync_adapter import derive_member_department_paths
 from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.models.audit import AuditLog, ApprovalRequest, EnterpriseInfo
@@ -777,9 +778,7 @@ async def list_identity_providers(
     result = await db.execute(query)
     providers = []
     for p in result.scalars().all():
-        data = IdentityProviderOut.model_validate(p).model_dump()
-        data["last_synced_at"] = (p.config or {}).get("last_synced_at")
-        providers.append(data)
+        providers.append(_identity_provider_response(p))
     return providers
 
 
@@ -886,6 +885,25 @@ def validate_provider_config(provider_type: str, config: dict):
     return
 
 
+def _sanitize_identity_provider_config(provider_type: str, config: dict | None) -> dict | None:
+    if config is None:
+        return None
+    sanitized = dict(config)
+    if provider_type == "google_workspace":
+        sanitized.pop("google_admin_refresh_token", None)
+        sanitized.pop("google_admin_refresh_token_encrypted", None)
+    return sanitized
+
+
+def _identity_provider_response(provider: IdentityProvider, sso_domain: str | None = None) -> dict:
+    data = IdentityProviderOut.model_validate(provider).model_dump()
+    data["config"] = _sanitize_identity_provider_config(provider.provider_type, provider.config)
+    data["last_synced_at"] = (provider.config or {}).get("last_synced_at")
+    if sso_domain is not None:
+        data["sso_domain"] = sso_domain
+    return data
+
+
 @router.post("/identity-providers", response_model=IdentityProviderOut)
 async def create_identity_provider(
     data: IdentityProviderCreate,
@@ -893,6 +911,8 @@ async def create_identity_provider(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new identity provider (Admin only)."""
+    from app.services.auth_registry import auth_provider_registry
+
     # Validate config
     validate_provider_config(data.provider_type, data.config)
     
@@ -930,7 +950,8 @@ async def create_identity_provider(
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
-    return IdentityProviderOut.model_validate(provider)
+    auth_provider_registry._clear_cache(provider.provider_type)
+    return _identity_provider_response(provider)
 
 
 @router.post("/identity-providers/oauth2", response_model=IdentityProviderOut)
@@ -940,6 +961,8 @@ async def create_oauth2_provider(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new OAuth2 identity provider with simplified fields (app_id, app_secret, authorize_url, etc.)."""
+    from app.services.auth_registry import auth_provider_registry
+
     # Convert to config dict
     oauth_config = OAuth2Config(
         app_id=data.app_id,
@@ -980,7 +1003,8 @@ async def create_oauth2_provider(
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
-    return IdentityProviderOut.model_validate(provider)
+    auth_provider_registry._clear_cache(provider.provider_type)
+    return _identity_provider_response(provider)
 
 
 class OAuth2ConfigUpdate(BaseModel):
@@ -1003,6 +1027,8 @@ async def update_oauth2_provider(
     db: AsyncSession = Depends(get_db),
 ):
     """Update an OAuth2 identity provider with simplified fields."""
+    from app.services.auth_registry import auth_provider_registry
+
     result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
     provider = result.scalar_one_or_none()
     if not provider:
@@ -1050,7 +1076,8 @@ async def update_oauth2_provider(
 
     await db.commit()
     await db.refresh(provider)
-    return IdentityProviderOut.model_validate(provider)
+    auth_provider_registry._clear_cache(provider.provider_type)
+    return _identity_provider_response(provider)
 
 
 class IdentityProviderUpdate(BaseModel):
@@ -1068,6 +1095,8 @@ async def update_identity_provider(
     db: AsyncSession = Depends(get_db),
 ):
     """Update an existing identity provider."""
+    from app.services.auth_registry import auth_provider_registry
+
     result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
     provider = result.scalar_one_or_none()
     if not provider:
@@ -1101,6 +1130,7 @@ async def update_identity_provider(
         
     await db.commit()
     await db.refresh(provider)
+    auth_provider_registry._clear_cache(provider.provider_type)
 
     # Recompute tenant.sso_enabled derived state whenever sso_login_enabled changes
     sso_domain = None
@@ -1112,9 +1142,7 @@ async def update_identity_provider(
         if t:
             sso_domain = t.sso_domain
 
-    out = IdentityProviderOut.model_validate(provider)
-    out.sso_domain = sso_domain
-    return out
+    return _identity_provider_response(provider, sso_domain=sso_domain)
 
 
 @router.delete("/identity-providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1287,13 +1315,17 @@ async def list_org_members(
     query = query.order_by(OrgMember.name).limit(100)
     result = await db.execute(query)
     rows = result.all()
+    member_paths = await derive_member_department_paths(
+        db,
+        [m for m, _provider_name, _provider_type in rows],
+    )
     return [
         {
             "id": str(m.id),
             "name": m.name,
             "email": m.email,
             "title": m.title,
-            "department_path": m.department_path,
+            "department_path": member_paths.get(m.id, m.department_path),
             "avatar_url": m.avatar_url,
             "external_id": m.external_id,
             "provider_id": str(m.provider_id) if m.provider_id else None,
