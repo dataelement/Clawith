@@ -54,7 +54,6 @@ class BroadcastEmailRecipient:
 async def resolve_email_config_async(db) -> SystemEmailConfig | None:
     """Resolve email configuration by searching in order:
     1. Platform-level settings in DB ('system_email_platform')
-    2. Environment variables (Settings class)
     """
     from sqlalchemy import select
     from app.models.system_settings import SystemSetting

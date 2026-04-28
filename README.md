@@ -158,20 +158,12 @@ The first user to register automatically becomes the **platform admin**. Open th
 
 ### System Email and Password Reset
 
-Clawith can send platform-owned emails for password reset and optional broadcast delivery. Configure SMTP in `.env`:
+Clawith can send platform-owned emails for password reset, email verification, and optional broadcast delivery.
 
-```bash
-PUBLIC_BASE_URL=http://localhost:3008
-SYSTEM_EMAIL_FROM_ADDRESS=bot@example.com
-SYSTEM_EMAIL_FROM_NAME=Clawith
-SYSTEM_SMTP_HOST=smtp.example.com
-SYSTEM_SMTP_PORT=465
-SYSTEM_SMTP_USERNAME=bot@example.com
-SYSTEM_SMTP_PASSWORD=your-app-password
-SYSTEM_SMTP_SSL=true
-SYSTEM_SMTP_TIMEOUT_SECONDS=15
-PASSWORD_RESET_TOKEN_EXPIRE_MINUTES=30
-```
+You can configure the SMTP server settings directly from the web interface:
+1. Log in as a platform administrator.
+2. Navigate to **Admin -> Platform Settings**.
+3. Under the **Platform** tab, locate the **System Email Configuration** section and enter your SMTP details.
 
 `PUBLIC_BASE_URL` must point to the user-facing frontend because reset links are generated as `/reset-password?token=...`.
 In production, set it to your public HTTPS domain (for example `https://app.example.com`), not a localhost address.
