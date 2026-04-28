@@ -198,6 +198,9 @@ export const tenantApi = {
 
     resolveByDomain: (domain: string) =>
         request<any>(`/tenants/resolve-by-domain?domain=${encodeURIComponent(domain)}`),
+
+    me: () =>
+        request<{ id: string; name: string; default_model_id: string | null; [k: string]: any }>('/tenants/me'),
 };
 
 export const adminApi = {
@@ -371,6 +374,9 @@ export const enterpriseApi = {
         const tid = localStorage.getItem('current_tenant_id');
         return request<any[]>(`/enterprise/llm-models${tid ? `?tenant_id=${tid}` : ''}`);
     },
+
+    setDefaultModel: (modelId: string) =>
+        request<void>(`/enterprise/llm-models/${modelId}/set-default`, { method: 'POST' }),
     templates: () => request<any[]>('/agents/templates'),
 
     // Enterprise Knowledge Base

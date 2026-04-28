@@ -177,7 +177,66 @@ async def add_llm_model(
     )
     db.add(model)
     await db.flush()
+
+    # First enabled model for a tenant becomes that tenant's default.
+    # Admins can later reassign via PATCH /llm-models/{id}/set-default.
+    if model.tenant_id and model.enabled:
+        from app.models.tenant import Tenant
+        t_result = await db.execute(select(Tenant).where(Tenant.id == model.tenant_id))
+        tenant = t_result.scalar_one_or_none()
+        if tenant and tenant.default_model_id is None:
+            tenant.default_model_id = model.id
+
     return LLMModelOut.model_validate(model)
+
+
+@router.post("/llm-models/{model_id}/set-default", status_code=status.HTTP_204_NO_CONTENT)
+async def set_default_llm_model(
+    model_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark this model as the tenant's default for new agents."""
+    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    model = result.scalar_one_or_none()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if not model.tenant_id:
+        raise HTTPException(status_code=400, detail="Model is not tenant-scoped")
+    if not model.enabled:
+        raise HTTPException(status_code=400, detail="Model is disabled")
+
+    from app.models.tenant import Tenant
+    t_result = await db.execute(select(Tenant).where(Tenant.id == model.tenant_id))
+    tenant = t_result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    # Track the previous default so we can migrate agents that were
+    # following it. Without this, an admin who switches the company
+    # default would have to manually update every existing agent — and
+    # users would never see the new default reflected in chat.
+    previous_default = tenant.default_model_id
+    tenant.default_model_id = model.id
+
+    # Migrate agents whose primary_model_id matches the OLD tenant
+    # default. They were "implicitly following the default" — make them
+    # follow the new one. Agents whose model is something else (the user
+    # explicitly picked it) are left alone.
+    if previous_default and previous_default != model.id:
+        from app.models.agent import Agent
+        await db.execute(
+            update(Agent)
+            .where(Agent.tenant_id == tenant.id)
+            .where(Agent.primary_model_id == previous_default)
+            .values(primary_model_id=model.id)
+        )
+        logger.info(
+            f"[set_default_llm_model] Migrated agents in tenant {tenant.id} "
+            f"from {previous_default} -> {model.id}"
+        )
+
+    await db.commit()
 
 
 @router.delete("/llm-models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)

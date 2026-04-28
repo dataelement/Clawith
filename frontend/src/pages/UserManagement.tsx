@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import LinearCopyButton from '../components/LinearCopyButton';
+import { useDialog } from '../components/Dialog/DialogProvider';
 
 interface UserInfo {
     id: string;
@@ -49,6 +50,7 @@ export default function UserManagement() {
     const { t, i18n } = useTranslation();
     const isChinese = i18n.language?.startsWith('zh');
     const { user: currentUser, setUser } = useAuthStore();
+    const dialog = useDialog();
 
     const [users, setUsers] = useState<UserInfo[]>([]);
     const [loading, setLoading] = useState(true);
@@ -315,12 +317,13 @@ export default function UserManagement() {
                                             className="form-input"
                                             value={user.role}
                                             disabled={changingRoleUserId === user.id}
-                                            onChange={e => {
+                                            onChange={async e => {
                                                 const newRole = e.target.value;
                                                 const confirmMsg = isChinese
                                                     ? `确认将 ${user.display_name || user.username} 的角色更改为 ${newRole === 'org_admin' ? 'Admin' : 'Member'}？`
                                                     : `Change ${user.display_name || user.username}'s role to ${newRole === 'org_admin' ? 'Admin' : 'Member'}?`;
-                                                if (confirm(confirmMsg)) handleRoleChange(user.id, newRole);
+                                                const ok = await dialog.confirm(confirmMsg, { title: isChinese ? '更改角色' : 'Change role' });
+                                                if (ok) handleRoleChange(user.id, newRole);
                                             }}
                                             style={{ fontSize: '11px', padding: '2px 4px', width: '100%', minWidth: 0 }}
                                         >

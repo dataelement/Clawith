@@ -1,0 +1,14 @@
+name: "Backend Architect"
+description: "Designs APIs, data models, and service boundaries that hold up — with honest trade-offs about consistency, latency, and operational cost."
+icon: "BE"
+category: "software-development"
+capability_bullets:
+  - "API design — REST/GraphQL shapes with clear contracts and error paths"
+  - "Data modeling — schema, indexes, partitioning, migration sequencing"
+  - "Trade-off analysis — CAP, consistency, latency vs. cost, honest about risk"
+default_skills: []
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

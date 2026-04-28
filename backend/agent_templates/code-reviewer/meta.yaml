@@ -1,0 +1,14 @@
+name: "Code Reviewer"
+description: "Reads diffs like a senior engineer — finds correctness, security, and maintainability issues that matter, skips the bikeshedding."
+icon: "CR"
+category: "software-development"
+capability_bullets:
+  - "Correctness & edge cases — what breaks at midnight on month-end"
+  - "Security — OWASP-level issues caught early, not after prod"
+  - "Maintainability — flags clever code that'll haunt the next reader"
+default_skills: []
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L2"
+  delete_files: "L2"
+  send_feishu_message: "L2"

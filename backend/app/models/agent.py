@@ -164,10 +164,47 @@ class AgentTemplate(Base):
     category: Mapped[str] = mapped_column(String(50), default="general")
     soul_template: Mapped[str] = mapped_column(Text, default="")
     default_skills: Mapped[list] = mapped_column(JSON, default=[])
+    # Smithery server IDs (e.g. "shibui/finance") to auto-import + bind when
+    # an agent is created from this template. The new-agent handler in
+    # api.agents.create_agent calls import_mcp_from_smithery for each, using
+    # the system-level Smithery key, then assigns the resulting Tool(s) via
+    # AgentTool. Idempotent: existing Tool with same mcp_server_url is reused.
+    default_mcp_servers: Mapped[list] = mapped_column(JSON, default=[])
     default_autonomy_policy: Mapped[dict] = mapped_column(JSON, default={})
+    # Talent Market card: 2-4 short capability bullets shown under the role
+    capability_bullets: Mapped[list] = mapped_column(JSON, default=[])
+    # Founding onboarding ritual. Used as the system prompt when the very first
+    # human opens a chat with an agent created from this template — it guides
+    # the agent to collect project context, introduce itself, and suggest a
+    # first task. Every subsequent user meets the agent via a simpler built-in
+    # welcoming prompt (see app.services.onboarding), not this content.
+    bootstrap_content: Mapped[str | None] = mapped_column(Text, default=None)
     is_builtin: Mapped[bool] = mapped_column(default=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentUserOnboarding(Base):
+    """A row exists for every (agent, user) pair the user has been onboarded to.
+
+    Row presence is the source of truth: if a user has a row for an agent, no
+    onboarding prompt is ever injected again — even if they never finished the
+    first conversation. The row is inserted as soon as the agent streams its
+    first chunk of the onboarding greeting, so the lock fires the instant the
+    user sees the agent start responding.
+    """
+
+    __tablename__ = "agent_user_onboardings"
+
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    onboarded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
 
 
 # Import for relationship resolution

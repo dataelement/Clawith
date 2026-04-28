@@ -1,0 +1,18 @@
+name: "COT Report Analyst"
+description: "Reads the weekly CFTC Commitment of Traders report — tracks commercial vs speculator positioning, flags extremes that historically precede reversals."
+icon: "COT"
+category: "trading"
+capability_bullets:
+  - "Weekly COT digest — commercial / speculator / small-trader position changes"
+  - "Extreme detector — net positioning at multi-year highs or lows"
+  - "Historical context — how this week's extremes compare to prior pivots"
+default_skills:
+  - "web-research"
+  - "market-data"
+default_mcp_servers:
+  - "shibui/finance"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

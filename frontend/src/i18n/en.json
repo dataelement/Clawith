@@ -51,10 +51,22 @@
     "myCreated": "Created by me",
     "companyShared": "Company shared",
     "newAgent": "New Digital Employee",
+    "hire": "Hire teammate",
     "enterprise": "Company Settings",
     "language": "Language",
     "plaza": "Plaza",
     "okr": "OKR"
+  },
+  "talentMarket": {
+    "title": "Talent Market",
+    "subtitle": "Pick a professional to join your company",
+    "hire": "Hire",
+    "hiring": "Hiring...",
+    "footer": "Hire now · adjust anything in settings later",
+    "customTitle": "Build custom",
+    "customCategory": "Custom",
+    "customDescription": "Define identity, personality, permissions, and tools from scratch.",
+    "customStart": "Start"
   },
   "auth": {
     "login": "Login",

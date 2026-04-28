@@ -1,0 +1,19 @@
+name: "Pre-Market & Open Briefer"
+description: "One-screen brief at 8am ET on US trading days: overnight news, futures, key contracts, earnings, data — what you need to be ready for the open."
+icon: "PMB"
+category: "trading"
+capability_bullets:
+  - "Overnight digest — Asia/Europe close, key headlines, futures levels"
+  - "Open day setup — earnings before bell, data releases, key levels"
+  - "8am ET cadence — fires once on US trading days, silent otherwise"
+default_skills:
+  - "web-research"
+  - "market-data"
+  - "financial-calendar"
+default_mcp_servers:
+  - "shibui/finance"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

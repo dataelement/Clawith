@@ -3271,8 +3271,19 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
         from app.services.mcp_client import MCPClient
 
         async with async_session() as db:
+            # Primary lookup: clawith-prefixed name (e.g.
+            # mcp_shibui_finance_unlock_financial_analysis).
             result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
             tool = result.scalar_one_or_none()
+
+            # Fallback: LLM sometimes drops the mcp_<server>_ prefix and calls
+            # the bare MCP-side tool name (e.g. unlock_financial_analysis).
+            # Resolve by mcp_tool_name when the prefixed name doesn't match.
+            if not tool:
+                result = await db.execute(
+                    select(Tool).where(Tool.mcp_tool_name == tool_name, Tool.type == "mcp")
+                )
+                tool = result.scalar_one_or_none()
 
             if not tool:
                 logger.warning(f"[MCP] Unknown tool: {tool_name}")
@@ -3369,9 +3380,14 @@ async def _execute_via_smithery_connect(mcp_url: str, tool_name: str, arguments:
             "Please set smithery_namespace and smithery_connection_id in the tool configuration."
         )
 
+    # Smithery Connect (and many MCP servers) emit SSE responses for tools/call.
+    # The server returns 406 Not Acceptable if the client doesn't declare both
+    # application/json and text/event-stream in the Accept header. We parse
+    # both formats below, so advertise both.
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
     }
 
     try:

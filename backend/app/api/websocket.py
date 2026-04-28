@@ -157,6 +157,7 @@ async def websocket_chat(
     agent_id: uuid.UUID,
     token: str = Query(...),
     session_id: str = Query(None),
+    lang: str = Query("en"),
 ):
     """WebSocket endpoint for real-time chat with an agent.
 
@@ -213,6 +214,10 @@ async def websocket_chat(
             role_description = agent.role_description or ""
             welcome_message = agent.welcome_message or ""
             ctx_size = agent.context_window_size or 100
+            # Captured for onboarding lookups — the DB-bound `agent` goes out
+            # of scope when this session block closes.
+            agent_snapshot = agent
+            user_display_name = (user.display_name or "").strip() or "there"
             logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}, ctx: {ctx_size}")
 
             # Load the agent's primary model
@@ -385,10 +390,58 @@ async def websocket_chat(
             content = data.get("content", "")
             display_content = data.get("display_content", "")  # User-facing display text
             file_name = data.get("file_name", "")  # Original file name for attachment display
-            logger.info(f"[WS] Received: {content[:50]}")
+            override_model_id = data.get("model_id")  # Optional per-turn model switcher
+            # When the frontend fires an onboarding trigger for a (user, agent)
+            # pair that hasn't met before, it tags the message so the server can
+            # (a) skip persisting a user-side turn and (b) not echo any user
+            # bubble — the agent opens the conversation itself.
+            is_onboarding_trigger = data.get("kind") == "onboarding_trigger"
+            logger.info(f"[WS] Received: {content[:50]}" + (" [onboarding]" if is_onboarding_trigger else ""))
 
-            if not content:
+            if not content and not is_onboarding_trigger:
                 continue
+            if is_onboarding_trigger:
+                # Guard against stale triggers. A frontend with a cached
+                # agent query from before the ritual completed can fire an
+                # onboarding_trigger on a new session even though the pair
+                # is already locked. In that case the resolver would return
+                # no prompt, but the placeholder "Please begin the
+                # onboarding" would still reach the LLM and the agent would
+                # dutifully restart the ritual. Short-circuit here, emit an
+                # event so the frontend refreshes its cache, and move on.
+                from app.services.onboarding import is_onboarded as _is_onboarded
+                async with async_session() as _gdb:
+                    if await _is_onboarded(_gdb, agent_id, user_id):
+                        logger.info("[WS] Onboarding trigger ignored — pair already onboarded")
+                        await websocket.send_json({
+                            "type": "onboarded",
+                            "agent_id": str(agent_id),
+                        })
+                        continue
+                # Minimal placeholder so the LLM has a valid user turn to anchor
+                # its greeting. The onboarding system prompt is what actually
+                # drives the reply; this text is never shown or saved.
+                content = "Please begin the onboarding."
+
+            # Per-message model override — the chat dropdown lets users pick a
+            # different tenant-scoped model for this session. Override only the
+            # current turn; nothing is persisted, and it resets when Chat.tsx
+            # remounts.
+            effective_llm_model = llm_model
+            if override_model_id:
+                try:
+                    _ovr_uuid = uuid.UUID(str(override_model_id))
+                    async with async_session() as _mdb:
+                        _mr = await _mdb.execute(select(LLMModel).where(LLMModel.id == _ovr_uuid))
+                        _ovr = _mr.scalar_one_or_none()
+                        if _ovr and _ovr.enabled and _ovr.tenant_id and (
+                            not llm_model or _ovr.tenant_id == llm_model.tenant_id
+                        ):
+                            effective_llm_model = _ovr
+                        else:
+                            logger.warning(f"[WS] model override {override_model_id} rejected (missing/disabled/tenant mismatch)")
+                except (ValueError, TypeError):
+                    logger.warning(f"[WS] model override {override_model_id!r} is not a valid UUID")
 
             # ── Quota checks ──
             try:
@@ -411,6 +464,10 @@ async def websocket_chat(
 
             # Save user message to DB.
             #
+            # Bootstrap trigger: the user never sent anything — the frontend
+            # fired a synthetic turn so the agent could greet first. Don't
+            # persist and don't title the session from it.
+            #
             # If the LLM content contains [image_data:...] markers, persist the full
             # payload so subsequent turns can still forward the image to the model.
             has_image_marker = "[image_data:" in content
@@ -420,35 +477,51 @@ async def websocket_chat(
                 saved_content = display_content if display_content else content
                 if file_name:
                     saved_content = f"[file:{file_name}]\n{saved_content}"
-            async with async_session() as db:
-                user_msg = ChatMessage(
-                    agent_id=agent_id,
-                    user_id=user_id,
-                    role="user",
-                    content=saved_content,
-                    conversation_id=conv_id,
-                )
-                db.add(user_msg)
-                # Update session last_message_at + auto-title on first message
-                from app.models.chat_session import ChatSession as _CS
-                from datetime import datetime as _dt2, timezone as _tz2
-                _now = _dt2.now(_tz2.utc)
-                _sess_r = await db.execute(
-                    select(_CS).where(_CS.id == uuid.UUID(conv_id))
-                )
-                _sess = _sess_r.scalar_one_or_none()
-                if _sess:
-                    _sess.last_message_at = _now
-                    if not history_messages and _sess.title.startswith("Session "):
-                        # Use display_content for title (avoids raw base64/markers)
-                        title_src = display_content if display_content else content
-                        # Clean up common prefixes from image/file messages
-                        clean_title = title_src.replace("[图片] ", "📷 ").replace("[image_data:", "").strip()
-                        if file_name and not clean_title:
-                            clean_title = f"📎 {file_name}"
-                        _sess.title = clean_title[:40] if clean_title else content[:40]
-                await db.commit()
-            logger.info("[WS] User message saved")
+            if is_onboarding_trigger:
+                logger.info("[WS] Onboarding trigger — skipping user-message persistence")
+                # Title this session "Onboarding" up front so it's identifiable
+                # in the session list even before the user has typed anything.
+                # The auto-title logic in the normal path only overwrites titles
+                # that start with "Session ", so this stays sticky.
+                async with async_session() as _sdb:
+                    from app.models.chat_session import ChatSession as _CS
+                    _sr = await _sdb.execute(
+                        select(_CS).where(_CS.id == uuid.UUID(conv_id))
+                    )
+                    _s = _sr.scalar_one_or_none()
+                    if _s and _s.title.startswith("Session "):
+                        _s.title = "Onboarding"
+                        await _sdb.commit()
+            else:
+                async with async_session() as db:
+                    user_msg = ChatMessage(
+                        agent_id=agent_id,
+                        user_id=user_id,
+                        role="user",
+                        content=saved_content,
+                        conversation_id=conv_id,
+                    )
+                    db.add(user_msg)
+                    # Update session last_message_at + auto-title on first message
+                    from app.models.chat_session import ChatSession as _CS
+                    from datetime import datetime as _dt2, timezone as _tz2
+                    _now = _dt2.now(_tz2.utc)
+                    _sess_r = await db.execute(
+                        select(_CS).where(_CS.id == uuid.UUID(conv_id))
+                    )
+                    _sess = _sess_r.scalar_one_or_none()
+                    if _sess:
+                        _sess.last_message_at = _now
+                        if not history_messages and _sess.title.startswith("Session "):
+                            # Use display_content for title (avoids raw base64/markers)
+                            title_src = display_content if display_content else content
+                            # Clean up common prefixes from image/file messages
+                            clean_title = title_src.replace("[图片] ", "📷 ").replace("[image_data:", "").strip()
+                            if file_name and not clean_title:
+                                clean_title = f"📎 {file_name}"
+                            _sess.title = clean_title[:40] if clean_title else content[:40]
+                    await db.commit()
+                logger.info("[WS] User message saved")
 
             # ── OpenClaw routing: insert into gateway_messages instead of LLM ──
             if agent_type == "openclaw":
@@ -505,18 +578,42 @@ async def websocket_chat(
                         fallback_llm_model = None
 
             # Call LLM with streaming
-            if llm_model:
-
+            if effective_llm_model:
                 try:
-                    logger.info(f"[WS] Calling LLM {llm_model.model} (streaming)...")
+                    logger.info(f"[WS] Calling LLM {effective_llm_model.model} (streaming)...")
                     
                     # Accumulate partial content for abort handling
                     partial_chunks: list[str] = []
-                    
+
+                    # Flipped to True inside _call_with_failover when an
+                    # onboarding prompt was injected for this turn. The first
+                    # streamed chunk then commits the junction-table row so
+                    # future sessions see this user as already onboarded, even
+                    # if they disconnect before the greeting finishes.
+                    needs_onboarding_mark = False
+                    onboarding_mark_done = False
+
                     async def stream_to_ws(text: str):
                         """Send each chunk to client in real-time."""
+                        nonlocal onboarding_mark_done
                         partial_chunks.append(text)
                         await websocket.send_json({"type": "chunk", "content": text})
+                        if needs_onboarding_mark and not onboarding_mark_done:
+                            onboarding_mark_done = True
+                            try:
+                                from app.services.onboarding import mark_onboarded
+                                async with async_session() as _ob_db:
+                                    await mark_onboarded(_ob_db, agent_id, user_id)
+                                # Tell the frontend to refresh its cached agent
+                                # record so subsequent sessions (or other open
+                                # tabs) see onboarded_for_me=true and skip the
+                                # kickoff effect.
+                                await websocket.send_json({
+                                    "type": "onboarded",
+                                    "agent_id": str(agent_id),
+                                })
+                            except Exception as _ob_err:
+                                logger.warning(f"[WS] mark_onboarded failed (non-fatal): {_ob_err}")
                     
                     async def tool_call_to_ws(data: dict):
                         """Send tool call info to client and persist completed ones."""
@@ -659,6 +756,8 @@ async def websocket_chat(
 
                     # Run call_llm_with_failover as a cancellable task
                     async def _call_with_failover():
+                        nonlocal needs_onboarding_mark
+
                         async def _on_failover(reason: str):
                             await websocket.send_json({"type": "info", "content": f"Primary model error, {reason}"})
 
@@ -667,8 +766,38 @@ async def websocket_chat(
                         while _truncated and _truncated[0].get("role") == "tool":
                             _truncated.pop(0)
 
+                        # Per-(user, agent) onboarding: if the junction table
+                        # has no row for this pair yet, prepend a system prompt.
+                        # The prompt is turn-aware — on the greeting turn it
+                        # tells the agent to greet + ask one question; on the
+                        # deliverable turn it tells the agent to drop question
+                        # mode and immediately produce a concrete output. The
+                        # junction row is only committed on the deliverable
+                        # turn (see lock_on_first_chunk below), so the full
+                        # two-step ritual stays guarded.
+                        from app.services.onboarding import resolve_onboarding_prompt
+                        skip_tools_for_greeting = False
+                        try:
+                            async with async_session() as _ob_db:
+                                _onb = await resolve_onboarding_prompt(
+                                    _ob_db, agent_snapshot, user_id,
+                                    user_name=user_display_name,
+                                    user_locale=lang,
+                                )
+                            if _onb:
+                                _truncated = [{"role": "system", "content": _onb.prompt}] + _truncated
+                                if _onb.lock_on_first_chunk:
+                                    needs_onboarding_mark = True
+                                # Greeting turn produces a templated reply that
+                                # never calls tools, so suppress the tool list
+                                # to cut prompt size by ~50% and improve TTFT.
+                                if _onb.is_greeting_turn:
+                                    skip_tools_for_greeting = True
+                        except Exception as _onb_err:
+                            logger.warning(f"[WS] Onboarding prompt resolve failed (non-fatal): {_onb_err}")
+
                         return await call_llm_with_failover(
-                            primary_model=llm_model,
+                            primary_model=effective_llm_model,
                             fallback_model=fallback_llm_model,
                             messages=_truncated,
                             agent_name=agent_name,
@@ -680,8 +809,9 @@ async def websocket_chat(
                             on_tool_call=tool_call_to_ws,
                             on_tool_delta=tool_delta_to_ws,
                             on_thinking=thinking_to_ws,
-                            supports_vision=getattr(llm_model, 'supports_vision', False),
+                            supports_vision=getattr(effective_llm_model, 'supports_vision', False),
                             on_failover=_on_failover,
+                            skip_tools=skip_tools_for_greeting,
                         )
 
                     llm_task = _aio.create_task(_call_with_failover())
@@ -732,7 +862,9 @@ async def websocket_chat(
                     ):
                         raise RuntimeError(assistant_response)
 
-                    # Update last_active_at
+                    # Update last_active_at. The onboarding lock is handled
+                    # earlier in stream_to_ws on the first streamed chunk, so
+                    # there's nothing to reconcile here anymore.
                     from datetime import datetime, timezone as tz
                     async with async_session() as _db:
                         from app.models.agent import Agent as AgentModel

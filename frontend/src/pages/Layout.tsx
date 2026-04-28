@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
 import { agentApi, tenantApi, authApi } from '../services/api';
+import { useToast } from '../components/Toast/ToastProvider';
 
 import {
     IconHome,
@@ -31,6 +32,7 @@ import {
     IconCheck,
 } from '@tabler/icons-react';
 import { useAppStore } from '../stores';
+import TalentMarketModal from '../components/TalentMarketModal';
 
 /* ────── Tabler Icons ────── */
 const SidebarIcons = {
@@ -233,6 +235,7 @@ function VersionDisplay() {
 
 export default function Layout() {
     const { t, i18n } = useTranslation();
+    const toast = useToast();
     const navigate = useNavigate();
     const { user, logout, setAuth } = useAuthStore();
     const queryClient = useQueryClient();
@@ -249,6 +252,7 @@ export default function Layout() {
     const langSubmenuPortalRef = useRef<HTMLDivElement>(null);
     const langHoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [showNotifications, setShowNotifications] = useState(false);
+    const [showTalentMarket, setShowTalentMarket] = useState(false);
     const [notifCategory, setNotifCategory] = useState<string>('all');
     const [selectedNotification, setSelectedNotification] = useState<any | null>(null);
     const [showTenantMenu, setShowTenantMenu] = useState(false);
@@ -308,7 +312,7 @@ export default function Layout() {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({ detail: 'Failed to switch tenant' }));
-            alert(err.detail || 'Failed to switch tenant');
+            toast.error('切换公司失败', { details: String(err.detail || `HTTP ${res.status}`) });
             return;
         }
         const data = await res.json();
@@ -701,10 +705,15 @@ export default function Layout() {
                 <div className="sidebar-bottom">
                     <div className="sidebar-section" style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px', marginBottom: 0 }}>
                         {user && (
-                            <NavLink to="/agents/new" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.newAgent')}>
+                            <button
+                                onClick={() => setShowTalentMarket(true)}
+                                className="sidebar-item"
+                                title={t('nav.hire', t('nav.newAgent'))}
+                                style={{ background: 'transparent', border: 'none', width: '100%', textAlign: 'left', cursor: 'pointer' }}
+                            >
                                 <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.plus}</span>
-                                <span className="sidebar-item-text">{t('nav.newAgent')}</span>
-                            </NavLink>
+                                <span className="sidebar-item-text">{t('nav.hire', t('nav.newAgent'))}</span>
+                            </button>
                         )}
                         {user && ['platform_admin', 'org_admin'].includes(user.role) && (
                             <NavLink to="/enterprise" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.enterprise')}>
@@ -1071,6 +1080,11 @@ export default function Layout() {
                     isChinese={!!isChinese}
                 />
             )}
+
+            <TalentMarketModal
+                open={showTalentMarket}
+                onClose={() => setShowTalentMarket(false)}
+            />
         </div>
     );
 }

@@ -39,6 +39,7 @@ class TenantOut(BaseModel):
     sso_enabled: bool = False
     sso_domain: str | None = None
     a2a_async_enabled: bool = False
+    default_model_id: uuid.UUID | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -421,6 +422,24 @@ async def list_tenants(
     """List all tenants (platform_admin only)."""
     result = await db.execute(select(Tenant).order_by(Tenant.created_at.desc()))
     return [TenantOut.model_validate(t) for t in result.scalars().all()]
+
+
+@router.get("/me", response_model=TenantOut)
+async def get_my_tenant(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the current user's own tenant. Any authenticated member can read
+    this — the wizard and the chat model switcher need default_model_id, which
+    shouldn't require admin privileges.
+    """
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="User is not in a tenant")
+    result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return TenantOut.model_validate(tenant)
 
 
 @router.get("/{tenant_id}", response_model=TenantOut)

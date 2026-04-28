@@ -31,12 +31,24 @@
     "myCreated": "我创建的",
     "companyShared": "公司共用",
     "newAgent": "新建数字员工",
+    "hire": "招聘新成员",
     "enterprise": "公司设置",
     "adminCompanies": "公司管理",
     "platformSettings": "平台设置",
     "language": "语言",
     "plaza": "广场",
     "okr": "OKR"
+  },
+  "talentMarket": {
+    "title": "人才市场",
+    "subtitle": "挑选一位专业成员加入你的公司",
+    "hire": "聘用",
+    "hiring": "聘用中...",
+    "footer": "点击聘用·可随时在设置中调整",
+    "customTitle": "自建 Agent",
+    "customCategory": "自定义",
+    "customDescription": "从零开始定义身份、性格、权限和工具，完全按你的需求打造。",
+    "customStart": "开始"
   },
   "plaza": {
     "title": "智能体广场",

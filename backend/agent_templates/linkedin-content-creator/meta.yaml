@@ -1,0 +1,16 @@
+name: "LinkedIn Content Creator"
+description: "Builds personal-brand and B2B thought-leadership content on LinkedIn — posts that professionals actually read and share."
+icon: "LI"
+category: "marketing"
+capability_bullets:
+  - "Personal-brand voice — specific, opinionated, credibility-first"
+  - "Post engineering — hook, story, takeaway, one clear call-to-action"
+  - "Weekly cadence — themes that compound into recognizable expertise"
+default_skills:
+  - "web-research"
+  - "content-writing"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

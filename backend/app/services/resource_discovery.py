@@ -18,7 +18,25 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
     """Read Smithery API key.
 
     Priority: 1) per-agent AgentTool config, 2) system-level tool config.
+
+    Sensitive fields in tool/AgentTool config are stored encrypted (see
+    api.tools._encrypt_sensitive_fields). We must decrypt here before
+    handing the value to httpx — otherwise Smithery rejects with 401.
+    Falls back to raw value when decrypt fails (e.g. legacy plaintext keys).
     """
+    from app.core.security import decrypt_data
+    from app.config import get_settings as _get_settings
+    secret_key = _get_settings().SECRET_KEY
+
+    def _maybe_decrypt(raw: str) -> str:
+        if not raw:
+            return ""
+        try:
+            return decrypt_data(raw, secret_key)
+        except Exception:
+            # Already plaintext (legacy / seeded with plain key) — return as-is.
+            return raw
+
     try:
         async with async_session() as db:
             # 1) Per-agent: check AgentTool configs for any MCP tool with a smithery_api_key
@@ -28,13 +46,13 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
                 )
                 for at in at_r.scalars().all():
                     if at.config and at.config.get("smithery_api_key"):
-                        return at.config["smithery_api_key"]
+                        return _maybe_decrypt(at.config["smithery_api_key"])
             # 2) System-level fallback
             for tool_name in ("discover_resources", "import_mcp_server"):
                 r = await db.execute(select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
                 if tool and tool.config and tool.config.get("smithery_api_key"):
-                    return tool.config["smithery_api_key"]
+                    return _maybe_decrypt(tool.config["smithery_api_key"])
     except Exception:
         pass
     return ""
@@ -413,6 +431,66 @@ async def import_mcp_from_smithery(
                 f"\n\n🔐 **OAuth 授权需要**: 请在浏览器中访问以下链接完成授权：\n"
                 f"{conn_result['auth_url']}\n"
                 f"授权完成后，工具即可使用。"
+            )
+
+    # Step 3.6: Override registry-advertised schema with the runtime server's
+    # actual tools/list. Smithery's registry detail can drift behind the live
+    # server (we hit this with shibui/finance: registry said `sql`, server
+    # required `user_prompt` + `query`). The truth is whatever tools/list
+    # returns at call time, so prefer it whenever available.
+    if smithery_config:
+        ns_ = smithery_config["smithery_namespace"]
+        conn_ = smithery_config["smithery_connection_id"]
+        try:
+            import json as _json
+            async with httpx.AsyncClient(timeout=15) as client:
+                live_resp = await client.post(
+                    f"https://api.smithery.ai/connect/{ns_}/{conn_}/mcp",
+                    json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    },
+                )
+            if live_resp.status_code == 200:
+                live_data = None
+                # Smithery Connect returns SSE; parse the first data: line.
+                for line in live_resp.text.split("\n"):
+                    line = line.strip()
+                    if line.startswith("data: "):
+                        try:
+                            live_data = _json.loads(line[6:])
+                            break
+                        except _json.JSONDecodeError:
+                            pass
+                if live_data is None:
+                    try:
+                        live_data = _json.loads(live_resp.text)
+                    except _json.JSONDecodeError:
+                        live_data = None
+                live_tools = (live_data or {}).get("result", {}).get("tools", []) if live_data else []
+                # MCP servers also return prompts here; only treat actual tools.
+                live_tools_normalized = [
+                    {
+                        "name": t.get("name", ""),
+                        "description": t.get("description", ""),
+                        "inputSchema": t.get("inputSchema", {}),
+                    }
+                    for t in live_tools
+                    if t.get("name") and isinstance(t.get("inputSchema"), dict)
+                ]
+                if live_tools_normalized:
+                    logger.info(
+                        f"[ResourceDiscovery] Using live tools/list for {qualified_name}: "
+                        f"{len(live_tools_normalized)} tool(s) override registry's "
+                        f"{len(tools_discovered)}"
+                    )
+                    tools_discovered = live_tools_normalized
+        except Exception as e:
+            logger.warning(
+                f"[ResourceDiscovery] Live tools/list failed for {qualified_name}, "
+                f"falling back to registry schema: {e}"
             )
 
     # Merge smithery_config + user config for AgentTool

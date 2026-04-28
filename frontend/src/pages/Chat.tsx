@@ -1,14 +1,16 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
-import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
+import ModelSwitcher from '../components/ModelSwitcher';
+import { agentApi, enterpriseApi, tenantApi, uploadFileWithProgress } from '../services/api';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { formatFileSize } from '../utils/formatFileSize';
 import { useAuthStore } from '../stores';
 import { useDropZone } from '../hooks/useDropZone';
+import { useToast } from '../components/Toast/ToastProvider';
 
 /* ── Inline SVG Icons ── */
 const Icons = {
@@ -261,7 +263,8 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
 }
 
 export default function Chat() {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
+    const toast = useToast();
     const { id } = useParams<{ id: string }>();
     const token = useAuthStore((s) => s.token);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -287,12 +290,54 @@ export default function Chat() {
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
+    // Track history load + whether we've already fired the one-shot onboarding
+    // trigger so the agent greets the user at most once per mount.
+    const historyLoaded = useRef(false);
+    const onboardingKickoffSent = useRef(false);
 
     const { data: agent } = useQuery({
         queryKey: ['agent', id],
         queryFn: () => agentApi.get(id!),
         enabled: !!id,
     });
+
+    // Tenant default model — used only as a "默认" tag in the dropdown, not as
+    // the initial selection. Initial selection is agent.primary_model_id.
+    const { data: myTenant } = useQuery({
+        queryKey: ['tenant', 'me'],
+        queryFn: () => tenantApi.me(),
+        staleTime: 5 * 60 * 1000,
+    });
+
+    // Chat-side selected model. Source-of-truth is agent.primary_model_id;
+    // the picker mirrors it bidirectionally:
+    //   - User picks model in chat → handleModelChange PATCHes the agent.
+    //   - Agent's saved default changes elsewhere (settings page, tenant
+    //     default migration) → useEffect below pulls the new value in.
+    // Also re-syncs when wsSessionId changes so "new conversation" lands
+    // on the agent's current default rather than a stale prior pick.
+    const queryClient = useQueryClient();
+    const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
+    useEffect(() => {
+        if (agent?.primary_model_id && agent.primary_model_id !== overrideModelId) {
+            setOverrideModelId(agent.primary_model_id);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [agent?.primary_model_id, wsSessionId]);
+
+    const handleModelChange = useCallback(async (newModelId: string | null) => {
+        // Optimistic UI: update local state immediately so the dropdown
+        // closes / reflects the choice without waiting on the server.
+        setOverrideModelId(newModelId);
+        if (!id || !newModelId || newModelId === agent?.primary_model_id) return;
+        try {
+            await agentApi.update(id, { primary_model_id: newModelId });
+            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+        } catch (e) {
+            // Roll back local state on failure so the picker shows reality.
+            setOverrideModelId(agent?.primary_model_id || null);
+        }
+    }, [id, agent?.primary_model_id, queryClient]);
 
     const { data: llmModels = [] } = useQuery({
         queryKey: ['llm-models'],
@@ -397,8 +442,29 @@ export default function Chat() {
                     setMessages(processed);
                 }
             })
-            .catch(() => { /* ignore */ });
+            .catch(() => { /* ignore */ })
+            .finally(() => { historyLoaded.current = true; });
     }, [id, token]);
+
+    // Per-(user, agent) onboarding kickoff: if this viewer has never been
+    // onboarded to this agent and the conversation is empty, fire a tagged
+    // trigger the backend treats as "agent greets first" — no visible user
+    // bubble, no DB write for the placeholder turn. One-shot per mount.
+    useEffect(() => {
+        if (onboardingKickoffSent.current) return;
+        if (!connected || !wsRef.current) return;
+        if (!agent || agent.onboarded_for_me !== false) return;
+        if (!historyLoaded.current) return;
+        if (messages.length > 0) return;
+        onboardingKickoffSent.current = true;
+        setIsWaiting(true);
+        setStreaming(true);
+        wsRef.current.send(JSON.stringify({
+            content: '',
+            kind: 'onboarding_trigger',
+            model_id: overrideModelId,
+        }));
+    }, [connected, agent, messages.length, overrideModelId]);
 
     useEffect(() => {
         if (!id || !token) return;
@@ -408,7 +474,8 @@ export default function Chat() {
         const connect = () => {
             if (cancelled) return;
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/chat/${id}?token=${token}`;
+            const lang = (i18n.language || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+            const wsUrl = `${protocol}//${window.location.host}/ws/chat/${id}?token=${token}&lang=${lang}`;
             const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
@@ -646,7 +713,7 @@ export default function Chat() {
             });
         } catch (err: any) {
             if (err?.message !== 'Upload cancelled') {
-                alert(t('agent.upload.failed') + (err?.message ? `: ${err.message}` : ''));
+                toast.error(t('agent.upload.failed'), { details: String(err?.message || '') });
             }
         } finally {
             if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -703,7 +770,7 @@ export default function Chat() {
             imageUrl: attachedFile?.imageUrl,
             timestamp: new Date().toISOString(),
         }]);
-        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '' }));
+        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '', model_id: overrideModelId }));
         setInput('');
         setAttachedFile(null);
     };
@@ -750,7 +817,7 @@ export default function Chat() {
             });
         } catch (err: any) {
             if (err?.message !== 'Upload cancelled') {
-                alert(t('agent.upload.failed') + (err?.message ? `: ${err.message}` : ''));
+                toast.error(t('agent.upload.failed'), { details: String(err?.message || '') });
             }
         } finally {
             if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -952,6 +1019,18 @@ export default function Chat() {
                                 placeholder={t('chat.placeholder')}
                                 disabled={!connected}
                                 rows={1}
+                            />
+                        </div>
+                        <div style={{ padding: '0 8px', marginTop: '4px' }}>
+                            <ModelSwitcher
+                                value={overrideModelId}
+                                onChange={handleModelChange}
+                                /* "默认" badge marks the agent's current saved
+                                   default (= primary_model_id), so it stays in
+                                   sync with whatever the picker / settings page
+                                   reports as the default. */
+                                tenantDefaultId={agent?.primary_model_id || null}
+                                disabled={!connected}
                             />
                         </div>
                         <div className="chat-composer-toolbar">
