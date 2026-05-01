@@ -3149,7 +3149,7 @@ export default function EnterpriseSettings() {
 
     return (
         <>
-            <div>
+            <div className="stagger-reveal">
                 <div className="page-header">
                     <div>
                         <h1 className="page-title">{t('nav.enterprise')}</h1>
@@ -3203,7 +3203,7 @@ export default function EnterpriseSettings() {
 
                         {/* Add Model form — only shown at top when adding new */}
                         {showAddModel && !editingModelId && (
-                            <div className="card" style={{ marginBottom: '16px' }}>
+                            <div className="card hover-lift" style={{ marginBottom: '16px' }}>
                                 <h3 style={{ marginBottom: '16px' }}>{t('enterprise.llm.addModel')}</h3>
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                                     <div className="form-group">

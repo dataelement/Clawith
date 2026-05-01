@@ -477,7 +477,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
 
     // ── Native mode: original multi-step wizard ──
     return (
-        <div>
+        <div className="stagger-reveal">
             <div className="page-header">
                 <h1 className="page-title">{t('nav.newAgent')}</h1>
             </div>
@@ -505,7 +505,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                 </div>
             )}
 
-            <div className="card" style={{ maxWidth: '640px' }}>
+            <div className="card hover-lift" style={{ maxWidth: '640px' }}>
                 {/* Step 1: Basic Info + Model */}
                 {step === 0 && (
                     <div>

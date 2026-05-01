@@ -1,6 +1,8 @@
 """Seed default agents (Morty & Meeseeks) on first platform startup."""
 
+import os
 import shutil
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -194,11 +196,20 @@ async def seed_default_agents():
     """
     # --- Idempotency guard: file-based marker (survives agent renames/deletes) ---
     seed_marker = Path(settings.AGENT_DATA_DIR) / ".seeded"
-    if seed_marker.exists():
-        logger.info("[AgentSeeder] Seed marker found, skipping default agent creation")
-        return
-
+    
+    # Check both marker AND database to handle inconsistent state
     async with async_session() as db:
+        # Verify agents actually exist in DB before skipping
+        existing_agents = await db.execute(
+            select(Agent).where(Agent.name.in_(["Morty", "Meeseeks"])).limit(2)
+        )
+        agents_in_db = existing_agents.scalars().all()
+        
+        if seed_marker.exists() and len(agents_in_db) == 2:
+            logger.info("[AgentSeeder] Seed marker found and agents exist in DB, skipping default agent creation")
+            return
+        elif seed_marker.exists() and len(agents_in_db) < 2:
+            logger.warning("[AgentSeeder] Seed marker exists but agents missing from DB, will re-seed")
 
         # Get platform admin as creator
         admin_result = await db.execute(
@@ -246,14 +257,104 @@ async def seed_default_agents():
         # ── Initialize workspace files ──
         template_dir = Path(settings.AGENT_TEMPLATE_DIR)
 
+        # Create parent directories first with proper permissions
+        parent_dir = Path(settings.AGENT_DATA_DIR)
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        
+        if os.name == 'nt':
+            try:
+                result = subprocess.run(
+                    ['icacls', str(parent_dir), '/grant', 'Everyone:F', '/T', '/C'],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.returncode != 0:
+                    logger.warning(f"icacls failed for {parent_dir}: {result.stderr}")
+            except Exception as e:
+                logger.warning(f"Failed to set permissions for {parent_dir}: {e}")
+        else:
+            try:
+                os.chmod(parent_dir, 0o755)
+            except Exception as e:
+                logger.warning(f"Failed to set permissions for {parent_dir}: {e}")
+
         for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
             agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent.id)
 
             if template_dir.exists():
+                # Remove existing directory if it exists and has permission issues
+                if agent_dir.exists():
+                    try:
+                        if os.name == 'nt':
+                            # First take ownership, then remove
+                            subprocess.run(
+                                ['takeown', '/F', str(agent_dir), '/R', '/A', '/D', 'Y'],
+                                check=False,
+                                capture_output=True,
+                                text=True,
+                                timeout=60
+                            )
+                            subprocess.run(
+                                ['powershell', '-Command', f'Remove-Item -Path "{agent_dir}" -Recurse -Force'],
+                                check=False,
+                                capture_output=True,
+                                text=True,
+                                timeout=30
+                            )
+                        else:
+                            shutil.rmtree(str(agent_dir))
+                    except Exception as e:
+                        logger.warning(f"Failed to remove existing agent_dir {agent_dir}: {e}")
+                
+                # Create fresh agent_dir with proper permissions
+                agent_dir.mkdir(parents=True, exist_ok=True)
+                
+                if os.name == 'nt':
+                    try:
+                        subprocess.run(
+                            ['icacls', str(agent_dir), '/inheritance:r'],
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            timeout=30
+                        )
+                        subprocess.run(
+                            ['icacls', str(agent_dir), '/grant', 'Everyone:F', '/T', '/C'],
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            timeout=60
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to set permissions for {agent_dir}: {e}")
+                else:
+                    try:
+                        os.chmod(agent_dir, 0o755)
+                    except Exception as e:
+                        logger.warning(f"Failed to set permissions for {agent_dir}: {e}")
+                
                 # Copy the full agent template so Morty/Meeseeks get EVERY file
                 # defined in the template: MEMORY_INDEX.md, curiosity_journal.md,
                 # state.json, todo.json, daily_reports/, enterprise_info/, etc.
-                shutil.copytree(str(template_dir), str(agent_dir))
+                # Use PowerShell to copy files to avoid permission issues
+                # Copy the full agent template so Morty/Meeseeks get EVERY file
+                # defined in the template: MEMORY_INDEX.md, curiosity_journal.md,
+                # state.json, todo.json, daily_reports/, enterprise_info/, etc.
+                if os.name == 'nt':
+                    copy_cmd = f'Copy-Item -Path "{template_dir}\\*" -Destination "{agent_dir}" -Recurse -Force'
+                    try:
+                        subprocess.run(
+                            ['powershell', '-Command', copy_cmd],
+                            check=False,
+                            capture_output=True,
+                            text=True
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to copy template files: {e}")
+                else:
+                    shutil.copytree(str(template_dir), str(agent_dir), dirs_exist_ok=True)
             else:
                 # Fallback for local dev (no Docker template mount)
                 agent_dir.mkdir(parents=True, exist_ok=True)
@@ -262,28 +363,28 @@ async def seed_default_agents():
                 (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
                 (agent_dir / "memory").mkdir(exist_ok=True)
 
-            # Overlay custom soul (rich Morty/Meeseeks persona over the generic template)
-            (agent_dir / "soul.md").write_text(soul_content.strip() + "\n", encoding="utf-8")
+                # Overlay custom soul (rich Morty/Meeseeks persona over the generic template)
+                (agent_dir / "soul.md").write_text(soul_content.strip() + "\n", encoding="utf-8")
 
-            # Ensure memory.md exists (template does not include it; holds runtime context)
-            mem_path = agent_dir / "memory" / "memory.md"
-            if not mem_path.exists():
-                mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
+                # Ensure memory.md exists (template does not include it; holds runtime context)
+                mem_path = agent_dir / "memory" / "memory.md"
+                if not mem_path.exists():
+                    mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
 
-            # Ensure reflections.md exists (not in agent_template; lives in app/templates)
-            refl_path = agent_dir / "memory" / "reflections.md"
-            if not refl_path.exists():
-                refl_src = Path(__file__).parent.parent / "templates" / "reflections.md"
-                refl_path.write_text(refl_src.read_text(encoding="utf-8") if refl_src.exists() else "# Reflections Journal\n", encoding="utf-8")
+                # Ensure reflections.md exists (not in agent_template; lives in app/templates)
+                refl_path = agent_dir / "memory" / "reflections.md"
+                if not refl_path.exists():
+                    refl_src = Path(__file__).parent.parent / "templates" / "reflections.md"
+                    refl_path.write_text(refl_src.read_text(encoding="utf-8") if refl_src.exists() else "# Reflections Journal\n", encoding="utf-8")
 
-            # Stamp agent identity into state.json if present
-            state_path = agent_dir / "state.json"
-            if state_path.exists():
-                import json as _json
-                state = _json.loads(state_path.read_text())
-                state["agent_id"] = str(agent.id)
-                state["name"] = agent.name
-                state_path.write_text(_json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+                # Stamp agent identity into state.json if present
+                state_path = agent_dir / "state.json"
+                if state_path.exists():
+                    import json as _json
+                    state = _json.loads(state_path.read_text())
+                    state["agent_id"] = str(agent.id)
+                    state["name"] = agent.name
+                    state_path.write_text(_json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # ── Assign skills ──
         all_skills_result = await db.execute(
@@ -379,7 +480,30 @@ async def seed_okr_agent():
     - Generates daily/weekly reports and posts them to the Plaza
     - Helps team members set up and maintain their focus.md files
     """
-    seed_marker = Path(settings.AGENT_DATA_DIR) / ".seeded"
+    # Ensure AGENT_DATA_DIR exists with proper permissions before any file operations
+    agent_data_dir = Path(settings.AGENT_DATA_DIR)
+    agent_data_dir.mkdir(parents=True, exist_ok=True)
+    
+    if os.name == 'nt':
+        try:
+            result = subprocess.run(
+                ['icacls', str(agent_data_dir), '/grant', 'Everyone:F', '/T', '/C'],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                logger.warning(f"icacls failed for {agent_data_dir}: {result.stderr}")
+        except Exception as e:
+            logger.warning(f"Failed to set permissions for {agent_data_dir}: {e}")
+    else:
+        try:
+            os.chmod(agent_data_dir, 0o755)
+        except Exception as e:
+            logger.warning(f"Failed to set permissions for {agent_data_dir}: {e}")
+
+    seed_marker = agent_data_dir / ".seeded"
 
     # Check if OKR Agent has already been seeded
     if seed_marker.exists():
@@ -477,14 +601,87 @@ async def seed_okr_agent():
         template_dir = Path(settings.AGENT_TEMPLATE_DIR)
         agent_dir = Path(settings.AGENT_DATA_DIR) / str(okr_agent.id)
 
-        if template_dir.exists():
-            shutil.copytree(str(template_dir), str(agent_dir))
-        else:
+        # Create directories with proper permissions
+        try:
+            # Remove existing directory if it exists and has permission issues
+            if agent_dir.exists():
+                try:
+                    if os.name == 'nt':
+                        # First take ownership, then remove
+                        subprocess.run(
+                            ['takeown', '/F', str(agent_dir), '/R', '/A', '/D', 'Y'],
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            timeout=60
+                        )
+                        subprocess.run(
+                            ['powershell', '-Command', f'Remove-Item -Path "{agent_dir}" -Recurse -Force'],
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            timeout=30
+                        )
+                    else:
+                        shutil.rmtree(str(agent_dir))
+                except Exception as e:
+                    logger.warning(f"Failed to remove existing agent_dir {agent_dir}: {e}")
+            
+            # Create fresh agent directory
             agent_dir.mkdir(parents=True, exist_ok=True)
-            (agent_dir / "skills").mkdir(exist_ok=True)
-            (agent_dir / "workspace").mkdir(exist_ok=True)
-            (agent_dir / "workspace" / "reports").mkdir(exist_ok=True)
-            (agent_dir / "memory").mkdir(exist_ok=True)
+            
+            # Set permissions on Windows - reset inheritance first, then grant
+            if os.name == 'nt':
+                try:
+                    subprocess.run(
+                        ['icacls', str(agent_dir), '/inheritance:r'],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                    subprocess.run(
+                        ['icacls', str(agent_dir), '/grant', 'Everyone:F', '/T', '/C'],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to set permissions for {agent_dir}: {e}")
+            
+            # Copy template files if available
+            if template_dir.exists():
+                logger.info(f"Copying template from {template_dir} to {agent_dir}")
+                try:
+                    if os.name == 'nt':
+                        copy_cmd = f'Copy-Item -Path "{template_dir}\\*" -Destination "{agent_dir}" -Recurse -Force'
+                        subprocess.run(
+                            ['powershell', '-Command', copy_cmd],
+                            check=False,
+                            capture_output=True,
+                            text=True
+                        )
+                    else:
+                        shutil.copytree(str(template_dir), str(agent_dir), dirs_exist_ok=True)
+                    logger.info(f"Successfully copied template to {agent_dir}")
+                except Exception as e:
+                    logger.error(f"Failed to copy template: {e}")
+                    # Fall back to creating empty structure
+                    (agent_dir / "skills").mkdir(exist_ok=True)
+                    (agent_dir / "workspace").mkdir(exist_ok=True)
+                    (agent_dir / "workspace" / "reports").mkdir(exist_ok=True)
+                    (agent_dir / "memory").mkdir(exist_ok=True)
+            else:
+                # Create empty structure
+                (agent_dir / "skills").mkdir(exist_ok=True)
+                (agent_dir / "workspace").mkdir(exist_ok=True)
+                (agent_dir / "workspace" / "reports").mkdir(exist_ok=True)
+                (agent_dir / "memory").mkdir(exist_ok=True)
+                
+        except Exception as e:
+            logger.error(f"Error setting up workspace: {e}")
+            raise
 
         # Write OKR Agent soul
         (agent_dir / "soul.md").write_text(OKR_AGENT_SOUL.strip() + "\n", encoding="utf-8")
@@ -961,8 +1158,48 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
         template_dir = Path(settings.AGENT_TEMPLATE_DIR)
         agent_dir = Path(settings.AGENT_DATA_DIR) / str(okr_agent.id)
 
+        # Create parent directories first with proper permissions
+        agent_dir.parent.mkdir(parents=True, exist_ok=True)
+        
+        if os.name == 'nt':
+            try:
+                subprocess.run(
+                    ['icacls', str(agent_dir.parent), '/grant', 'Everyone:F', '/T', '/C'],
+                    check=False,
+                    capture_output=True,
+                    text=True
+                )
+            except Exception as e:
+                logger.warning(f"Failed to set permissions for {agent_dir.parent}: {e}")
+        else:
+            try:
+                os.chmod(agent_dir.parent, 0o755)
+            except Exception as e:
+                logger.warning(f"Failed to set permissions for {agent_dir.parent}: {e}")
+
         if template_dir.exists():
-            shutil.copytree(str(template_dir), str(agent_dir))
+            # First create empty agent_dir with proper permissions
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Set permissions
+            if os.name == 'nt':
+                try:
+                    subprocess.run(
+                        ['icacls', str(agent_dir), '/grant', 'Everyone:F', '/T', '/C'],
+                        check=False,
+                        capture_output=True,
+                        text=True
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to set permissions for {agent_dir}: {e}")
+            else:
+                try:
+                    os.chmod(agent_dir, 0o755)
+                except Exception as e:
+                    logger.warning(f"Failed to set permissions for {agent_dir}: {e}")
+            
+            # Copy template files
+            shutil.copytree(str(template_dir), str(agent_dir), dirs_exist_ok=True)
         else:
             agent_dir.mkdir(parents=True, exist_ok=True)
             for sub in ("skills", "workspace", "workspace/reports", "memory"):

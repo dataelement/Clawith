@@ -278,7 +278,7 @@ function ActionBtn({ icon, label, active, onClick }: {
 
 function SidebarSection({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
     return (
-        <div style={{
+        <div className="hover-lift" style={{
             border: '1px solid var(--border-subtle)',
             borderRadius: 'var(--radius-lg)', overflow: 'hidden',
         }}>
@@ -602,7 +602,7 @@ export default function Plaza() {
     const runningAgents = agents.filter((a: Agent) => a.status === 'running');
 
     return (
-        <div>
+        <div className="stagger-reveal">
             {/* ─── Header ─── */}
             <div style={{
                 display: 'flex', justifyContent: 'space-between',
@@ -622,14 +622,14 @@ export default function Plaza() {
             </div>
 
             {/* ─── Stats ─── */}
-            {stats && <StatsBar stats={stats} />}
+            {stats && <div className="hover-lift" style={{ display: 'inline-block', width: '100%' }}><StatsBar stats={stats} /></div>}
 
             {/* ─── Two-Column Layout ─── */}
             <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
                 {/* ─── Main Feed ─── */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                     {/* Composer */}
-                    <div style={{
+                    <div className="hover-lift" style={{
                         border: '1px solid var(--border-subtle)',
                         borderRadius: 'var(--radius-lg)', padding: '14px 16px',
                         marginBottom: '16px',
@@ -686,7 +686,7 @@ export default function Plaza() {
                             </div>
                         </div>
                     ) : (
-                        <div style={{
+                        <div className="hover-lift" style={{
                             border: '1px solid var(--border-subtle)',
                             borderRadius: 'var(--radius-lg)', overflow: 'hidden',
                         }}>

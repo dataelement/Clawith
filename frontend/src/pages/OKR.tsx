@@ -549,7 +549,7 @@ function ObjectiveCard({
     }
 
     return (
-        <div style={{
+        <div className="hover-lift" style={{
             border: '1px solid var(--border-subtle)',
             borderRadius: '10px',
             overflow: 'hidden',
@@ -734,7 +734,7 @@ function CreateObjectiveForm({
     }
 
     return (
-        <div style={{
+        <div className="hover-lift" style={{
             padding: '16px',
             background: 'var(--bg-primary)',
             border: '1px solid var(--accent-primary)40',
@@ -949,7 +949,7 @@ export default function OKR() {
     const periodOptions = periods;
 
     return (
-        <div data-okr-role-mode={okrRoleMode} style={{ padding: '24px', maxWidth: 960, margin: '0 auto' }}>
+        <div className="stagger-reveal" data-okr-role-mode={okrRoleMode} style={{ padding: '24px', maxWidth: 960, margin: '0 auto' }}>
             {/* Page Header */}
             <div style={{
                 display: 'grid',
@@ -1179,14 +1179,15 @@ export default function OKR() {
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                                 {Object.entries(memberGroups).map(([ownerKey, group]) => (
                                     <div
-                                        key={ownerKey}
-                                        style={{
-                                            border: '1px solid var(--border-subtle)',
-                                            borderRadius: '14px',
-                                            background: 'var(--bg-primary)',
-                                            padding: '14px',
-                                        }}
-                                    >
+                                    key={ownerKey}
+                                    className="hover-lift"
+                                    style={{
+                                        border: '1px solid var(--border-subtle)',
+                                        borderRadius: '14px',
+                                        background: 'var(--bg-primary)',
+                                        padding: '14px',
+                                    }}
+                                >
                                         <div style={{
                                             display: 'flex',
                                             alignItems: 'center',
@@ -1496,7 +1497,7 @@ function MembersWithoutOKRPanel({
                 </button>
             </div>
 
-            <div style={{
+            <div className="hover-lift" style={{
                 border: '1px solid var(--border-subtle)',
                 borderRadius: '10px',
                 overflow: 'hidden',

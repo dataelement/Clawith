@@ -222,7 +222,7 @@ export default function UserManagement() {
     };
 
     return (
-        <div>
+        <div className="stagger-reveal">
             {toast && (
                 <div style={{
                     position: 'fixed', top: '20px', right: '20px', padding: '10px 20px',

@@ -74,7 +74,7 @@ export default function InvitationCodes() {
     };
 
     return (
-        <div className="content-area" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 24px' }}>
+        <div className="content-area stagger-reveal" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 24px' }}>
             {toast && (
                 <div style={{
                     position: 'fixed', top: '20px', right: '20px', padding: '10px 20px',
@@ -91,7 +91,7 @@ export default function InvitationCodes() {
             </p>
 
             {/* Batch Create */}
-            <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
+            <div className="card hover-lift" style={{ padding: '16px', marginBottom: '16px' }}>
                 <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '12px' }}>
                     {t('enterprise.invites.createTitle', 'Create Invitation Codes')}
                 </div>

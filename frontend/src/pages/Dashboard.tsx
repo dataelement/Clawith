@@ -171,6 +171,7 @@ function OKRSummaryCard() {
 
     return (
         <div
+            className="hover-lift"
             style={{
                 border: '1px solid var(--border-subtle)',
                 borderRadius: 'var(--radius-lg)',
@@ -180,7 +181,7 @@ function OKRSummaryCard() {
                 alignItems: 'center',
                 gap: '20px',
                 cursor: 'pointer',
-                transition: 'border-color 0.15s',
+                transition: 'border-color 0.15s, transform var(--transition-bounce), box-shadow var(--transition-default)',
                 background: 'var(--bg-secondary)',
             }}
             onClick={() => navigate('/okr')}
@@ -544,7 +545,7 @@ export default function Dashboard() {
     const greeting = hour < 6 ? '🌙 ' + t('dashboard.greeting.lateNight') : hour < 12 ? '☀️ ' + t('dashboard.greeting.morning') : hour < 18 ? '🌤️ ' + t('dashboard.greeting.afternoon') : '🌙 ' + t('dashboard.greeting.evening');
 
     return (
-        <div>
+        <div className="stagger-reveal">
             {/* Header */}
             <div style={{
                 display: 'flex', justifyContent: 'space-between',
@@ -586,13 +587,15 @@ export default function Dashboard() {
             ) : (
                 <>
                     {/* Stats Bar */}
-                    <StatsBar agents={agents} allTasks={allTasks} />
+                    <div className="hover-lift" style={{ display: 'inline-block', width: '100%' }}>
+                        <StatsBar agents={agents} allTasks={allTasks} />
+                    </div>
 
                     {/* OKR Summary (P3) — only shown when OKR is enabled */}
                     <OKRSummaryCard />
 
                     {/* Agent List Card */}
-                    <div style={{
+                    <div className="hover-lift" style={{
                         border: '1px solid var(--border-subtle)',
                         borderRadius: 'var(--radius-lg)',
                         overflow: 'hidden',
@@ -636,7 +639,7 @@ export default function Dashboard() {
                     </div>
 
                     {/* Recent Activity */}
-                    <div style={{
+                    <div className="hover-lift" style={{
                         border: '1px solid var(--border-subtle)',
                         borderRadius: 'var(--radius-lg)', overflow: 'hidden',
                     }}>

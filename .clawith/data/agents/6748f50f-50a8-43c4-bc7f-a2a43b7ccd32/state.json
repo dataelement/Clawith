@@ -1,0 +1,13 @@
+{
+    "agent_id": "",
+    "name": "",
+    "status": "idle",
+    "current_task": null,
+    "last_active": null,
+    "channel_status": {},
+    "stats": {
+        "tasks_completed_today": 0,
+        "tasks_in_progress": 0,
+        "督办_pending": 0
+    }
+}

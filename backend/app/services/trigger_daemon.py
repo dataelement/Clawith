@@ -902,7 +902,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 else:
                     cleaned = final_reply
 
-                notification = f"⚡ {summary}\n\n{cleaned}"
+                notification = f"[TRIGGER] {summary}\n\n{cleaned}"
 
                 target_session_id = delivery_target["session_id"]
                 owner_user_id = delivery_target.get("owner_user_id")
@@ -954,7 +954,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             "triggers": [{"name": t.name, "type": t.type} for t in triggers],
         }, agent_id=agent_id)
 
-        logger.info(f"⚡ Triggers fired for {agent.name}: {[t.name for t in triggers]}")
+        logger.info(f"[TRIGGER] Triggers fired for {agent.name}: {[t.name for t in triggers]}")
 
     except Exception as e:
         logger.error(f"Failed to invoke agent {agent_id} for triggers: {e}")
@@ -1110,7 +1110,7 @@ async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, 
 
 async def start_trigger_daemon():
     """Start the background trigger daemon loop. Called from FastAPI startup."""
-    logger.info("⚡ Trigger Daemon started (15s tick, heartbeat every ~60s)")
+    logger.info("[TRIGGER] Trigger Daemon started (15s tick, heartbeat every ~60s)")
     _heartbeat_counter = 0
     while True:
         try:

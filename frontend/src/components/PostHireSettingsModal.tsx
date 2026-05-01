@@ -238,25 +238,48 @@ function RadioRow({ selected, onClick, title, hint }: { selected: boolean; onCli
             type="button"
             onClick={onClick}
             style={{
-                display: 'flex', alignItems: 'flex-start', gap: '10px',
-                padding: '10px 12px', textAlign: 'left',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '12px',
+                padding: '14px 16px',
+                textAlign: 'left',
                 border: `1px solid ${selected ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
-                borderRadius: '8px', background: selected ? 'var(--accent-subtle, rgba(99,102,241,0.08))' : 'transparent',
-                cursor: 'pointer', width: '100%',
+                borderRadius: '8px',
+                background: selected ? 'var(--accent-subtle, rgba(99,102,241,0.08))' : 'transparent',
+                cursor: 'pointer',
+                width: '100%',
+                minHeight: '64px',
+                overflow: 'visible',
+                boxSizing: 'border-box',
             }}
         >
             <span style={{
-                marginTop: '2px', width: '14px', height: '14px', borderRadius: '50%',
+                marginTop: '3px',
+                width: '14px',
+                height: '14px',
+                borderRadius: '50%',
                 border: `2px solid ${selected ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 flexShrink: 0,
+                flexGrow: 0,
+                flexBasis: 'auto',
             }}>
                 {selected && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-primary)' }} />}
             </span>
-            <span style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                <span style={{ fontSize: '13px', color: 'var(--text-primary)' }}>{title}</span>
-                <span style={{ fontSize: '11.5px', color: 'var(--text-tertiary)' }}>{hint}</span>
-            </span>
+            <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+                flexShrink: 1,
+                flexGrow: 1,
+                flexBasis: 'calc(100% - 26px)',
+                minWidth: 0,
+            }}>
+                <div style={{ fontSize: '13px', color: 'var(--text-primary)', fontWeight: 500 }}>{title}</div>
+                <div style={{ fontSize: '11.5px', color: 'var(--text-tertiary)', lineHeight: '1.6', whiteSpace: 'normal', wordWrap: 'break-word' }}>{hint}</div>
+            </div>
         </button>
     );
 }
