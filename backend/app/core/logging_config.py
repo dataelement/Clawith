@@ -36,19 +36,50 @@ def set_trace_id(trace_id: str) -> None:
 
 def configure_logging():
     """Configure loguru with custom format including trace ID."""
-    # Remove default handler
+    import os
+    is_windows = os.name == 'nt'
+
     logger.remove()
 
-    # Add stdout handler with custom format and filter to ensure trace_id exists
-    logger.add(
-        sys.stdout,
-        level="INFO",
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{extra[trace_id]:-<12}</cyan> | <cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        enqueue=True,
-        backtrace=True,
-        diagnose=True,
-        filter=lambda record: (record["extra"].setdefault("trace_id", get_trace_id() or str(uuid4())) is not None)
-    )
+    if is_windows:
+        fmt = "{time:YYYY-MM-DD HH:mm:ss} | {level} | {extra[trace_id]:-<12} | {name}:{line} - {message}"
+
+        class EncodedStream:
+            def __init__(self, stream):
+                self.stream = stream
+                self.encoding = 'utf-8'
+
+            def write(self, text):
+                try:
+                    self.stream.write(text)
+                except UnicodeEncodeError:
+                    clean_text = text.encode('utf-8', errors='replace').decode('utf-8')
+                    self.stream.write(clean_text)
+
+            def flush(self):
+                self.stream.flush()
+
+        logger.add(
+            EncodedStream(sys.stdout),
+            level="INFO",
+            format=fmt,
+            enqueue=True,
+            backtrace=True,
+            diagnose=True,
+            filter=lambda record: (record["extra"].setdefault("trace_id", get_trace_id() or str(uuid4())) is not None),
+            colorize=False,
+        )
+    else:
+        logger.add(
+            sys.stdout,
+            level="INFO",
+            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{extra[trace_id]:-<12}</cyan> | <cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+            enqueue=True,
+            backtrace=True,
+            diagnose=True,
+            filter=lambda record: (record["extra"].setdefault("trace_id", get_trace_id() or str(uuid4())) is not None),
+            colorize=True,
+        )
 
     return logger
 

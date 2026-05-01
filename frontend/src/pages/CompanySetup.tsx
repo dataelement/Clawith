@@ -110,7 +110,7 @@ export default function CompanySetup() {
     console.log('[CompanySetup] guards:', { fromRegister, fromTenantSelection, tenant_id: user?.tenant_id });
 
     return (
-        <div className="company-setup-page">
+        <div className="company-setup-page stagger-reveal">
             {/* Language Switcher */}
             <div style={{
                 position: 'absolute', top: '16px', right: '16px',

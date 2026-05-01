@@ -3621,7 +3621,7 @@ function AgentDetailInner() {
 
     return (
         <>
-            <div className={`agent-detail-page ${activeTab === 'chat' ? 'agent-detail-page--chat' : 'agent-detail-page--settings'}`}>
+            <div className={`agent-detail-page ${activeTab === 'chat' ? 'agent-detail-page--chat' : 'agent-detail-page--settings'} stagger-reveal`}>
                 {/* Header */}
                 <div className="page-header agent-detail-header">
                     {activeTab === 'chat' ? <div
@@ -3759,46 +3759,46 @@ function AgentDetailInner() {
                         <div>
                             {/* Metric cards */}
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '24px' }}>
-                                <div className="card">
+                                <div className="card hover-lift">
                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.tabs.status')}</div>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                         <span className={`status-dot ${statusKey}`} />
                                         <span style={{ fontSize: '16px', fontWeight: 500 }}>{t(`agent.status.${statusKey}`)}</span>
                                     </div>
                                 </div>
-                                <div className="card">
+                                <div className="card hover-lift">
                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.settings.today')} Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_today)}</div>
                                     {agent.max_tokens_per_day && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_day)}</div>}
                                 </div>
-                                <div className="card">
+                                <div className="card hover-lift">
                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.settings.month')} Token</div>
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_month)}</div>
                                     {agent.max_tokens_per_month && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_month)}</div>}
                                 </div>
                                 {/* Native agent metrics */}
                                 {(agent as any)?.agent_type !== 'openclaw' && (<>
-                                    <div className="card">
+                                    <div className="card hover-lift">
                                         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.llmCallsToday')}</div>
                                         <div style={{ fontSize: '22px', fontWeight: 600 }}>{((agent as any).llm_calls_today || 0).toLocaleString()}</div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.status.max')}: {((agent as any).max_llm_calls_per_day || 100).toLocaleString()}</div>
                                     </div>
-                                    <div className="card">
+                                    <div className="card hover-lift">
                                         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.totalToken')}</div>
                                         <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens((agent as any).tokens_used_total || 0)}</div>
                                     </div>
                                     {metrics && (
                                         <>
-                                            <div className="card">
+                                            <div className="card hover-lift">
                                                 <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.tasks.done')}</div>
                                                 <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.tasks?.done || 0}/{metrics.tasks?.total || 0}</div>
                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> {metrics.tasks?.completion_rate || 0}%</div>
                                             </div>
-                                            <div className="card">
+                                            <div className="card hover-lift">
                                                 <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.pending')}</div>
                                                 <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>{metrics.approvals?.pending || 0}</div>
                                             </div>
-                                            <div className="card" style={{ position: 'relative' }}>
+                                            <div className="card hover-lift" style={{ position: 'relative' }}>
                                                 <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                                                     {t('agent.status.24hActions')}
                                                     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
@@ -3826,7 +3826,7 @@ function AgentDetailInner() {
 
                             {/* Agent Profile & Model Info */}
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
-                                <div className="card">
+                                <div className="card hover-lift">
                                     <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.profile.title')}</h3>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', gap: '12px' }}>
@@ -3854,7 +3854,7 @@ function AgentDetailInner() {
                                     </div>
                                 </div>
                                 {(agent as any)?.agent_type !== 'openclaw' ? (
-                                    <div className="card">
+                                    <div className="card hover-lift">
                                         <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
@@ -3872,7 +3872,7 @@ function AgentDetailInner() {
                                         </div>
                                     </div>
                                 ) : (
-                                    <div className="card">
+                                    <div className="card hover-lift">
                                         <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>
                                             {t('agent.openclaw.connection')}
                                         </h3>
@@ -3905,7 +3905,7 @@ function AgentDetailInner() {
 
                             {/* Recent Activity */}
                             {activityLogs && activityLogs.length > 0 && (
-                                <div className="card">
+                                <div className="card hover-lift">
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                                         <h3 style={{ fontSize: '14px', fontWeight: 600 }}>{t('agent.activity.recent', 'Recent Activity')}</h3>
                                         <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setActiveTab('activityLog')}>View All →</button>

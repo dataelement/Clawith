@@ -1,5 +1,7 @@
 """Clawith Backend — FastAPI Application Entry Point."""
 
+import os
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
@@ -190,6 +192,18 @@ async def lifespan(app: FastAPI):
                 if _tenant:
                     _new_dir = _data_dir / f"enterprise_info_{_tenant.id}"
                     if not _new_dir.exists():
+                        # Set permissions on parent directory first
+                        if os.name == 'nt':
+                            try:
+                                subprocess.run(
+                                    ['icacls', str(_data_dir), '/grant', 'Everyone:F', '/T', '/C'],
+                                    check=False,
+                                    capture_output=True,
+                                    text=True
+                                )
+                            except Exception as e:
+                                print(f"[startup] ⚠️ Failed to set permissions for {_data_dir}: {e}", flush=True)
+                        
                         shutil.copytree(str(_old_dir), str(_new_dir))
                         print(f"[startup] ✅ Migrated enterprise_info → enterprise_info_{_tenant.id}", flush=True)
                     else:

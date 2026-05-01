@@ -440,7 +440,7 @@ export default function PlatformDashboard() {
     // ─── Render ───────────────────────────────────────────
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="stagger-reveal" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
             {/* Time Range Toggle */}
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                 <div style={{ display: 'flex', background: 'var(--bg-secondary)', padding: '4px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>

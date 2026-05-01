@@ -107,11 +107,11 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     const currentAccessLevel = permData?.access_level || 'use';
 
     return (
-        <div>
+        <div className="stagger-reveal">
             <h3 style={{ marginBottom: '16px' }}>{t('agent.settings.title')}</h3>
 
             {/* ── API Key Management ── */}
-            <div className="card" style={{ marginBottom: '12px' }}>
+            <div className="card hover-lift" style={{ marginBottom: '12px' }}>
                 <h4 style={{ marginBottom: '4px' }}>
                     API Key
                 </h4>

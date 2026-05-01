@@ -107,45 +107,22 @@ export default function TalentMarketModal({ open, onClose }: Props) {
 
     return (
         <div
-            style={{
-                position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                zIndex: 10000,
-            }}
+            className="talent-market-modal"
             onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
         >
-            <div
-                style={{
-                    background: 'var(--bg-primary)', borderRadius: '12px',
-                    width: '960px', maxWidth: '95vw',
-                    height: 'min(88vh, 720px)',
-                    border: '1px solid var(--border-subtle)',
-                    boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
-                    display: 'flex', flexDirection: 'column', overflow: 'hidden',
-                }}
-            >
+            <div className="talent-market-content">
                 {/* Header */}
-                <div style={{
-                    padding: '24px 28px 12px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px',
-                }}>
+                <div className="talent-market-header">
                     <div style={{ flex: 1, minWidth: 0 }}>
-                        <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 600 }}>
+                        <h2 className="talent-market-title">
                             {t('talentMarket.title', isChinese ? '人才市场' : 'Talent Market')}
                         </h2>
-                        <p style={{ margin: '6px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        <p className="talent-market-subtitle">
                             {t('talentMarket.subtitle', isChinese ? '挑选一位专业成员加入你的公司' : 'Pick a professional to join your company')}
                         </p>
                     </div>
                     {/* Search box */}
-                    <div style={{
-                        display: 'flex', alignItems: 'center', gap: '8px',
-                        height: '40px',
-                        padding: '0 12px',
-                        background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: '8px',
-                        width: '260px', maxWidth: '40vw',
-                    }}>
+                    <div className="talent-market-search">
                         <IconSearch size={15} stroke={1.6} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
                         <input
                             type="text"
@@ -155,22 +132,13 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                                 'talentMarket.searchPlaceholder',
                                 isChinese ? '搜索 Agent 名称或能力…' : 'Search agents by name or skill…',
                             )}
-                            style={{
-                                flex: 1, minWidth: 0,
-                                background: 'transparent', border: 'none', outline: 'none',
-                                color: 'var(--text-primary)', fontSize: '13px',
-                                height: '100%',
-                            }}
                             aria-label={t('talentMarket.searchLabel', isChinese ? '搜索 Agent' : 'Search agents')}
                         />
                         {searchQuery && (
                             <button
                                 onClick={() => setSearchQuery('')}
                                 title={t('common.clear', isChinese ? '清空' : 'Clear')}
-                                style={{
-                                    background: 'transparent', border: 'none', cursor: 'pointer',
-                                    color: 'var(--text-tertiary)', padding: '0', display: 'flex',
-                                }}
+                                className="talent-market-search-clear"
                             >
                                 <IconX size={14} stroke={1.6} />
                             </button>
@@ -190,13 +158,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                 <div
                     role="tablist"
                     aria-label={t('talentMarket.tabsAria', isChinese ? '分类筛选' : 'Category filters')}
-                    style={{
-                        display: 'flex',
-                        padding: '0 28px',
-                        borderBottom: '1px solid var(--border-subtle)',
-                        overflowX: 'auto',
-                        flexShrink: 0,
-                    }}
+                    className="talent-market-tabs"
                 >
                     {tabs.map((tab) => {
                         const isActive = !isSearching && activeTab === tab.id;
@@ -206,27 +168,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                                 role="tab"
                                 aria-selected={isActive}
                                 onClick={() => { setSearchQuery(''); setActiveTab(tab.id); }}
-                                onMouseEnter={(e) => {
-                                    if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)';
-                                }}
-                                onMouseLeave={(e) => {
-                                    if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)';
-                                }}
-                                style={{
-                                    padding: '14px 18px',
-                                    marginBottom: '-1px',
-                                    marginRight: '8px',
-                                    background: 'transparent',
-                                    border: 'none',
-                                    borderBottom: `2px solid ${isActive ? 'var(--text-primary)' : 'transparent'}`,
-                                    color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-                                    fontSize: '13px',
-                                    fontWeight: 500,
-                                    cursor: 'pointer',
-                                    whiteSpace: 'nowrap',
-                                    transition: 'color 120ms, border-color 120ms',
-                                    outline: 'none',
-                                }}
+                                className={`talent-market-tab${isActive ? ' active' : ''}`}
                             >
                                 {tab.label}
                             </button>
@@ -235,13 +177,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                 </div>
 
                 {/* Cards */}
-                <div style={{
-                    padding: '18px 28px 20px', overflowY: 'auto', flex: 1,
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-                    gap: '16px',
-                    alignContent: 'start',
-                }}>
+                <div className="talent-market-cards">
                     {isLoading && (
                         <div style={{ gridColumn: '1 / -1', padding: '60px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
                             {t('common.loading', 'Loading...')}
@@ -271,10 +207,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                 </div>
 
                 {/* Footer */}
-                <div style={{
-                    padding: '12px 28px 16px', textAlign: 'center', fontSize: '12px',
-                    color: 'var(--text-tertiary)', borderTop: '1px solid var(--border-subtle)',
-                }}>
+                <div className="talent-market-footer">
                     {t('talentMarket.footer', isChinese ? '点击聘用·可随时在设置中调整' : 'Hire now · adjust anything in settings later')}
                 </div>
             </div>
@@ -302,38 +235,20 @@ function TemplateCard({ tpl, hiring, isChinese, onHire }: {
         : [localized.description].filter(Boolean);
 
     return (
-        <div style={{
-            border: '1px solid var(--border-subtle)', borderRadius: '10px',
-            padding: '18px', display: 'flex', flexDirection: 'column',
-            background: 'var(--bg-primary)',
-            transition: 'border-color 120ms',
-        }}>
-            <div style={{
-                width: '40px', height: '40px', borderRadius: '8px',
-                background: 'var(--bg-secondary)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: '13px', fontWeight: 600, marginBottom: '14px',
-                letterSpacing: '0.04em',
-            }}>
+        <div className="talent-card">
+            <div className="talent-card-icon">
                 {tpl.icon || 'AI'}
             </div>
-            <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '2px' }}>
+            <div className="talent-card-title">
                 {localized.name}
             </div>
-            <div style={{
-                fontSize: '10px', fontWeight: 500, letterSpacing: '0.06em',
-                color: 'var(--text-tertiary)', textTransform: 'uppercase',
-                marginBottom: '12px',
-            }}>
+            <div className="talent-card-category">
                 {tpl.category || 'general'}
             </div>
-            <ul style={{
-                margin: 0, padding: 0, listStyle: 'none', flex: 1,
-                fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: 1.7,
-            }}>
+            <ul className="talent-card-bullets">
                 {bullets.slice(0, 4).map((b, i) => (
-                    <li key={i} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start' }}>
-                        <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>•</span>
+                    <li key={i}>
+                        <span className="talent-card-bullet-dot">•</span>
                         <span>{b}</span>
                     </li>
                 ))}
@@ -356,76 +271,28 @@ function CustomCard({ onClick }: { onClick: () => void }) {
     return (
         <div
             onClick={onClick}
-            style={{
-                border: '1.5px dashed var(--border-subtle)', borderRadius: '10px',
-                padding: '18px', display: 'flex', flexDirection: 'column',
-                cursor: 'pointer',
-                background: 'linear-gradient(135deg, rgba(255,255,255,0.97) 0%, rgba(255,255,255,0.92) 54%, rgba(249,246,238,0.82) 100%)',
-                transition: 'border-color 120ms, background 120ms',
-                position: 'relative',
-                overflow: 'hidden',
-            }}
-            onMouseEnter={(e) => {
-                (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--accent)';
-            }}
-            onMouseLeave={(e) => {
-                (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-subtle)';
-            }}
+            className="talent-card-custom"
         >
             <div
                 aria-hidden="true"
-                style={{
-                    position: 'absolute',
-                    inset: 0,
-                    backgroundImage: `linear-gradient(90deg, rgba(255,255,255,0.97) 0%, rgba(255,255,255,0.84) 48%, rgba(255,255,255,0.18) 100%), url(${customAgentBackground})`,
-                    backgroundRepeat: 'no-repeat',
-                    backgroundPosition: 'right -44px center',
-                    backgroundSize: '260px auto',
-                    filter: 'grayscale(18%) saturate(76%) sepia(8%)',
-                    opacity: 0.68,
-                    pointerEvents: 'none',
-                }}
+                className="talent-card-custom-bg"
+                style={{ backgroundImage: `url(${customAgentBackground})` }}
             />
-            <div style={{
-                width: '40px', height: '40px', borderRadius: '8px',
-                background: 'var(--bg-secondary)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                marginBottom: '14px', color: 'var(--text-secondary)',
-                position: 'relative', zIndex: 1,
-            }}>
+            <div className="talent-card-custom-icon">
                 <IconPlus size={20} stroke={1.5} />
             </div>
-            <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '2px', position: 'relative', zIndex: 1 }}>
+            <div className="talent-card-custom-title">
                 {t('talentMarket.customTitle', isChinese ? '自建 Agent' : 'Build custom')}
             </div>
-            <div style={{
-                fontSize: '10px', fontWeight: 500, letterSpacing: '0.06em',
-                color: 'var(--text-tertiary)', textTransform: 'uppercase',
-                marginBottom: '12px',
-                position: 'relative', zIndex: 1,
-            }}>
+            <div className="talent-card-custom-category">
                 {t('talentMarket.customCategory', 'Custom')}
             </div>
-            <p style={{
-                margin: 0, flex: 1, fontSize: '12.5px',
-                color: 'var(--text-secondary)', lineHeight: 1.6,
-                position: 'relative', zIndex: 1,
-            }}>
+            <p className="talent-card-custom-description">
                 {t('talentMarket.customDescription', isChinese
                     ? '创建本地 Native Agent，按你的需求定义身份、权限和工具。'
                     : 'Create a native agent, then define its identity, permissions, and tools.')}
             </p>
-            <div style={{
-                marginTop: '14px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                color: 'var(--text-tertiary)',
-                fontSize: '11.5px',
-                lineHeight: 1.2,
-                position: 'relative',
-                zIndex: 1,
-            }}>
+            <div className="talent-card-custom-hint">
                 <IconWorld size={13} stroke={1.5} style={{ flexShrink: 0 }} />
                 <span>
                     {t('talentMarket.externalAgentHint', isChinese
@@ -439,7 +306,7 @@ function CustomCard({ onClick }: { onClick: () => void }) {
                     e.stopPropagation();
                     onClick();
                 }}
-                style={{ marginTop: '16px', width: '100%', position: 'relative', zIndex: 1 }}
+                style={{ marginTop: '16px', width: '100%' }}
             >
                 {t('talentMarket.customStart', isChinese ? '开始' : 'Start')}
             </button>

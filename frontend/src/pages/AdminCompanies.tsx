@@ -812,7 +812,7 @@ function CompaniesTab() {
     const gridCols = columns.map(c => c.flex).join(' ') + ' ' + actionColFlex;
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        <div className="stagger-reveal" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
             {toast && (
                 <div style={{
                     position: 'fixed', top: '20px', right: '20px', padding: '10px 20px',

@@ -92,27 +92,31 @@ function DialogModal({ state, onClose }: { state: NonNullable<ModalState>; onClo
 
     return (
         <div
+            className="dialog-backdrop"
             style={{
                 position: 'fixed', inset: 0,
                 background: 'rgba(0,0,0,0.5)',
+                backdropFilter: 'blur(4px)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 zIndex: 10000,
+                animation: 'backdropFadeIn 0.2s ease forwards',
             }}
             onClick={(e) => { if (e.target === e.currentTarget) onClose(false); }}
         >
             <div
+                className="dialog-content"
                 role="dialog"
                 aria-modal="true"
                 style={{
                     background: 'var(--bg-primary)',
-                    borderRadius: '12px',
+                    borderRadius: '16px',
                     padding: '24px',
                     width: '420px',
                     maxWidth: '90vw',
                     maxHeight: '80vh',
                     overflow: 'auto',
-                    border: '1px solid var(--border-subtle)',
-                    boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+                    border: '1px solid var(--border-default)',
+                    boxShadow: '0 24px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05) inset',
                 }}
             >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>

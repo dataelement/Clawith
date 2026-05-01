@@ -48,7 +48,7 @@ export default function Messages() {
     };
 
     return (
-        <div style={{ maxWidth: '800px', margin: '0 auto', padding: '24px' }}>
+        <div className="stagger-reveal" style={{ maxWidth: '800px', margin: '0 auto', padding: '24px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
                 <h1 style={{ fontSize: '20px', fontWeight: 600, margin: 0 }}>{t('messages.title')}</h1>
                 {unreadCount > 0 && (

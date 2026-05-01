@@ -1,7 +1,7 @@
-"""Agent lifecycle manager — Docker container management for OpenClaw Gateway instances."""
-
 import json
+import os
 import shutil
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,13 +20,32 @@ from app.services.llm import get_model_api_key
 settings = get_settings()
 
 
+def _set_directory_permissions(path: Path):
+    """Set proper permissions for a directory on Windows."""
+    if os.name == 'nt':
+        try:
+            subprocess.run(
+                ['icacls', str(path), '/grant', 'Everyone:F', '/T', '/C'],
+                check=False,
+                capture_output=True,
+                text=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to set permissions for {path}: {e}")
+    else:
+        try:
+            os.chmod(path, 0o755)
+        except Exception as e:
+            logger.warning(f"Failed to set permissions for {path}: {e}")
+
+
 class AgentManager:
     """Manage OpenClaw Gateway Docker containers for digital employees."""
 
     def __init__(self):
         try:
             self.docker_client = docker.from_env()
-        except DockerException:
+        except Exception:
             logger.warning("Docker not available — agent containers will not be managed")
             self.docker_client = None
 
@@ -46,99 +65,132 @@ class AgentManager:
             logger.warning(f"Agent dir already exists: {agent_dir}")
             return
 
-        if template_dir.exists():
-            # Copy template
-            shutil.copytree(str(template_dir), str(agent_dir))
-        else:
-            # No template dir (local dev) — create minimal workspace structure
-            logger.info(f"Template dir not found ({template_dir}), creating minimal workspace")
-            agent_dir.mkdir(parents=True, exist_ok=True)
-            (agent_dir / "workspace").mkdir(exist_ok=True)
-            (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
-            (agent_dir / "memory").mkdir(exist_ok=True)
-            (agent_dir / "skills").mkdir(exist_ok=True)
-            (agent_dir / "tasks.json").write_text("[]", encoding="utf-8")
+        try:
+            # Create parent directories first with proper permissions
+            agent_dir.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                _set_directory_permissions(agent_dir.parent)
+            except Exception:
+                logger.warning(f"Failed to set permissions for {agent_dir.parent}, continuing")
 
-        # Customize soul.md
-        soul_path = agent_dir / "soul.md"
-        # Get creator name
-        from app.models.user import User
-        result = await db.execute(select(User).where(User.id == agent.creator_id))
-        creator = result.scalar_one_or_none()
-        creator_name = creator.display_name if creator else "Unknown"
+            if template_dir.exists():
+                # First create empty agent_dir with proper permissions
+                # This ensures shutil.copytree can write to it
+                agent_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    _set_directory_permissions(agent_dir)
+                except Exception:
+                    logger.warning(f"Failed to set permissions for {agent_dir}, continuing")
+                
+                # Copy template files
+                shutil.copytree(str(template_dir), str(agent_dir), dirs_exist_ok=True)
+                try:
+                    _set_directory_permissions(agent_dir)
+                except Exception:
+                    logger.warning(f"Failed to set permissions for {agent_dir}, continuing")
+            else:
+                # No template dir (local dev) — create minimal workspace structure
+                logger.info(f"Template dir not found ({template_dir}), creating minimal workspace")
+                agent_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    _set_directory_permissions(agent_dir)
+                except Exception:
+                    logger.warning(f"Failed to set permissions for {agent_dir}, continuing")
+                (agent_dir / "workspace").mkdir(exist_ok=True)
+                (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
+                (agent_dir / "memory").mkdir(exist_ok=True)
+                (agent_dir / "skills").mkdir(exist_ok=True)
+                (agent_dir / "tasks.json").write_text("[]", encoding="utf-8")
+        except Exception as e:
+            # If creating files fails, log it but continue with agent creation
+            logger.error(f"Failed to initialize agent files for {agent.name}: {e}")
+            logger.warning("Continuing with agent creation without workspace files")
 
-        soul_content = f"# Personality\n\nI'm {agent.name}, {agent.role_description or 'a digital assistant'}.\n"
-        if soul_path.exists():
-            template_content = soul_path.read_text()
-            soul_content = template_content.replace("{{agent_name}}", agent.name)
-            soul_content = soul_content.replace("{{role_description}}", agent.role_description or "通用助手")
-            soul_content = soul_content.replace("{{creator_name}}", creator_name)
-            soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        try:
+            # Customize soul.md
+            soul_path = agent_dir / "soul.md"
+            # Get creator name
+            from app.models.user import User
+            result = await db.execute(select(User).where(User.id == agent.creator_id))
+            creator = result.scalar_one_or_none()
+            creator_name = creator.display_name if creator else "Unknown"
 
-        # Helper function to replace or append sections
-        def replace_or_append_section(content: str, section_name: str, section_content: str) -> str:
-            """Replace existing ## SectionName or append if not found."""
-            if not section_content:
-                return content
-            
-            # Pattern to match existing section (case-insensitive header)
-            import re
-            pattern = rf"^##\s+{re.escape(section_name)}\s*$"
-            lines = content.split('\n')
-            
-            # Find the section header
-            for i, line in enumerate(lines):
-                if re.match(pattern, line.strip(), re.IGNORECASE):
-                    # Found existing section - replace until next ## header or end
-                    section_start = i
-                    section_end = len(lines)
-                    for j in range(i + 1, len(lines)):
-                        if lines[j].strip().startswith('## '):
-                            section_end = j
-                            break
-                    
-                    # Replace the section content (with trailing newline for proper spacing)
-                    new_section = f"## {section_name}\n{section_content}\n"
-                    lines = lines[:section_start] + [new_section] + lines[section_end:]
-                    return '\n'.join(lines)
-            
-            # Section not found - append at the end
-            return content + f"\n## {section_name}\n{section_content}\n"
+            soul_content = f"# Personality\n\nI'm {agent.name}, {agent.role_description or 'a digital assistant'}.\n"
+            if soul_path.exists():
+                template_content = soul_path.read_text()
+                soul_content = template_content.replace("{{agent_name}}", agent.name)
+                soul_content = soul_content.replace("{{role_description}}", agent.role_description or "通用助手")
+                soul_content = soul_content.replace("{{creator_name}}", creator_name)
+                soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
-        # Use the helper to replace or append Personality and Boundaries
-        soul_content = replace_or_append_section(soul_content, "Personality", personality)
-        soul_content = replace_or_append_section(soul_content, "Boundaries", boundaries)
+            # Helper function to replace or append sections
+            def replace_or_append_section(content: str, section_name: str, section_content: str) -> str:
+                """Replace existing ## SectionName or append if not found."""
+                if not section_content:
+                    return content
+                
+                # Pattern to match existing section (case-insensitive header)
+                import re
+                pattern = rf"^##\s+{re.escape(section_name)}\s*$"
+                lines = content.split('\n')
+                
+                # Find the section header
+                for i, line in enumerate(lines):
+                    if re.match(pattern, line.strip(), re.IGNORECASE):
+                        # Found existing section - replace until next ## header or end
+                        section_start = i
+                        section_end = len(lines)
+                        for j in range(i + 1, len(lines)):
+                            if lines[j].strip().startswith('## '):
+                                section_end = j
+                                break
+                        
+                        # Replace the section content (with trailing newline for proper spacing)
+                        new_section = f"## {section_name}\n{section_content}\n"
+                        lines = lines[:section_start] + [new_section] + lines[section_end:]
+                        return '\n'.join(lines)
+                
+                # Section not found - append at the end
+                return content + f"\n## {section_name}\n{section_content}\n"
 
-        soul_path.write_text(soul_content, encoding="utf-8")
+            # Use the helper to replace or append Personality and Boundaries
+            soul_content = replace_or_append_section(soul_content, "Personality", personality)
+            soul_content = replace_or_append_section(soul_content, "Boundaries", boundaries)
 
-        # Ensure memory.md exists
-        mem_path = agent_dir / "memory" / "memory.md"
-        if not mem_path.exists():
-            mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
+            soul_path.write_text(soul_content, encoding="utf-8")
 
-        # Ensure reflections.md exists — copy from central template
-        refl_path = agent_dir / "memory" / "reflections.md"
-        if not refl_path.exists():
-            refl_template = Path(__file__).parent.parent / "templates" / "reflections.md"
-            refl_content = refl_template.read_text(encoding="utf-8") if refl_template.exists() else "# Reflections Journal\n"
-            refl_path.write_text(refl_content, encoding="utf-8")
+            # Ensure memory.md exists
+            mem_path = agent_dir / "memory" / "memory.md"
+            if not mem_path.exists():
+                mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
 
-        # Ensure HEARTBEAT.md exists — copy from central template
-        hb_path = agent_dir / "HEARTBEAT.md"
-        if not hb_path.exists():
-            hb_template = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
-            hb_content = hb_template.read_text(encoding="utf-8") if hb_template.exists() else "# Heartbeat Instructions\n"
-            hb_path.write_text(hb_content, encoding="utf-8")
+            # Ensure reflections.md exists — copy from central template
+            refl_path = agent_dir / "memory" / "reflections.md"
+            if not refl_path.exists():
+                refl_template = Path(__file__).parent.parent / "templates" / "reflections.md"
+                refl_content = refl_template.read_text(encoding="utf-8") if refl_template.exists() else "# Reflections Journal\n"
+                refl_path.write_text(refl_content, encoding="utf-8")
 
-        # Customize state.json
-        state_path = agent_dir / "state.json"
-        if state_path.exists():
-            state = json.loads(state_path.read_text())
-            state["agent_id"] = str(agent.id)
-            state["name"] = agent.name
-            state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            # Ensure HEARTBEAT.md exists — copy from central template
+            hb_path = agent_dir / "HEARTBEAT.md"
+            if not hb_path.exists():
+                hb_template = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
+                hb_content = hb_template.read_text(encoding="utf-8") if hb_template.exists() else "# Heartbeat Instructions\n"
+                hb_path.write_text(hb_content, encoding="utf-8")
 
-        logger.info(f"Initialized agent files at {agent_dir}")
+            # Customize state.json
+            state_path = agent_dir / "state.json"
+            if state_path.exists():
+                state = json.loads(state_path.read_text())
+                state["agent_id"] = str(agent.id)
+                state["name"] = agent.name
+                state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            logger.info(f"Initialized agent files at {agent_dir}")
+        except Exception as e:
+            # If writing files fails, log it but continue with agent creation
+            logger.error(f"Failed to write agent files for {agent.name}: {e}")
+            logger.warning("Continuing with agent creation without workspace files")
 
     def _generate_openclaw_config(self, agent: Agent, model: LLMModel | None) -> dict:
         """Generate openclaw.json config for the agent container."""
@@ -182,13 +234,22 @@ class AgentManager:
         # Generate OpenClaw config
         config = self._generate_openclaw_config(agent, model)
         config_dir = agent_dir / ".openclaw"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / "openclaw.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+        try:
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / "openclaw.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
 
-        # Create workspace symlink
-        workspace_dir = config_dir / "workspace"
-        if not workspace_dir.exists():
-            workspace_dir.symlink_to(agent_dir / "workspace")
+            # Create workspace symlink (or junction on Windows)
+            workspace_dir = config_dir / "workspace"
+            if not workspace_dir.exists():
+                try:
+                    workspace_dir.symlink_to(agent_dir / "workspace")
+                except OSError:
+                    try:
+                        workspace_dir.symlink_to(agent_dir / "workspace", target_is_directory=True)
+                    except OSError:
+                        logger.warning(f"Cannot create symlink for {workspace_dir}, skipping")
+        except Exception as e:
+            logger.warning(f"Failed to create OpenClaw config: {e}, skipping container start")
 
         # Assign a unique port
         container_port = 18789 + hash(str(agent.id)) % 10000
@@ -221,7 +282,7 @@ class AgentManager:
             logger.info(f"Started container {container.id[:12]} for agent {agent.name} on port {container_port}")
             return container.id
 
-        except DockerException as e:
+        except Exception as e:
             logger.error(f"Failed to start container for agent {agent.name}: {e}")
             agent.status = "error"
             return None
