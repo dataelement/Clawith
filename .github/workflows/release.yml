@@ -177,6 +177,12 @@ jobs:
           style_excerpt = "\n".join(existing.splitlines()[:120]).strip()
           commit_bullets = Path(".github/release-artifacts/commit-bullets.txt").read_text(encoding="utf-8").strip()
 
+          # Limit commit bullets to fit within API token limits
+          lines = commit_bullets.splitlines()
+          if len(lines) > 100:
+              lines = lines[:100] + [f"- ... and {len(lines) - 100} more commits"]
+          commit_summary = "\n".join(lines)
+
           prompt = f"""You are writing Clawith release notes in markdown.
 
           Rules:
@@ -191,15 +197,10 @@ jobs:
           - Previous release tag: {base_tag}
           - Target release tag: {target_tag}
           - Release type: {release_type}
-
-          Release branch:
-          {os.environ["SOURCE_REF"]}
-
-          Recent release note style:
-          {style_excerpt or "(no prior release note style provided)"}
+          - Release branch: {os.environ["SOURCE_REF"]}
 
           Commits included in this release:
-          {commit_bullets or "- No commit bullets collected"}
+          {commit_summary or "- No commit bullets collected"}
           """
 
           Path(".github/release-artifacts/release-prompt.txt").write_text(prompt, encoding="utf-8")
