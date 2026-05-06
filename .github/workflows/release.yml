@@ -1,7 +1,7 @@
 name: Release
 
-# Uses GitHub Models API with GITHUB_TOKEN (auto-provided) for AI release notes.
-# Model: gpt-4o-mini (no manual secrets required)
+# Uses GitHub Models API for AI release notes.
+# Requires: Repository secret MODELS_TOKEN (PAT with models:read scope)
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ on:
         default: false
         type: boolean
       use_ai_notes:
-        description: Use OpenAI to draft release notes when OPENAI_API_KEY is configured
+        description: Use GitHub Models to draft release notes when MODELS_TOKEN is configured
         required: true
         default: true
         type: boolean
@@ -219,7 +219,7 @@ jobs:
         if: ${{ inputs.use_ai_notes }}
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODELS_TOKEN: ${{ secrets.MODELS_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -243,7 +243,7 @@ jobs:
 
           curl -fsSL https://models.inference.ai.azure.com/chat/completions \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Authorization: Bearer $MODELS_TOKEN" \
             -d @.github/release-artifacts/openai-payload.json \
             > .github/release-artifacts/openai-response.json
 
