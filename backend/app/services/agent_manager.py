@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.services.llm import get_model_api_key
+from app.services.storage import get_storage_backend, normalize_storage_key
 
 settings = get_settings()
 
@@ -31,36 +32,64 @@ class AgentManager:
             self.docker_client = None
 
     def _agent_dir(self, agent_id: uuid.UUID) -> Path:
-        return Path(settings.AGENT_DATA_DIR) / str(agent_id)
+        local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
+        return Path(local_root) / str(agent_id)
+
+    def _agent_storage_prefix(self, agent_id: uuid.UUID) -> str:
+        return normalize_storage_key(str(agent_id))
 
     def _template_dir(self) -> Path:
         return Path(settings.AGENT_TEMPLATE_DIR)
+
+    async def _materialize_agent_dir(self, agent_id: uuid.UUID) -> Path:
+        """Create a local working tree from shared storage for container mounting."""
+        agent_dir = self._agent_dir(agent_id)
+        storage = get_storage_backend()
+        agent_prefix = self._agent_storage_prefix(agent_id)
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        if not await storage.exists(agent_prefix):
+            return agent_dir
+        for entry in await storage.list_dir(agent_prefix):
+            await self._materialize_entry(storage, entry.key, agent_dir)
+        return agent_dir
+
+    async def _materialize_entry(self, storage, storage_key: str, local_root: Path) -> None:
+        rel = Path(storage_key).relative_to(Path(storage_key).parts[0]).as_posix()
+        local_path = local_root / rel
+        if await storage.is_dir(storage_key):
+            local_path.mkdir(parents=True, exist_ok=True)
+            for child in await storage.list_dir(storage_key):
+                await self._materialize_entry(storage, child.key, local_root)
+            return
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(await storage.read_bytes(storage_key))
 
     async def initialize_agent_files(self, db: AsyncSession, agent: Agent,
                                       personality: str = "", boundaries: str = "") -> None:
         """Copy template files and customize for this agent."""
         agent_dir = self._agent_dir(agent.id)
         template_dir = self._template_dir()
+        storage = get_storage_backend()
+        agent_prefix = self._agent_storage_prefix(agent.id)
 
-        if agent_dir.exists():
+        if await storage.exists(agent_prefix):
             logger.warning(f"Agent dir already exists: {agent_dir}")
             return
 
         if template_dir.exists():
-            # Copy template
-            shutil.copytree(str(template_dir), str(agent_dir))
+            for src in template_dir.rglob("*"):
+                if src.is_dir():
+                    continue
+                rel = src.relative_to(template_dir).as_posix()
+                await storage.write_bytes(
+                    f"{agent_prefix}/{rel}",
+                    src.read_bytes(),
+                )
         else:
-            # No template dir (local dev) — create minimal workspace structure
             logger.info(f"Template dir not found ({template_dir}), creating minimal workspace")
-            agent_dir.mkdir(parents=True, exist_ok=True)
-            (agent_dir / "workspace").mkdir(exist_ok=True)
-            (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
-            (agent_dir / "memory").mkdir(exist_ok=True)
-            (agent_dir / "skills").mkdir(exist_ok=True)
-            (agent_dir / "tasks.json").write_text("[]", encoding="utf-8")
+            await storage.write_text(f"{agent_prefix}/tasks.json", "[]", encoding="utf-8")
 
         # Customize soul.md
-        soul_path = agent_dir / "soul.md"
         # Get creator name
         from app.models.user import User
         result = await db.execute(select(User).where(User.id == agent.creator_id))
@@ -68,8 +97,9 @@ class AgentManager:
         creator_name = creator.display_name if creator else "Unknown"
 
         soul_content = f"# Personality\n\nI'm {agent.name}, {agent.role_description or 'a digital assistant'}.\n"
-        if soul_path.exists():
-            template_content = soul_path.read_text()
+        soul_key = f"{agent_prefix}/soul.md"
+        if await storage.exists(soul_key):
+            template_content = await storage.read_text(soul_key, encoding="utf-8", errors="replace")
             soul_content = template_content.replace("{{agent_name}}", agent.name)
             soul_content = soul_content.replace("{{role_description}}", agent.role_description or "通用助手")
             soul_content = soul_content.replace("{{creator_name}}", creator_name)
@@ -109,34 +139,34 @@ class AgentManager:
         soul_content = replace_or_append_section(soul_content, "Personality", personality)
         soul_content = replace_or_append_section(soul_content, "Boundaries", boundaries)
 
-        soul_path.write_text(soul_content, encoding="utf-8")
+        await storage.write_text(soul_key, soul_content, encoding="utf-8")
 
         # Ensure memory.md exists
-        mem_path = agent_dir / "memory" / "memory.md"
-        if not mem_path.exists():
-            mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
+        mem_key = f"{agent_prefix}/memory/memory.md"
+        if not await storage.exists(mem_key):
+            await storage.write_text(mem_key, "# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
 
         # Ensure reflections.md exists — copy from central template
-        refl_path = agent_dir / "memory" / "reflections.md"
-        if not refl_path.exists():
+        refl_key = f"{agent_prefix}/memory/reflections.md"
+        if not await storage.exists(refl_key):
             refl_template = Path(__file__).parent.parent / "templates" / "reflections.md"
             refl_content = refl_template.read_text(encoding="utf-8") if refl_template.exists() else "# Reflections Journal\n"
-            refl_path.write_text(refl_content, encoding="utf-8")
+            await storage.write_text(refl_key, refl_content, encoding="utf-8")
 
         # Ensure HEARTBEAT.md exists — copy from central template
-        hb_path = agent_dir / "HEARTBEAT.md"
-        if not hb_path.exists():
+        hb_key = f"{agent_prefix}/HEARTBEAT.md"
+        if not await storage.exists(hb_key):
             hb_template = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
             hb_content = hb_template.read_text(encoding="utf-8") if hb_template.exists() else "# Heartbeat Instructions\n"
-            hb_path.write_text(hb_content, encoding="utf-8")
+            await storage.write_text(hb_key, hb_content, encoding="utf-8")
 
         # Customize state.json
-        state_path = agent_dir / "state.json"
-        if state_path.exists():
-            state = json.loads(state_path.read_text())
+        state_key = f"{agent_prefix}/state.json"
+        if await storage.exists(state_key):
+            state = json.loads(await storage.read_text(state_key, encoding="utf-8", errors="replace"))
             state["agent_id"] = str(agent.id)
             state["name"] = agent.name
-            state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            await storage.write_text(state_key, json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
         logger.info(f"Initialized agent files at {agent_dir}")
 
@@ -171,7 +201,7 @@ class AgentManager:
             agent.last_active_at = datetime.now(timezone.utc)
             return None
 
-        agent_dir = self._agent_dir(agent.id)
+        agent_dir = await self._materialize_agent_dir(agent.id)
 
         # Get model config
         model = None
@@ -269,7 +299,8 @@ class AgentManager:
     async def archive_agent_files(self, agent_id: uuid.UUID) -> Path:
         """Archive agent files to a backup location and return the archive directory."""
         agent_dir = self._agent_dir(agent_id)
-        archive_dir = Path(settings.AGENT_DATA_DIR) / "_archived"
+        local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
+        archive_dir = Path(local_root) / "_archived"
         archive_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         dest = archive_dir / f"{agent_id}_{timestamp}"

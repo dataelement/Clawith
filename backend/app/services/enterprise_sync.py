@@ -6,18 +6,15 @@ Agents pull latest data based on their roles and write to local enterprise_info/
 
 import json
 import uuid
-from pathlib import Path
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.core.events import publish_event
 from app.models.agent import Agent
 from app.models.audit import EnterpriseInfo
-
-settings = get_settings()
+from app.services.storage import store_agent_bytes
 
 # Redis channel for enterprise info updates
 ENTERPRISE_INFO_CHANNEL = "enterprise_info_updated"
@@ -67,9 +64,6 @@ class EnterpriseSyncService:
 
         Filters by visible_roles — if empty, all roles can see it.
         """
-        agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "enterprise_info"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-
         result = await db.execute(select(EnterpriseInfo))
         all_info = result.scalars().all()
 
@@ -78,12 +72,16 @@ class EnterpriseSyncService:
             if info.visible_roles and agent_role and agent_role not in info.visible_roles:
                 continue
 
-            file_path = agent_dir / f"{info.info_type}.json"
-            file_path.write_text(json.dumps({
-                "type": info.info_type,
-                "version": info.version,
-                "content": info.content,
-            }, ensure_ascii=False, indent=2))
+            await store_agent_bytes(
+                agent_id,
+                f"enterprise_info/{info.info_type}.json",
+                json.dumps({
+                    "type": info.info_type,
+                    "version": info.version,
+                    "content": info.content,
+                }, ensure_ascii=False, indent=2).encode("utf-8"),
+                content_type="application/json",
+            )
 
         logger.info(f"Synced enterprise info to agent {agent_id}")
 

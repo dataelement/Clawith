@@ -17,6 +17,7 @@ from sqlalchemy import and_, delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.workspace import WorkspaceEditLock, WorkspaceFileRevision
+from app.services.storage import get_storage_backend, normalize_storage_key
 
 USER_AUTOSAVE_MERGE_SECONDS = 60
 EDIT_LOCK_TTL_SECONDS = 90
@@ -243,11 +244,20 @@ async def write_workspace_file(
                 locked_by_user_id=str(lock.user_id),
             )
 
-    target = safe_agent_path(base_dir, normalized)
-    before = await read_text_if_exists(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    async with aiofiles.open(target, "w", encoding="utf-8") as f:
-        await f.write(content)
+    storage = get_storage_backend()
+    storage_key = normalize_storage_key(f"{agent_id}/{normalized}")
+    local_base_available = False
+    try:
+        target = safe_agent_path(base_dir, normalized)
+        local_base_available = True
+    except Exception:
+        target = None
+    before = await storage.read_text(storage_key, encoding="utf-8", errors="replace") if await storage.exists(storage_key) else None
+    await storage.write_text(storage_key, content, encoding="utf-8")
+    if local_base_available and target is not None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(target, "w", encoding="utf-8") as f:
+            await f.write(content)
 
     revision = await record_revision(
         db,
@@ -282,7 +292,12 @@ async def delete_workspace_file(
 ) -> WorkspaceWriteResult:
     """Delete a workspace file and record the deleted content."""
     normalized = normalize_workspace_path(path)
-    target = safe_agent_path(base_dir, normalized)
+    storage = get_storage_backend()
+    storage_key = normalize_storage_key(f"{agent_id}/{normalized}")
+    try:
+        target = safe_agent_path(base_dir, normalized)
+    except Exception:
+        target = None
     if enforce_human_lock and actor_type != "user":
         lock = await get_active_lock(db, agent_id=agent_id, path=normalized)
         if lock:
@@ -292,15 +307,19 @@ async def delete_workspace_file(
                 f"Human is currently editing {normalized}. Do not delete it now.",
                 locked_by_user_id=str(lock.user_id),
             )
-    if not target.exists():
+    if not await storage.exists(storage_key):
         return WorkspaceWriteResult(False, normalized, f"File not found: {normalized}")
-    before = await read_text_if_exists(target)
-    if target.is_dir():
-        import shutil
-
-        shutil.rmtree(target)
+    before = await storage.read_text(storage_key, encoding="utf-8", errors="replace") if await storage.is_file(storage_key) else None
+    if await storage.is_dir(storage_key):
+        await storage.delete_tree(storage_key)
     else:
-        target.unlink()
+        await storage.delete(storage_key)
+    if target is not None and target.exists():
+        if target.is_dir():
+            import shutil
+            shutil.rmtree(target)
+        else:
+            target.unlink()
     revision = await record_revision(
         db,
         agent_id=agent_id,

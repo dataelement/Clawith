@@ -46,7 +46,7 @@ from app.config import get_settings
 
 
 _settings = get_settings()
-WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
+WORKSPACE_ROOT = Path(_settings.STORAGE_LOCAL_ROOT or _settings.AGENT_DATA_DIR)
 
 # ─── Tool Config Cache ──────────────────────────────────────────
 # Cache tool configurations to avoid frequent DB queries

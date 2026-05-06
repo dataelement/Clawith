@@ -1,7 +1,10 @@
 """Application configuration."""
 
 from functools import lru_cache
+import os
 from pathlib import Path
+import socket
+import uuid
 
 from pydantic_settings import BaseSettings
 
@@ -30,6 +33,14 @@ def _default_agent_data_dir() -> str:
     if _running_in_container():
         return "/data/agents"
     return str(Path.home() / ".clawith" / "data" / "agents")
+
+
+def _default_instance_id() -> str:
+    """Generate a stable-enough per-process instance identifier."""
+    host = socket.gethostname() or "unknown"
+    pid = os.getpid()
+    suffix = uuid.uuid4().hex[:8]
+    return f"{host}-{pid}-{suffix}"
 
 
 def _default_agent_template_dir() -> str:
@@ -73,6 +84,7 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
+    INSTANCE_ID: str = _default_instance_id()
 
     # JWT
     JWT_SECRET_KEY: str = "change-me-jwt-secret"
@@ -83,8 +95,20 @@ class Settings(BaseSettings):
     EMAIL_VERIFICATION_REQUIRED: bool = False  # Require email verification for login
 
     # File Storage
+    STORAGE_BACKEND: str = "local"
     AGENT_DATA_DIR: str = _default_agent_data_dir()
     AGENT_TEMPLATE_DIR: str = _default_agent_template_dir()
+    STORAGE_LOCAL_ROOT: str = _default_agent_data_dir()
+    S3_BUCKET: str = ""
+    S3_REGION: str = ""
+    S3_ENDPOINT_URL: str = ""
+    S3_ACCESS_KEY_ID: str = ""
+    S3_SECRET_ACCESS_KEY: str = ""
+    S3_PREFIX: str = "agents"
+    S3_PRESIGN_TTL_SECONDS: int = 3600
+
+    # Process role
+    PROCESS_ROLE: str = "all"
 
     # Docker (for Agent containers)
     DOCKER_NETWORK: str = "clawith_network"

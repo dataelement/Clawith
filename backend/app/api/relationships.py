@@ -2,7 +2,6 @@
 
 import json
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -10,16 +9,15 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.config import get_settings
 from app.core.permissions import build_visible_agents_query, check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.org import AgentRelationship, AgentAgentRelationship, OrgMember
-from app.services.org_sync_adapter import derive_member_department_paths
 from app.models.user import User
+from app.services.org_sync_adapter import derive_member_department_paths
+from app.services.storage import store_agent_bytes
 
-settings = get_settings()
 router = APIRouter(prefix="/agents/{agent_id}/relationships", tags=["relationships"])
 
 RELATION_LABELS = {
@@ -368,11 +366,13 @@ async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
     )
     agent_rels = a_result.scalars().all()
 
-    ws = Path(settings.AGENT_DATA_DIR) / str(agent_id)
-    ws.mkdir(parents=True, exist_ok=True)
-
     if not human_rows and not agent_rels:
-        (ws / "relationships.md").write_text("# 关系网络\n\n_暂无配置的关系。_\n", encoding="utf-8")
+        await store_agent_bytes(
+            agent_id,
+            "relationships.md",
+            "# 关系网络\n\n_暂无配置的关系。_\n".encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
+        )
         return
 
     lines = ["# 关系网络\n"]
@@ -412,4 +412,9 @@ async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
                 lines.append(f"- {r.description}")
             lines.append("")
 
-    (ws / "relationships.md").write_text("\n".join(lines), encoding="utf-8")
+    await store_agent_bytes(
+        agent_id,
+        "relationships.md",
+        "\n".join(lines).encode("utf-8"),
+        content_type="text/markdown; charset=utf-8",
+    )

@@ -29,6 +29,12 @@ from app.services.workspace_collaboration import (
     release_edit_lock,
     write_workspace_file,
 )
+from app.services.storage import (
+    ensure_local_path,
+    get_storage_backend,
+    guess_content_type,
+    normalize_storage_key,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,7 +72,14 @@ class RestoreRevisionBody(BaseModel):
 
 
 def _agent_base_dir(agent_id: uuid.UUID) -> Path:
-    return Path(settings.AGENT_DATA_DIR) / str(agent_id)
+    local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
+    return Path(local_root) / str(agent_id)
+
+
+def _agent_storage_key(agent_id: uuid.UUID, rel_path: str = "") -> str:
+    prefix = str(agent_id)
+    rel = normalize_storage_key(rel_path)
+    return f"{prefix}/{rel}" if rel else prefix
 
 
 def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
@@ -87,27 +100,23 @@ async def list_files(
 ):
     """List files and directories in an agent's file system."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
-
-    if not target.exists():
+    storage = get_storage_backend()
+    storage_key = _agent_storage_key(agent_id, path)
+    if not await storage.exists(storage_key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
-    if not target.is_dir():
+    if not await storage.is_dir(storage_key):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a directory")
 
     items = []
-    base_abs = _agent_base_dir(agent_id).resolve()
-    for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
-        if entry.name == '.gitkeep':
-            continue
-        rel = str(entry.resolve().relative_to(base_abs))
-        stat = entry.stat()
+    for entry in await storage.list_dir(storage_key):
+        rel_path = str(Path(entry.key).relative_to(str(agent_id)))
         items.append(FileInfo(
             name=entry.name,
-            path=rel,
-            is_dir=entry.is_dir(),
-            size=stat.st_size if entry.is_file() else 0,
-            modified_at=str(stat.st_mtime),
-            url=f"/api/agents/{agent_id}/files/download?path={rel}" if not entry.is_dir() else None
+            path=rel_path,
+            is_dir=entry.is_dir,
+            size=entry.size,
+            modified_at=entry.modified_at,
+            url=f"/api/agents/{agent_id}/files/download?path={rel_path}" if not entry.is_dir else None
         ))
     return items
 
@@ -121,17 +130,17 @@ async def read_file(
 ):
     """Read the content of a file."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
-
-    if not target.exists() or not target.is_file():
+    storage = get_storage_backend()
+    key = _agent_storage_key(agent_id, path)
+    if not await storage.exists(key) or not await storage.is_file(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
     try:
-        async with aiofiles.open(target, "r", encoding="utf-8") as f:
-            content = await f.read()
+        content = await storage.read_text(key, encoding="utf-8", errors="replace")
         return FileContent(path=path, content=content)
     except UnicodeDecodeError:
-        return FileContent(path=path, content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]")
+        stat = await storage.stat(key)
+        return FileContent(path=path, content=f"[二进制文件: {Path(path).name}, {stat.size} bytes]")
 
 
 def _file_kind(path: str) -> str:
@@ -237,16 +246,18 @@ async def preview_file(
 ):
     """Return a browser-friendly preview payload for Workspace files."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
-    if not target.exists() or not target.is_file():
+    storage = get_storage_backend()
+    key = _agent_storage_key(agent_id, path)
+    if not await storage.exists(key) or not await storage.is_file(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
     kind = _file_kind(path)
-    mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    mime_type = mimetypes.guess_type(Path(path).name)[0] or "application/octet-stream"
     download_url = f"/api/agents/{agent_id}/files/download?path={path}"
+    local_target: Path | None = None
 
     if kind in {"markdown", "html", "text"}:
-        content = await read_text_if_exists(target)
+        content = await storage.read_text(key, encoding="utf-8", errors="replace")
         return {
             "path": path,
             "kind": kind,
@@ -256,7 +267,7 @@ async def preview_file(
             "download_url": download_url,
         }
     if kind == "csv":
-        content = await read_text_if_exists(target) or ""
+        content = await storage.read_text(key, encoding="utf-8", errors="replace")
         rows = _parse_csv_rows(content)
         return {
             "path": path,
@@ -277,6 +288,8 @@ async def preview_file(
         }
     if kind == "xlsx":
         try:
+            target = await ensure_local_path(key)
+            local_target = target
             from openpyxl import load_workbook
 
             wb = load_workbook(target, read_only=True, data_only=True)
@@ -311,6 +324,8 @@ async def preview_file(
                 "download_url": download_url,
             }
     if kind in {"docx", "pptx"}:
+        target = await ensure_local_path(key)
+        local_target = target
         extracted_text = _extract_document_text(target, kind)
         companion = _find_companion_text_preview(target)
         companion_content = await read_text_if_exists(companion) if companion is not None else None
@@ -323,7 +338,10 @@ async def preview_file(
             "download_url": download_url,
         }
 
-    companion = _find_companion_text_preview(target)
+    if local_target is not None:
+        companion = _find_companion_text_preview(local_target)
+    else:
+        companion = None
     if companion is not None:
         content = await read_text_if_exists(companion)
         return {
@@ -336,13 +354,13 @@ async def preview_file(
             "download_url": download_url,
         }
 
-    raw = target.read_bytes()
+    raw = await storage.read_bytes(key)
     encoded = base64.b64encode(raw[:1024 * 1024]).decode("ascii")
     return {
         "path": path,
         "kind": kind,
         "mime_type": mime_type,
-        "size": target.stat().st_size,
+        "size": len(raw),
         "base64_sample": encoded,
         "download_url": download_url,
     }
@@ -384,13 +402,29 @@ async def download_file(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
     await check_agent_access(db, user, agent_id)
-    target = _safe_path(agent_id, path)
-    if not target.exists() or not target.is_file():
+    storage = get_storage_backend()
+    key = _agent_storage_key(agent_id, path)
+    if not await storage.exists(key) or not await storage.is_file(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(
-        path=str(target),
-        filename=target.name,
-        content_disposition_type="inline" if inline else "attachment",
+    presigned = await storage.presign_download_url(key, filename=Path(path).name, inline=inline)
+    if presigned:
+        return Response(
+            status_code=302,
+            headers={"Location": presigned},
+        )
+    local_path = await storage.local_path_for(key)
+    if local_path is not None:
+        return FileResponse(
+            path=str(local_path),
+            filename=Path(path).name,
+            content_disposition_type="inline" if inline else "attachment",
+        )
+    data = await storage.read_bytes(key)
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content=data,
+        media_type=guess_content_type(Path(path).name),
+        headers={"Content-Disposition": f'{disposition}; filename="{Path(path).name}"'},
     )
 
 
@@ -505,11 +539,10 @@ async def restore_file_revision(
     if revision.after_content is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot restore an empty/deleted revision")
 
-    target = _safe_path(agent_id, revision.path)
-    before = await read_text_if_exists(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    async with aiofiles.open(target, "w", encoding="utf-8") as f:
-        await f.write(revision.after_content)
+    storage = get_storage_backend()
+    storage_key = _agent_storage_key(agent_id, revision.path)
+    before = await storage.read_text(storage_key, encoding="utf-8", errors="replace") if await storage.exists(storage_key) else None
+    await storage.write_text(storage_key, revision.after_content, encoding="utf-8")
     restored = await record_revision(
         db,
         agent_id=agent_id,
@@ -533,16 +566,14 @@ async def delete_file(
 ):
     """Delete a file."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
-
-    if not target.exists():
+    storage = get_storage_backend()
+    key = _agent_storage_key(agent_id, path)
+    if not await storage.exists(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-
-    if target.is_dir():
-        import shutil
-        shutil.rmtree(target)
+    if await storage.is_dir(key):
+        await storage.delete_tree(key)
     else:
-        target.unlink()
+        await storage.delete(key)
 
     return {"status": "ok", "path": path}
 
@@ -579,19 +610,11 @@ async def import_skill_to_agent(
     if not skill.files:
         raise HTTPException(status_code=400, detail="Skill has no files")
 
-    # Write each file into the agent's workspace
-    base = _agent_base_dir(agent_id)
-    skill_dir = base / "skills" / skill.folder_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
+    storage = get_storage_backend()
     written = []
     for f in skill.files:
-        file_path = (skill_dir / f.path).resolve()
-        # Safety check
-        if not str(file_path).startswith(str(base.resolve())):
-            continue
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(f.content, encoding="utf-8")
+        skill_key = _agent_storage_key(agent_id, f"skills/{skill.folder_name}/{f.path}")
+        await storage.write_text(skill_key, f.content, encoding="utf-8")
         written.append(f.path)
 
     return {
@@ -630,28 +653,25 @@ async def upload_file_to_workspace(
     if normalized_path not in {"workspace", "skills"} and not normalized_path.startswith(("workspace/", "skills/")):
         raise HTTPException(status_code=400, detail="右侧根目录视图是 agent 根目录；上传文件时请放到 workspace/ 或 skills/ 目录下")
 
-    base = _agent_base_dir(agent_id)
-    target_dir = (base / normalized_path).resolve()
-    if not str(target_dir).startswith(str(base.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-
-    target_dir.mkdir(parents=True, exist_ok=True)
     filename = file.filename or "unnamed"
     # Sanitize filename
     filename = filename.replace("/", "_").replace("\\", "_")
-    save_path = target_dir / filename
+    storage = get_storage_backend()
+    file_key = _agent_storage_key(agent_id, f"{normalized_path}/{filename}")
 
     content = await file.read()
-    save_path.write_bytes(content)
+    await storage.write_bytes(file_key, content, content_type=guess_content_type(filename))
 
     # Auto-extract text from non-text files
     extracted_path = None
     from app.services.text_extractor import needs_extraction, save_extracted_text
     if needs_extraction(filename):
+        save_path = await ensure_local_path(file_key)
         txt_file = save_extracted_text(save_path, content, filename)
         if txt_file:
-            base_abs = base.resolve()
-            extracted_path = str(txt_file.resolve().relative_to(base_abs))
+            extracted_path = f"{normalized_path}/{txt_file.name}"
+            extracted_key = _agent_storage_key(agent_id, extracted_path)
+            await storage.write_bytes(extracted_key, txt_file.read_bytes(), content_type="text/plain; charset=utf-8")
 
     return {
         "status": "ok",
@@ -669,11 +689,19 @@ enterprise_kb_router = APIRouter(prefix="/enterprise/knowledge-base", tags=["ent
 
 
 def _enterprise_kb_dir(tenant_id: str) -> Path:
-    return Path(settings.AGENT_DATA_DIR) / f"enterprise_info_{tenant_id}" / "knowledge_base"
+    local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
+    return Path(local_root) / f"enterprise_info_{tenant_id}" / "knowledge_base"
 
 
 def _enterprise_info_dir(tenant_id: str) -> Path:
-    return Path(settings.AGENT_DATA_DIR) / f"enterprise_info_{tenant_id}"
+    local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
+    return Path(local_root) / f"enterprise_info_{tenant_id}"
+
+
+def _enterprise_storage_key(tenant_id: str, rel_path: str = "") -> str:
+    prefix = f"enterprise_info_{tenant_id}"
+    rel = normalize_storage_key(rel_path)
+    return f"{prefix}/{rel}" if rel else prefix
 
 
 @enterprise_kb_router.get("/files")
@@ -684,31 +712,20 @@ async def list_enterprise_kb_files(
     """List files in enterprise knowledge base (tenant-scoped)."""
     if not current_user.tenant_id:
         return []
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id)).resolve()
-    info_dir.mkdir(parents=True, exist_ok=True)
-
-    if path:
-        target = (info_dir / path).resolve()
-    else:
-        target = info_dir
-    if not str(target).startswith(str(info_dir)):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-
-    if not target.exists() or not target.is_dir():
+    storage = get_storage_backend()
+    storage_key = _enterprise_storage_key(str(current_user.tenant_id), path)
+    if not await storage.exists(storage_key) or not await storage.is_dir(storage_key):
         return []
 
     items = []
-    for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
-        if entry.name == '.gitkeep':
-            continue
-        rel = str(entry.resolve().relative_to(info_dir.resolve()))
-        stat = entry.stat()
+    for entry in await storage.list_dir(storage_key):
+        rel = str(Path(entry.key).relative_to(f"enterprise_info_{current_user.tenant_id}"))
         items.append({
             "name": entry.name,
             "path": rel,
-            "is_dir": entry.is_dir(),
-            "size": stat.st_size if entry.is_file() else 0,
-            "url": f"/api/enterprise/knowledge-base/download?path={rel}" if not entry.is_dir() else None
+            "is_dir": entry.is_dir,
+            "size": entry.size,
+            "url": f"/api/enterprise/knowledge-base/download?path={rel}" if not entry.is_dir else None
         })
     return items
 
@@ -727,28 +744,28 @@ async def upload_enterprise_kb_file(
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
 
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id))
-    target_dir = (info_dir / sub_path).resolve()
-    if not str(target_dir).startswith(str(info_dir.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-
-    target_dir.mkdir(parents=True, exist_ok=True)
     filename = file.filename or "unnamed"
     filename = filename.replace("/", "_").replace("\\", "_")
-    save_path = target_dir / filename
+    storage = get_storage_backend()
+    rel_path = f"{sub_path}/{filename}" if sub_path else filename
+    storage_key = _enterprise_storage_key(str(current_user.tenant_id), rel_path)
 
     content = await file.read()
-    save_path.write_bytes(content)
+    await storage.write_bytes(storage_key, content, content_type=guess_content_type(filename))
 
     # Auto-extract text from non-text files
     extracted_path = None
     from app.services.text_extractor import needs_extraction, save_extracted_text
     if needs_extraction(filename):
+        save_path = await ensure_local_path(storage_key)
         txt_file = save_extracted_text(save_path, content, filename)
         if txt_file:
-            extracted_path = str(txt_file.resolve().relative_to(info_dir.resolve()))
-
-    rel_path = f"{sub_path}/{filename}" if sub_path else filename
+            extracted_path = f"{sub_path}/{txt_file.name}" if sub_path else txt_file.name
+            await storage.write_bytes(
+                _enterprise_storage_key(str(current_user.tenant_id), extracted_path),
+                txt_file.read_bytes(),
+                content_type="text/plain; charset=utf-8",
+            )
     return {
         "status": "ok",
         "path": rel_path,
@@ -767,18 +784,17 @@ async def read_enterprise_file(
     """Read content of an enterprise knowledge base file (tenant-scoped)."""
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id))
-    target = (info_dir / path).resolve()
-    if not str(target).startswith(str(info_dir.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-    if not target.exists() or not target.is_file():
+    storage = get_storage_backend()
+    storage_key = _enterprise_storage_key(str(current_user.tenant_id), path)
+    if not await storage.exists(storage_key) or not await storage.is_file(storage_key):
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
-        content = target.read_text(encoding="utf-8", errors="replace")
+        content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
         return {"path": path, "content": content}
     except Exception:
-        return {"path": path, "content": f"[二进制文件: {target.name}, {target.stat().st_size} bytes]"}
+        stat = await storage.stat(storage_key)
+        return {"path": path, "content": f"[二进制文件: {Path(path).name}, {stat.size} bytes]"}
 
 
 @enterprise_kb_router.put("/content")
@@ -793,14 +809,8 @@ async def write_enterprise_file(
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
 
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id))
-    target = (info_dir / path).resolve()
-    if not str(target).startswith(str(info_dir.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    async with aiofiles.open(target, "w", encoding="utf-8") as f:
-        await f.write(data.content)
+    storage = get_storage_backend()
+    await storage.write_text(_enterprise_storage_key(str(current_user.tenant_id), path), data.content, encoding="utf-8")
     return {"status": "ok", "path": path}
 
 
@@ -815,18 +825,14 @@ async def delete_enterprise_file(
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
 
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id))
-    target = (info_dir / path).resolve()
-    if not str(target).startswith(str(info_dir.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-    if not target.exists():
+    storage = get_storage_backend()
+    storage_key = _enterprise_storage_key(str(current_user.tenant_id), path)
+    if not await storage.exists(storage_key):
         raise HTTPException(status_code=404, detail="File not found")
-
-    if target.is_dir():
-        import shutil
-        shutil.rmtree(target)
+    if await storage.is_dir(storage_key):
+        await storage.delete_tree(storage_key)
     else:
-        target.unlink()
+        await storage.delete(storage_key)
     return {"status": "ok", "path": path}
 
 

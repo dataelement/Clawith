@@ -1,9 +1,7 @@
 """Seed default agents (Morty & Meeseeks) on first platform startup."""
 
-import shutil
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 from loguru import logger
 
@@ -21,8 +19,28 @@ from app.models.trigger import AgentTrigger
 from app.models.user import User
 from app.models.okr import OKRSettings
 from app.config import get_settings
+from app.services.agent_manager import agent_manager
+from app.services.storage import get_storage_backend, store_agent_bytes
 
 settings = get_settings()
+SEED_MARKER_KEY = "_bootstrap/.seeded"
+
+
+async def _read_seed_marker() -> str:
+    storage = get_storage_backend()
+    if not await storage.exists(SEED_MARKER_KEY):
+        return ""
+    return await storage.read_text(SEED_MARKER_KEY, encoding="utf-8", errors="replace")
+
+
+async def _append_seed_marker(line: str) -> None:
+    storage = get_storage_backend()
+    existing = await _read_seed_marker()
+    if line in existing:
+        return
+    updated = existing if existing.endswith("\n") or not existing else existing + "\n"
+    updated += f"{line}\n"
+    await storage.write_text(SEED_MARKER_KEY, updated, encoding="utf-8")
 
 
 # ── Soul definitions ────────────────────────────────────────────
@@ -192,9 +210,8 @@ async def seed_default_agents():
     than by agent name, so the seeder does NOT re-run if the user renames or
     deletes the default agents.  Delete the marker manually to re-seed.
     """
-    # --- Idempotency guard: file-based marker (survives agent renames/deletes) ---
-    seed_marker = Path(settings.AGENT_DATA_DIR) / ".seeded"
-    if seed_marker.exists():
+    # --- Idempotency guard: storage-backed marker (survives agent renames/deletes) ---
+    if await _read_seed_marker():
         logger.info("[AgentSeeder] Seed marker found, skipping default agent creation")
         return
 
@@ -243,47 +260,14 @@ async def seed_default_agents():
         db.add(AgentPermission(agent_id=morty.id, scope_type="company", access_level="manage"))
         db.add(AgentPermission(agent_id=meeseeks.id, scope_type="company", access_level="manage"))
 
-        # ── Initialize workspace files ──
-        template_dir = Path(settings.AGENT_TEMPLATE_DIR)
-
         for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
-            agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent.id)
-
-            if template_dir.exists():
-                # Copy the full agent template so Morty/Meeseeks get EVERY file
-                # defined in the template: MEMORY_INDEX.md, curiosity_journal.md,
-                # state.json, todo.json, daily_reports/, enterprise_info/, etc.
-                shutil.copytree(str(template_dir), str(agent_dir))
-            else:
-                # Fallback for local dev (no Docker template mount)
-                agent_dir.mkdir(parents=True, exist_ok=True)
-                (agent_dir / "skills").mkdir(exist_ok=True)
-                (agent_dir / "workspace").mkdir(exist_ok=True)
-                (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
-                (agent_dir / "memory").mkdir(exist_ok=True)
-
-            # Overlay custom soul (rich Morty/Meeseeks persona over the generic template)
-            (agent_dir / "soul.md").write_text(soul_content.strip() + "\n", encoding="utf-8")
-
-            # Ensure memory.md exists (template does not include it; holds runtime context)
-            mem_path = agent_dir / "memory" / "memory.md"
-            if not mem_path.exists():
-                mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
-
-            # Ensure reflections.md exists (not in agent_template; lives in app/templates)
-            refl_path = agent_dir / "memory" / "reflections.md"
-            if not refl_path.exists():
-                refl_src = Path(__file__).parent.parent / "templates" / "reflections.md"
-                refl_path.write_text(refl_src.read_text(encoding="utf-8") if refl_src.exists() else "# Reflections Journal\n", encoding="utf-8")
-
-            # Stamp agent identity into state.json if present
-            state_path = agent_dir / "state.json"
-            if state_path.exists():
-                import json as _json
-                state = _json.loads(state_path.read_text())
-                state["agent_id"] = str(agent.id)
-                state["name"] = agent.name
-                state_path.write_text(_json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            await agent_manager.initialize_agent_files(db, agent)
+            await store_agent_bytes(
+                agent.id,
+                "soul.md",
+                (soul_content.strip() + "\n").encode("utf-8"),
+                content_type="text/markdown; charset=utf-8",
+            )
 
         # ── Assign skills ──
         all_skills_result = await db.execute(
@@ -292,9 +276,6 @@ async def seed_default_agents():
         all_skills = {s.folder_name: s for s in all_skills_result.scalars().all()}
 
         for agent, skill_folders in [(morty, MORTY_SKILLS), (meeseeks, MEESEEKS_SKILLS)]:
-            agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent.id)
-            skills_dir = agent_dir / "skills"
-
             # Always include default skills
             folders_to_copy = set(skill_folders)
             for fname, skill in all_skills.items():
@@ -305,12 +286,13 @@ async def seed_default_agents():
                 skill = all_skills.get(fname)
                 if not skill:
                     continue
-                skill_folder = skills_dir / skill.folder_name
-                skill_folder.mkdir(parents=True, exist_ok=True)
                 for sf in skill.files:
-                    file_path = skill_folder / sf.path
-                    file_path.parent.mkdir(parents=True, exist_ok=True)
-                    file_path.write_text(sf.content, encoding="utf-8")
+                    await store_agent_bytes(
+                        agent.id,
+                        f"skills/{skill.folder_name}/{sf.path}",
+                        sf.content.encode("utf-8"),
+                        content_type="text/plain; charset=utf-8",
+                    )
 
         # ── Assign all default tools ──
         default_tools_result = await db.execute(
@@ -337,32 +319,33 @@ async def seed_default_agents():
         ))
 
         # ── Write relationships.md for each ──
-        morty_dir = Path(settings.AGENT_DATA_DIR) / str(morty.id)
-        meeseeks_dir = Path(settings.AGENT_DATA_DIR) / str(meeseeks.id)
-
-        (morty_dir / "relationships.md").write_text(
+        await store_agent_bytes(
+            morty.id,
+            "relationships.md",
             "# Relationships\n\n"
             "## Digital Employee Colleagues\n\n"
-            "- **Meeseeks** (collaborator): Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.\n",
-            encoding="utf-8",
+            "- **Meeseeks** (collaborator): Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.\n".encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
         )
-        (meeseeks_dir / "relationships.md").write_text(
+        await store_agent_bytes(
+            meeseeks.id,
+            "relationships.md",
             "# Relationships\n\n"
             "## Digital Employee Colleagues\n\n"
-            "- **Morty** (collaborator): Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.\n",
-            encoding="utf-8",
+            "- **Morty** (collaborator): Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.\n".encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
         )
 
         await db.commit()
         logger.info(f"[AgentSeeder] Created default agents: Morty ({morty.id}), Meeseeks ({meeseeks.id})")
 
     # Write seed marker AFTER a successful commit so a failed seed can be retried
-    seed_marker.parent.mkdir(parents=True, exist_ok=True)
-    seed_marker.write_text(
+    await get_storage_backend().write_text(
+        SEED_MARKER_KEY,
         f"seeded\nmorty={morty.id}\nmeeseeks={meeseeks.id}\n",
         encoding="utf-8",
     )
-    logger.info(f"[AgentSeeder] Wrote seed marker to {seed_marker}")
+    logger.info(f"[AgentSeeder] Wrote seed marker to {SEED_MARKER_KEY}")
 
 
 async def seed_okr_agent():
@@ -379,14 +362,11 @@ async def seed_okr_agent():
     - Generates daily/weekly reports and posts them to the Plaza
     - Helps team members set up and maintain their focus.md files
     """
-    seed_marker = Path(settings.AGENT_DATA_DIR) / ".seeded"
-
     # Check if OKR Agent has already been seeded
-    if seed_marker.exists():
-        marker_content = seed_marker.read_text(encoding="utf-8")
-        if "okr_agent=" in marker_content:
-            logger.info("[AgentSeeder] OKR Agent already seeded, skipping")
-            return
+    marker_content = await _read_seed_marker()
+    if "okr_agent=" in marker_content:
+        logger.info("[AgentSeeder] OKR Agent already seeded, skipping")
+        return
 
     async with async_session() as db:
         # Abort if a non-stopped OKR Agent already exists in the DB.
@@ -404,7 +384,7 @@ async def seed_okr_agent():
         if existing.scalar_one_or_none():
             logger.info("[AgentSeeder] OKR Agent already exists in DB, skipping")
             # Update marker so we don't check again next startup
-            _append_seed_marker(seed_marker, "okr_agent=existing")
+            await _append_seed_marker("okr_agent=existing")
             return
 
         # Get platform admin as creator
@@ -445,7 +425,7 @@ async def seed_okr_agent():
         except IntegrityError:
             await db.rollback()
             logger.info("[AgentSeeder] OKR Agent was created concurrently (or exists with same name), skipping")
-            _append_seed_marker(seed_marker, "okr_agent=existing")
+            await _append_seed_marker("okr_agent=existing")
             return
 
         # ── Link OKR Agent ID to OKRSettings ──
@@ -474,56 +454,33 @@ async def seed_okr_agent():
         db.add(AgentPermission(agent_id=okr_agent.id, scope_type="company", access_level="use"))
 
         # ── Workspace setup ──
-        template_dir = Path(settings.AGENT_TEMPLATE_DIR)
-        agent_dir = Path(settings.AGENT_DATA_DIR) / str(okr_agent.id)
-
-        if template_dir.exists():
-            shutil.copytree(str(template_dir), str(agent_dir))
-        else:
-            agent_dir.mkdir(parents=True, exist_ok=True)
-            (agent_dir / "skills").mkdir(exist_ok=True)
-            (agent_dir / "workspace").mkdir(exist_ok=True)
-            (agent_dir / "workspace" / "reports").mkdir(exist_ok=True)
-            (agent_dir / "memory").mkdir(exist_ok=True)
-
-        # Write OKR Agent soul
-        (agent_dir / "soul.md").write_text(OKR_AGENT_SOUL.strip() + "\n", encoding="utf-8")
-
-        # Ensure memory.md exists
-        mem_path = agent_dir / "memory" / "memory.md"
-        if not mem_path.exists():
-            mem_path.write_text(
+        await agent_manager.initialize_agent_files(db, okr_agent)
+        await store_agent_bytes(
+            okr_agent.id,
+            "soul.md",
+            (OKR_AGENT_SOUL.strip() + "\n").encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
+        )
+        await store_agent_bytes(
+            okr_agent.id,
+            "memory/memory.md",
+            (
                 "# Memory\n\n"
                 "## OKR System State\n"
                 "- Last report generated: (none)\n"
                 "- Last progress collection: (none)\n"
-                "- Team members tracked: (pending)\n",
-                encoding="utf-8",
-            )
-
-        # OKR Agent does NOT use HEARTBEAT.md — heartbeat is disabled for this agent.
-        # All scheduled activity is driven by cron triggers (daily/weekly/biweekly/monthly reports).
-
-        # Create workspace/reports directory
-        reports_dir = agent_dir / "workspace" / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write relationships.md — empty initially, will be populated as team onboards
-        (agent_dir / "relationships.md").write_text(
+                "- Team members tracked: (pending)\n"
+            ).encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
+        )
+        await store_agent_bytes(
+            okr_agent.id,
+            "relationships.md",
             "# Relationships\n\n"
             "## Team Members (OKR tracking)\n\n"
-            "_Team members will be added here as they are onboarded into the OKR system._\n",
-            encoding="utf-8",
+            "_Team members will be added here as they are onboarded into the OKR system._\n".encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
         )
-
-        # Stamp state.json if template provides one
-        state_path = agent_dir / "state.json"
-        if state_path.exists():
-            import json as _json
-            state = _json.loads(state_path.read_text())
-            state["agent_id"] = str(okr_agent.id)
-            state["name"] = okr_agent.name
-            state_path.write_text(_json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # ── Assign default tools + OKR-specific tools ──
         # Default tools: all tools where is_default=True
@@ -580,17 +537,8 @@ async def seed_okr_agent():
         await db.commit()
 
     # Update seed marker
-    _append_seed_marker(seed_marker, f"okr_agent={okr_agent.id}")
+    await _append_seed_marker(f"okr_agent={okr_agent.id}")
     logger.info(f"[AgentSeeder] OKR Agent seeded, id={okr_agent.id}")
-
-
-def _append_seed_marker(marker_path: Path, line: str):
-    """Append a key=value line to the .seeded marker file (idempotent)."""
-    marker_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = marker_path.read_text(encoding="utf-8") if marker_path.exists() else ""
-    if line not in existing:
-        with marker_path.open("a", encoding="utf-8") as f:
-            f.write(f"{line}\n")
 
 
 async def _seed_okr_triggers(db, agent_id: uuid.UUID) -> None:
@@ -958,34 +906,32 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
         await db.flush()
 
         # ── Workspace setup ──
-        template_dir = Path(settings.AGENT_TEMPLATE_DIR)
-        agent_dir = Path(settings.AGENT_DATA_DIR) / str(okr_agent.id)
-
-        if template_dir.exists():
-            shutil.copytree(str(template_dir), str(agent_dir))
-        else:
-            agent_dir.mkdir(parents=True, exist_ok=True)
-            for sub in ("skills", "workspace", "workspace/reports", "memory"):
-                (agent_dir / sub).mkdir(parents=True, exist_ok=True)
-
-        (agent_dir / "soul.md").write_text(OKR_AGENT_SOUL.strip() + "\n", encoding="utf-8")
-
-        mem_path = agent_dir / "memory" / "memory.md"
-        if not mem_path.exists():
-            mem_path.write_text(
+        await agent_manager.initialize_agent_files(db, okr_agent)
+        await store_agent_bytes(
+            okr_agent.id,
+            "soul.md",
+            (OKR_AGENT_SOUL.strip() + "\n").encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
+        )
+        await store_agent_bytes(
+            okr_agent.id,
+            "memory/memory.md",
+            (
                 "# Memory\n\n"
                 "## OKR System State\n"
                 "- Last report generated: (none)\n"
                 "- Last progress collection: (none)\n"
-                "- Team members tracked: (pending)\n",
-                encoding="utf-8",
-            )
-
-        (agent_dir / "relationships.md").write_text(
+                "- Team members tracked: (pending)\n"
+            ).encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
+        )
+        await store_agent_bytes(
+            okr_agent.id,
+            "relationships.md",
             "# Relationships\n\n"
             "## Team Members (OKR tracking)\n\n"
-            "_Team members will be added here as they are onboarded into the OKR system._\n",
-            encoding="utf-8",
+            "_Team members will be added here as they are onboarded into the OKR system._\n".encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
         )
 
         # ── Assign default tools ──
