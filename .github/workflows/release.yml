@@ -1,0 +1,409 @@
+name: Release
+
+# Uses GitHub Models API with GITHUB_TOKEN (auto-provided) for AI release notes.
+# Model: gpt-4o-mini (no manual secrets required)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Release type to cut
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        required: true
+        default: false
+        type: boolean
+      use_ai_notes:
+        description: Use OpenAI to draft release notes when OPENAI_API_KEY is configured
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Cut release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve base tag and target version
+        id: version
+        shell: bash
+        env:
+          REQUESTED_RELEASE_TYPE: ${{ inputs.release_type }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags
+
+          stable_tag="$(git tag --merged HEAD --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+          base_tag="$stable_tag"
+          if [ -z "$base_tag" ]; then
+            base_tag="$(git tag --merged HEAD --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$' | head -n 1 || true)"
+          fi
+          if [ -z "$base_tag" ]; then
+            base_tag="v0.0.0"
+            log_range=""
+          else
+            log_range="${base_tag}..HEAD"
+          fi
+
+          if [ -n "$log_range" ] && [ -z "$(git log --oneline "$log_range")" ]; then
+            echo "No commits found since ${base_tag}; skipping duplicate release."
+            exit 1
+          fi
+
+          release_type="$REQUESTED_RELEASE_TYPE"
+          if [ "$release_type" = "auto" ]; then
+            if [ -n "$log_range" ]; then
+              subjects="$(git log --format=%s "$log_range")"
+              bodies="$(git log --format=%B "$log_range")"
+            else
+              subjects="$(git log --format=%s)"
+              bodies="$(git log --format=%B)"
+            fi
+            if printf '%s\n' "$bodies" | grep -Eq 'BREAKING CHANGE|^[^[:space:]]+(\([^)]+\))?!:'; then
+              release_type="major"
+            elif printf '%s\n' "$subjects" | grep -Eq '^feat(\([^)]+\))?:'; then
+              release_type="minor"
+            else
+              release_type="patch"
+            fi
+          fi
+
+          next_version="$(python - "$base_tag" "$release_type" <<'PY'
+          import re
+          import sys
+
+          base_tag, release_type = sys.argv[1], sys.argv[2]
+          match = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", base_tag)
+          if not match:
+              major, minor, patch = 0, 0, 0
+          else:
+              major, minor, patch = map(int, match.groups())
+
+          if release_type == "major":
+              major += 1
+              minor = 0
+              patch = 0
+          elif release_type == "minor":
+              minor += 1
+              patch = 0
+          else:
+              patch += 1
+
+          print(f"{major}.{minor}.{patch}")
+          PY
+          )"
+
+          tag_name="v${next_version}"
+
+          if git rev-parse "$tag_name" >/dev/null 2>&1; then
+            echo "Tag ${tag_name} already exists."
+            exit 1
+          fi
+
+          {
+            echo "base_tag=$base_tag"
+            echo "release_type=$release_type"
+            echo "version=$next_version"
+            echo "tag=$tag_name"
+            echo "log_range=$log_range"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Base tag: $base_tag"
+          echo "Release type: $release_type"
+          echo "Next version: $next_version"
+
+      - name: Collect release context
+        shell: bash
+        env:
+          BASE_TAG: ${{ steps.version.outputs.base_tag }}
+          TARGET_VERSION: ${{ steps.version.outputs.version }}
+          TARGET_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_TYPE: ${{ steps.version.outputs.release_type }}
+          LOG_RANGE: ${{ steps.version.outputs.log_range }}
+          SOURCE_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p .github/release-artifacts
+
+          if [ -n "$LOG_RANGE" ]; then
+            git log --no-merges --pretty=format:'- %s (%h)' "$LOG_RANGE" > .github/release-artifacts/commit-bullets.txt
+            git log --no-merges --pretty=format:'%H%x09%s' "$LOG_RANGE" > .github/release-artifacts/commit-table.tsv
+          else
+            git log --no-merges --pretty=format:'- %s (%h)' > .github/release-artifacts/commit-bullets.txt
+            git log --no-merges --pretty=format:'%H%x09%s' > .github/release-artifacts/commit-table.tsv
+          fi
+
+          python <<'PY'
+          from pathlib import Path
+          import os
+
+          base_tag = os.environ["BASE_TAG"]
+          target_version = os.environ["TARGET_VERSION"]
+          target_tag = os.environ["TARGET_TAG"]
+          release_type = os.environ["RELEASE_TYPE"]
+
+          notes_path = Path("RELEASE_NOTES.md")
+          existing = notes_path.read_text(encoding="utf-8") if notes_path.exists() else ""
+          style_excerpt = "\n".join(existing.splitlines()[:120]).strip()
+          commit_bullets = Path(".github/release-artifacts/commit-bullets.txt").read_text(encoding="utf-8").strip()
+
+          prompt = f"""You are writing Clawith release notes in markdown.
+
+          Rules:
+          - Start with a top-level heading exactly like: # {target_tag} — <short title>
+          - Keep the tone concise and product-focused.
+          - Use these sections when they make sense: ## What's New, ## Bug Fixes, ## Upgrade Guide, ## Notes
+          - Mention upgrade or migration risk only when the commits strongly imply it.
+          - Do not invent features that are not present in the commit list.
+          - Prefer grouping related changes instead of listing every commit verbatim.
+
+          Context:
+          - Previous release tag: {base_tag}
+          - Target release tag: {target_tag}
+          - Release type: {release_type}
+
+          Release branch:
+          {os.environ["SOURCE_REF"]}
+
+          Recent release note style:
+          {style_excerpt or "(no prior release note style provided)"}
+
+          Commits included in this release:
+          {commit_bullets or "- No commit bullets collected"}
+          """
+
+          Path(".github/release-artifacts/release-prompt.txt").write_text(prompt, encoding="utf-8")
+          PY
+
+      - name: Update version files
+        shell: bash
+        env:
+          TARGET_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          printf '%s\n' "$TARGET_VERSION" > backend/VERSION
+          printf '%s\n' "$TARGET_VERSION" > frontend/VERSION
+
+      - name: Draft release notes with GitHub Models
+        if: ${{ inputs.use_ai_notes }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          python <<'PY'
+          from pathlib import Path
+          import json
+          import os
+
+          prompt = Path(".github/release-artifacts/release-prompt.txt").read_text(encoding="utf-8")
+          payload = {
+              "model": "gpt-4o-mini",
+              "messages": [
+                  {"role": "user", "content": prompt}
+              ],
+          }
+          Path(".github/release-artifacts/openai-payload.json").write_text(
+              json.dumps(payload, ensure_ascii=False),
+              encoding="utf-8",
+          )
+          PY
+
+          curl -fsSL https://models.inference.ai.azure.com/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -d @.github/release-artifacts/openai-payload.json \
+            > .github/release-artifacts/openai-response.json
+
+          python <<'PY'
+          from pathlib import Path
+          import json
+
+          response = json.loads(Path(".github/release-artifacts/openai-response.json").read_text(encoding="utf-8"))
+          text = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+          if not text:
+              raise SystemExit("GitHub Models did not return release note text.")
+
+          Path(".github/release-artifacts/release-notes.generated.md").write_text(
+              text.rstrip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Build fallback release notes
+        shell: bash
+        env:
+          BASE_TAG: ${{ steps.version.outputs.base_tag }}
+          TARGET_VERSION: ${{ steps.version.outputs.version }}
+          TARGET_TAG: ${{ steps.version.outputs.tag }}
+          SOURCE_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ -s .github/release-artifacts/release-notes.generated.md ]; then
+            exit 0
+          fi
+
+          python <<'PY'
+          from pathlib import Path
+          import os
+
+          base_tag = os.environ["BASE_TAG"]
+          target_version = os.environ["TARGET_VERSION"]
+          target_tag = os.environ["TARGET_TAG"]
+          source_ref = os.environ["SOURCE_REF"]
+
+          entries = []
+          for line in Path(".github/release-artifacts/commit-table.tsv").read_text(encoding="utf-8").splitlines():
+              if not line.strip():
+                  continue
+              _, subject = line.split("\t", 1)
+              entries.append(subject.strip())
+
+          features = []
+          fixes = []
+          others = []
+          for subject in entries:
+              lowered = subject.lower()
+              if lowered.startswith("feat"):
+                  features.append(subject)
+              elif lowered.startswith("fix"):
+                  fixes.append(subject)
+              else:
+                  others.append(subject)
+
+          def bullets(items):
+              return "\n".join(f"- {item}" for item in items[:8]) or "- No user-facing highlights captured from commit subjects."
+
+          sections = [
+              f"# {target_tag} — Release Highlights",
+              "",
+              "## What's New",
+              bullets(features or others),
+          ]
+
+          if fixes:
+              sections.extend([
+                  "",
+                  "## Bug Fixes",
+                  bullets(fixes),
+              ])
+
+          sections.extend([
+              "",
+              "## Upgrade Guide",
+              "",
+              "### Docker Deployment",
+              "```bash",
+              f"git pull origin {source_ref}",
+              "docker compose down && docker compose up -d --build",
+              "```",
+              "",
+              "### Source Deployment",
+              "```bash",
+              f"git pull origin {source_ref}",
+              "cd frontend && npm install && npm run build",
+              "cd ..",
+              "```",
+              "",
+              "## Notes",
+              f"- Release generated from changes since `{base_tag}`.",
+              f"- Runtime version files were updated to `{target_version}`.",
+          ])
+
+          Path(".github/release-artifacts/release-notes.generated.md").write_text(
+              "\n".join(sections).rstrip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Refresh RELEASE_NOTES.md
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python <<'PY'
+          from pathlib import Path
+
+          notes_file = Path(".github/release-artifacts/release-notes.generated.md")
+          release_notes_path = Path("RELEASE_NOTES.md")
+
+          new_block = notes_file.read_text(encoding="utf-8").strip()
+          existing = release_notes_path.read_text(encoding="utf-8").strip() if release_notes_path.exists() else ""
+
+          if existing:
+              combined = f"{new_block}\n\n---\n\n{existing}\n"
+          else:
+              combined = f"{new_block}\n"
+
+          release_notes_path.write_text(combined, encoding="utf-8")
+          PY
+
+      - name: Commit release metadata
+        shell: bash
+        env:
+          TARGET_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git add backend/VERSION frontend/VERSION RELEASE_NOTES.md
+
+          if git diff --cached --quiet; then
+            echo "No release metadata changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore(release): cut ${TARGET_TAG}"
+          git push origin HEAD:${{ github.ref_name }}
+
+      - name: Create and push tag
+        shell: bash
+        env:
+          TARGET_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git tag -a "$TARGET_TAG" -m "Release $TARGET_TAG"
+          git push origin "$TARGET_TAG"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: .github/release-artifacts/release-notes.generated.md
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: false
