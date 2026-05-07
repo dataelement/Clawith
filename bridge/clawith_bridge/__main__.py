@@ -38,6 +38,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Path to TOML config (default: {DEFAULT_CONFIG_PATH})",
     )
     ap.add_argument("--log-level", default="INFO", help="DEBUG | INFO | WARNING | ERROR")
+    ap.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="Tee logs to this path with rotation. Required when running under "
+             "Task Scheduler -Hidden, where stdout/stderr are dropped.",
+    )
     ap.add_argument("--version", action="version", version=f"clawith-bridge {__version__}")
 
     sub = ap.add_subparsers(dest="command")
@@ -51,7 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ip.add_argument(
         "--adapter",
         default="claude_code",
-        choices=("claude_code", "openclaw", "hermes"),
+        choices=("claude_code", "openclaw", "hermes", "codex"),
         help="Which adapter to enable in the generated TOML (default: claude_code)",
     )
 
@@ -185,6 +192,27 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.remove()
     logger.add(sys.stderr, level=args.log_level.upper())
+    # When run under Task Scheduler (-Hidden), stderr goes nowhere. The
+    # installer passes --log-file so we always have a persistent trail.
+    log_file = getattr(args, "log_file", None)
+    if log_file is not None:
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            # NOTE: intentionally NOT using enqueue=True. Loguru's enqueue
+            # uses multiprocessing.Queue which is fragile under PyInstaller
+            # (needs freeze_support + spawn semantics) and has been seen to
+            # silently swallow records from the logger thread, turning a
+            # hung adapter into a silent stall with no diagnostic trail.
+            # The bridge is single-process; direct sink is fine.
+            logger.add(
+                str(log_file),
+                level=args.log_level.upper(),
+                rotation="10 MB",
+                retention=5,
+                encoding="utf-8",
+            )
+        except Exception as e:
+            print(f"WARNING: failed to open log file {log_file}: {e}", file=sys.stderr)
 
     if args.command == "install":
         from .install_windows import install

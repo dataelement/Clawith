@@ -1,8 +1,8 @@
 """Tests for bridge installer template rendering.
 
 The server-side installer template is the only place that decides which
-bridge adapter (claude_code / openclaw / hermes) will be enabled on the
-user's machine. A regression here would silently put the wrong runtime
+bridge adapter (claude_code / openclaw / hermes / codex) will be enabled on
+the user's machine. A regression here would silently put the wrong runtime
 into `~/.clawith-bridge.toml` and the bridge would advertise an adapter
 the agent isn't configured for — visible only as a chat-time error.
 """
@@ -24,6 +24,7 @@ from app.services.local_agent.installer_templates import (
     ("claude_code", "cc_enabled"),
     ("openclaw", "oc_enabled"),
     ("hermes", "hm_enabled"),
+    ("codex", "cx_enabled"),
 ])
 def test_adapter_flags_exactly_one_true(adapter, expected_true):
     flags = _adapter_enabled_flags(adapter)
@@ -40,12 +41,13 @@ def test_adapter_flags_unknown_defaults_to_claude_code():
     assert flags["cc_enabled"] == "true"
     assert flags["oc_enabled"] == "false"
     assert flags["hm_enabled"] == "false"
+    assert flags["cx_enabled"] == "false"
 
 
 # ── Unix shell template (linux/macos) ──────────────────────────────────
 
 
-@pytest.mark.parametrize("adapter", ["claude_code", "openclaw", "hermes"])
+@pytest.mark.parametrize("adapter", ["claude_code", "openclaw", "hermes", "codex"])
 def test_render_installer_linux_only_selected_adapter_enabled(adapter):
     payload, filename, content_type = render_installer(
         platform="linux",
@@ -63,6 +65,7 @@ def test_render_installer_linux_only_selected_adapter_enabled(adapter):
         "claude_code": "[claude_code]\nenabled    = ",
         "hermes":      "[hermes]\nenabled  = ",
         "openclaw":    "[openclaw]\nenabled  = ",
+        "codex":       "[codex]\nenabled    = ",
     }
     for name, header in sections.items():
         expected = "true" if name == adapter else "false"

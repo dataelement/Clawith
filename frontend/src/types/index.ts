@@ -90,3 +90,135 @@ export interface TokenResponse {
     user: User;
     needs_company_setup?: boolean;
 }
+
+// ─── Projects ──────────────────────────────────────────
+
+export type ProjectScopeType = 'tenant' | 'department' | 'user';
+export type ProjectChatVisibility = 'shared' | 'private';
+export type ProjectFileCreatorType = 'user' | 'agent';
+
+export interface ProjectAgentSummary {
+    agent_id: string;
+    name: string;
+    avatar_url?: string | null;
+}
+
+export interface Project {
+    id: string;
+    name: string;
+    description: string;
+    scope_type: ProjectScopeType;
+    scope_id: string;
+    chat_visibility: ProjectChatVisibility;
+    archived_at?: string | null;
+    created_by: string;
+    created_at: string;
+    updated_at: string;
+    agent_count: number;
+    file_count: number;
+    session_count: number;
+    last_message_at?: string | null;
+    agents: ProjectAgentSummary[];
+}
+
+export interface ProjectAgentMember {
+    project_id: string;
+    agent_id: string;
+    agent_name: string;
+    avatar_url?: string | null;
+    added_by: string;
+    added_at: string;
+}
+
+export interface ProjectFile {
+    id: string;
+    project_id: string;
+    filename: string;
+    /** Path relative to the project workspace root, "/"-separated.
+     *  Equals filename for files at root; "posts/draft.md" for nested ones. */
+    path: string;
+    is_dir: boolean;
+    size_bytes: number;
+    mime_type: string;
+    created_by_type: ProjectFileCreatorType;
+    created_by: string;
+    created_at: string;
+    updated_at: string;
+    /** Phase 4 polish: number of project tasks linking to this file. */
+    linked_task_count?: number;
+    /** Up to 3 task titles, for tooltip display. */
+    linked_task_titles?: string[];
+}
+
+export interface ProjectFileConflict {
+    detail: 'filename_conflict';
+    existing: ProjectFile;
+    suggested_alt_name: string;
+}
+
+export type ProjectScheduledTaskFrequency = 'hourly' | 'daily' | 'weekdays' | 'weekly';
+
+export interface ProjectScheduledTask {
+    id: string;
+    project_id: string;
+    agent_id: string;
+    agent_name: string;
+    agent_avatar_url?: string | null;
+    name: string;
+    prompt: string;
+    frequency: ProjectScheduledTaskFrequency;
+    is_enabled: boolean;
+    last_fired_at?: string | null;
+    fire_count: number;
+    cron_expr: string;
+    created_at: string;
+}
+
+export interface ProjectChatSession {
+    id: string;
+    agent_id: string;
+    agent_name: string;
+    user_id: string;
+    user_display_name?: string | null;
+    title: string;
+    created_at: string;
+    last_message_at?: string | null;
+    message_count: number;
+    owned_by_me: boolean;
+}
+
+export type ProjectTaskStatus = 'todo' | 'doing' | 'done' | 'blocked';
+export type ProjectTaskCreatedByType = 'user' | 'agent';
+
+export interface ProjectTask {
+    id: string;
+    project_id: string;
+    title: string;
+    description: string;
+    status: ProjectTaskStatus;
+    assigned_agent_id?: string | null;
+    assigned_agent_name?: string | null;
+    assigned_agent_avatar_url?: string | null;
+    assigned_user_id?: string | null;
+    assigned_user_display_name?: string | null;
+    due_date?: string | null;
+    created_by: string;
+    created_by_type: ProjectTaskCreatedByType;
+    created_at: string;
+    updated_at: string;
+    completed_at?: string | null;
+    linked_file_count: number;
+}
+
+export interface ProjectTaskFileLink {
+    file_id: string;
+    filename: string;
+    mime_type: string;
+    size_bytes: number;
+    linked_at: string;
+    linked_by_type: ProjectTaskCreatedByType;
+}
+
+export interface ProjectTaskDetail extends ProjectTask {
+    linked_files: ProjectTaskFileLink[];
+}

@@ -94,12 +94,17 @@ _SCREENSHOT_PATH_RE = re.compile(
     r"workspace/(?:desktop[_-])?screenshot[_-]\d+\.png"
 )
 
-# Tool names that can produce screenshots (either in-memory or file-based)
+# Tool names that can produce vision-bearing results — either screenshots
+# (agentbay_*) or any image read by the file tools (read_file on a *.png /
+# *.jpg / etc.). Both paths funnel through the same `[ImageID: ...]` sentinel
+# + memory cache mechanism, so try_inject_screenshot_vision treats them
+# uniformly.
 SCREENSHOT_TOOL_NAMES = frozenset({
     "agentbay_browser_navigate",
     "agentbay_browser_screenshot",
     "agentbay_computer_screenshot",
     "agentbay_computer_precision_screenshot",
+    "read_file",
 })
 
 # Sentinel text that replaces consumed [ImageID: ...] markers in DB-stored history

@@ -51,6 +51,7 @@ class BridgeConfig:
     claude_code: AdapterConfig = field(default_factory=AdapterConfig)
     hermes: AdapterConfig = field(default_factory=lambda: AdapterConfig(enabled=False))
     openclaw: AdapterConfig = field(default_factory=lambda: AdapterConfig(enabled=False))
+    codex: AdapterConfig = field(default_factory=lambda: AdapterConfig(enabled=False))
 
     def enabled_adapters(self) -> list[str]:
         out: list[str] = []
@@ -60,6 +61,8 @@ class BridgeConfig:
             out.append("hermes")
         if self.openclaw.enabled:
             out.append("openclaw")
+        if self.codex.enabled:
+            out.append("codex")
         return out
 
 
@@ -82,7 +85,7 @@ def _apply_env(cfg: BridgeConfig) -> None:
         except ValueError:
             pass
     # Adapter enable flags
-    for name in ("claude_code", "hermes", "openclaw"):
+    for name in ("claude_code", "hermes", "openclaw", "codex"):
         key = f"CLAWITH_BRIDGE_ADAPTER_{name.upper()}"
         v = env.get(key)
         if v is not None:
@@ -101,7 +104,7 @@ def _apply_toml(cfg: BridgeConfig, data: dict[str, Any]) -> None:
     for k in ("reconnect_min", "reconnect_max"):
         if k in data:
             setattr(cfg, k, float(data[k]))
-    for name in ("claude_code", "hermes", "openclaw"):
+    for name in ("claude_code", "hermes", "openclaw", "codex"):
         section = data.get(name)
         if isinstance(section, dict):
             ac: AdapterConfig = getattr(cfg, name)

@@ -135,10 +135,23 @@ export function uploadFileWithProgress(
             if (xhr.status >= 200 && xhr.status < 300) {
                 try { resolve(JSON.parse(xhr.responseText)); } catch { resolve(undefined); }
             } else {
-                try {
-                    const err = JSON.parse(xhr.responseText);
-                    reject(new Error(err.detail || `HTTP ${xhr.status}`));
-                } catch { reject(new Error(`HTTP ${xhr.status}`)); }
+                let body: any = null;
+                try { body = JSON.parse(xhr.responseText); } catch { /* non-JSON */ }
+                const detail = body?.detail;
+                // FastAPI HTTPException(detail=...) wraps in {"detail": <whatever>}.
+                // detail can be a string (simple errors) or an object (structured errors
+                // like filename_conflict). Preserve both so callers can branch on
+                // err.status / err.detail without losing information to String coercion.
+                const message =
+                    typeof detail === 'string'
+                        ? detail
+                        : (detail && typeof detail === 'object' && typeof (detail as any).detail === 'string')
+                            ? (detail as any).detail
+                            : `HTTP ${xhr.status}`;
+                const err: any = new Error(message);
+                err.status = xhr.status;
+                err.detail = detail;
+                reject(err);
             }
         };
         xhr.onerror = () => reject(new Error('Network error'));
@@ -252,6 +265,14 @@ export const agentApi = {
 
     collaborators: (id: string) =>
         request<any[]>(`/agents/${id}/collaborators`),
+
+    /** Create a new chat session for this agent.
+     *  When project_id is given, the agent must already be in project_agents. */
+    createSession: (id: string, body: { project_id?: string; title?: string } = {}) =>
+        request<{ id: string; agent_id: string; title: string }>(`/agents/${id}/sessions`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        }),
 
     templates: () =>
         request<any[]>('/agents/templates'),
@@ -557,3 +578,188 @@ export const controlApi = {
     unlock: (agentId: string, data: { session_id: string; export_cookies?: boolean; platform_hint?: string }) =>
         request<any>(`/agents/${agentId}/control/unlock`, { method: 'POST', body: JSON.stringify(data) }),
 };
+
+// ─── Projects ─────────────────────────────────────────
+import type {
+    Project,
+    ProjectAgentMember,
+    ProjectChatSession,
+    ProjectFile,
+    ProjectScheduledTask,
+    ProjectScheduledTaskFrequency,
+    ProjectTask,
+    ProjectTaskDetail,
+    ProjectTaskStatus,
+} from '../types';
+
+export const projectApi = {
+    list: (params?: { q?: string; archived?: boolean }) => {
+        const qs = new URLSearchParams();
+        if (params?.q) qs.set('q', params.q);
+        if (params?.archived) qs.set('archived', 'true');
+        const tail = qs.toString();
+        return request<Project[]>(`/projects${tail ? `?${tail}` : ''}`);
+    },
+
+    create: (data: { name: string; description?: string }) =>
+        request<Project>('/projects', { method: 'POST', body: JSON.stringify(data) }),
+
+    get: (id: string) => request<Project>(`/projects/${id}`),
+
+    update: (id: string, data: { name?: string; description?: string; chat_visibility?: 'shared' | 'private' }) =>
+        request<Project>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+    archive: (id: string) => request<Project>(`/projects/${id}/archive`, { method: 'POST' }),
+    unarchive: (id: string) => request<Project>(`/projects/${id}/unarchive`, { method: 'POST' }),
+
+    listAgents: (id: string) => request<ProjectAgentMember[]>(`/projects/${id}/agents`),
+    addAgent: (id: string, agent_id: string) =>
+        request<ProjectAgentMember>(`/projects/${id}/agents`, { method: 'POST', body: JSON.stringify({ agent_id }) }),
+    removeAgent: (id: string, agent_id: string) =>
+        request<void>(`/projects/${id}/agents/${agent_id}`, { method: 'DELETE' }),
+
+    listFiles: (id: string, path: string = '') =>
+        request<ProjectFile[]>(`/projects/${id}/files?path=${encodeURIComponent(path)}`),
+    listRecentFiles: (id: string, hours: number = 168, limit: number = 20) =>
+        request<ProjectFile[]>(`/projects/${id}/files/recent?hours=${hours}&limit=${limit}`),
+    uploadFile: (
+        id: string,
+        file: File,
+        path: string = '',
+        conflictMode?: 'replace' | 'keep_both',
+        onProgress?: (pct: number) => void,
+    ) => {
+        const params = new URLSearchParams();
+        if (path) params.set('path', path);
+        if (conflictMode) params.set('conflict', conflictMode);
+        const tail = params.toString() ? `?${params.toString()}` : '';
+        return uploadFileWithProgress(`/projects/${id}/files${tail}`, file, onProgress);
+    },
+    // Path-based download (used by FileBrowser via downloadUrl adapter).
+    // Token is embedded in the query string so <img>/<iframe>/anchor download links
+    // — which can't send a custom Authorization header — still authenticate.
+    downloadFileUrlByPath: (id: string, path: string) => {
+        const token = localStorage.getItem('token');
+        return `/api/projects/${id}/files/download?path=${encodeURIComponent(path)}&token=${token}`;
+    },
+    // Legacy by-id download (kept for Task↔file linking).
+    downloadFileUrl: (id: string, file_id: string) => `/api/projects/${id}/files/${file_id}`,
+    deleteFileByPath: (id: string, path: string) =>
+        request<void>(`/projects/${id}/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+    // Legacy by-id delete (kept for symmetry / Task linking flows).
+    deleteFile: (id: string, file_id: string) =>
+        request<void>(`/projects/${id}/files/${file_id}`, { method: 'DELETE' }),
+    readFileContent: (id: string, path: string) =>
+        request<{ path: string; content: string }>(`/projects/${id}/files/content?path=${encodeURIComponent(path)}`),
+    writeFileContent: (id: string, path: string, content: string) =>
+        request<ProjectFile>(`/projects/${id}/files/content`, { method: 'PUT', body: JSON.stringify({ path, content }) }),
+    moveFile: (id: string, src_path: string, dst_path: string) =>
+        request<{ src_path: string; dst_path: string }>(`/projects/${id}/files/move`, {
+            method: 'POST',
+            body: JSON.stringify({ src_path, dst_path }),
+        }),
+    cleanupEmptyFolders: (id: string) =>
+        request<{ removed: string[] }>(`/projects/${id}/files/cleanup-empty`, { method: 'POST' }),
+
+    getBrief: (id: string) => request<{ content: string }>(`/projects/${id}/brief`),
+    setBrief: (id: string, content: string) =>
+        request<{ content: string }>(`/projects/${id}/brief`, { method: 'PUT', body: JSON.stringify({ content }) }),
+
+    listBriefHistory: (id: string) =>
+        request<Array<{ ts: string; actor_type: string; actor_id: string | null; bytes: number; filename: string }>>(
+            `/projects/${id}/brief/history`,
+        ),
+    getBriefSnapshot: (id: string, filename: string) =>
+        request<{ filename: string; content: string }>(`/projects/${id}/brief/history/${filename}`),
+    restoreBriefSnapshot: (id: string, filename: string) =>
+        request<{ content: string }>(`/projects/${id}/brief/history/${filename}/restore`, { method: 'POST' }),
+
+    listSessions: (id: string) => request<ProjectChatSession[]>(`/projects/${id}/chat-sessions`),
+
+    // ── Tasks (Phase 3 deliverables) ──
+    listTasks: (id: string, opts?: { status?: ProjectTaskStatus | 'all'; assigned_agent_id?: string }) => {
+        const qs = new URLSearchParams();
+        if (opts?.status && opts.status !== 'all') qs.set('status', opts.status);
+        if (opts?.assigned_agent_id) qs.set('assigned_agent_id', opts.assigned_agent_id);
+        const tail = qs.toString() ? `?${qs}` : '';
+        return request<ProjectTask[]>(`/projects/${id}/tasks${tail}`);
+    },
+    getTask: (id: string, taskId: string) =>
+        request<ProjectTaskDetail>(`/projects/${id}/tasks/${taskId}`),
+    createTask: (id: string, body: {
+        title: string;
+        description?: string;
+        status?: ProjectTaskStatus;
+        assigned_agent_id?: string | null;
+        assigned_user_id?: string | null;
+        due_date?: string | null;
+    }) => request<ProjectTaskDetail>(`/projects/${id}/tasks`, {
+        method: 'POST', body: JSON.stringify(body),
+    }),
+    updateTask: (id: string, taskId: string, body: Partial<{
+        title: string;
+        description: string;
+        status: ProjectTaskStatus;
+        assigned_agent_id: string | null;
+        assigned_user_id: string | null;
+        due_date: string | null;
+        clear_assignee: boolean;
+        clear_due_date: boolean;
+    }>) => request<ProjectTaskDetail>(`/projects/${id}/tasks/${taskId}`, {
+        method: 'PATCH', body: JSON.stringify(body),
+    }),
+    deleteTask: (id: string, taskId: string) =>
+        request<void>(`/projects/${id}/tasks/${taskId}`, { method: 'DELETE' }),
+    linkFileToTask: (id: string, taskId: string, fileId: string) =>
+        request<ProjectTaskDetail>(`/projects/${id}/tasks/${taskId}/files`, {
+            method: 'POST', body: JSON.stringify({ file_id: fileId }),
+        }),
+    unlinkFileFromTask: (id: string, taskId: string, fileId: string) =>
+        request<void>(`/projects/${id}/tasks/${taskId}/files/${fileId}`, { method: 'DELETE' }),
+
+    // Scheduled tasks (backed by agent_triggers with focus_ref=project:{id})
+    listScheduledTasks: (id: string) => request<ProjectScheduledTask[]>(`/projects/${id}/scheduled-tasks`),
+    createScheduledTask: (id: string, body: {
+        agent_id: string;
+        name: string;
+        prompt: string;
+        frequency: ProjectScheduledTaskFrequency;
+        is_enabled?: boolean;
+    }) => request<ProjectScheduledTask>(`/projects/${id}/scheduled-tasks`, {
+        method: 'POST', body: JSON.stringify(body),
+    }),
+    updateScheduledTask: (id: string, taskId: string, body: Partial<{
+        name: string; prompt: string; frequency: ProjectScheduledTaskFrequency; is_enabled: boolean;
+    }>) => request<ProjectScheduledTask>(`/projects/${id}/scheduled-tasks/${taskId}`, {
+        method: 'PATCH', body: JSON.stringify(body),
+    }),
+    deleteScheduledTask: (id: string, taskId: string) =>
+        request<void>(`/projects/${id}/scheduled-tasks/${taskId}`, { method: 'DELETE' }),
+};
+
+export const agentProjectsApi = {
+    listByAgent: (agentId: string, archived?: boolean) => {
+        const tail = archived ? '?archived=true' : '';
+        return request<Project[]>(`/agents/${agentId}/projects${tail}`);
+    },
+};
+
+
+export interface ChatSessionDetail {
+    id: string;
+    agent_id: string;
+    user_id: string;
+    title: string;
+    source_channel: string;
+    created_at: string;
+    last_message_at?: string | null;
+    message_count: number;
+    project_id?: string | null;
+    project_name?: string | null;
+    owned_by_me: boolean;
+}
+
+export const chatSessionApi = {
+    get: (sessionId: string) => request<ChatSessionDetail>(`/chat-sessions/${sessionId}`),
+};
+

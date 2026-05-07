@@ -726,19 +726,23 @@ const ADAPTER_LABELS: Record<string, string> = {
     claude_code: 'Claude Code',
     openclaw: 'OpenClaw',
     hermes: 'Hermes',
+    codex: 'Codex',
 };
+
+type AdapterValue = 'claude_code' | 'openclaw' | 'hermes' | 'codex';
 
 function RuntimeSelector({ agent, agentId, isChinese, bridgeStatus }: RuntimeSelectorProps) {
     const qc = useQueryClient();
-    const current: 'claude_code' | 'openclaw' | 'hermes' =
+    const current: AdapterValue =
         (agent?.bridge_adapter as any) || 'claude_code';
     const [saving, setSaving] = useState<string | null>(null);
     const [justChanged, setJustChanged] = useState(false);
 
-    const OPTIONS: { value: 'claude_code' | 'openclaw' | 'hermes'; label: string }[] = [
+    const OPTIONS: { value: AdapterValue; label: string }[] = [
         { value: 'claude_code', label: ADAPTER_LABELS.claude_code },
         { value: 'openclaw', label: ADAPTER_LABELS.openclaw },
         { value: 'hermes', label: ADAPTER_LABELS.hermes },
+        { value: 'codex', label: ADAPTER_LABELS.codex },
     ];
 
     // Live mismatch: bridge is connected but its TOML enables different adapters
@@ -748,7 +752,7 @@ function RuntimeSelector({ agent, agentId, isChinese, bridgeStatus }: RuntimeSel
     const liveMismatch = !!(bridgeStatus?.connected && liveAdapters.length > 0 && !liveAdapters.includes(current));
     const bridgeIsOn = !!bridgeStatus?.connected;
 
-    const onSelect = async (next: 'claude_code' | 'openclaw' | 'hermes') => {
+    const onSelect = async (next: AdapterValue) => {
         if (next === current || saving) return;
         setSaving(next);
         try {

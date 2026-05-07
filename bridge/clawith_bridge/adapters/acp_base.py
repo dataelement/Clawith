@@ -37,6 +37,8 @@ import sys
 from pathlib import Path
 from typing import Any, AsyncIterator, ClassVar
 
+from loguru import logger
+
 from .base import BaseAdapter, SessionEvent
 
 
@@ -144,6 +146,37 @@ class ACPSubprocessAdapter(BaseAdapter):
     KILL_GRACE_SEC: ClassVar[float] = 5.0
     ACP_PROTOCOL_VERSION: ClassVar[int] = 1
 
+    # If the agent emits no session/update and no stderr line for this many
+    # seconds after session/prompt is sent, assume the backing gateway is
+    # hung and bail out. Without this guard the user sits at "thinking..."
+    # for the full timeout_s (default 30min). Real agents emit first chunks
+    # within a few seconds, so 15s is safely above noise.
+    IDLE_AFTER_PROMPT_TIMEOUT_S: ClassVar[float] = 15.0
+
+    # Substrings in stderr that mean the subprocess's own connection to the
+    # gateway is beyond recovery — don't wait for a prompt response that will
+    # never arrive. Each entry is (substring, user-friendly explanation).
+    _FATAL_STDERR_PATTERNS: ClassVar[list[tuple[str, str]]] = [
+        (
+            "ECONNREFUSED",
+            "OpenClaw gateway is not reachable. Start it (run "
+            "`~/.openclaw/gateway.cmd` or `openclaw gateway`) and retry.",
+        ),
+        (
+            "gateway timeout",
+            "OpenClaw gateway timed out on the agent turn. Try "
+            "`openclaw doctor` — if the OpenClaw TUI is running, its memory "
+            "sqlite lock may be blocking the gateway.",
+        ),
+    ]
+
+    @classmethod
+    def _match_fatal_stderr(cls, text: str) -> str | None:
+        for substr, friendly in cls._FATAL_STDERR_PATTERNS:
+            if substr in text:
+                return friendly
+        return None
+
     def __init__(self, config: Any = None) -> None:
         super().__init__(config)
         self._procs: dict[str, asyncio.subprocess.Process] = {}
@@ -172,6 +205,7 @@ class ACPSubprocessAdapter(BaseAdapter):
     ) -> AsyncIterator[SessionEvent]:
         argv = self.build_acp_argv(params, cwd)
         effective_env = {**os.environ, **(env or {})}
+        logger.info(f"[acp {session_id}] spawning: {argv}")
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -183,8 +217,10 @@ class ACPSubprocessAdapter(BaseAdapter):
                 stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError as e:
+            logger.error(f"[acp {session_id}] executable not found: {argv[0]!r}")
             yield SessionEvent(kind="stderr_chunk", payload={"text": f"{argv[0]!r} not found: {e}"})
             raise
+        logger.info(f"[acp {session_id}] spawned pid={proc.pid}")
         self._procs[session_id] = proc
         self._finals[session_id] = []
 
@@ -195,13 +231,16 @@ class ACPSubprocessAdapter(BaseAdapter):
         async def _write_line(obj: dict[str, Any]) -> None:
             assert proc.stdin is not None
             if proc.stdin.is_closing():
+                logger.warning(f"[acp {session_id}] stdin closing, drop write")
                 return
             payload = (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
+            logger.info(f"[acp {session_id}] → {len(payload)}B method={obj.get('method')} id={obj.get('id')}")
             proc.stdin.write(payload)
             try:
                 await proc.stdin.drain()
-            except (ConnectionResetError, BrokenPipeError):
-                pass
+                logger.info(f"[acp {session_id}] → drained")
+            except (ConnectionResetError, BrokenPipeError) as e:
+                logger.warning(f"[acp {session_id}] → drain failed: {type(e).__name__}")
 
         async def _request(req_id: int, method: str, params_: dict[str, Any]) -> dict[str, Any]:
             loop = asyncio.get_event_loop()
@@ -224,13 +263,24 @@ class ACPSubprocessAdapter(BaseAdapter):
                 msg["result"] = result or {}
             await _write_line(msg)
 
+        def _fail_pending(exc: Exception) -> None:
+            """Fail any in-flight JSON-RPC requests so their `await _request(...)`
+            callers wake up immediately instead of blocking on a response that
+            will never arrive."""
+            for _, fut in list(pending.items()):
+                if not fut.done():
+                    fut.set_exception(exc)
+            pending.clear()
+
         async def _reader() -> None:
             """Read JSON-RPC from stdout; dispatch responses + notifications."""
             assert proc.stdout is not None
             while True:
                 raw = await proc.stdout.readline()
                 if not raw:
+                    logger.info(f"[acp {session_id}] ← stdout EOF")
                     break
+                logger.info(f"[acp {session_id}] ← {len(raw)}B: {raw[:120]!r}")
                 try:
                     line = raw.decode("utf-8", errors="replace").strip()
                 except Exception:
@@ -270,6 +320,13 @@ class ACPSubprocessAdapter(BaseAdapter):
                     # ones; reject the rest so the agent can continue.
                     await self._handle_agent_request(msg, _respond)
                 # else: notification we don't care about — drop.
+            # Subprocess closed stdout. Any in-flight initialize/session-new/
+            # session-prompt request will never be answered, so fail them now
+            # instead of letting callers hit their per-step 30s timeout.
+            _fail_pending(RuntimeError(
+                "ACP subprocess closed stdout before responding "
+                "(see stderr for the underlying cause)."
+            ))
             await event_queue.put(None)  # EOF sentinel
 
         async def _stderr_reader() -> None:
@@ -277,12 +334,33 @@ class ACPSubprocessAdapter(BaseAdapter):
             while True:
                 raw = await proc.stderr.readline()
                 if not raw:
+                    logger.info(f"[acp {session_id}] stderr EOF")
                     break
                 text = raw.decode("utf-8", errors="replace").rstrip()
-                if text:
+                if not text:
+                    continue
+                logger.warning(f"[acp {session_id}] stderr: {text}")
+                friendly = self._match_fatal_stderr(text)
+                if friendly is not None:
+                    # The subprocess told us (via stderr) that something it
+                    # depends on is broken. No amount of waiting will fix it.
+                    # Fail any pending requests with the friendly message so
+                    # initialize/session-new/session-prompt unblock immediately,
+                    # then push a `fatal` chunk so the prompt loop can yield a
+                    # visible error and raise.
+                    logger.error(
+                        f"[acp {session_id}] fatal stderr matched: {friendly}"
+                    )
+                    _fail_pending(RuntimeError(friendly))
                     await event_queue.put(SessionEvent(
-                        kind="stderr_chunk", payload={"text": text},
+                        kind="stderr_chunk",
+                        payload={"text": friendly, "fatal": True},
                     ))
+                    await event_queue.put(None)  # unblock prompt loop
+                    return
+                await event_queue.put(SessionEvent(
+                    kind="stderr_chunk", payload={"text": text},
+                ))
 
         reader_task = asyncio.create_task(_reader())
         stderr_task = asyncio.create_task(_stderr_reader())
@@ -291,6 +369,7 @@ class ACPSubprocessAdapter(BaseAdapter):
 
         try:
             # 1. initialize
+            logger.info(f"[acp {session_id}] sending initialize (timeout={min(30, timeout_s)}s)")
             init_result = await asyncio.wait_for(
                 _request(1, "initialize", {
                     "protocolVersion": self.ACP_PROTOCOL_VERSION,
@@ -298,12 +377,14 @@ class ACPSubprocessAdapter(BaseAdapter):
                 }),
                 timeout=min(30, timeout_s),
             )
+            logger.info(f"[acp {session_id}] initialize ok, caps={init_result.get('agentCapabilities')}")
             yield SessionEvent(kind="status", payload={
                 "state": "init",
                 "agent_capabilities": init_result.get("agentCapabilities") or {},
             })
 
             # 2. session/new
+            logger.debug(f"[acp {session_id}] sending session/new")
             session_result = await asyncio.wait_for(
                 _request(2, "session/new", {
                     "cwd": os.path.abspath(cwd) if cwd else os.path.abspath(os.getcwd()),
@@ -317,14 +398,18 @@ class ACPSubprocessAdapter(BaseAdapter):
                     "text": "ACP session/new returned no sessionId",
                 })
                 raise RuntimeError("ACP session/new returned no sessionId")
+            logger.info(f"[acp {session_id}] session/new ok acp_sid={acp_session_id}")
 
             # 3. session/prompt — fire async, pump notifications in parallel
+            logger.debug(f"[acp {session_id}] sending session/prompt")
             prompt_task = asyncio.create_task(_request(3, "session/prompt", {
                 "sessionId": acp_session_id,
                 "prompt": self.build_prompt_content(prompt),
             }))
 
             start_t = asyncio.get_event_loop().time()
+            last_event_t = start_t
+            idle_cap = self.IDLE_AFTER_PROMPT_TIMEOUT_S
             while True:
                 if prompt_task.done():
                     # Drain any events already queued before we noticed completion
@@ -332,23 +417,50 @@ class ACPSubprocessAdapter(BaseAdapter):
                         item = event_queue.get_nowait()
                         if item is None:
                             break
+                        if item.kind == "stderr_chunk" and item.payload.get("fatal"):
+                            yield item
+                            raise RuntimeError(
+                                item.payload.get("text") or "fatal ACP stderr"
+                            )
                         yield item
                     break
-                remaining = timeout_s - (asyncio.get_event_loop().time() - start_t)
+                now = asyncio.get_event_loop().time()
+                remaining = timeout_s - (now - start_t)
+                idle = now - last_event_t
                 if remaining <= 0:
                     yield SessionEvent(kind="stderr_chunk", payload={
                         "text": f"timeout after {timeout_s}s",
                     })
                     break
+                if idle > idle_cap:
+                    msg = (
+                        f"OpenClaw sent no response for {idle_cap:.0f}s after prompt. "
+                        "Gateway is likely hung — try `openclaw doctor`. "
+                        "Common cause: the OpenClaw TUI holds the memory sqlite "
+                        "lock, which blocks gateway agent turns."
+                    )
+                    logger.warning(
+                        f"[acp {session_id}] idle timeout after prompt: "
+                        f"{idle:.1f}s exceeded {idle_cap:.0f}s cap"
+                    )
+                    yield SessionEvent(kind="stderr_chunk", payload={"text": msg})
+                    raise RuntimeError(msg)
                 try:
+                    wait_s = max(0.1, min(remaining, idle_cap - idle, 0.5))
                     item = await asyncio.wait_for(
-                        event_queue.get(), timeout=min(remaining, 0.5),
+                        event_queue.get(), timeout=wait_s,
                     )
                 except asyncio.TimeoutError:
                     continue
                 if item is None:
                     # stdout EOF — process exited mid-prompt
                     break
+                last_event_t = asyncio.get_event_loop().time()
+                if item.kind == "stderr_chunk" and item.payload.get("fatal"):
+                    yield item
+                    raise RuntimeError(
+                        item.payload.get("text") or "fatal ACP stderr"
+                    )
                 yield item
 
             # Collect final stopReason

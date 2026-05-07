@@ -264,3 +264,104 @@ async def test_missing_executable_raises_file_not_found():
             events.append(ev)
     # We want visibility before the raise — at least one stderr_chunk event.
     assert any(e.kind == "stderr_chunk" for e in events)
+
+
+# ── Fail-fast: fatal stderr patterns + idle-after-prompt ────────────────
+
+FAKE_AGENT_ECONNREFUSED = textwrap.dedent("""
+    import sys
+    # Mimic `openclaw acp` when the gateway is down: node prints its error
+    # to stderr and exits without ever answering initialize.
+    print("Error: connect ECONNREFUSED 127.0.0.1:18789", file=sys.stderr, flush=True)
+    sys.exit(1)
+""")
+
+
+@pytest.mark.asyncio
+async def test_fatal_econnrefused_surfaces_friendly_error(tmp_path):
+    """Real-world regression: before this guard, ECONNREFUSED in stderr
+    would sit until the 30s initialize wait_for expired, then report
+    'adapter timeout' — giving the user zero hint that the gateway is down.
+
+    The fatal stderr here fires during the initialize handshake (before the
+    prompt streaming loop), so the user-visible contract is the raised
+    exception's message — which the session_manager wraps into a
+    SessionErrorFrame. No intermediate stderr_chunk is yielded because we
+    never enter the drain path; that's fine since the terminal error frame
+    carries the same friendly text."""
+    adapter = _FakeACPAdapter(FAKE_AGENT_ECONNREFUSED)
+    events = []
+    with pytest.raises(Exception) as excinfo:
+        async for ev in adapter.start_session(
+            session_id="s-fatal", prompt="hi", params={},
+            cwd=str(tmp_path), env={}, timeout_s=30,
+        ):
+            events.append(ev)
+
+    # Friendly message reaches the user via the raised exception (which
+    # becomes the `error` field of SessionErrorFrame in session_manager).
+    assert "OpenClaw gateway is not reachable" in str(excinfo.value)
+
+
+FAKE_AGENT_HANG_ON_PROMPT = textwrap.dedent("""
+    import json, sys, time
+
+    def send(obj):
+        sys.stdout.write(json.dumps(obj) + "\\n")
+        sys.stdout.flush()
+
+    for raw in sys.stdin:
+        raw = raw.strip()
+        if not raw:
+            continue
+        msg = json.loads(raw)
+        mid = msg.get("id")
+        method = msg.get("method")
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "protocolVersion": 1, "agentCapabilities": {}}})
+        elif method == "session/new":
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "sessionId": "acp-hang"}})
+        elif method == "session/prompt":
+            # Hang: no session/update, no response. Simulates gateway wedged
+            # on memory-sync lock contention.
+            time.sleep(30)
+""")
+
+
+class _FastIdleAdapter(ACPSubprocessAdapter):
+    """Override the idle cap so the test doesn't actually wait 15 real seconds."""
+    IDLE_AFTER_PROMPT_TIMEOUT_S = 1.0
+
+    def __init__(self, script: str):
+        super().__init__(config=None)
+        self._script = script
+
+    def build_acp_argv(self, params, cwd):
+        return [sys.executable, "-u", "-c", self._script]
+
+
+@pytest.mark.asyncio
+async def test_idle_after_prompt_fails_fast(tmp_path):
+    """Regression: before this guard, a wedged gateway that accepts
+    session/prompt but never streams any session/update would leave the
+    user at 'thinking...' for the full timeout_s (default 30min)."""
+    adapter = _FastIdleAdapter(FAKE_AGENT_HANG_ON_PROMPT)
+    events = []
+    with pytest.raises(RuntimeError) as excinfo:
+        async for ev in adapter.start_session(
+            session_id="s-idle", prompt="hi", params={},
+            cwd=str(tmp_path), env={}, timeout_s=30,
+        ):
+            events.append(ev)
+
+    # The error must name the visible symptom and give an actionable next step.
+    err = str(excinfo.value)
+    assert "no response" in err.lower()
+    assert "openclaw doctor" in err.lower()
+    # The idle message was also surfaced as a stderr_chunk before the raise.
+    assert any(
+        e.kind == "stderr_chunk" and "no response" in e.payload.get("text", "").lower()
+        for e in events
+    )

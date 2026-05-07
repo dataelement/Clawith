@@ -15,6 +15,7 @@ KNOWN_ADAPTERS: set[str] = {
     "claude_code",
     "hermes",
     "openclaw",
+    "codex",
 }
 
 # Minimal param schema per adapter. Keys are the `params` field on
@@ -30,6 +31,9 @@ ADAPTER_PARAM_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "openclaw": {
         # OpenClaw historically accepts a bare prompt; no structured params.
+    },
+    "codex": {
+        "model": {"type": "string", "description": "Codex model override"},
     },
 }
 

@@ -711,12 +711,36 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             )
             agent_participant = result.scalar_one_or_none()
 
+            # If any trigger is bound to a project (focus_ref="project:{uuid}"),
+            # tag the session so it surfaces in that project's Chats tab and
+            # picks up BRIEF/workspace context via build_project_context_block.
+            project_session_id: uuid.UUID | None = None
+            for t in triggers:
+                ref = t.focus_ref or ""
+                if ref.startswith("project:"):
+                    try:
+                        project_session_id = uuid.UUID(ref[len("project:"):])
+                    except ValueError:
+                        project_session_id = None
+                    break
+
+            # For project scheduled runs, title with the project prefix — consistent
+            # with how user-initiated project chats are named. We'll fetch project
+            # name below if bound.
+            if project_session_id is not None:
+                from app.models.project import Project as _Project
+                proj_r = await db.execute(select(_Project).where(_Project.id == project_session_id))
+                _proj = proj_r.scalar_one_or_none()
+                if _proj is not None:
+                    title = f"{_proj.name}：{', '.join(trigger_names)}"[:200]
+
             session = ChatSession(
                 agent_id=agent_id,
                 user_id=agent.creator_id,
                 participant_id=agent_participant.id if agent_participant else None,
                 source_channel="trigger",
                 title=title[:200],
+                project_id=project_session_id,
             )
             db.add(session)
             await db.flush()

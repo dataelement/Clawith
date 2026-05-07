@@ -21,7 +21,7 @@ export default function AgentCreate() {
         const params = new URLSearchParams(location.search);
         return params.get('type') === 'openclaw' ? 'openclaw' : 'native';
     });
-    const [bridgeAdapter, setBridgeAdapter] = useState<'' | 'claude_code' | 'openclaw' | 'hermes'>('');
+    const [bridgeAdapter, setBridgeAdapter] = useState<'' | 'claude_code' | 'openclaw' | 'hermes' | 'codex'>('');
     // Clear field error when user edits a field
     const clearFieldError = (field: string) => setFieldErrors(prev => { const n = { ...prev }; delete n[field]; return n; });
     const [createdApiKey, setCreatedApiKey] = useState('');
@@ -408,6 +408,13 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
             title: t('wizard.runtime.hermes', 'Hermes'),
             desc: t('wizard.runtime.hermesDesc', 'Bridge to local Hermes agent'),
         },
+        {
+            key: 'codex' as const,
+            active: bridgeAdapter === 'codex',
+            onClick: () => { setBridgeAdapter('codex'); setStep(0); },
+            title: t('wizard.runtime.codex', 'Codex'),
+            desc: t('wizard.runtime.codexDesc', 'Bridge to local Codex CLI'),
+        },
     ];
     const typeSelector = (
         <div>
@@ -435,7 +442,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                     <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }}>
                         {t('wizard.runtime.chooseLocal', 'Choose your local agent')}
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', maxWidth: '880px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', maxWidth: '880px' }}>
                         {localRuntimeCards.map((card) => (
                             <div
                                 key={card.key}
@@ -490,7 +497,9 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                             ? t('wizard.bridge.titleClaudeCode', 'Link Claude Code Agent')
                             : bridgeAdapter === 'hermes'
                                 ? t('wizard.bridge.titleHermes', 'Link Hermes Agent')
-                                : t('wizard.bridge.titleOpenclaw', 'Link OpenClaw Agent')}
+                                : bridgeAdapter === 'codex'
+                                    ? t('wizard.bridge.titleCodex', 'Link Codex Agent')
+                                    : t('wizard.bridge.titleOpenclaw', 'Link OpenClaw Agent')}
                         <span style={{
                             fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
                             background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
@@ -501,7 +510,9 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                             ? t('wizard.bridge.descClaudeCode', 'Give your agent a name. Download the installer and run it on the machine where your Claude Code CLI is installed.')
                             : bridgeAdapter === 'hermes'
                                 ? t('wizard.bridge.descHermes', 'Give your agent a name. Download the installer and run it on the machine where your Hermes agent runs.')
-                                : t('wizard.bridge.descOpenclaw', 'Give your agent a name. Download the installer and run it on the machine where your OpenClaw daemon runs.')}
+                                : bridgeAdapter === 'codex'
+                                    ? t('wizard.bridge.descCodex', 'Give your agent a name. Download the installer and run it on the machine where your Codex CLI is installed.')
+                                    : t('wizard.bridge.descOpenclaw', 'Give your agent a name. Download the installer and run it on the machine where your OpenClaw daemon runs.')}
                     </p>
 
                     <div className="form-group">

@@ -16,7 +16,7 @@ import type { LivePreviewState } from '../components/AgentBayLivePanel';
 import AgentSidePanel, { SidePanelTab } from '../components/AgentSidePanel';
 import type { WorkspaceActivity, WorkspaceLiveDraft } from '../components/WorkspaceOperationPanel';
 import AgentCredentials from '../components/AgentCredentials';
-import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, tenantApi, triggerApi, uploadFileWithProgress } from '../services/api';
+import { activityApi, agentApi, agentProjectsApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, tenantApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import ModelSwitcher from '../components/ModelSwitcher';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
@@ -34,6 +34,7 @@ import {
     IconEye,
     IconFileText,
     IconFolder,
+    IconFolders,
     IconHeartbeat,
     IconLock,
     IconMailForward,
@@ -53,7 +54,7 @@ import {
 } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 
-const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'projects', 'settings'] as const;
 
 const WORKSPACE_TOOLS = new Set([
     'write_file',
@@ -2467,6 +2468,33 @@ function AgentDetailInner() {
     const [historyMsgs, setHistoryMsgs] = useState<any[]>([]);
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
+    // Inline rename in the session sidebar: { id, draft } while editing
+    const [renamingSession, setRenamingSession] = useState<{ id: string; draft: string } | null>(null);
+
+    const commitRenameSession = async (sessionId: string, newTitle: string) => {
+        const trimmed = newTitle.trim();
+        if (!trimmed) { setRenamingSession(null); return; }
+        const prev = sessions.find(s => s.id === sessionId);
+        if (prev && prev.title === trimmed) { setRenamingSession(null); return; }
+        // Optimistic local update
+        setSessions(xs => xs.map(s => s.id === sessionId ? { ...s, title: trimmed } : s));
+        setAllSessions(xs => xs.map(s => s.id === sessionId ? { ...s, title: trimmed } : s));
+        if (activeSession?.id === sessionId) {
+            setActiveSession((s: any) => s ? { ...s, title: trimmed } : s);
+        }
+        setRenamingSession(null);
+        try {
+            const tkn = localStorage.getItem('token');
+            await fetch(`/api/agents/${id}/sessions/${sessionId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tkn}` },
+                body: JSON.stringify({ title: trimmed }),
+            });
+        } catch (e) {
+            // Rollback on failure — refetch is simplest
+            if (id) fetchMySessions(true, id);
+        }
+    };
     const [agentExpired, setAgentExpired] = useState(false);
     // Websocket chat state (for 'me' conversation)
     const token = useAuthStore((s) => s.token);
@@ -3144,9 +3172,38 @@ function AgentDetailInner() {
         fetchMySessions(false, id).then((data: any) => {
             if (currentAgentIdRef.current !== id) return;
             setSessionsLoading(false);
-            if (data && data.length > 0) selectSession(data[0], 'mine');
+            if (data && data.length > 0) {
+                // Deep-link support: if URL carries ?session=xxx (e.g. arrived from
+                // a Project's Chats tab), prefer that session over the default newest.
+                const wantedId = new URLSearchParams(location.search).get('session');
+                const match = wantedId ? data.find((s: any) => String(s.id) === wantedId) : null;
+                const target = match || data[0];
+                // Skip when we're already on this session — avoids tearing down
+                // and re-opening the WebSocket on every deep-link navigation
+                // (including the second "+ New Chat" click from a Project).
+                if (activeSessionIdRef.current === String(target.id)) return;
+                selectSession(target, 'mine');
+            }
         });
-    }, [id, token, activeTab, currentUser?.id]);
+    // location.search in the deps makes re-navigating to the same /agents/:id
+    // with a different ?session= actually pick up the new session (React Router
+    // keeps the component mounted when only search/hash changes, so without this
+    // dep the effect would not re-run).
+    }, [id, token, activeTab, currentUser?.id, location.search]);
+
+    // Deep-link prefill: when navigated with ?prefill=..., populate the chat
+    // input box once. Used by the Project Files "Send to agent" right-click menu
+    // so the agent receives a starter prompt with the file path.
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const prefill = params.get('prefill');
+        if (!prefill) return;
+        setChatInput(prefill);
+        // Strip prefill from the URL so a refresh doesn't re-prefill.
+        params.delete('prefill');
+        const rest = params.toString();
+        navigate(`${location.pathname}${rest ? `?${rest}` : ''}${location.hash || ''}`, { replace: true });
+    }, [location.search, location.pathname, location.hash, navigate]);
 
     const ensureSessionSocket = (sess: any, agentId: string, authToken: string) => {
         const sessionId = String(sess.id);
@@ -4653,7 +4710,7 @@ function AgentDetailInner() {
                                     {agent.name}
                                 </h1>
                             )}
-                            {/* TODO(bridge): re-add bridge online/offline badge — was inside page-subtitle, now removed by upstream info-card refactor (see renderAgentInfoCard around line 4329). bridgeStatus query is preserved above. */}
+                            {/* TODO(bridge): re-add bridge online/offline badge (with codex variant: a === 'codex' ? 'Codex' : ...) — was inside page-subtitle, now removed by upstream info-card refactor (see renderAgentInfoCard around line 4329). bridgeStatus query is preserved above. */}
                         </div>
                         <button
                             className={`agent-info-chevron${infoCardOpen ? ' agent-info-chevron--open' : ''}`}
@@ -4715,7 +4772,7 @@ function AgentDetailInner() {
                         }
                         // OpenClaw agents: only show status, chat, activityLog, settings
                         if ((agent as any)?.agent_type === 'openclaw') {
-                            return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
+                            return ['status', 'relationships', 'chat', 'activityLog', 'projects', 'settings'].includes(tab);
                         }
                         return true;
                     }).map((tab) => (
@@ -6039,7 +6096,35 @@ function AgentDetailInner() {
                                                             onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
                                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
-                                                                    <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{s.title}</div>
+                                                                    {renamingSession !== null && renamingSession.id === s.id ? (
+                                                                        <input
+                                                                            autoFocus
+                                                                            value={renamingSession.draft}
+                                                                            onChange={(e) => setRenamingSession({ id: s.id, draft: e.target.value })}
+                                                                            onClick={(e) => e.stopPropagation()}
+                                                                            onKeyDown={(e) => {
+                                                                                if (e.key === 'Enter') {
+                                                                                    e.preventDefault();
+                                                                                    commitRenameSession(s.id, (e.currentTarget as HTMLInputElement).value);
+                                                                                } else if (e.key === 'Escape') {
+                                                                                    e.preventDefault();
+                                                                                    setRenamingSession(null);
+                                                                                }
+                                                                            }}
+                                                                            onBlur={(e) => commitRenameSession(s.id, e.currentTarget.value)}
+                                                                            style={{
+                                                                                fontSize: '12px', flex: 1, minWidth: 0,
+                                                                                padding: '1px 4px',
+                                                                                border: '1px solid var(--accent-primary)',
+                                                                                borderRadius: 3,
+                                                                                background: 'var(--bg-primary)',
+                                                                                color: 'var(--text-primary)',
+                                                                                outline: 'none',
+                                                                            }}
+                                                                        />
+                                                                    ) : (
+                                                                        <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{s.title}</div>
+                                                                    )}
                                                                     {s.is_primary && (
                                                                         <span style={{
                                                                             fontSize: '9px',
@@ -6072,6 +6157,21 @@ function AgentDetailInner() {
                                                                         </span>
                                                                     )}
                                                                     {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
+                                                                    {s.project_id && s.project_name && (
+                                                                        <span
+                                                                            title={s.project_name}
+                                                                            style={{
+                                                                                fontSize: '9px', padding: '1px 4px', borderRadius: '3px',
+                                                                                background: 'var(--accent-subtle)', color: 'var(--accent-text)',
+                                                                                display: 'inline-flex', alignItems: 'center', gap: '3px',
+                                                                                flexShrink: 0, maxWidth: '120px',
+                                                                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                                            }}
+                                                                        >
+                                                                            <IconFolders size={9} stroke={2} />
+                                                                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.project_name}</span>
+                                                                        </span>
+                                                                    )}
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                                     {s.last_message_at
@@ -6080,6 +6180,10 @@ function AgentDetailInner() {
                                                                     {s.message_count > 0 && <span className="session-msg-count" style={{ marginLeft: 'auto' }}>{s.message_count}</span>}
                                                                 </div>
                                                             </div>
+                                                            <button className="session-del-btn" onClick={(e) => { e.stopPropagation(); setRenamingSession({ id: s.id, draft: s.title }); }}
+                                                                title={t('chat.renameSession', 'Rename session')}>
+                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+                                                            </button>
                                                             <button className="session-del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
                                                                 title={t('chat.deleteSession', 'Delete session')}>
                                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
@@ -6178,6 +6282,31 @@ function AgentDetailInner() {
                                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
                                         </button>
                                     )}
+                                {activeSession?.project_id && (
+                                    <div
+                                        onClick={() => navigate(`/projects/${activeSession.project_id}`)}
+                                        title={t('chat.openProject', 'Open project')}
+                                        style={{
+                                            display: 'flex', alignItems: 'center', gap: 6,
+                                            padding: '6px 10px',
+                                            margin: sessionListCollapsed ? '8px 16px 0 52px' : '8px 16px 0',
+                                            background: 'var(--accent-subtle)',
+                                            color: 'var(--accent-text)',
+                                            borderRadius: 6,
+                                            fontSize: 11,
+                                            cursor: 'pointer',
+                                            border: '1px solid var(--border-subtle)',
+                                            flexShrink: 0,
+                                            alignSelf: 'flex-start',
+                                            maxWidth: 'calc(100% - 32px)',
+                                        }}
+                                    >
+                                        <IconFolders size={13} stroke={1.75} />
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {t('chat.inProject', { name: activeSession.project_name || '...' })}
+                                        </span>
+                                    </div>
+                                )}
                                 {!activeSession ? (
                                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
                                         <div>{t('agent.chat.noSessionSelected')}</div>
@@ -6945,6 +7074,60 @@ function AgentDetailInner() {
                         };
                         return <ApprovalsTab />;
                     })()}
+
+                {/* ── Projects Tab (reverse lookup: which projects does this agent participate in) ── */}
+                {activeTab === 'projects' && (() => {
+                    const ProjectsTab = () => {
+                        const { data: projects = [], isLoading: projectsLoading } = useQuery({
+                            queryKey: ['agent-projects', id],
+                            queryFn: () => agentProjectsApi.listByAgent(id!),
+                            enabled: !!id,
+                        });
+                        if (projectsLoading) {
+                            return <div style={{ color: 'var(--text-tertiary)', padding: 16 }}>{t('common.loading', 'Loading...')}</div>;
+                        }
+                        if (projects.length === 0) {
+                            return (
+                                <div style={{ color: 'var(--text-tertiary)', padding: 32, textAlign: 'center' }}>
+                                    {t('agent.projects.none', 'This agent is not in any project yet.')}
+                                </div>
+                            );
+                        }
+                        return (
+                            <div
+                                style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+                                    gap: 10,
+                                }}
+                            >
+                                {projects.map(p => (
+                                    <div
+                                        key={p.id}
+                                        className="card"
+                                        onClick={() => navigate(`/projects/${p.id}`)}
+                                        style={{
+                                            padding: 14, cursor: 'pointer',
+                                            opacity: p.archived_at ? 0.6 : 1,
+                                        }}
+                                    >
+                                        <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 4 }}>{p.name}</div>
+                                        {p.description && (
+                                            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.4 }}>
+                                                {p.description.length > 80 ? p.description.slice(0, 80) + '...' : p.description}
+                                            </div>
+                                        )}
+                                        <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 6 }}>
+                                            {p.agent_count} agents · {p.file_count} files
+                                            {p.archived_at && ` · ${t('projects.status.archived', 'Archived')}`}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        );
+                    };
+                    return <ProjectsTab />;
+                })()}
 
                 {/* ── Settings Tab ── */}
                 {

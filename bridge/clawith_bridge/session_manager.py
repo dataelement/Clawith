@@ -18,6 +18,7 @@ from loguru import logger
 
 from .adapters import BaseAdapter
 from .adapters.claude_code import ClaudeCodeAdapter
+from .adapters.codex import CodexAdapter
 from .adapters.hermes import HermesAdapter
 from .adapters.openclaw import OpenClawAdapter
 from .config import BridgeConfig
@@ -38,6 +39,7 @@ _ADAPTER_REGISTRY: dict[str, tuple[type[BaseAdapter], str]] = {
     "claude_code": (ClaudeCodeAdapter, "claude_code"),
     "hermes": (HermesAdapter, "hermes"),
     "openclaw": (OpenClawAdapter, "openclaw"),
+    "codex": (CodexAdapter, "codex"),
 }
 
 
@@ -139,6 +141,10 @@ class SessionManager:
         env: dict[str, str],
         timeout_s: int,
     ) -> None:
+        logger.info(
+            f"[session {session_id}] start adapter={adapter_name} "
+            f"cwd={cwd or '<none>'} timeout_s={timeout_s}"
+        )
         # Send session.accepted
         await self._send(
             SessionAcceptedFrame(session_id=session_id, adapter=adapter_name)
@@ -157,11 +163,20 @@ class SessionManager:
 
         error: str | None = None
         final_accum: list[str] = []
-        try:
+
+        # Wall-clock watchdog: the adapter should self-terminate at timeout_s,
+        # but if it gets stuck in an await (e.g. subprocess pipe deadlock on
+        # Windows, or a bug where its own timeout fires without propagating),
+        # we still want to fail the session instead of leaving the UI in
+        # "thinking..." forever. Give the adapter a 60s grace window to emit
+        # its own error cleanly before we force-unwind.
+        watchdog_s = max(timeout_s, 30) + 60
+
+        async def _drive() -> None:
+            nonlocal error
             async for ev in adapter.start_session(
                 session_id, prompt, params, cwd, env, timeout_s
             ):
-                # Accumulate assistant_text for fallback final_text
                 if ev.kind == "assistant_text":
                     txt = ev.payload.get("text") or ""
                     if txt:
@@ -175,7 +190,29 @@ class SessionManager:
                 except Exception as send_err:
                     logger.warning(f"failed to forward event, aborting session: {send_err}")
                     error = f"bridge send failed: {send_err}"
-                    break
+                    return
+
+        # asyncio.wait_for raises its own TimeoutError on watchdog expiry, but
+        # an inner wait_for (e.g. adapter's initialize 30s bound) raises the
+        # same class and propagates through here. Track elapsed to disambiguate
+        # in the log so we don't mislabel an adapter-level timeout as watchdog.
+        t0 = asyncio.get_event_loop().time()
+        try:
+            await asyncio.wait_for(_drive(), timeout=watchdog_s)
+        except asyncio.TimeoutError:
+            elapsed = asyncio.get_event_loop().time() - t0
+            if elapsed + 1 >= watchdog_s:
+                logger.error(
+                    f"[session {session_id}] watchdog fired at {watchdog_s}s "
+                    f"(adapter did not self-terminate)"
+                )
+                error = f"bridge watchdog: adapter exceeded {watchdog_s}s"
+            else:
+                logger.warning(
+                    f"[session {session_id}] adapter timeout at {elapsed:.1f}s "
+                    f"(inner wait_for expired before watchdog)"
+                )
+                error = f"adapter timeout after {elapsed:.1f}s"
         except asyncio.CancelledError:
             error = "cancelled"
         except Exception as e:
@@ -202,6 +239,7 @@ class SessionManager:
 
         # Send terminal frame
         if error and error != "cancelled":
+            logger.warning(f"[session {session_id}] end error={error}")
             try:
                 await self._send(SessionErrorFrame(
                     session_id=session_id, error=error, retryable=False
@@ -209,6 +247,10 @@ class SessionManager:
             except Exception:
                 pass
         else:
+            logger.info(
+                f"[session {session_id}] end ok final_text_len={len(final_text)} "
+                f"{'(cancelled)' if error == 'cancelled' else ''}"
+            )
             try:
                 await self._send(SessionDoneFrame(
                     session_id=session_id,

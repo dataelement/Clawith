@@ -48,7 +48,7 @@ async def get_inbox(
             ChatSession.source_channel == "agent",
             (ChatSession.agent_id.in_(my_agent_ids)) | (ChatSession.peer_agent_id.in_(my_agent_ids)),
         )
-        .order_by(ChatSession.last_message_at.desc().nullslast())
+        .order_by(func.coalesce(ChatSession.last_message_at, ChatSession.created_at).desc())
         .limit(limit)
     )
     sessions = sessions_q.scalars().all()

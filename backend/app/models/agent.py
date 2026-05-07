@@ -38,9 +38,9 @@ class Agent(Base):
     # Agent type: 'native' (platform-hosted LLM) or 'openclaw' (remote OpenClaw bot)
     agent_type: Mapped[str] = mapped_column(String(20), default="native", nullable=False)
     # Local-runtime adapter selection when agent_type='openclaw':
-    #   'claude_code' (default), 'openclaw', or 'hermes'. Controls which
-    #   adapter the bridge installer enables and which session.start.adapter
-    #   the server sends. Ignored for native agents.
+    #   'claude_code' (default), 'openclaw', 'hermes', or 'codex'. Controls
+    #   which adapter the bridge installer enables and which
+    #   session.start.adapter the server sends. Ignored for native agents.
     bridge_adapter: Mapped[str | None] = mapped_column(String(32))
     # API key hash for OpenClaw gateway authentication
     api_key_hash: Mapped[str | None] = mapped_column(String(128))

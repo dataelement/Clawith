@@ -58,6 +58,8 @@ services:
     volumes:
       - ./backend:/app
       - ./backend/agent_data:/data/agents
+      - ./backend/project_workspaces:/data/project_workspaces
+      - ./backend/backups:/data/backups
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro
     cap_add:

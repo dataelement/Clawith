@@ -46,6 +46,17 @@ def _default_agent_template_dir() -> str:
     return str(source_path)
 
 
+def _default_project_workspace_dir() -> str:
+    """Shared workspace root for Project feature.
+
+    Distinct from AGENT_DATA_DIR: each project has its own workspace,
+    independent of any individual agent's private workspace.
+    """
+    if _running_in_container():
+        return "/data/project_workspaces"
+    return str(Path.home() / ".clawith" / "data" / "project_workspaces")
+
+
 def _read_version() -> str:
     """Read version from local VERSION file, fallback to root."""
     for candidate in [Path(__file__).resolve().parent.parent / "VERSION",
@@ -85,6 +96,7 @@ class Settings(BaseSettings):
     # File Storage
     AGENT_DATA_DIR: str = _default_agent_data_dir()
     AGENT_TEMPLATE_DIR: str = _default_agent_template_dir()
+    PROJECT_WORKSPACE_DIR: str = _default_project_workspace_dir()
 
     # Docker (for Agent containers)
     DOCKER_NETWORK: str = "clawith_network"

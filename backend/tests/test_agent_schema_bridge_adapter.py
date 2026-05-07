@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from app.schemas.schemas import AgentCreate, AgentUpdate
 
 
-_VALID = ["claude_code", "openclaw", "hermes"]
+_VALID = ["claude_code", "openclaw", "hermes", "codex"]
 _INVALID = [
     "claud_code",   # typo
     "CLAUDE_CODE",  # wrong case — regex is case-sensitive

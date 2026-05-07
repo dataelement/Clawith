@@ -209,8 +209,8 @@ class AgentCreate(BaseModel):
     agent_type: str = "native"  # native | openclaw
     bridge_adapter: str | None = Field(
         default=None,
-        pattern="^(claude_code|openclaw|hermes)$",
-        description="claude_code | openclaw | hermes (only for agent_type=openclaw)",
+        pattern="^(claude_code|openclaw|hermes|codex)$",
+        description="claude_code | openclaw | hermes | codex (only for agent_type=openclaw)",
     )
     role_description: str = Field(default="", max_length=500, description="Role description, max 500 characters")
     bio: str | None = None
@@ -319,7 +319,7 @@ class AgentUpdate(BaseModel):
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
     bridge_mode: str | None = Field(default=None, pattern="^(disabled|enabled|auto)$")
-    bridge_adapter: str | None = Field(default=None, pattern="^(claude_code|openclaw|hermes)$")
+    bridge_adapter: str | None = Field(default=None, pattern="^(claude_code|openclaw|hermes|codex)$")
 
 
 class AgentStatusOut(BaseModel):

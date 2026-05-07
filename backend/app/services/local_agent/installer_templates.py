@@ -89,6 +89,10 @@ base_url = "http://127.0.0.1:7890"
 [openclaw]
 enabled  = {oc_enabled}
 base_url = "http://127.0.0.1:9000"
+
+[codex]
+enabled    = {cx_enabled}
+executable = "codex"
 EOF
 chmod 600 "$CONFIG_PATH"
 
@@ -172,12 +176,12 @@ echo "     claude login"
 """
 
 
-_KNOWN_ADAPTERS = ("claude_code", "openclaw", "hermes")
+_KNOWN_ADAPTERS = ("claude_code", "openclaw", "hermes", "codex")
 
 
 def _adapter_enabled_flags(adapter: str) -> dict[str, str]:
-    """Return `{"cc_enabled": ..., "hm_enabled": ..., "oc_enabled": ...}` —
-    three TOML bool literals with only `adapter` set to `true`. Unknown
+    """Return `{"cc_enabled": ..., "hm_enabled": ..., "oc_enabled": ..., "cx_enabled": ...}` —
+    four TOML bool literals with only `adapter` set to `true`. Unknown
     adapters default to claude_code."""
     if adapter not in _KNOWN_ADAPTERS:
         adapter = "claude_code"
@@ -185,6 +189,7 @@ def _adapter_enabled_flags(adapter: str) -> dict[str, str]:
         "cc_enabled": "true" if adapter == "claude_code" else "false",
         "hm_enabled": "true" if adapter == "hermes" else "false",
         "oc_enabled": "true" if adapter == "openclaw" else "false",
+        "cx_enabled": "true" if adapter == "codex" else "false",
     }
 
 
@@ -200,7 +205,7 @@ def render_installer(
 
     `adapter` picks which bridge adapter the generated TOML (or baked
     trailer, on Windows) enables — one of 'claude_code' | 'openclaw' |
-    'hermes'.
+    'hermes' | 'codex'.
 
     Returns (payload_bytes, filename, content_type).
     For Windows, payload is a single self-configuring .exe; for Unix, a
