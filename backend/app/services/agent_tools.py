@@ -2369,29 +2369,14 @@ async def _execute_tool_direct(
                 return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
             return _write_file(ws, path, content, tenant_id=_agent_tenant_id)
         elif tool_name == "move_file":
-            source_path = arguments.get("source_path")
-            destination_path = arguments.get("destination_path")
-            if not source_path or not destination_path:
-                return "Missing source_path or destination_path"
-            if _is_enterprise_info_path(source_path) or _is_enterprise_info_path(destination_path):
-                return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-            if str(source_path or "").strip("/").strip() in {"tasks.json", "soul.md"}:
-                return f"{source_path} cannot be moved (protected)"
-            async with async_session() as _wdb:
-                move_result = await move_workspace_path(
-                    _wdb,
-                    agent_id=agent_id,
-                    base_dir=ws,
-                    source_path=source_path,
-                    destination_path=destination_path,
-                    actor_type="agent",
-                    actor_id=agent_id,
-                    session_id=None,
-                    enforce_human_lock=True,
-                    overwrite=bool(arguments.get("overwrite", False)),
-                )
-                await _wdb.commit()
-            return f"✅ {move_result.message}" if move_result.ok else f"❌ {move_result.message}"
+            # LLM tool schema uses src_path/dst_path (path-aware Phase 4 version).
+            # Approved-action replay carries through whatever args the LLM
+            # originally proposed, so dispatch must match the LLM-facing schema.
+            return await _move_file_impl(agent_id, "", arguments)
+        elif tool_name == "rename_file":
+            return await _rename_file_impl(agent_id, "", arguments)
+        elif tool_name == "list_recent_changes":
+            return await _list_recent_changes_impl("", arguments)
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
             return await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
@@ -2565,34 +2550,6 @@ async def execute_tool(
                     if write_result.ok
                     else f"❌ {write_result.message}"
                 )
-        elif tool_name == "move_file":
-            source_path = arguments.get("source_path")
-            destination_path = arguments.get("destination_path")
-            if not source_path:
-                return "❌ Missing required argument 'source_path' for move_file"
-            if not destination_path:
-                return "❌ Missing required argument 'destination_path' for move_file"
-            protected = {"tasks.json", "soul.md"}
-            if str(source_path).strip("/") in protected:
-                result = f"❌ {source_path} cannot be moved (protected)"
-            elif _is_enterprise_info_path(source_path) or _is_enterprise_info_path(destination_path):
-                result = "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-            else:
-                async with async_session() as _wdb:
-                    move_result = await move_workspace_path(
-                        _wdb,
-                        agent_id=agent_id,
-                        base_dir=ws,
-                        source_path=source_path,
-                        destination_path=destination_path,
-                        actor_type="agent",
-                        actor_id=agent_id,
-                        session_id=session_id,
-                        enforce_human_lock=True,
-                        overwrite=bool(arguments.get("overwrite", False)),
-                    )
-                    await _wdb.commit()
-                result = f"✅ {move_result.message}" if move_result.ok else f"❌ {move_result.message}"
         elif tool_name == "delete_file":
             path = arguments.get("path", "")
             if _is_enterprise_info_path(path):
