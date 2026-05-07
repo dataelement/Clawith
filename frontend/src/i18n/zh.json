@@ -37,7 +37,8 @@
     "platformSettings": "平台设置",
     "language": "语言",
     "plaza": "广场",
-    "okr": "OKR"
+    "okr": "OKR",
+    "projects": "项目"
   },
   "talentMarket": {
     "title": "人才市场",
@@ -226,7 +227,11 @@
       "chat": "聊天",
       "activityLog": "工作日志",
       "approvals": "审批",
+      "projects": "项目",
       "settings": "设置"
+    },
+    "projects": {
+      "none": "此数字员工还未加入任何项目。"
     },
     "fields": {
       "name": "名称",
@@ -1008,7 +1013,12 @@
     "placeholder": "输入消息...",
     "send": "发送",
     "deleteSession": "删除会话",
-    "deleteConfirm": "确定删除这个会话及其所有消息？此操作无法撤销。"
+    "deleteConfirm": "确定删除这个会话及其所有消息？此操作无法撤销。",
+    "renameSession": "重命名会话",
+    "inProject": "项目：{{name}}",
+    "openProject": "打开项目",
+    "readonlyMode": "只读模式——这是其他用户的对话",
+    "readonlyPlaceholder": "只读：其他用户的对话"
   },
   "messages": {
     "title": "消息中心",
@@ -1948,5 +1958,229 @@
     },
     "loading": "加载中...",
     "noData": "暂无数据"
+  },
+  "projects": {
+    "title": "项目",
+    "newProject": "新建项目",
+    "noProjects": "还没有项目。点击上方按钮创建第一个。",
+    "searchPlaceholder": "搜索项目...",
+    "showArchived": "包含已归档",
+    "neverActive": "暂无活动",
+    "justNow": "刚刚",
+    "minutesAgo": "{{count}} 分钟前",
+    "hoursAgo": "{{count}} 小时前",
+    "daysAgo": "{{count}} 天前",
+    "notFound": "项目不存在或你没有访问权限。",
+    "status": {
+      "active": "进行中",
+      "archived": "已归档"
+    },
+    "detail": {
+      "tab": {
+        "overview": "概览",
+        "chats": "对话",
+        "tasks": "任务",
+        "files": "文件",
+        "settings": "设置"
+      }
+    },
+    "overview": {
+      "stats": "统计",
+      "agents": "参与的数字员工",
+      "agentsHeading": "参与的员工：",
+      "files": "文件",
+      "sessions": "对话"
+    },
+    "brief": {
+      "pinned": "项目简报——自动注入到此项目下的每个对话。",
+      "edit": "编辑",
+      "empty": "还没有 brief。到「文件」标签页编辑 BRIEF.md。",
+      "emptyClickToEdit": "还没填 brief，点这里开始写。",
+      "history": "历史版本",
+      "hideHistory": "收起历史",
+      "historyTitle": "过往版本",
+      "historyEmpty": "还没有历史版本。每次保存会在这里出现。",
+      "load": "载入",
+      "restore": "恢复",
+      "restoreConfirm": "把这个版本作为当前 BRIEF？当前内容会先被自动存一份，所以此操作可再次回滚。",
+      "byUser": "用户",
+      "byAgent": "数字员工",
+      "tabWrite": "编辑",
+      "tabPreview": "预览",
+      "editorHint": "提示：以 > 开头的引用块是填写指引，写完后可以整行删掉。点「预览」看渲染效果。",
+      "previewEmpty": "还没有内容。",
+      "heading": "项目简报",
+      "unparsableNotice": "当前 BRIEF 包含自定义结构，已切到高级编辑模式。如需回到表单视图，请保留 ## 目标 / ## 背景 / ## 限制条件 三个章节。",
+      "cannotSwitchToForm": "当前内容不符合表单结构，请保留 ## 目标 / ## 背景 / ## 限制条件 三个章节后再切换。",
+      "formFooterHint": "所有改动会在保存后写入项目内每个对话的上下文。",
+      "advancedFooterHint": "高级模式：直接编辑 markdown。",
+      "switchToAdvanced": "高级模式 ›",
+      "switchToForm": "‹ 回到表单视图",
+      "removeSection": "删除章节",
+      "removeSectionConfirm": "删除此章节？",
+      "bodyPlaceholder": "在这里写你的内容…",
+      "form": {
+        "titleLabel": "项目名称",
+        "titlePlaceholder": "给项目起个名字",
+        "addSection": "添加章节",
+        "customHeadingPlaceholder": "章节标题（如：人员安排）"
+      },
+      "section": {
+        "goal": {
+          "label": "目标",
+          "hint": "这个项目最终要交付什么？尽量具体、可验收。",
+          "placeholder": "在这里写项目的目标…"
+        },
+        "context": {
+          "label": "背景",
+          "hint": "为什么做、谁在用、相关参考资料。",
+          "placeholder": "在这里写项目的背景…"
+        },
+        "constraints": {
+          "label": "限制条件",
+          "hint": "不能越界的红线（截止时间、合规、预算等）。",
+          "placeholder": "在这里写限制条件…"
+        }
+      }
+    },
+    "onboarding": {
+      "addAgentTitle": "先加一个员工，项目就能启动了",
+      "addAgentBody": "Project 里还没有任何员工。加一个之后就可以在「对话」标签页里开始对话。",
+      "goAddAgent": "去添加员工"
+    },
+    "files": {
+      "uploadHint": "拖放文件到此处或点击上传",
+      "uploadDisabled": "项目已归档，无法上传。",
+      "chooseFiles": "选择文件",
+      "empty": "还没有文件。",
+      "download": "下载",
+      "delete": "删除",
+      "deleteConfirm": "删除 {{name}}？",
+      "uploadedByUser": "已上传",
+      "writtenByAgent": "数字员工写入",
+      "preview": "预览",
+      "cannotPreview": "无法预览此文件类型，请下载查看。",
+      "previewFailed": "预览失败",
+      "uploadSuccess": "已上传 {{name}}",
+      "uploadFailed": "上传失败：{{error}}",
+      "deleteSuccess": "已删除 {{name}}",
+      "deleteFailed": "删除失败：{{error}}",
+      "conflict": {
+        "title": "文件已存在",
+        "body": "「{{name}}」已经在这个项目里。你想要？",
+        "keepBothHint": "保留两者时将保存为：",
+        "keepBoth": "保留两者",
+        "replace": "替换",
+        "cancel": "取消"
+      }
+    },
+    "chats": {
+      "newChat": "新建对话",
+      "pickAgent": "选择数字员工...",
+      "pickAgentWarning": "请先选择一个数字员工",
+      "rename": "重命名",
+      "noAgents": "还没有加入任何员工",
+      "archivedTooltip": "项目已归档。",
+      "addAgentFirst": "请先到「设置」里加入员工。",
+      "noSessions": "还没有对话。选一个员工开始聊。",
+      "addAgentToStart": "添加一个数字员工开始对话。",
+      "readonly": "只读",
+      "messages": "条"
+    },
+    "tasks": {
+      "new": "新建任务",
+      "newTitle": "新建任务",
+      "create": "创建",
+      "empty": "还没有任务。",
+      "emptyFiltered": "没有符合筛选条件的任务。",
+      "emptyHint": "点「新建任务」添加第一个交付物。",
+      "noActive": "没有进行中的任务。打开「任务」标签去添加。",
+      "activeHeading": "进行中的任务",
+      "viewAll": "查看全部 →",
+      "deleted": "已删除 {{name}}",
+      "deleteConfirm": "确定删除这个任务？",
+      "byAgent": "员工创建",
+      "byAgentNotice": "这个任务是数字员工创建的。",
+      "completedAt": "完成于",
+      "dueShort": "截止",
+      "linkedFiles": "关联的文件",
+      "noLinkedFiles": "还没有关联文件。",
+      "noFilesToLink": "项目里还没有文件。请先在「文件」标签页上传。",
+      "preview": "预览",
+      "filter": {
+        "all": "全部"
+      },
+      "status": {
+        "todo": "待办",
+        "doing": "进行中",
+        "done": "已完成",
+        "blocked": "受阻"
+      },
+      "fields": {
+        "title": "标题",
+        "titlePlaceholder": "例如：10 张 Instagram 海报",
+        "description": "描述（可选）",
+        "descriptionPlaceholder": "支持 Markdown。",
+        "assignee": "指派给",
+        "unassigned": "未指派",
+        "due": "截止日期"
+      }
+    },
+    "agents": {
+      "none": "还没有数字员工。",
+      "add": "添加员工",
+      "addHint": "选一个员工加入",
+      "allAdded": "所有可用员工都已在项目中",
+      "remove": "移除",
+      "removeConfirm": "将 {{name}} 从项目中移除？对话历史会保留。"
+    },
+    "settings": {
+      "basics": "基础信息",
+      "agents": "数字员工",
+      "lifecycle": "生命周期",
+      "chatVisibility": "对话可见性",
+      "visibility": {
+        "shared": "共享——其他成员只读可见",
+        "private": "私有——只有会话创建者可见"
+      },
+      "archive": "归档",
+      "unarchive": "取消归档",
+      "archiveConfirm": "归档这个项目？之后将变成只读。",
+      "archiveHelp": {
+        "active": "归档后项目变为只读，历史与文件都会保留。",
+        "archived": "项目已归档。取消归档即可继续工作。"
+      }
+    },
+    "create": {
+      "nameLabel": "名称",
+      "namePlaceholder": "例如：出海发布——素材制作",
+      "descriptionLabel": "简短描述",
+      "descriptionPlaceholder": "一句话说清楚，方便同事快速认出这个项目。"
+    },
+    "scheduled": {
+      "title": "定时任务",
+      "newBtn": "新建",
+      "newTask": "新建定时任务",
+      "empty": "还没有定时任务。点「新建」添加——agent 会按时自动在此 project 里跑一次，结果会出现在「对话」标签页里。",
+      "needAgent": "请先添加一个员工。",
+      "agent": "由哪个员工执行",
+      "nameLabel": "任务名称",
+      "namePlaceholder": "例如：每日进度汇报",
+      "promptLabel": "agent 需要做什么",
+      "promptPlaceholder": "例如：读最近上传的文件，在项目对话里贴一段一句话进度总结。",
+      "freqLabel": "频率",
+      "freq": {
+        "hourly": "每小时",
+        "daily": "每天 · 09:00",
+        "weekdays": "工作日 · 09:00",
+        "weekly": "每周一 · 09:00"
+      },
+      "firedCount_one": "已执行 {{count}} 次",
+      "firedCount_other": "已执行 {{count}} 次",
+      "paused": "已暂停",
+      "pause": "暂停",
+      "resume": "启用",
+      "deleteConfirm": "删除任务「{{name}}」？"
+    }
   }
 }

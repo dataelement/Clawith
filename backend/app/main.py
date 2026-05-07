@@ -1,5 +1,6 @@
 """Clawith Backend — FastAPI Application Entry Point."""
 
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
@@ -264,6 +265,7 @@ async def lifespan(app: FastAPI):
                 import traceback
                 traceback.print_exception(type(exc), exc, exc.__traceback__)
 
+        from app.services.backup_service import backup_daemon
         for name, coro in [
             ("trigger_daemon", start_trigger_daemon()),
             ("feishu_ws", feishu_ws_manager.start_all()),
@@ -271,11 +273,108 @@ async def lifespan(app: FastAPI):
             ("wecom_stream", wecom_stream_manager.start_all()),
             ("wechat_poll", wechat_poll_manager.start_all()),
             ("discord_gw", discord_gateway_manager.start_all()),
+            ("backup_daemon", backup_daemon()),
         ]:
             task = asyncio.create_task(coro, name=name)
             task.add_done_callback(_bg_task_error)
             logger.info(f"[startup] created bg task: {name}")
         logger.info("[startup] all background tasks created!")
+
+        # ── Project / agent workspace consistency audit ──
+        # For every project in DB, check that its workspace directory and BRIEF
+        # exist on disk. Missing directories / briefs get auto-seeded via the
+        # lazy self-heal, so here we just log the state so humans see it.
+        try:
+            from sqlalchemy import select as _select
+            from app.database import async_session as _audit_session
+            from app.models.project import Project as _Project
+            from app.services.project_workspace import project_workspace_service as _pws
+            from app.services.project_workspace import BRIEF_FILENAME as _BRIEF
+
+            async with _audit_session() as _audit_db:
+                _projects = (await _audit_db.execute(_select(_Project))).scalars().all()
+            total = len(_projects)
+            missing_dir = 0
+            missing_brief = 0
+            for _p in _projects:
+                _root = _pws.get_root(_p.id)
+                if not _root.exists():
+                    missing_dir += 1
+                    continue
+                if not (_root / _BRIEF).exists():
+                    missing_brief += 1
+            if total == 0:
+                logger.info("[startup-audit] no projects in DB")
+            elif missing_dir == 0 and missing_brief == 0:
+                logger.info(f"[startup-audit] {total} project(s) OK: all workspaces + BRIEF present")
+            else:
+                logger.warning(
+                    f"[startup-audit] {total} project(s): "
+                    f"{missing_dir} missing workspace dir, {missing_brief} missing BRIEF.md. "
+                    f"Missing BRIEFs will be re-seeded on first read (lazy self-heal)."
+                )
+
+            # ── Heal legacy fake .project/<pid>/ directories ─────────────
+            # Earlier builds placed the agent↔project symlink at
+            #   {AGENT_DATA_DIR}/<aid>/workspace/.project/<pid>
+            # but agents wrote with paths like `.project/<pid>/foo.md`,
+            # which the file tools resolved to
+            #   {AGENT_DATA_DIR}/<aid>/.project/<pid>/foo.md  (a private real dir)
+            # so project chat writes accumulated outside the shared workspace.
+            # Lazy heal happens when an agent re-enters a project chat, but a
+            # stranded fake dir for a project the agent left would never trigger
+            # heal. This audit migrates any such dir on startup.
+            try:
+                from pathlib import Path as _Path
+                from app.config import get_settings as _gs
+                _agent_data_dir = _Path(_gs().AGENT_DATA_DIR)
+                healed = 0
+                stranded = 0
+                if _agent_data_dir.exists():
+                    _project_ids = {str(_p.id) for _p in _projects}
+                    for _agent_dir in _agent_data_dir.iterdir():
+                        if not _agent_dir.is_dir():
+                            continue
+                        _proj_root = _agent_dir / ".project"
+                        if not _proj_root.exists():
+                            continue
+                        for _pid_entry in list(_proj_root.iterdir()):
+                            # Already a symlink — nothing to do.
+                            if _pid_entry.is_symlink():
+                                continue
+                            if not _pid_entry.is_dir():
+                                continue
+                            try:
+                                _pid_uuid = uuid.UUID(_pid_entry.name)
+                            except (ValueError, AttributeError):
+                                continue
+                            if str(_pid_uuid) not in _project_ids:
+                                # Project no longer exists in DB → leave on disk for forensics.
+                                stranded += 1
+                                continue
+                            try:
+                                _aid_uuid = uuid.UUID(_agent_dir.name)
+                            except (ValueError, AttributeError):
+                                continue
+                            try:
+                                _pws.ensure_agent_project_symlink(_aid_uuid, _pid_uuid)
+                                healed += 1
+                            except Exception as _heal_err:
+                                logger.warning(
+                                    f"[startup-audit] heal {_agent_dir.name}/.project/"
+                                    f"{_pid_entry.name} failed: {_heal_err}"
+                                )
+                if healed or stranded:
+                    logger.info(
+                        f"[startup-audit] legacy .project/ paths: healed {healed}, "
+                        f"stranded {stranded} (project no longer in DB)"
+                    )
+            except Exception as _heal_audit_err:
+                logger.warning(
+                    f"[startup-audit] legacy .project/ heal pass failed: {_heal_audit_err}"
+                )
+        except Exception as _e:
+            logger.warning(f"[startup-audit] consistency check failed: {_e}")
     except Exception as e:
         logger.error(f"[startup] Background tasks failed: {e}")
         import traceback
@@ -333,7 +432,7 @@ from app.api.tools import router as tools_router
 from app.api.plaza import router as plaza_router
 from app.api.skills import router as skills_router
 from app.api.users import router as users_router
-from app.api.chat_sessions import router as chat_sessions_router
+from app.api.chat_sessions import router as chat_sessions_router, chat_session_router
 from app.api.slack import router as slack_router
 from app.api.discord_bot import router as discord_router
 from app.api.dingtalk import router as dingtalk_router
@@ -353,6 +452,7 @@ from app.api.pages import router as pages_router, public_router as pages_public_
 from app.api.agent_credentials import router as credentials_router
 from app.api.agentbay_control import router as agentbay_control_router
 from app.api.okr import router as okr_router
+from app.api.projects import router as projects_router, agent_projects_router
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(agents_router, prefix=settings.API_PREFIX)
@@ -386,6 +486,7 @@ app.include_router(atlassian_router, prefix=settings.API_PREFIX)
 
 app.include_router(triggers_router)
 app.include_router(chat_sessions_router)
+app.include_router(chat_session_router)
 app.include_router(plaza_router)
 app.include_router(notification_router, prefix=settings.API_PREFIX)
 app.include_router(webhooks_router)  # Public endpoint, no API prefix
@@ -397,6 +498,10 @@ app.include_router(pages_public_router)  # Public endpoint for /p/{short_id}, no
 app.include_router(credentials_router, prefix=settings.API_PREFIX)
 app.include_router(agentbay_control_router, prefix=settings.API_PREFIX)
 app.include_router(okr_router)  # OKR — self-prefixed at /api/okr
+
+# Project feature — routers carry their own /api prefix
+app.include_router(projects_router)
+app.include_router(agent_projects_router)
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])

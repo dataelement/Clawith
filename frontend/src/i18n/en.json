@@ -55,7 +55,8 @@
     "enterprise": "Company Settings",
     "language": "Language",
     "plaza": "Plaza",
-    "okr": "OKR"
+    "okr": "OKR",
+    "projects": "Projects"
   },
   "talentMarket": {
     "title": "Talent Market",
@@ -219,7 +220,11 @@
       "chat": "Chat",
       "activityLog": "Activity Log",
       "approvals": "Approvals",
+      "projects": "Projects",
       "settings": "Settings"
+    },
+    "projects": {
+      "none": "This agent is not in any project yet."
     },
     "fields": {
       "name": "Name",
@@ -921,7 +926,12 @@
     "placeholder": "Type a message...",
     "send": "Send",
     "deleteSession": "Delete session",
-    "deleteConfirm": "Delete this session and all its messages? This cannot be undone."
+    "deleteConfirm": "Delete this session and all its messages? This cannot be undone.",
+    "renameSession": "Rename session",
+    "inProject": "In project: {{name}}",
+    "openProject": "Open project",
+    "readonlyMode": "Read-only — this conversation belongs to another user",
+    "readonlyPlaceholder": "Read-only: another user's conversation"
   },
   "messages": {
     "title": "Messages",
@@ -1821,5 +1831,229 @@
     "ssoEnabled": "Enable SSO",
     "ssoDomain": "Custom Access Domain",
     "ssoDomainPlaceholder": "e.g. acme.clawith.com"
+  },
+  "projects": {
+    "title": "Projects",
+    "newProject": "New Project",
+    "noProjects": "No projects yet. Create the first one above.",
+    "searchPlaceholder": "Search projects...",
+    "showArchived": "Include archived",
+    "neverActive": "No activity yet",
+    "justNow": "just now",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "daysAgo": "{{count}}d ago",
+    "notFound": "Project not found or you do not have access.",
+    "status": {
+      "active": "Active",
+      "archived": "Archived"
+    },
+    "detail": {
+      "tab": {
+        "overview": "Overview",
+        "chats": "Chats",
+        "tasks": "Tasks",
+        "files": "Files",
+        "settings": "Settings"
+      }
+    },
+    "overview": {
+      "stats": "Stats",
+      "agents": "Agents",
+      "agentsHeading": "Participating agents:",
+      "files": "files",
+      "sessions": "chat sessions"
+    },
+    "brief": {
+      "pinned": "Project brief — injected into every chat inside this project.",
+      "edit": "Edit",
+      "empty": "No brief yet. Open the Files tab to edit BRIEF.md.",
+      "emptyClickToEdit": "No brief yet. Click to start writing.",
+      "history": "History",
+      "hideHistory": "Hide history",
+      "historyTitle": "Past versions",
+      "historyEmpty": "No earlier versions yet. Saves will appear here.",
+      "load": "Load",
+      "restore": "Restore",
+      "restoreConfirm": "Restore this snapshot as the current BRIEF? The current content will itself be snapshotted first.",
+      "byUser": "by user",
+      "byAgent": "by agent",
+      "tabWrite": "Write",
+      "tabPreview": "Preview",
+      "editorHint": "Lines starting with > are guidance — delete them once you're done. Use Preview to see how it'll render.",
+      "previewEmpty": "Nothing to preview yet.",
+      "heading": "Project brief",
+      "unparsableNotice": "This BRIEF contains custom structure, so we've switched to advanced mode. To return to the form view, keep the ## Goal / ## Context / ## Constraints sections.",
+      "cannotSwitchToForm": "Current content doesn't match the form structure. Keep the ## Goal / ## Context / ## Constraints sections, then try again.",
+      "formFooterHint": "All changes are saved into the context injected into every chat in this project.",
+      "advancedFooterHint": "Advanced mode: edit markdown directly.",
+      "switchToAdvanced": "Advanced ›",
+      "switchToForm": "‹ Back to form",
+      "removeSection": "Remove section",
+      "removeSectionConfirm": "Remove this section?",
+      "bodyPlaceholder": "Write here…",
+      "form": {
+        "titleLabel": "Project name",
+        "titlePlaceholder": "Give the project a name",
+        "addSection": "Add section",
+        "customHeadingPlaceholder": "Section title (e.g. People)"
+      },
+      "section": {
+        "goal": {
+          "label": "Goal",
+          "hint": "What is this project ultimately delivering? Be specific and verifiable.",
+          "placeholder": "Write the project goal here…"
+        },
+        "context": {
+          "label": "Context",
+          "hint": "Why are we doing this, who it's for, prior decisions or reference material.",
+          "placeholder": "Write the context here…"
+        },
+        "constraints": {
+          "label": "Constraints",
+          "hint": "Hard limits — deadlines, compliance, budget, style guardrails.",
+          "placeholder": "Write the constraints here…"
+        }
+      }
+    },
+    "onboarding": {
+      "addAgentTitle": "Add an agent to get this project moving",
+      "addAgentBody": "There are no agents in this project yet. Add one, then you can start chats in the Chats tab.",
+      "goAddAgent": "Add agent"
+    },
+    "files": {
+      "uploadHint": "Drag files here or click to upload",
+      "uploadDisabled": "Upload disabled for archived projects.",
+      "chooseFiles": "Choose files",
+      "empty": "No files yet.",
+      "download": "Download",
+      "delete": "Delete",
+      "deleteConfirm": "Delete {{name}}?",
+      "uploadedByUser": "uploaded",
+      "writtenByAgent": "agent-written",
+      "preview": "Preview",
+      "cannotPreview": "Cannot preview this file type — download to view.",
+      "previewFailed": "Preview failed",
+      "uploadSuccess": "Uploaded {{name}}",
+      "uploadFailed": "Upload failed: {{error}}",
+      "deleteSuccess": "Deleted {{name}}",
+      "deleteFailed": "Delete failed: {{error}}",
+      "conflict": {
+        "title": "File already exists",
+        "body": "\"{{name}}\" already exists in this project. What would you like to do?",
+        "keepBothHint": "Keep both will save as:",
+        "keepBoth": "Keep both",
+        "replace": "Replace",
+        "cancel": "Cancel"
+      }
+    },
+    "chats": {
+      "newChat": "New Chat",
+      "pickAgent": "Select an agent...",
+      "pickAgentWarning": "Please select an agent first",
+      "rename": "Rename",
+      "noAgents": "No agents assigned",
+      "archivedTooltip": "This project is archived.",
+      "addAgentFirst": "Add an agent in Settings first.",
+      "noSessions": "No chats yet — start one with an agent above.",
+      "addAgentToStart": "Add an agent to start chatting.",
+      "readonly": "read-only",
+      "messages": "msgs"
+    },
+    "tasks": {
+      "new": "New task",
+      "newTitle": "New task",
+      "create": "Create",
+      "empty": "No tasks yet.",
+      "emptyFiltered": "No tasks match this filter.",
+      "emptyHint": "Click + New task to add the first deliverable.",
+      "noActive": "No active tasks. Open the Tasks tab to add some.",
+      "activeHeading": "Active tasks",
+      "viewAll": "View all →",
+      "deleted": "Deleted {{name}}",
+      "deleteConfirm": "Delete this task?",
+      "byAgent": "agent-created",
+      "byAgentNotice": "This task was created by an agent.",
+      "completedAt": "done",
+      "dueShort": "due",
+      "linkedFiles": "Linked files",
+      "noLinkedFiles": "No files linked yet.",
+      "noFilesToLink": "No files in this project yet. Upload some in the Files tab first.",
+      "preview": "Preview",
+      "filter": {
+        "all": "All"
+      },
+      "status": {
+        "todo": "To do",
+        "doing": "Doing",
+        "done": "Done",
+        "blocked": "Blocked"
+      },
+      "fields": {
+        "title": "Title",
+        "titlePlaceholder": "e.g. 10 Instagram posters",
+        "description": "Description (optional)",
+        "descriptionPlaceholder": "Markdown supported.",
+        "assignee": "Assign to",
+        "unassigned": "Unassigned",
+        "due": "Due date"
+      }
+    },
+    "agents": {
+      "none": "No agents yet.",
+      "add": "Add agent",
+      "addHint": "Pick an agent to add",
+      "allAdded": "All available agents are in the project",
+      "remove": "Remove",
+      "removeConfirm": "Remove {{name}} from this project? History will be preserved."
+    },
+    "settings": {
+      "basics": "Basics",
+      "agents": "Agents",
+      "lifecycle": "Lifecycle",
+      "chatVisibility": "Chat visibility",
+      "visibility": {
+        "shared": "Shared — other members see sessions read-only",
+        "private": "Private — only session owner sees their sessions"
+      },
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "archiveConfirm": "Archive this project? It will become read-only.",
+      "archiveHelp": {
+        "active": "Archive makes the project read-only. History and files are preserved.",
+        "archived": "This project is archived. Unarchive to resume work."
+      }
+    },
+    "create": {
+      "nameLabel": "Name",
+      "namePlaceholder": "e.g. Overseas launch — material prep",
+      "descriptionLabel": "Short description",
+      "descriptionPlaceholder": "A one-liner to help teammates recognise this project at a glance."
+    },
+    "scheduled": {
+      "title": "Scheduled tasks",
+      "newBtn": "New",
+      "newTask": "New scheduled task",
+      "empty": "No scheduled tasks yet. Click \"New\" to add one — the agent will run it on schedule inside this project, and the run shows up in the Chats tab.",
+      "needAgent": "Add an agent first.",
+      "agent": "Which agent runs this task",
+      "nameLabel": "Task name",
+      "namePlaceholder": "e.g. Daily standup report",
+      "promptLabel": "What should the agent do?",
+      "promptPlaceholder": "e.g. Read recent project files and post a one-paragraph progress summary to the project chat.",
+      "freqLabel": "Frequency",
+      "freq": {
+        "hourly": "Every hour",
+        "daily": "Every day · 09:00",
+        "weekdays": "Weekdays · 09:00",
+        "weekly": "Every Monday · 09:00"
+      },
+      "firedCount_one": "fired {{count}}x",
+      "firedCount_other": "fired {{count}}x",
+      "paused": "paused",
+      "pause": "Pause",
+      "resume": "Resume",
+      "deleteConfirm": "Delete task \"{{name}}\"?"
+    }
   }
 }
