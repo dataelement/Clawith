@@ -73,6 +73,18 @@ async def poll_messages(
     logger.info(f"[Gateway] poll called, key_prefix={x_api_key[:8]}...")
     agent = await _get_agent_by_key(x_api_key, db)
 
+    # Hint: if a bridge is also connected for this agent, gateway polling is
+    # redundant. We still serve the poll (legacy compatibility) but flag it.
+    try:
+        from app.services.local_agent.session_dispatcher import dispatcher as _la_dispatcher
+        if _la_dispatcher.has_bridge(str(agent.id)):
+            logger.info(
+                f"[Gateway] agent {agent.id} has an active bridge (mode={getattr(agent, 'bridge_mode', 'disabled')}); "
+                f"poll is redundant — prefer WS bridge for this agent."
+            )
+    except Exception:
+        pass
+
     # Update last seen
     agent.openclaw_last_seen = datetime.now(timezone.utc)
     agent.status = "running"

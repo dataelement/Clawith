@@ -37,10 +37,26 @@ class Agent(Base):
 
     # Agent type: 'native' (platform-hosted LLM) or 'openclaw' (remote OpenClaw bot)
     agent_type: Mapped[str] = mapped_column(String(20), default="native", nullable=False)
+    # Local-runtime adapter selection when agent_type='openclaw':
+    #   'claude_code' (default), 'openclaw', or 'hermes'. Controls which
+    #   adapter the bridge installer enables and which session.start.adapter
+    #   the server sends. Ignored for native agents.
+    bridge_adapter: Mapped[str | None] = mapped_column(String(32))
     # API key hash for OpenClaw gateway authentication
     api_key_hash: Mapped[str | None] = mapped_column(String(128))
+    # Plaintext API key stored alongside the hash so installer downloads
+    # can reuse it without rotating — rotation is an explicit action.
+    # See gateway._get_agent_by_key for the dual-path auth that falls back
+    # to api_key_hash for legacy agents where this column is still NULL.
+    api_key: Mapped[str | None] = mapped_column(String(128))
     # Last time OpenClaw polled the gateway (online status indicator)
     openclaw_last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Local-agent bridge integration mode:
+    #   "disabled" (default, safe): bridge connections rejected; legacy gateway polling only.
+    #   "enabled": bridge must be connected; /gateway routes still work but session path preferred.
+    #   "auto":    bridge preferred, gateway polling acts as fallback when bridge is offline.
+    bridge_mode: Mapped[str] = mapped_column(String(16), default="disabled", nullable=False)
 
     # Runtime
     status: Mapped[str] = mapped_column(

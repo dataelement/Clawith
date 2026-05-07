@@ -74,6 +74,16 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
         enabled: !!agentId,
     });
 
+    // Live bridge status — used to detect adapter mismatch (agent expects
+    // one runtime, installed bridge advertises another).
+    const { data: bridgeStatus } = useQuery({
+        queryKey: ['bridge-status', agentId],
+        queryFn: () => agentApi.bridgeStatus(agentId),
+        enabled: !!agentId,
+        refetchInterval: 5000,
+        refetchIntervalInBackground: false,
+    });
+
     const handleScopeChange = async (newScope: string) => {
         try {
             await fetchAuth(`/agents/${agentId}/permissions`, {
@@ -105,6 +115,84 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     const isOwner = permData?.is_owner ?? false;
     const currentScope = permData?.scope_type || 'company';
     const currentAccessLevel = permData?.access_level || 'use';
+
+    // ─── Bridge mode state ──────────────────────────────
+    const currentBridgeMode: 'disabled' | 'enabled' | 'auto' =
+        (agent?.bridge_mode as any) || 'disabled';
+    const [bridgeSaving, setBridgeSaving] = useState<string | null>(null);
+
+    const handleBridgeModeChange = async (newMode: 'disabled' | 'enabled' | 'auto') => {
+        if (newMode === currentBridgeMode) return;
+        setBridgeSaving(newMode);
+        try {
+            await agentApi.update(agentId, { bridge_mode: newMode } as any);
+            queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+        } catch (e) {
+            console.error('Failed to update bridge_mode', e);
+        } finally {
+            setBridgeSaving(null);
+        }
+    };
+
+    // ─── Bridge installer download ──────────────────────
+    const detectedPlatform: 'windows' | 'macos' | 'linux' = (() => {
+        const p = (typeof navigator !== 'undefined' ? navigator.platform || '' : '').toLowerCase();
+        const ua = (typeof navigator !== 'undefined' ? navigator.userAgent || '' : '').toLowerCase();
+        if (p.startsWith('win') || ua.includes('windows')) return 'windows';
+        if (p.startsWith('mac') || ua.includes('mac os')) return 'macos';
+        return 'linux';
+    })();
+    const [installerPlatform, setInstallerPlatform] = useState<'windows' | 'macos' | 'linux'>(detectedPlatform);
+    const [installerDownloading, setInstallerDownloading] = useState(false);
+    const [installerConfirm, setInstallerConfirm] = useState(false);
+    const [installerError, setInstallerError] = useState<string>('');
+    const [installerDownloaded, setInstallerDownloaded] = useState(false);
+
+    const handleDownloadInstaller = async () => {
+        setInstallerDownloading(true);
+        setInstallerError('');
+        try {
+            const token = localStorage.getItem('token');
+            const resp = await fetch(`/api/agents/${agentId}/bridge-installer?platform=${installerPlatform}`, {
+                method: 'POST',
+                headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            });
+            if (!resp.ok) {
+                const errText = await resp.text().catch(() => '');
+                throw new Error(errText || `HTTP ${resp.status}`);
+            }
+            const blob = await resp.blob();
+            const filename = resp.headers.get('X-Clawith-Filename')
+                || (installerPlatform === 'windows' ? 'clawith-bridge-setup.exe' : 'install-clawith-bridge.sh');
+
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            setInstallerDownloaded(true);
+            setInstallerConfirm(false);
+            // Agent's api_key_hash + bridge_mode may have changed server-side
+            queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+            // Clear previously-shown plaintext key (it's now invalid)
+            setApiKey(null);
+        } catch (e: any) {
+            console.error('Failed to download installer', e);
+            setInstallerError(e?.message || 'Download failed');
+        } finally {
+            setInstallerDownloading(false);
+        }
+    };
+
+    const runCommand = installerPlatform === 'windows'
+        ? (isChinese
+            ? '双击 clawith-bridge-setup.exe 即可安装'
+            : 'Double-click clawith-bridge-setup.exe to install')
+        : 'bash install-clawith-bridge.sh';
 
     return (
         <div>
@@ -225,6 +313,232 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                     </div>
                 )}
             </div>
+
+            {/* ── Bridge Mode ── */}
+            <div className="card" style={{ marginBottom: '12px' }}>
+                <h4 style={{ marginBottom: '4px' }}>
+                    {isChinese ? '本地 Bridge 连接模式' : 'Local Bridge Mode'}
+                </h4>
+                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                    {isChinese
+                        ? 'Bridge 是跑在你本机的小程序，把 Claude Code 等本地工具接入 Clawith。'
+                        : 'The bridge is a small program running on your machine that connects local tools like Claude Code to Clawith.'}
+                </p>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {([
+                        {
+                            val: 'enabled' as const,
+                            label: isChinese ? '启用（推荐）' : 'Enabled (recommended)',
+                            desc: isChinese
+                                ? '通过 Bridge 实时流式执行。Bridge 未连接时消息会失败。'
+                                : 'Stream execution via bridge. Messages fail if bridge is not connected.',
+                        },
+                        {
+                            val: 'auto' as const,
+                            label: isChinese ? '自动回落' : 'Auto fallback',
+                            desc: isChinese
+                                ? '优先 Bridge；未连接时回落到旧版 Gateway 轮询（~5 分钟延迟）。'
+                                : 'Prefer bridge; fall back to legacy gateway polling (~5 min delay) when offline.',
+                        },
+                        {
+                            val: 'disabled' as const,
+                            label: isChinese ? '禁用（兼容旧版）' : 'Disabled (legacy)',
+                            desc: isChinese
+                                ? '只走 Gateway 轮询。Bridge 连接会被拒绝。'
+                                : 'Use gateway polling only. Bridge connections will be rejected.',
+                        },
+                    ]).map(opt => {
+                        const selected = currentBridgeMode === opt.val;
+                        const isSaving = bridgeSaving === opt.val;
+                        return (
+                            <label
+                                key={opt.val}
+                                style={{
+                                    display: 'flex', alignItems: 'flex-start', gap: '10px',
+                                    padding: '12px 14px', borderRadius: '8px',
+                                    cursor: isOwner && !bridgeSaving ? 'pointer' : 'default',
+                                    border: selected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                                    background: selected ? 'rgba(99,102,241,0.06)' : 'transparent',
+                                    opacity: isOwner ? 1 : 0.7,
+                                    transition: 'all 0.15s',
+                                }}
+                            >
+                                <input
+                                    type="radio"
+                                    name="bridge_mode_oc"
+                                    checked={selected}
+                                    disabled={!isOwner || !!bridgeSaving}
+                                    onChange={() => handleBridgeModeChange(opt.val)}
+                                    style={{ accentColor: 'var(--accent-primary)', marginTop: '2px' }}
+                                />
+                                <div style={{ flex: 1 }}>
+                                    <div style={{ fontWeight: 500, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        {opt.label}
+                                        {isSaving && (
+                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                {isChinese ? '保存中…' : 'Saving…'}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                        {opt.desc}
+                                    </div>
+                                </div>
+                            </label>
+                        );
+                    })}
+                </div>
+
+                {!isOwner && (
+                    <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                        {isChinese ? '只有创建者或管理员可以修改此设置' : 'Only the creator or admin can change this setting'}
+                    </div>
+                )}
+            </div>
+
+            {/* ── Install Bridge ── */}
+            {isOwner && (
+                <div className="card" style={{ marginBottom: '12px' }}>
+                    <h4 style={{ marginBottom: '4px' }}>
+                        {isChinese ? '一键安装 Bridge' : 'One-click Bridge Install'}
+                    </h4>
+                    <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                        {isChinese
+                            ? '下载预配置好 API Key 的安装包，在你本机运行即可完成安装 + 自启 + 连接。Windows 无需 Python。'
+                            : 'Download a pre-configured installer. Run it on your local machine to install + autostart + connect. No Python required on Windows.'}
+                    </p>
+
+                    {/* Runtime selector (editable) */}
+                    <RuntimeSelector agent={agent} agentId={agentId} isChinese={isChinese} bridgeStatus={bridgeStatus} />
+
+                    {/* Platform selector */}
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                        {([
+                            { val: 'windows' as const, label: 'Windows' },
+                            { val: 'macos' as const, label: 'macOS' },
+                            { val: 'linux' as const, label: 'Linux' },
+                        ]).map(opt => {
+                            const selected = installerPlatform === opt.val;
+                            return (
+                                <label
+                                    key={opt.val}
+                                    style={{
+                                        flex: 1, padding: '10px 12px', borderRadius: '8px',
+                                        cursor: 'pointer', textAlign: 'center',
+                                        border: selected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                                        background: selected ? 'rgba(99,102,241,0.06)' : 'transparent',
+                                        transition: 'all 0.15s', fontSize: '13px', fontWeight: 500,
+                                    }}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="bridge_installer_platform"
+                                        checked={selected}
+                                        onChange={() => setInstallerPlatform(opt.val)}
+                                        style={{ display: 'none' }}
+                                    />
+                                    {opt.label}
+                                </label>
+                            );
+                        })}
+                    </div>
+
+                    {/* Hint: download is idempotent — does NOT rotate the key */}
+                    <div style={{
+                        padding: '10px 12px', borderRadius: '6px',
+                        background: 'rgba(99,102,241,0.04)', border: '1px solid var(--border-subtle)',
+                        fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px',
+                    }}>
+                        {isChinese
+                            ? '下载不会重置 API Key，已在运行的 bridge 保持在线。要撤销旧 Key 请用上方的"重新生成 API Key"。'
+                            : 'Downloading does NOT rotate the API Key — any running bridge stays online. Use "Regenerate API Key" above to revoke the old key.'}
+                    </div>
+
+                    {/* Download action */}
+                    {!installerConfirm ? (
+                        <button
+                            className="btn btn-primary"
+                            onClick={() => setInstallerConfirm(true)}
+                            disabled={installerDownloading}
+                            style={{ padding: '8px 20px', fontSize: '13px' }}
+                        >
+                            {isChinese
+                                ? `下载 ${installerPlatform === 'windows' ? 'Windows' : installerPlatform === 'macos' ? 'macOS' : 'Linux'} 安装器`
+                                : `Download ${installerPlatform === 'windows' ? 'Windows' : installerPlatform === 'macos' ? 'macOS' : 'Linux'} Installer`}
+                        </button>
+                    ) : (
+                        <div style={{
+                            padding: '12px 14px', borderRadius: '8px',
+                            background: 'rgba(99,102,241,0.04)', border: '1px solid var(--border-subtle)',
+                        }}>
+                            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
+                                {isChinese ? '确认下载安装器？' : 'Confirm download?'}
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                <button
+                                    className="btn btn-secondary"
+                                    onClick={() => setInstallerConfirm(false)}
+                                    disabled={installerDownloading}
+                                    style={{ padding: '5px 14px', fontSize: '12px' }}
+                                >
+                                    {isChinese ? '取消' : 'Cancel'}
+                                </button>
+                                <button
+                                    className="btn btn-primary"
+                                    onClick={handleDownloadInstaller}
+                                    disabled={installerDownloading}
+                                    style={{ padding: '5px 14px', fontSize: '12px' }}
+                                >
+                                    {installerDownloading
+                                        ? (isChinese ? '生成中…' : 'Generating…')
+                                        : (isChinese ? '下载' : 'Download')}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {installerError && (
+                        <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--error)' }}>
+                            {installerError}
+                        </div>
+                    )}
+
+                    {/* Post-download instructions */}
+                    {installerDownloaded && (
+                        <div style={{
+                            marginTop: '14px', padding: '12px 14px', borderRadius: '8px',
+                            background: 'rgba(50,200,100,0.06)', border: '1px solid rgba(50,200,100,0.2)',
+                        }}>
+                            <div style={{ fontSize: '12px', fontWeight: 500, marginBottom: '8px', color: 'var(--text-primary)' }}>
+                                {isChinese ? '✓ 已下载。在本机运行：' : '✓ Downloaded. Run it on your machine:'}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <code style={{
+                                    flex: 1, padding: '6px 10px', borderRadius: '6px',
+                                    background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                                    fontSize: '12px', fontFamily: 'monospace',
+                                    wordBreak: 'break-all', color: 'var(--text-primary)',
+                                }}>
+                                    {runCommand}
+                                </code>
+                                <LinearCopyButton
+                                    className="btn btn-secondary"
+                                    textToCopy={runCommand}
+                                    label={isChinese ? '复制' : 'Copy'}
+                                    copiedLabel={isChinese ? '已复制' : 'Copied'}
+                                    style={{ padding: '4px 12px', fontSize: '12px', whiteSpace: 'nowrap', minWidth: '60px' }}
+                                />
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '10px', lineHeight: 1.6 }}>
+                                {isChinese
+                                    ? <>前置：先装 <code>claude</code> CLI 并登录（<code>npm install -g @anthropic-ai/claude-code</code> 然后 <code>claude login</code>）。</>
+                                    : <>Prereq: install <code>claude</code> CLI and login first (<code>npm install -g @anthropic-ai/claude-code</code> then <code>claude login</code>).</>}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* ── Permissions ── */}
             <div className="card" style={{ marginBottom: '12px' }}>
@@ -386,6 +700,146 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                         >
                             {isChinese ? '删除此 Agent' : 'Delete this Agent'}
                         </button>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// RuntimeSelector
+//
+// Lets the creator/admin change bridge_adapter after agent creation.
+// When it changes, the already-installed bridge keeps advertising the
+// old adapter until the user reinstalls — we surface that clearly
+// instead of silently drifting.
+// ────────────────────────────────────────────────────────────────
+interface RuntimeSelectorProps {
+    agent: any;
+    agentId: string;
+    isChinese: boolean;
+    bridgeStatus?: { connected: boolean; applicable: boolean; adapters?: string[] };
+}
+
+const ADAPTER_LABELS: Record<string, string> = {
+    claude_code: 'Claude Code',
+    openclaw: 'OpenClaw',
+    hermes: 'Hermes',
+};
+
+function RuntimeSelector({ agent, agentId, isChinese, bridgeStatus }: RuntimeSelectorProps) {
+    const qc = useQueryClient();
+    const current: 'claude_code' | 'openclaw' | 'hermes' =
+        (agent?.bridge_adapter as any) || 'claude_code';
+    const [saving, setSaving] = useState<string | null>(null);
+    const [justChanged, setJustChanged] = useState(false);
+
+    const OPTIONS: { value: 'claude_code' | 'openclaw' | 'hermes'; label: string }[] = [
+        { value: 'claude_code', label: ADAPTER_LABELS.claude_code },
+        { value: 'openclaw', label: ADAPTER_LABELS.openclaw },
+        { value: 'hermes', label: ADAPTER_LABELS.hermes },
+    ];
+
+    // Live mismatch: bridge is connected but its TOML enables different adapters
+    // than what the agent expects. Auto-clears once the user reinstalls/reconfigures
+    // and the next poll reports the right adapter.
+    const liveAdapters: string[] = Array.isArray(bridgeStatus?.adapters) ? bridgeStatus!.adapters! : [];
+    const liveMismatch = !!(bridgeStatus?.connected && liveAdapters.length > 0 && !liveAdapters.includes(current));
+    const bridgeIsOn = !!bridgeStatus?.connected;
+
+    const onSelect = async (next: 'claude_code' | 'openclaw' | 'hermes') => {
+        if (next === current || saving) return;
+        setSaving(next);
+        try {
+            await agentApi.update(agentId, { bridge_adapter: next } as any);
+            await qc.invalidateQueries({ queryKey: ['agent', agentId] });
+            setJustChanged(true);
+        } catch (e) {
+            console.error('Failed to update runtime', e);
+            alert(isChinese ? '切换 runtime 失败，请稍后重试' : 'Failed to change runtime, please retry');
+        } finally {
+            setSaving(null);
+        }
+    };
+
+    return (
+        <div style={{ marginBottom: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                    {isChinese ? '运行时' : 'Runtime'}
+                </span>
+                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                    {isChinese ? '（创建后可切换）' : '(changeable after creation)'}
+                </span>
+            </div>
+            <div style={{ display: 'flex', gap: '6px' }}>
+                {OPTIONS.map(opt => {
+                    const selected = current === opt.value;
+                    const isLoading = saving === opt.value;
+                    return (
+                        <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => onSelect(opt.value)}
+                            disabled={!!saving}
+                            style={{
+                                flex: 1, padding: '8px 10px', borderRadius: '6px',
+                                cursor: saving ? 'not-allowed' : 'pointer',
+                                border: selected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                                background: selected ? 'rgba(99,102,241,0.08)' : 'transparent',
+                                fontSize: '12px', fontWeight: selected ? 600 : 500,
+                                opacity: saving && !selected && !isLoading ? 0.5 : 1,
+                            }}
+                        >
+                            {isLoading ? (isChinese ? '切换中…' : 'Saving…') : opt.label}
+                        </button>
+                    );
+                })}
+            </div>
+            {liveMismatch && (
+                <div style={{
+                    marginTop: '8px', padding: '10px 12px', borderRadius: '6px',
+                    background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.35)',
+                    fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.55,
+                }}>
+                    {isChinese ? (
+                        <>
+                            ⚠️ <strong>Runtime 不匹配</strong>：Agent 期望 <strong>{ADAPTER_LABELS[current]}</strong>，
+                            但本机 bridge 实际启用的是 <strong>{liveAdapters.map(a => ADAPTER_LABELS[a] || a).join(' / ')}</strong>。
+                            此时发消息会报 runtime 不可用。请 <strong>重新下载下方的安装器</strong> 并在本机运行，
+                            或编辑 <code>~/.clawith-bridge.toml</code> 把 <code>[{current}]</code> 下的 <code>enabled</code> 改成 <code>true</code>（同时把其他 runtime 的 <code>enabled</code> 改成 <code>false</code>）后重启 bridge。
+                        </>
+                    ) : (
+                        <>
+                            ⚠️ <strong>Runtime mismatch</strong>: this agent expects <strong>{ADAPTER_LABELS[current]}</strong>,
+                            but the bridge installed on your machine is advertising <strong>{liveAdapters.map(a => ADAPTER_LABELS[a] || a).join(' / ')}</strong>.
+                            Chatting will fail with "runtime not available". <strong>Redownload the installer</strong> below and run it again,
+                            or edit <code>~/.clawith-bridge.toml</code> to set <code>enabled = true</code> under <code>[{current}]</code>
+                            (and <code>false</code> for the others) and restart the bridge.
+                        </>
+                    )}
+                </div>
+            )}
+            {!liveMismatch && justChanged && !bridgeIsOn && (
+                <div style={{
+                    marginTop: '8px', padding: '10px 12px', borderRadius: '6px',
+                    background: 'rgba(255,180,50,0.10)', border: '1px solid rgba(255,180,50,0.30)',
+                    fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.55,
+                }}>
+                    {isChinese ? (
+                        <>
+                            已切换到 <strong>{ADAPTER_LABELS[current]}</strong>。Bridge 当前离线，
+                            无法验证它是否已启用新 runtime。请 <strong>重新下载下方的安装器</strong> 并在本机运行，
+                            或编辑 <code>~/.clawith-bridge.toml</code> 把 <code>[{current}]</code> 下的 <code>enabled</code> 改成 <code>true</code> 后重启 bridge。
+                        </>
+                    ) : (
+                        <>
+                            Switched to <strong>{ADAPTER_LABELS[current]}</strong>. The bridge is offline right now,
+                            so we can't verify it has the new runtime enabled. <strong>Redownload the installer</strong> below
+                            and run it again, or edit <code>~/.clawith-bridge.toml</code> to set <code>enabled = true</code> under
+                            <code>[{current}]</code> and restart the bridge.
+                        </>
                     )}
                 </div>
             )}

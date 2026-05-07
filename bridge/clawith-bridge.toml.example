@@ -1,0 +1,24 @@
+# Copy to ~/.clawith-bridge.toml and edit.
+
+server = "ws://127.0.0.1:8000"
+token  = "oc-REPLACE_ME"
+
+max_concurrent_sessions = 4
+ping_interval           = 25
+reconnect_min           = 1.0
+reconnect_max           = 60.0
+
+[claude_code]
+enabled    = true
+executable = "claude"     # path to Claude Code CLI
+# default_cwd = "/Users/me/workspace"   # optional
+
+[hermes]
+enabled     = false
+base_url    = "http://127.0.0.1:7890"
+# auth_header = "Bearer xxx"
+
+[openclaw]
+enabled     = false
+base_url    = "http://127.0.0.1:9000"
+# auth_header = "Bearer xxx"

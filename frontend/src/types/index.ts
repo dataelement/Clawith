@@ -50,6 +50,7 @@ export interface Agent {
     // True when the viewing user has already been onboarded to this agent.
     // Defaults to true on list endpoints that don't compute per-viewer state.
     onboarded_for_me?: boolean;
+    bridge_mode?: 'disabled' | 'enabled' | 'auto';
     created_at: string;
     last_active_at?: string;
 }

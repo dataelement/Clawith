@@ -2341,6 +2341,19 @@ function AgentDetailInner() {
     const awarePanelVisible = activeTab === 'chat' && livePanelVisible && sidePanelTab === 'aware';
     const awareDataActive = activeTab === 'aware' || awarePanelVisible;
 
+    // Live bridge status — only meaningful for bridge-style (agent_type=openclaw) agents.
+    // Polls while the user has the page open so the badge flips within a few seconds
+    // of the bridge connecting or dropping.
+    const isBridgeAgent = (agent as any)?.agent_type === 'openclaw';
+    const { data: bridgeStatus } = useQuery({
+        queryKey: ['bridge-status', id],
+        queryFn: () => agentApi.bridgeStatus(id!),
+        enabled: !!id && isBridgeAgent,
+        refetchInterval: isBridgeAgent ? 5000 : false,
+        refetchIntervalInBackground: false,
+    });
+
+
     // ── Aware tab data: triggers ──
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
         queryKey: ['triggers', id],
@@ -3435,8 +3448,12 @@ function AgentDetailInner() {
                 setChatInfoMsg(d.content || '');
                 if (chatInfoTimerRef.current) clearTimeout(chatInfoTimerRef.current);
                 chatInfoTimerRef.current = setTimeout(() => setChatInfoMsg(null), 6000);
-            } else {
+            } else if (d.role && d.content) {
                 setChatMessages(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
+            } else {
+                // Unknown event with no role/content — control frames (rate_limit_event,
+                // ping, bridge status/file_change/bridge_event). Drop to avoid phantoms.
+                console.debug('[stream] skip unknown event', d.type, d);
             }
         };
     };
@@ -4636,6 +4653,7 @@ function AgentDetailInner() {
                                     {agent.name}
                                 </h1>
                             )}
+                            {/* TODO(bridge): re-add bridge online/offline badge — was inside page-subtitle, now removed by upstream info-card refactor (see renderAgentInfoCard around line 4329). bridgeStatus query is preserved above. */}
                         </div>
                         <button
                             className={`agent-info-chevron${infoCardOpen ? ' agent-info-chevron--open' : ''}`}
