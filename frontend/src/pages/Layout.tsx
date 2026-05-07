@@ -254,6 +254,7 @@ export default function Layout() {
     const activeAgentNestedMatch = useMatch('/agents/:id/*');
     const activeAgentRootMatch = useMatch('/agents/:id');
     const activeAgentId = activeAgentNestedMatch?.params.id || activeAgentRootMatch?.params.id;
+    const canAccessPlatformSettings = user?.role === 'platform_admin' || !!(user as any)?.is_platform_admin;
 
     const [showAccountSettings, setShowAccountSettings] = useState(false);
     const [showAccountMenu, setShowAccountMenu] = useState(false);
@@ -333,6 +334,10 @@ export default function Layout() {
         if (data.redirect_url) {
             localStorage.setItem('token', data.access_token);
             const targetUrl = new URL(data.redirect_url, window.location.origin);
+            if (targetUrl.hostname === window.location.hostname) {
+                targetUrl.protocol = window.location.protocol;
+                targetUrl.port = window.location.port;
+            }
             targetUrl.pathname = '/';
             targetUrl.hash = '';
             window.location.href = targetUrl.toString();
@@ -429,6 +434,8 @@ export default function Layout() {
 
     // Sidebar agent search & pin
     const [sidebarSearch, setSidebarSearch] = useState('');
+    const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
+    const agentDrawerCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [pinnedAgents, setPinnedAgents] = useState<Set<string>>(() => {
         try {
             const stored = localStorage.getItem('pinned_agents');
@@ -476,6 +483,23 @@ export default function Layout() {
         refetchInterval: 30000,
     });
 
+    const openAgentDrawer = useCallback(() => {
+        if (!isSidebarCollapsed) return;
+        if (agentDrawerCloseTimerRef.current) {
+            clearTimeout(agentDrawerCloseTimerRef.current);
+            agentDrawerCloseTimerRef.current = null;
+        }
+        setAgentDrawerOpen(true);
+    }, [isSidebarCollapsed]);
+
+    const scheduleCloseAgentDrawer = useCallback(() => {
+        if (agentDrawerCloseTimerRef.current) clearTimeout(agentDrawerCloseTimerRef.current);
+        agentDrawerCloseTimerRef.current = setTimeout(() => {
+            setAgentDrawerOpen(false);
+            agentDrawerCloseTimerRef.current = null;
+        }, 160);
+    }, []);
+
     const handleLogout = () => {
         logout();
         navigate('/login');
@@ -515,7 +539,12 @@ export default function Layout() {
 
     useEffect(() => () => {
         if (langHoverCloseTimerRef.current) clearTimeout(langHoverCloseTimerRef.current);
+        if (agentDrawerCloseTimerRef.current) clearTimeout(agentDrawerCloseTimerRef.current);
     }, []);
+
+    useEffect(() => {
+        if (!isSidebarCollapsed) setAgentDrawerOpen(false);
+    }, [isSidebarCollapsed]);
 
     const updateLangSubmenuPosition = useCallback(() => {
         const el = accountDropdownRef.current;
@@ -575,6 +604,128 @@ export default function Layout() {
         </div>
     );
 
+    const q = sidebarSearch.trim().toLowerCase();
+    const sortedAgents = [...agents].filter((a: any) => {
+        if (!q) return true;
+        return (a.name || '').toLowerCase().includes(q) || (a.role_description || '').toLowerCase().includes(q);
+    }).sort((a: any, b: any) => {
+        const ap = pinnedAgents.has(a.id) ? 1 : 0;
+        const bp = pinnedAgents.has(b.id) ? 1 : 0;
+        if (ap !== bp) return bp - ap;
+        const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return bTime - aTime;
+    });
+
+    const agentSearchBox = (force = false) => (force || agents.length >= 5) && (
+        <div className="sidebar-agent-search">
+            <IconSearch size={14} stroke={2} className="sidebar-agent-search-icon" />
+            <input
+                type="text"
+                value={sidebarSearch}
+                onChange={e => setSidebarSearch(e.target.value)}
+                placeholder={isChinese ? '搜索...' : 'Search...'}
+            />
+            {sidebarSearch && (
+                <button onClick={() => setSidebarSearch('')} aria-label={isChinese ? '清空搜索' : 'Clear search'}>
+                    <IconX size={14} stroke={2} />
+                </button>
+            )}
+        </div>
+    );
+
+    const renderAgent = (agent: any, options?: { drawer?: boolean }) => {
+        const badge = getAgentBadgeStatus(agent);
+        const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
+        const unreadCount = Number(agent.unread_count || 0);
+        const showPin = !isSidebarCollapsed || options?.drawer;
+        return (
+            <div key={agent.id} className={`sidebar-agent-item${agent.creator_id === user?.id ? ' owned' : ''}${options?.drawer ? ' drawer-agent' : ''}`}>
+                <NavLink
+                    to={`/agents/${agent.id}/chat`}
+                    className={({ isActive }) => `sidebar-item ${isActive || activeAgentId === agent.id ? 'active' : ''}`}
+                    title={agent.name}
+                    onClick={() => setAgentDrawerOpen(false)}
+                >
+                    <span className="sidebar-item-icon" style={{ position: 'relative' }}>
+                        <span className={`agent-avatar${agent.agent_type === 'openclaw' ? ' openclaw' : ''}`}>{avatarChar}</span>
+                        {agent.agent_type === 'openclaw' && (
+                            <span className="agent-avatar-link" style={{ display: 'flex' }}>
+                                <IconArrowUpRight size={10} stroke={2.5} />
+                            </span>
+                        )}
+                        {badge && <span className={`agent-avatar-badge ${badge}`} />}
+                        {unreadCount > 0 && (
+                            <span className="sidebar-agent-unread">
+                                {unreadCount > 99 ? '99+' : unreadCount}
+                            </span>
+                        )}
+                    </span>
+                    <span className="sidebar-item-text">{agent.name}</span>
+                </NavLink>
+                {showPin && (
+                    <button
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); togglePin(agent.id); }}
+                        className={`sidebar-pin-btn ${pinnedAgents.has(agent.id) ? 'pinned' : ''}`}
+                        title={pinnedAgents.has(agent.id) ? (isChinese ? '取消置顶' : 'Unpin') : (isChinese ? '置顶' : 'Pin to top')}
+                    >
+                        {pinnedAgents.has(agent.id) ? (
+                            <>
+                                <IconPin size={14} stroke={1.5} className="pin-default" />
+                                <IconPinnedOff size={14} stroke={1.5} className="pin-hover" />
+                            </>
+                        ) : (
+                            <IconPin size={14} stroke={1.5} className="pin-on" />
+                        )}
+                    </button>
+                )}
+            </div>
+        );
+    };
+
+    const agentListContent = (drawer = false) => (
+        <>
+            {sortedAgents.map(agent => renderAgent(agent, { drawer }))}
+            {agents.length === 0 && (
+                <div className="sidebar-section">
+                    <div className="sidebar-section-title">{t('nav.myAgents')}</div>
+                </div>
+            )}
+            {agents.length > 0 && sortedAgents.length === 0 && q && (
+                <div className="sidebar-agent-empty">
+                    {isChinese ? '无匹配结果' : 'No matches'}
+                </div>
+            )}
+        </>
+    );
+
+    const agentDrawer = isSidebarCollapsed && agentDrawerOpen && typeof document !== 'undefined' && createPortal(
+        <div
+            className="sidebar-agent-drawer"
+            onMouseEnter={openAgentDrawer}
+            onMouseLeave={scheduleCloseAgentDrawer}
+        >
+            <div className="sidebar-agent-drawer-header">
+                <span>{isChinese ? '智能体' : 'Agents'}</span>
+                <button
+                    type="button"
+                    onClick={() => {
+                        setShowTalentMarket(true);
+                        setAgentDrawerOpen(false);
+                    }}
+                    title={t('nav.hire', t('nav.newAgent'))}
+                >
+                    <IconPlus size={16} stroke={1.7} />
+                </button>
+            </div>
+            {agentSearchBox(true)}
+            <div className="sidebar-agent-drawer-list">
+                {agentListContent(true)}
+            </div>
+        </div>,
+        document.body,
+    );
+
     return (
         <div className={`app-layout ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
             <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
@@ -605,7 +756,7 @@ export default function Layout() {
                             {isSidebarCollapsed ? SidebarIcons.expand : SidebarIcons.collapse}
                         </button>
 
-                        {showTenantMenu && !isSidebarCollapsed && (
+                        {showTenantMenu && (
                             <div className="tenant-switcher-popover">
                                 <div className="tenant-switcher-label">{isChinese ? '切换公司' : 'Switch company'}</div>
                                 {(myTenants as any[]).length > 8 && (
@@ -703,149 +854,28 @@ export default function Layout() {
                 
                 <div className="sidebar-divider" />
 
-                <div className="sidebar-scrollable">
-                    {/* Sidebar search */}
-                    {!isSidebarCollapsed && agents.length >= 5 && (
-                        <div style={{ padding: '4px 12px 4px', position: 'relative' }}>
-                            <div style={{ position: 'absolute', left: '20px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-tertiary)', display: 'flex' }}>
-                                <IconSearch size={14} stroke={2} />
-                            </div>
-                            <input
-                                type="text"
-                                value={sidebarSearch}
-                                onChange={e => setSidebarSearch(e.target.value)}
-                                placeholder={isChinese ? '搜索...' : 'Search...'}
-                                style={{
-                                    width: '100%', padding: '5px 24px 5px 28px', border: '1px solid var(--border-subtle)',
-                                    borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-                                    fontSize: '12px', outline: 'none', boxSizing: 'border-box',
-                                }}
-                                onFocus={e => e.target.style.borderColor = 'var(--primary)'}
-                                onBlur={e => e.target.style.borderColor = 'var(--border-subtle)'}
-                            />
-                            {sidebarSearch && (
-                                <button onClick={() => setSidebarSearch('')} style={{ position: 'absolute', right: '18px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex', padding: 0 }}>
-                                    <IconX size={14} stroke={2} />
-                                </button>
-                            )}
+                <div
+                    className="sidebar-scrollable"
+                    onMouseEnter={openAgentDrawer}
+                    onMouseLeave={scheduleCloseAgentDrawer}
+                >
+                    {!isSidebarCollapsed && (
+                        <div className="sidebar-agent-header">
+                            <span>{isChinese ? '智能体' : 'Agents'}</span>
+                            <button
+                                type="button"
+                                onClick={() => setShowTalentMarket(true)}
+                                title={t('nav.hire', t('nav.newAgent'))}
+                            >
+                                <IconPlus size={15} stroke={1.7} />
+                            </button>
                         </div>
                     )}
-                    {/* Agent list */}
-                    {(() => {
-                        const q = sidebarSearch.trim().toLowerCase();
-                        const filterAgent = (a: any) => !q || (a.name || '').toLowerCase().includes(q) || (a.role_description || '').toLowerCase().includes(q);
-                        const sortedAgents = [...agents].filter(filterAgent).sort((a: any, b: any) => {
-                            const ap = pinnedAgents.has(a.id) ? 1 : 0;
-                            const bp = pinnedAgents.has(b.id) ? 1 : 0;
-                            if (ap !== bp) return bp - ap;
-                            // Sort by created_at descending (newest first)
-                            const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
-                            const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
-                            return bTime - aTime;
-                        });
-                        const renderAgent = (agent: any) => {
-                            const badge = getAgentBadgeStatus(agent);
-                            const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
-                            const unreadCount = Number(agent.unread_count || 0);
-                            return (
-                            <div key={agent.id} style={{ position: 'relative' }} className={`sidebar-agent-item${agent.creator_id === user?.id ? ' owned' : ''}`}>
-                                <NavLink
-                                    to={`/agents/${agent.id}/chat`}
-                                    className={({ isActive }) => `sidebar-item ${isActive || activeAgentId === agent.id ? 'active' : ''}`}
-                                    title={agent.name}
-                                >
-                                    <span className="sidebar-item-icon" style={{ position: 'relative' }}>
-                                        <span className={`agent-avatar${agent.agent_type === 'openclaw' ? ' openclaw' : ''}`}>{avatarChar}</span>
-                                        {agent.agent_type === 'openclaw' && (
-                                            <span className="agent-avatar-link" style={{ display: 'flex' }}>
-                                                <IconArrowUpRight size={10} stroke={2.5} />
-                                            </span>
-                                        )}
-                                        {badge && <span className={`agent-avatar-badge ${badge}`} />}
-                                        {unreadCount > 0 && (
-                                            <span style={{
-                                                position: 'absolute',
-                                                right: '-7px',
-                                                top: '-6px',
-                                                minWidth: unreadCount > 9 ? '18px' : '14px',
-                                                height: unreadCount > 9 ? '18px' : '14px',
-                                                padding: unreadCount > 9 ? '0 4px' : '0',
-                                                borderRadius: '999px',
-                                                background: 'var(--text-primary)',
-                                                color: 'var(--bg-primary)',
-                                                fontSize: '10px',
-                                                fontWeight: 600,
-                                                lineHeight: 1,
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                boxShadow: '0 0 0 2px var(--bg-primary)',
-                                            }}>
-                                                {unreadCount > 99 ? '99+' : unreadCount}
-                                            </span>
-                                        )}
-                                    </span>
-                                    <span className="sidebar-item-text">{agent.name}</span>
-                                </NavLink>
-                                {!isSidebarCollapsed && (
-                                    <button
-                                        onClick={e => { e.preventDefault(); e.stopPropagation(); togglePin(agent.id); }}
-                                        className={`sidebar-pin-btn ${pinnedAgents.has(agent.id) ? 'pinned' : ''}`}
-                                        title={pinnedAgents.has(agent.id) ? (isChinese ? '取消置顶' : 'Unpin') : (isChinese ? '置顶' : 'Pin to top')}
-                                    >
-                                        {pinnedAgents.has(agent.id) ? (
-                                            <>
-                                                <IconPin size={14} stroke={1.5} className="pin-default" />
-                                                <IconPinnedOff size={14} stroke={1.5} className="pin-hover" />
-                                            </>
-                                        ) : (
-                                            <IconPin size={14} stroke={1.5} className="pin-on" />
-                                        )}
-                                    </button>
-                                )}
-                            </div>
-                        );};
-                        return (
-                            <>
-                                {sortedAgents.map(renderAgent)}
-                                {agents.length === 0 && (
-                                    <div className="sidebar-section">
-                                        <div className="sidebar-section-title">{t('nav.myAgents')}</div>
-                                    </div>
-                                )}
-                                {agents.length > 0 && sortedAgents.length === 0 && q && (
-                                    <div style={{ padding: '12px 16px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-                                        {isChinese ? '无匹配结果' : 'No matches'}
-                                    </div>
-                                )}
-                            </>
-                        );
-                    })()}
+                    {!isSidebarCollapsed && agentSearchBox()}
+                    {agentListContent()}
                 </div>
 
                 <div className="sidebar-bottom">
-                    <div className="sidebar-section" style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px', marginBottom: 0 }}>
-                        {user && (
-                            <button
-                                onClick={() => setShowTalentMarket(true)}
-                                className="sidebar-item"
-                                title={t('nav.hire', t('nav.newAgent'))}
-                                style={{ background: 'transparent', border: 'none', width: '100%', textAlign: 'left', cursor: 'pointer' }}
-                            >
-                                <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.plus}</span>
-                                <span className="sidebar-item-text">{t('nav.hire', t('nav.newAgent'))}</span>
-                            </button>
-                        )}
-                        {user && user.role === 'platform_admin' && (
-                            <NavLink to="/admin/platform-settings" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.platformSettings', 'Platform Settings')}>
-                                <span className="sidebar-item-icon" style={{ display: 'flex' }}>
-                                    <IconSettings size={16} stroke={1.5} />
-                                </span>
-                                <span className="sidebar-item-text">{t('nav.platformSettings', 'Platform Settings')}</span>
-                            </NavLink>
-                        )}
-                    </div>
-
                     <div className="sidebar-footer">
                         <div className="sidebar-footer-controls" style={{
                             display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px',
@@ -903,6 +933,12 @@ export default function Layout() {
                                         <IconUser size={15} stroke={1.5} />
                                         <span>{isChinese ? '账户设置' : 'Account Settings'}</span>
                                     </button>
+                                    {canAccessPlatformSettings && (
+                                        <button className="account-dropdown-item" onClick={() => { navigate('/admin/platform-settings'); setShowAccountMenu(false); }}>
+                                            <IconSettings size={15} stroke={1.5} />
+                                            <span>{t('nav.platformSettings', 'Platform Settings')}</span>
+                                        </button>
+                                    )}
                                     <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '4px 0' }} />
                                     <button className="account-dropdown-item account-dropdown-danger" onClick={() => { handleLogout(); setShowAccountMenu(false); }}>
                                         <IconLogout size={15} stroke={1.5} />
@@ -945,6 +981,7 @@ export default function Layout() {
                     </div>
                 </div>
             </nav>
+            {agentDrawer}
 
             {showTenantSetupModal && (
                 <div className="tenant-setup-modal-backdrop" onClick={() => setShowTenantSetupModal(false)}>

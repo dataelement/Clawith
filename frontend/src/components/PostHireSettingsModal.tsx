@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { IconX } from '@tabler/icons-react';
 import { agentApi, enterpriseApi, tenantApi } from '../services/api';
 import { translateTemplate } from '../i18n/templateTranslations';
+import { useDialog } from './Dialog/DialogProvider';
 
 interface Template {
     id: string;
@@ -38,6 +39,7 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
     const queryClient = useQueryClient();
+    const dialog = useDialog();
     const isChinese = i18n.language.startsWith('zh');
 
     const [visibility, setVisibility] = useState<Visibility>('company');
@@ -122,8 +124,11 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
             // tab). AgentDetail picks up the hash on mount.
             if (navigateAfter) navigate(`/agents/${agent.id}#chat`);
         },
-        onError: (err: any) => {
-            alert((err?.message || 'Failed to create agent') as string);
+        onError: async (err: any) => {
+            await dialog.alert(isChinese ? '创建数字员工失败' : 'Failed to create agent', {
+                type: 'error',
+                details: String(err?.message || err),
+            });
         },
     });
 

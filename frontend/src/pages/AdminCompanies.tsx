@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { adminApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor } from '../utils/theme';
-import { IconFilter } from '@tabler/icons-react';
+import { IconFilter, IconShieldCheck } from '@tabler/icons-react';
 import PlatformDashboard from './PlatformDashboard';
 import LinearCopyButton from '../components/LinearCopyButton';
 import { useDialog } from '../components/Dialog/DialogProvider';
@@ -48,8 +48,10 @@ export default function AdminCompanies() {
     const user = useAuthStore((s) => s.user);
     const [activeTab, setActiveTab] = useState<'dashboard' | 'platform' | 'companies'>('dashboard');
 
-    // Guard: only platform_admin
-    if (user?.role !== 'platform_admin') {
+    const canAccessPlatformSettings = user?.role === 'platform_admin' || !!(user as any)?.is_platform_admin;
+
+    // Guard: platform admins keep access across tenant contexts.
+    if (!canAccessPlatformSettings) {
         return (
             <div style={{ padding: '60px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
                 {t('common.noPermission', 'You do not have permission to access this page.')}
@@ -1016,7 +1018,7 @@ function CompaniesTab() {
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
                             {c.sso_enabled ? (
                                 <>
-                                    <span style={{ color: 'var(--accent-primary)', fontSize: '14px' }} title="SSO Enabled">🛡️</span>
+                                    <span style={{ color: 'var(--accent-primary)', display: 'inline-flex' }} title="SSO Enabled"><IconShieldCheck size={14} stroke={1.8} /></span>
                                     {c.sso_domain && (
                                         <span style={{ 
                                             fontSize: '9px', background: 'rgba(59,130,246,0.1)', 

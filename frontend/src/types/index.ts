@@ -7,6 +7,7 @@ export interface User {
     display_name: string;
     avatar_url?: string;
     role: 'platform_admin' | 'org_admin' | 'agent_admin' | 'member';
+    is_platform_admin?: boolean;
     tenant_id?: string;
     title?: string;
     feishu_open_id?: string;
@@ -28,6 +29,13 @@ export interface Agent {
     autonomy_policy: Record<string, string>;
     tokens_used_today: number;
     tokens_used_month: number;
+    tokens_used_total?: number;
+    cache_read_tokens_today?: number;
+    cache_read_tokens_month?: number;
+    cache_read_tokens_total?: number;
+    cache_creation_tokens_today?: number;
+    cache_creation_tokens_month?: number;
+    cache_creation_tokens_total?: number;
     max_tokens_per_day?: number;
     max_tokens_per_month?: number;
     heartbeat_enabled: boolean;

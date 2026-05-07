@@ -38,6 +38,7 @@ class CompanyStats(BaseModel):
     agent_count: int = 0
     agent_running_count: int = 0
     total_tokens: int = 0
+    cache_read_tokens_total: int = 0
     org_admin_email: str | None = None
 
 
@@ -96,11 +97,14 @@ async def list_companies(
 
         # Total tokens
         tc = await db.execute(
-            select(sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0)).where(
+            select(
+                sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0),
+                sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_total), 0),
+            ).where(
                 Agent.tenant_id == tid
             )
         )
-        total_tokens = tc.scalar() or 0
+        total_tokens, cache_read_tokens_total = tc.one()
 
         # Org Admin Email (first found if multiple)
         admin_q = await db.execute(
@@ -124,6 +128,7 @@ async def list_companies(
             agent_count=agent_count,
             agent_running_count=agent_running,
             total_tokens=total_tokens,
+            cache_read_tokens_total=cache_read_tokens_total,
             org_admin_email=org_admin_email,
         ))
 
@@ -248,13 +253,24 @@ async def get_platform_timeseries(
     tokens_q = await db.execute(
         select(
             cast(DailyTokenUsage.date, Date).label('d'),
-            sqla_func.sum(DailyTokenUsage.tokens_used).label('c')
+            sqla_func.sum(DailyTokenUsage.tokens_used).label('c'),
+            sqla_func.sum(DailyTokenUsage.cache_read_tokens).label('cache_read'),
         ).where(
             DailyTokenUsage.date >= start_date,
             DailyTokenUsage.date <= end_date
         ).group_by('d')
     )
     tokens_by_day = {row.d: row.c for row in tokens_q.all()}
+    tokens_q = await db.execute(
+        select(
+            cast(DailyTokenUsage.date, Date).label('d'),
+            sqla_func.sum(DailyTokenUsage.cache_read_tokens).label('cache_read'),
+        ).where(
+            DailyTokenUsage.date >= start_date,
+            DailyTokenUsage.date <= end_date
+        ).group_by('d')
+    )
+    cache_by_day = {row.d: row.cache_read for row in tokens_q.all()}
 
     # 4. New Sessions per day (DAU = distinct users with sessions that day)
     sessions_q = await db.execute(
@@ -320,17 +336,20 @@ async def get_platform_timeseries(
     total_companies = (await db.execute(select(sqla_func.count()).select_from(Tenant).where(Tenant.created_at < start_date))).scalar() or 0
     total_users = (await db.execute(select(sqla_func.count()).select_from(User).where(User.created_at < start_date))).scalar() or 0
     total_tokens = (await db.execute(select(sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0)).where(Agent.created_at < start_date))).scalar() or 0
+    total_cache_read = (await db.execute(select(sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_total), 0)).where(Agent.created_at < start_date))).scalar() or 0
     total_sessions = (await db.execute(select(sqla_func.count()).select_from(ChatSession).where(ChatSession.created_at < start_date))).scalar() or 0
 
     while current_d <= end_d:
         nc = companies_by_day.get(current_d, 0)
         nu = users_by_day.get(current_d, 0)
         nt = tokens_by_day.get(current_d, 0)
+        ncache = cache_by_day.get(current_d, 0)
         ns = sessions_by_day.get(current_d, 0)
 
         total_companies += nc
         total_users += nu
         total_tokens += nt
+        total_cache_read += ncache
         total_sessions += ns
 
         result.append({
@@ -341,6 +360,9 @@ async def get_platform_timeseries(
             "total_users": total_users,
             "new_tokens": nt,
             "total_tokens": total_tokens,
+            "new_cache_read_tokens": ncache,
+            "total_cache_read_tokens": total_cache_read,
+            "cache_hit_rate": round((ncache or 0) / max(nt or 0, 1), 4),
             # New metrics
             "new_sessions": ns,
             "total_sessions": total_sessions,
@@ -361,22 +383,43 @@ async def get_platform_leaderboards(
     """Get Top 20 token consuming companies and agents."""
     # Top 20 Companies by total tokens
     top_companies_q = await db.execute(
-        select(Tenant.name, sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).label('total'))
+        select(
+            Tenant.name,
+            sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).label('total'),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_total), 0).label('cache_read'),
+        )
         .join(Agent, Agent.tenant_id == Tenant.id)
         .group_by(Tenant.id)
         .order_by(sqla_func.sum(Agent.tokens_used_total).desc())
         .limit(20)
     )
-    top_companies = [{"name": row.name, "tokens": row.total} for row in top_companies_q.all()]
+    top_companies = [
+        {
+            "name": row.name,
+            "tokens": row.total,
+            "cache_read_tokens": row.cache_read,
+            "cache_hit_rate": round((row.cache_read or 0) / max(row.total or 0, 1), 4),
+        }
+        for row in top_companies_q.all()
+    ]
 
     # Top 20 Agents by total tokens
     top_agents_q = await db.execute(
-        select(Agent.name, Tenant.name.label('tenant_name'), Agent.tokens_used_total)
+        select(Agent.name, Tenant.name.label('tenant_name'), Agent.tokens_used_total, Agent.cache_read_tokens_total)
         .join(Tenant, Tenant.id == Agent.tenant_id)
         .order_by(Agent.tokens_used_total.desc())
         .limit(20)
     )
-    top_agents = [{"name": row.name, "company": row.tenant_name, "tokens": row.tokens_used_total} for row in top_agents_q.all()]
+    top_agents = [
+        {
+            "name": row.name,
+            "company": row.tenant_name,
+            "tokens": row.tokens_used_total,
+            "cache_read_tokens": row.cache_read_tokens_total,
+            "cache_hit_rate": round((row.cache_read_tokens_total or 0) / max(row.tokens_used_total or 0, 1), 4),
+        }
+        for row in top_agents_q.all()
+    ]
 
     return {
         "top_companies": top_companies,

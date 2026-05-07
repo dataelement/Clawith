@@ -663,7 +663,9 @@ async def reset_password(data: ResetPasswordRequest, db: AsyncSession = Depends(
 @router.get("/me", response_model=UserOut)
 async def get_me(current_user: User = Depends(get_authenticated_user)):
     """Get current user profile."""
-    return UserOut.model_validate(current_user)
+    data = UserOut.model_validate(current_user)
+    data.is_platform_admin = bool(getattr(getattr(current_user, "identity", None), "is_platform_admin", False))
+    return data
 
 
 @router.patch("/me", response_model=UserOut)

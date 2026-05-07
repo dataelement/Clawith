@@ -20,13 +20,33 @@ def build_visible_agents_query(
     """Build a query for agents visible to the current user.
 
     Visibility defaults to "same company + creator/self-permitted/company-wide".
-    This keeps private agents hidden from other users, including platform admins.
+    Company admins can see all non-private agents in their tenant. Private
+    user-only agents stay hidden unless the admin created them.
     """
     stmt = select(Agent)
 
     target_tenant_id = tenant_id if tenant_id is not None else user.tenant_id
     if target_tenant_id is None:
         return stmt.where(false())
+
+    public_or_shared_ids = (
+        select(AgentPermission.agent_id)
+        .where(AgentPermission.scope_type != "user")
+    )
+    private_user_only_ids = (
+        select(AgentPermission.agent_id)
+        .where(AgentPermission.scope_type == "user")
+        .where(AgentPermission.agent_id.not_in(public_or_shared_ids))
+    )
+
+    if user.role in ("platform_admin", "org_admin"):
+        return stmt.where(
+            Agent.tenant_id == target_tenant_id,
+            or_(
+                Agent.creator_id == user.id,
+                Agent.id.not_in(private_user_only_ids),
+            ),
+        )
 
     permitted_ids = (
         select(AgentPermission.agent_id)
@@ -56,8 +76,9 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     Returns (agent, access_level) where access_level is 'manage' or 'use'.
 
     Access is granted if:
-    1. User is the agent creator → manage
-    2. User has explicit permission (company/user scope) → from permission record
+    1. User is the agent creator -> manage
+    2. Company admin + non-private agent -> manage
+    3. User has explicit permission (company/user scope) -> from permission record
     """
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
@@ -75,6 +96,11 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     # Check permission scopes
     perms = await db.execute(select(AgentPermission).where(AgentPermission.agent_id == agent_id))
     permissions = perms.scalars().all()
+
+    is_admin = user.role in ("platform_admin", "org_admin")
+    is_private_user_only = bool(permissions) and all(perm.scope_type == "user" for perm in permissions)
+    if is_admin and not is_private_user_only:
+        return agent, "manage"
 
     for perm in permissions:
         if perm.scope_type == "company" and agent.tenant_id == user.tenant_id:

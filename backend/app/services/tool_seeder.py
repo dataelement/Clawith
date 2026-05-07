@@ -5,7 +5,13 @@ from sqlalchemy import select
 from app.database import async_session
 from app.models.tool import Tool
 
-SYNC_IS_DEFAULT_TOOL_NAMES = {"read_webpage", "duckduckgo_search", "jina_search", "jina_read"}
+SYNC_IS_DEFAULT_TOOL_NAMES = {
+    "read_webpage",
+    "duckduckgo_search",
+    "jina_search",
+    "jina_read",
+    "update_objective",
+}
 
 # Builtin tool definitions — these map to the hardcoded AGENT_TOOLS
 BUILTIN_TOOLS = [
@@ -28,14 +34,14 @@ BUILTIN_TOOLS = [
     {
         "name": "read_file",
         "display_name": "Read File",
-        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks.",
+        "description": "Read file contents from the workspace. Can read soul.md, focus.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks.",
         "category": "file",
         "icon": "📄",
         "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"},
+                "path": {"type": "string", "description": "File path, e.g.: soul.md, focus.md, memory/memory.md"},
                 "offset": {"type": "integer", "description": "Starting line number (0-indexed, default 0). Use with limit for pagination."},
                 "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000). Use with offset for pagination."},
             },
@@ -79,6 +85,25 @@ BUILTIN_TOOLS = [
                 "path": {"type": "string", "description": "File path to delete"}
             },
             "required": ["path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "move_file",
+        "display_name": "Move File",
+        "description": "Move or rename a file or folder within the workspace. Use this instead of execute_code for reorganizing workspace files, moving generated documents into subfolders, or renaming files. Cannot move soul.md, tasks.json, or enterprise_info/. If destination_path is an existing folder or ends with '/', the original filename is preserved inside that folder. Does not overwrite by default.",
+        "category": "file",
+        "icon": "↪",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string", "description": "Current file or folder path, e.g.: workspace/report.md"},
+                "destination_path": {"type": "string", "description": "Destination file/folder path, e.g.: workspace/archive/report.md or workspace/presentations/PPT/"},
+                "overwrite": {"type": "boolean", "description": "Replace the destination if it already exists. Default false."},
+            },
+            "required": ["source_path", "destination_path"],
         },
         "config": {},
         "config_schema": {},
@@ -180,7 +205,7 @@ BUILTIN_TOOLS = [
     {
         "name": "convert_html_to_pdf",
         "display_name": "HTML to PDF",
-        "description": "Convert an HTML source file into a PDF document using WeasyPrint.",
+        "description": "Convert an HTML source file into a PDF document. Uses headless Chrome by default for higher-fidelity rendering of modern CSS and screen layouts, with WeasyPrint as a fallback.",
         "category": "file",
         "icon": "📄",
         "is_default": True,
@@ -189,6 +214,12 @@ BUILTIN_TOOLS = [
             "properties": {
                 "source_path": {"type": "string", "description": "Path to the source HTML file"},
                 "target_path": {"type": "string", "description": "Path for the output PDF file (.pdf)"},
+                "design_width": {"type": "number", "description": "Optional browser viewport width in pixels, default 1280"},
+                "design_height": {"type": "number", "description": "Optional browser viewport height in pixels, default 720"},
+                "pdf_mode": {"type": "string", "enum": ["pages", "single"], "description": "pages outputs paginated PDF, single outputs one long full-page PDF. Default: pages"},
+                "scale": {"type": "number", "description": "Optional Chrome PDF scale for paginated output, default 0.64"},
+                "paper_width": {"type": "number", "description": "Optional paper width in inches for paginated output, default 8.27"},
+                "paper_height": {"type": "number", "description": "Optional paper height in inches for paginated output, default 11.69"},
             },
             "required": ["source_path", "target_path"],
         },
@@ -198,7 +229,7 @@ BUILTIN_TOOLS = [
     {
         "name": "convert_html_to_pptx",
         "display_name": "HTML to PowerPoint",
-        "description": "Convert an HTML source file into a PowerPoint .pptx file. Organize HTML logically (e.g. sections or headings for slides).",
+        "description": "Convert an HTML source file into a PowerPoint .pptx file. By default, render_mode='editable' opens the HTML in headless Chrome, samples real element positions/styles, and maps explicit .slide/data-slide nodes or top-level page sections into editable PPT elements. Use render_mode='visual' as a high-fidelity screenshot fallback when exact visual preservation is more important than editability.",
         "category": "file",
         "icon": "📽️",
         "is_default": True,
@@ -207,6 +238,10 @@ BUILTIN_TOOLS = [
             "properties": {
                 "source_path": {"type": "string", "description": "Path to the source HTML file"},
                 "target_path": {"type": "string", "description": "Path for the output PowerPoint file (.pptx)"},
+                "design_width": {"type": "number", "description": "Optional source design width in pixels, default 1280"},
+                "design_height": {"type": "number", "description": "Optional source design height in pixels, default 720"},
+                "render_mode": {"type": "string", "enum": ["editable", "visual"], "description": "editable maps HTML/CSS into editable PPT elements using Chrome layout sampling; visual preserves styling with Chrome-rendered screenshots as a fallback. Default: editable"},
+                "render_scale": {"type": "number", "description": "Optional Chrome raster scale for screenshots and complex CSS captures. Higher values improve sharpness but increase PPTX size. Default: 2, clamped between 1 and 4"},
             },
             "required": ["source_path", "target_path"],
         },
@@ -1264,8 +1299,9 @@ BUILTIN_TOOLS = [
         "display_name": "Get OKR Board",
         "description": (
             "Get the full OKR board for the current period. Returns all Objectives and Key Results "
-            "for the tenant, organized by company and member level. Includes kr_id values so you "
-            "can call update_kr_progress to update specific KRs. Used by the OKR Agent to generate "
+            "for the tenant, organized by company and member level. Includes objective_id values "
+            "for every Objective and kr_id values for every Key Result, so you can update existing "
+            "Objectives and KRs instead of creating duplicates. Used by the OKR Agent to generate "
             "progress reports and monitor team performance."
         ),
         "category": "okr",
@@ -1588,7 +1624,7 @@ BUILTIN_TOOLS = [
         ),
         "category": "okr",
         "icon": "✏️",
-        "is_default": False,
+        "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
@@ -2282,14 +2318,6 @@ AGENTBAY_TOOLS = [
             "properties": {
                 "url": {"type": "string", "description": "要访问的网址"},
                 "wait_for": {"type": "string", "description": "等待元素选择器（可选）"},
-                "save_to_workspace": {
-                    "type": "boolean",
-                    # Set to True ONLY when the user explicitly asks to SEE or SAVE
-                    # a screenshot (e.g. "截图给我看", "保存截图"). Default False means
-                    # the screenshot is held in memory for LLM vision only (invisible to user).
-                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
-                    "default": False,
-                },
             },
             "required": ["url"],
         },
@@ -2326,16 +2354,19 @@ AGENTBAY_TOOLS = [
         "is_default": False,
         "parameters_schema": {
             "type": "object",
-            "properties": {
-                "save_to_workspace": {
-                    "type": "boolean",
-                    # Set to True ONLY when the user explicitly asks to SEE or SAVE
-                    # a screenshot. Default False = in-memory for LLM vision only.
-                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
-                    "default": False,
-                },
-            },
+            "properties": {},
         },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_browser_save_screenshot",
+        "display_name": "AgentBay: Save Browser Screenshot",
+        "description": "[ENV: Browser] Save the current headless browser screenshot to workspace/screenshots/. Use only when the user explicitly asks to save, share, keep, or show a screenshot. For routine visual observation, use agentbay_browser_screenshot instead because it stays internal and does not create workspace files.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
         "config": {},
         "config_schema": {},
     },
@@ -2472,9 +2503,28 @@ AGENTBAY_TOOLS = [
     {
         "name": "agentbay_computer_screenshot",
         "display_name": "AgentBay: Desktop Screenshot",
-        "description": "[ENV: Cloud Desktop] Take a screenshot of the full Cloud Desktop (Windows/Linux). IMPORTANT: This desktop is an ISOLATED environment — it does NOT share filesystem, processes, or browser sessions with the Headless Browser (browser_* tools) or Code Sandbox (code_execute/command_exec). To browse the web on this desktop, use computer_start_app to open a browser app. Essential for understanding the current desktop state before performing GUI operations.",
+        "description": "[ENV: Cloud Desktop] Take a screenshot of the full Cloud Desktop (Windows/Linux). The analysis image includes a coordinate grid and the result includes the pixel coordinate system for mouse tools. For tiny controls such as close buttons, menus, checkboxes, or small icons, call this again with focus_x/focus_y/focus_width/focus_height around the target area before clicking; the focused crop is enlarged for vision and its grid labels remain absolute desktop coordinates. IMPORTANT: This desktop is an ISOLATED environment — it does NOT share filesystem, processes, or browser sessions with the Headless Browser (browser_* tools) or Code Sandbox (code_execute/command_exec). To browse the web on this desktop, first use agentbay_computer_get_installed_apps, then start a browser with the returned start_cmd. Essential for understanding the current desktop state before performing GUI operations.",
         "category": "agentbay",
         "icon": "📸",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "focus_x": {"type": "integer", "description": "Optional absolute desktop X coordinate for the top-left of a focused precision crop"},
+                "focus_y": {"type": "integer", "description": "Optional absolute desktop Y coordinate for the top-left of a focused precision crop"},
+                "focus_width": {"type": "integer", "description": "Optional width of the focused precision crop in desktop pixels"},
+                "focus_height": {"type": "integer", "description": "Optional height of the focused precision crop in desktop pixels"},
+            },
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_save_screenshot",
+        "display_name": "AgentBay: Save Desktop Screenshot",
+        "description": "[ENV: Cloud Desktop] Save the current Cloud Desktop screenshot to workspace/screenshots/. Use only when the user explicitly asks to save, share, keep, or show a screenshot. For routine visual observation, use agentbay_computer_screenshot instead because it stays internal and does not create workspace files.",
+        "category": "agentbay",
+        "icon": "A",
         "is_default": False,
         "parameters_schema": {"type": "object", "properties": {}},
         "config": {},
@@ -2483,7 +2533,7 @@ AGENTBAY_TOOLS = [
     {
         "name": "agentbay_computer_click",
         "display_name": "AgentBay: Mouse Click",
-        "description": "[ENV: Cloud Desktop] Click the mouse at specific screen coordinates on the Cloud Desktop (ISOLATED from Browser and Code Sandbox). Take a screenshot first to identify the target position.",
+        "description": "[ENV: Cloud Desktop] Click the mouse at absolute desktop pixel coordinates on the Cloud Desktop (ISOLATED from Browser and Code Sandbox). Always inspect the desktop first with agentbay_computer_screenshot. Before clicking dialog buttons, text buttons, tabs, menus, checkboxes, close buttons, small controls, or any target whose center is not unambiguous from the full screenshot, call agentbay_computer_precision_screenshot around the target area and use the absolute coordinate labels in that enlarged crop. Do not repeatedly guess from the full screenshot after a miss. For login prompts, software popups, cancel/no-thanks/not-now/skip/no-login flows, prefer agentbay_computer_dismiss_dialog before coordinate clicking. Click the visual center of the target. Coordinates are from the full desktop top-left corner (0, 0), not from the right-side preview panel. For in-app popups, embedded panels, marketplace/store windows, browser/app tabs, document tabs, and software-internal close buttons, use the app UI with click, Escape, or shortcuts such as Ctrl+W; do not escalate to root-window close tools. Use agentbay_computer_list_windows/close_window only when the user explicitly wants to close or quit an entire OS-level window/application.",
         "category": "agentbay",
         "icon": "🖱️",
         "is_default": False,
@@ -2495,6 +2545,26 @@ AGENTBAY_TOOLS = [
                 "button": {"type": "string", "enum": ["left", "right", "middle", "double_left"], "description": "Mouse button (default: left)", "default": "left"},
             },
             "required": ["x", "y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_precision_screenshot",
+        "display_name": "AgentBay: Precision Screenshot",
+        "description": "[ENV: Cloud Desktop] Take an enlarged focused crop of the Cloud Desktop for accurate mouse targeting. Use this before clicking dialog buttons, text buttons, tabs, menus, checkboxes, close buttons, small controls, or after any near-miss. Provide an approximate absolute desktop rectangle around the target; small rectangles are automatically expanded to include surrounding context, so prefer a region around the target instead of an ultra-tight crop. The returned vision image is enlarged and its grid labels remain absolute desktop coordinates for agentbay_computer_click. The next click should use the center coordinate read from this precision crop, not a guessed coordinate from the full screenshot.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Absolute desktop X coordinate of the crop top-left"},
+                "y": {"type": "integer", "description": "Absolute desktop Y coordinate of the crop top-left"},
+                "width": {"type": "integer", "description": "Approximate crop width in desktop pixels. Small crops are automatically expanded for context."},
+                "height": {"type": "integer", "description": "Approximate crop height in desktop pixels. Small crops are automatically expanded for context."},
+            },
+            "required": ["x", "y", "width", "height"],
         },
         "config": {},
         "config_schema": {},
@@ -2607,7 +2677,7 @@ AGENTBAY_TOOLS = [
     {
         "name": "agentbay_computer_start_app",
         "display_name": "AgentBay: Start Application",
-        "description": "[ENV: Cloud Desktop] Start an application on the Cloud Desktop by its launch command (e.g. 'firefox', 'libreoffice --calc'). The desktop is ISOLATED from the Headless Browser and Code Sandbox environments.",
+        "description": "[ENV: Cloud Desktop] Start an application on the Cloud Desktop by its launch command. Prefer calling agentbay_computer_get_installed_apps first and pass the returned start_cmd exactly; do not guess commands such as chrome, microsoft-edge, or wps. If a direct command fails, this tool will try to match installed apps by name/start_cmd and retry with the real start_cmd. The desktop is ISOLATED from the Headless Browser and Code Sandbox environments.",
         "category": "agentbay",
         "icon": "🚀",
         "is_default": False,
@@ -2618,6 +2688,24 @@ AGENTBAY_TOOLS = [
                 "work_dir": {"type": "string", "description": "Working directory for the application (optional)"},
             },
             "required": ["cmd"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_get_installed_apps",
+        "display_name": "AgentBay: Get Installed Apps",
+        "description": "[ENV: Cloud Desktop] List installed applications and their real launch commands. Use this before agentbay_computer_start_app, then pass the returned start_cmd exactly instead of guessing app names.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "start_menu": {"type": "boolean", "description": "Include Start Menu applications (default: true)", "default": True},
+                "desktop": {"type": "boolean", "description": "Include Desktop shortcuts (default: true)", "default": True},
+                "ignore_system_apps": {"type": "boolean", "description": "Hide system applications (default: true)", "default": True},
+            },
         },
         "config": {},
         "config_schema": {},
@@ -2647,7 +2735,7 @@ AGENTBAY_TOOLS = [
     {
         "name": "agentbay_computer_activate_window",
         "display_name": "AgentBay: Activate Window",
-        "description": "[ENV: Cloud Desktop] Bring a specific window to the foreground on the Cloud Desktop by its window ID. Use get_active_window or list_visible_apps to find window IDs.",
+        "description": "[ENV: Cloud Desktop] Bring a specific window to the foreground on the Cloud Desktop by its window ID. Use agentbay_computer_list_windows or get_active_window to find window IDs.",
         "category": "agentbay",
         "icon": "🪟",
         "is_default": False,
@@ -2657,6 +2745,56 @@ AGENTBAY_TOOLS = [
                 "window_id": {"type": "integer", "description": "Window ID to activate"},
             },
             "required": ["window_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_list_windows",
+        "display_name": "AgentBay: List Windows",
+        "description": "[ENV: Cloud Desktop] List OS-level root desktop windows with window_id, title, process, and geometry. These IDs are for whole application windows only. Use this for activation, or before closing only when the user explicitly wants to close/quit an entire desktop window or app. Do NOT use root window IDs for in-app popups, modals, embedded marketplace/store panels, browser/app tabs, document tabs, or software-internal dialogs; close those with the app UI, Escape, Ctrl+W, or agentbay_computer_dismiss_dialog.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "timeout_ms": {"type": "integer", "description": "Timeout in milliseconds (default: 3000)", "default": 3000},
+            },
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_close_window",
+        "display_name": "AgentBay: Close Window",
+        "description": "[ENV: Cloud Desktop] HIGH-RISK: close an entire OS-level root desktop window by explicit window_id returned by agentbay_computer_list_windows. This can quit the whole application and lose context. Use only when the user explicitly asks to close/quit a whole desktop window or app. Never use this for in-app popups, modals, embedded marketplace/store panels, browser/app tabs, document tabs, login prompts, or software-internal dialogs; use app UI clicks, Escape, Ctrl+W, or agentbay_computer_dismiss_dialog instead.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "window_id": {"type": "integer", "description": "Window ID returned by agentbay_computer_list_windows or get_active_window"},
+                "title": {"type": "string", "description": "Optional title text for candidate lookup only when window_id is unknown; title-only calls will not close anything"},
+            },
+            "required": ["window_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_dismiss_dialog",
+        "display_name": "AgentBay: Dismiss Dialog",
+        "description": "[ENV: Cloud Desktop] Safely dismiss the active in-app popup/dialog by sending Escape only. It never closes root desktop windows or applications. Prefer this over coordinate clicking for modals, login prompts, no-login/not-now/skip/cancel prompts, and software-internal dialogs. For in-app tabs, embedded panels, marketplace/store windows, or document tabs, prefer app UI controls or shortcuts such as Ctrl+W. Use agentbay_computer_close_window only when the user explicitly wants to close/quit an entire OS-level window/app.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Optional human-readable popup/dialog title hint for logging only; this tool will still only send Escape"},
+            },
         },
         "config": {},
         "config_schema": {},
@@ -2732,8 +2870,9 @@ OKR_BUILTIN_TOOLS = [
         "description": (
             "Read the full OKR board for the current period: company-level Objectives and "
             "Key Results, plus every member's (human and agent) individual O and KRs with "
-            "current progress values. Use this to understand company direction and see how "
-            "others are tracking before planning your own work."
+            "current progress values. Includes objective_id for each Objective and kr_id for "
+            "each Key Result. Use this to understand company direction, update existing OKRs, "
+            "and see how others are tracking before planning your own work."
         ),
         "category": "okr",
         "icon": "🎯",
@@ -2926,6 +3065,87 @@ async def seed_builtin_tools():
                     if not check.scalar_one_or_none():
                         db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True))
             logger.info(f"[ToolSeeder] Auto-assigned {len(new_tool_ids)} new tools to {len(agent_ids)} agents")
+
+        # AgentBay desktop window helpers are non-default tools, but should be
+        # available wherever the user has already enabled Cloud Desktop tools.
+        computer_anchor_names = [
+            "agentbay_computer_screenshot",
+            "agentbay_computer_precision_screenshot",
+            "agentbay_computer_click",
+            "agentbay_computer_get_active_window",
+            "agentbay_computer_activate_window",
+        ]
+        computer_helper_names = [
+            "agentbay_computer_precision_screenshot",
+            "agentbay_computer_save_screenshot",
+            "agentbay_computer_list_windows",
+            "agentbay_computer_close_window",
+            "agentbay_computer_dismiss_dialog",
+        ]
+        anchor_tools_r = await db.execute(select(Tool.id).where(Tool.name.in_(computer_anchor_names)))
+        anchor_tool_ids = [row[0] for row in anchor_tools_r.fetchall()]
+        helper_tools_r = await db.execute(select(Tool).where(Tool.name.in_(computer_helper_names)))
+        helper_tools = helper_tools_r.scalars().all()
+        if anchor_tool_ids and helper_tools:
+            enabled_agent_r = await db.execute(
+                select(AgentTool.agent_id)
+                .where(AgentTool.tool_id.in_(anchor_tool_ids), AgentTool.enabled == True)  # noqa: E712
+                .distinct()
+            )
+            enabled_agent_ids = [row[0] for row in enabled_agent_r.fetchall()]
+            assigned_count = 0
+            for agent_id in enabled_agent_ids:
+                for helper_tool in helper_tools:
+                    existing_assignment = await db.execute(
+                        select(AgentTool).where(
+                            AgentTool.agent_id == agent_id,
+                            AgentTool.tool_id == helper_tool.id,
+                        )
+                    )
+                    if not existing_assignment.scalar_one_or_none():
+                        db.add(AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
+                        assigned_count += 1
+            if assigned_count:
+                logger.info(
+                    f"[ToolSeeder] Auto-assigned {assigned_count} AgentBay computer helper tool(s) "
+                    f"to {len(enabled_agent_ids)} agent(s)"
+                )
+
+        # Save-screenshot is non-default, but should be available wherever the
+        # user has enabled the AgentBay browser screenshot tool.
+        browser_anchor_names = [
+            "agentbay_browser_navigate",
+            "agentbay_browser_screenshot",
+        ]
+        browser_helper_names = ["agentbay_browser_save_screenshot"]
+        browser_anchor_tools_r = await db.execute(select(Tool.id).where(Tool.name.in_(browser_anchor_names)))
+        browser_anchor_tool_ids = [row[0] for row in browser_anchor_tools_r.fetchall()]
+        browser_helper_tools_r = await db.execute(select(Tool).where(Tool.name.in_(browser_helper_names)))
+        browser_helper_tools = browser_helper_tools_r.scalars().all()
+        if browser_anchor_tool_ids and browser_helper_tools:
+            browser_enabled_agent_r = await db.execute(
+                select(AgentTool.agent_id)
+                .where(AgentTool.tool_id.in_(browser_anchor_tool_ids), AgentTool.enabled == True)  # noqa: E712
+                .distinct()
+            )
+            browser_enabled_agent_ids = [row[0] for row in browser_enabled_agent_r.fetchall()]
+            browser_assigned_count = 0
+            for agent_id in browser_enabled_agent_ids:
+                for helper_tool in browser_helper_tools:
+                    existing_assignment = await db.execute(
+                        select(AgentTool).where(
+                            AgentTool.agent_id == agent_id,
+                            AgentTool.tool_id == helper_tool.id,
+                        )
+                    )
+                    if not existing_assignment.scalar_one_or_none():
+                        db.add(AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
+                        browser_assigned_count += 1
+            if browser_assigned_count:
+                logger.info(
+                    f"[ToolSeeder] Auto-assigned {browser_assigned_count} AgentBay browser helper tool(s) "
+                    f"to {len(browser_enabled_agent_ids)} agent(s)"
+                )
 
         OBSOLETE_TOOLS = ["bing_search", "manage_tasks"]
         for obsolete_name in OBSOLETE_TOOLS:

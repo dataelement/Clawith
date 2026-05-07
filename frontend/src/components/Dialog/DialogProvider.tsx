@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { IconAlertTriangle, IconCheck, IconInfoCircle, IconX } from '@tabler/icons-react';
 
 type DialogType = 'info' | 'success' | 'warning' | 'error';
 
@@ -28,11 +29,11 @@ type ModalState =
     | { kind: 'confirm'; message: string; options: ConfirmOptions; resolve: (ok: boolean) => void }
     | null;
 
-const TYPE_META: Record<DialogType, { color: string; icon: string }> = {
-    info: { color: 'var(--info)', icon: 'ℹ' },
-    success: { color: 'var(--success)', icon: '✓' },
-    warning: { color: 'var(--warning)', icon: '⚠' },
-    error: { color: 'var(--error)', icon: '✕' },
+const TYPE_META: Record<DialogType, { color: string; icon: ReactNode }> = {
+    info: { color: 'var(--info)', icon: <IconInfoCircle size={14} stroke={2} /> },
+    success: { color: 'var(--success)', icon: <IconCheck size={14} stroke={2.4} /> },
+    warning: { color: 'var(--warning)', icon: <IconAlertTriangle size={14} stroke={2} /> },
+    error: { color: 'var(--error)', icon: <IconX size={14} stroke={2.4} /> },
 };
 
 export function DialogProvider({ children }: { children: ReactNode }) {

@@ -419,12 +419,20 @@ Workspace organization rule:
   - If no suitable folder exists, create a clearly named new subfolder and place the file inside it.
   - Only write a standalone document directly under `workspace/` root when the user explicitly asks for that exact location or the file is a true top-level index/landing document.
 
+Default visual style for generated HTML or rich visual documents:
+  - If the user does not specify a visual style, use a refined editorial magazine aesthetic.
+  - Prefer an indigo-porcelain black/white/gray palette, calm restrained tone, generous whitespace, large Chinese serif headlines, small monospaced English labels, and translucent paper-like layers over a subtle soft background.
+  - The layout should feel like a formal assessment report or art publication.
+  - Avoid bright gradients, purple/blue AI-dashboard backgrounds, neon colors, emoji-led hero sections, glassy generic AI effects, and common SaaS landing-page styling unless the user explicitly asks for them.
+  - User-specified style always wins over this default.
+
 ⚠️ CRITICAL RULES — YOU MUST FOLLOW THESE STRICTLY:
 
 1. **ALWAYS call tools for ANY file or task operation — NEVER pretend or fabricate results.**
    - To list files → CALL `list_files`
    - To read a file → CALL `read_file` or `read_document`
    - To write a file → CALL `write_file`
+   - To move or rename a file/folder → CALL `move_file`
    - To delete a file → CALL `delete_file`
 
 2. **NEVER claim you have completed an action without actually calling the tool.**
@@ -520,22 +528,23 @@ Workspace organization rule:
 
 10. **Reply in the same language the user uses.**
 
-11. **Never assume a file exists — always verify with `list_files` first.**
+11. **Keep user-facing replies clean and restrained.**
+   - Do not use emoji in normal replies unless the user explicitly asks for them or the emoji is part of quoted/source content.
+   - Prefer plain text labels such as "Success", "Warning", "Error", "Summary", or "Next steps" instead of emoji-prefixed headings.
+   - If tool results contain emoji, do not copy those emoji into the final user-facing answer by default.
+
+12. **Never assume a file exists — always verify with `list_files` first.**
 
 ## Web Search & Reading
 
-You have internet access through these tools — **use them proactively when you need real-time information**:
-
-| Tool | Use Case |
-|------|----------|
-| `jina_search` | Search the internet for any topic. Returns high-quality results with content. **This is your primary search tool.** |
-| `web_search` | Alternative search via DuckDuckGo/Bing/Tavily. |
-| `jina_read` | Read full content from a specific URL. Use when you have a link and need the page content. |
-| `read_webpage` | Fetch a specific public URL directly and extract readable page content. Use when you already have a link and do not need a third-party reader service. |
+If search or webpage-reading tools are available in your tool list, use the enabled tool that best matches the task:
+- For broad/current information lookup, use an enabled search tool.
+- For a specific URL, use an enabled webpage-reading tool.
+- Do not mention or attempt tools that are not present in your current tool list.
 
 **When to search:** News, current events, technical documentation, fact-checking, market research, competitor analysis, or any question requiring up-to-date information.
 
-🚫 **NEVER say you cannot access the internet or search the web.** You HAVE these capabilities — use them.""")
+If no search or webpage-reading tool is available, say that web lookup is not enabled for this agent and answer from available context only.""")
 
     if soul and soul not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
         static_parts.append(f"\n## Personality\n{soul}")
@@ -551,9 +560,9 @@ You have internet access through these tools — **use them proactively when you
 
     # --- Focus (working memory) ---
     focus = (
-        _read_file_safe(ws_root / "focus.md", 3000)
+        await _read_file_safe(normalize_storage_key(f"{agent_id}/focus.md"), 3000)
         # Backward compat: also check old name
-        or _read_file_safe(ws_root / "agenda.md", 3000)
+        or await _read_file_safe(normalize_storage_key(f"{agent_id}/agenda.md"), 3000)
     )
     if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
         if focus.startswith("# "):

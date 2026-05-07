@@ -18,12 +18,14 @@ from app.services.storage_runtime.facade import (
     normalize_storage_key,
     tenant_storage_prefix,
 )
+from app.services.storage_runtime.fallback import FallbackStorageBackend
 from app.services.storage_runtime.local import LocalStorageBackend
 from app.services.storage_runtime.s3 import S3StorageBackend
 
 __all__ = [
     "StorageBackend",
     "StorageEntry",
+    "FallbackStorageBackend",
     "LocalStorageBackend",
     "S3StorageBackend",
     "agent_storage_key",

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { IconAlertTriangle, IconWorld } from '@tabler/icons-react';
 import { useAuthStore } from '../stores';
 import { tenantApi, authApi } from '../services/api';
 
@@ -120,7 +121,7 @@ export default function CompanySetup() {
                 background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
                 zIndex: 101,
             }} onClick={toggleLang}>
-                🌐
+                <IconWorld size={44} stroke={1.6} />
             </div>
 
             <div className="company-setup-container">
@@ -134,7 +135,7 @@ export default function CompanySetup() {
 
                 {error && (
                     <div className="login-error" style={{ marginBottom: 16 }}>
-                        <span>⚠</span> {error}
+                        <span><IconAlertTriangle size={14} stroke={1.8} /></span> {error}
                     </div>
                 )}
 

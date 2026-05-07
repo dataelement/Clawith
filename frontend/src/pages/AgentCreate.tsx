@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { IconEye, IconSettings, IconTools } from '@tabler/icons-react';
 import { agentApi, channelApi, enterpriseApi, skillApi, tenantApi } from '../services/api';
 import ChannelConfig from '../components/ChannelConfig';
 import LinearCopyButton from '../components/LinearCopyButton';
@@ -625,7 +626,9 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                                 }
                                             }}
                                         />
-                                        <div style={{ fontSize: '18px' }}>{skill.icon}</div>
+                                        <div style={{ fontSize: '18px', display: 'flex', color: 'var(--text-tertiary)' }}>
+                                            {/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(skill.icon || '') ? <IconTools size={18} stroke={1.8} /> : (skill.icon || <IconTools size={18} stroke={1.8} />)}
+                                        </div>
                                         <div style={{ flex: 1 }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                 <span style={{ fontWeight: 500, fontSize: '13px' }}>{skill.name}</span>
@@ -678,8 +681,8 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                 </label>
                                 <div style={{ display: 'flex', gap: '8px' }}>
                                     {[
-                                        { value: 'use', icon: '👁️', label: t('wizard.step4.useLevel', 'Use'), desc: t('wizard.step4.useDesc', 'Can use Task, Chat, Tools, Skills, Workspace') },
-                                        { value: 'manage', icon: '⚙️', label: t('wizard.step4.manageLevel', 'Manage'), desc: t('wizard.step4.manageDesc', 'Full access including Settings, Mind, Relationships') },
+                                        { value: 'use', icon: <IconEye size={14} stroke={1.8} />, label: t('wizard.step4.useLevel', 'Use'), desc: t('wizard.step4.useDesc', 'Can use Task, Chat, Tools, Skills, Workspace') },
+                                        { value: 'manage', icon: <IconSettings size={14} stroke={1.8} />, label: t('wizard.step4.manageLevel', 'Manage'), desc: t('wizard.step4.manageDesc', 'Full access including Settings, Mind, Relationships') },
                                     ].map((lvl) => (
                                         <label key={lvl.value} style={{
                                             flex: 1, display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '12px',
@@ -690,7 +693,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                             <input type="radio" name="access_level" checked={form.permission_access_level === lvl.value}
                                                 onChange={() => setForm({ ...form, permission_access_level: lvl.value })} style={{ marginTop: '2px' }} />
                                             <div>
-                                                <div style={{ fontWeight: 500, fontSize: '13px' }}>{lvl.icon} {lvl.label}</div>
+                                                <div style={{ fontWeight: 500, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>{lvl.icon} {lvl.label}</div>
                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{lvl.desc}</div>
                                             </div>
                                         </label>

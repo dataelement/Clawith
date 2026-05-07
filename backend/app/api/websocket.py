@@ -169,6 +169,7 @@ async def get_chat_history(
                 entry["toolArgs"] = data.get("args")
                 entry["toolStatus"] = data.get("status", "done")
                 entry["toolResult"] = data.get("result", "")
+                entry["toolThinking"] = data.get("reasoning_content", "")
             except Exception:
                 pass
         out.append(entry)
@@ -607,25 +608,28 @@ async def websocket_chat(
                     # Accumulate partial content for abort handling
                     partial_chunks: list[str] = []
 
-                    # Flipped to True inside _call_with_failover when an
-                    # onboarding prompt was injected for this turn. The first
-                    # streamed chunk then commits the junction-table row so
-                    # future sessions see this user as already onboarded, even
-                    # if they disconnect before the greeting finishes.
+                    # Set inside _call_with_failover when an onboarding prompt
+                    # was injected for this turn. The first streamed chunk then
+                    # writes the target phase: "greeted" after the hidden
+                    # greeting trigger, "completed" after the first real
+                    # calibration reply.
                     needs_onboarding_mark = False
+                    onboarding_target_phase = "completed"
                     onboarding_mark_done = False
 
-                    async def stream_to_ws(text: str):
-                        """Send each chunk to client in real-time."""
+                    async def maybe_mark_onboarding_progress():
                         nonlocal onboarding_mark_done
-                        partial_chunks.append(text)
-                        await websocket.send_json({"type": "chunk", "content": text})
                         if needs_onboarding_mark and not onboarding_mark_done:
                             onboarding_mark_done = True
                             try:
-                                from app.services.onboarding import mark_onboarded
+                                from app.services.onboarding import mark_onboarding_phase
                                 async with async_session() as _ob_db:
-                                    await mark_onboarded(_ob_db, agent_id, user_id)
+                                    await mark_onboarding_phase(
+                                        _ob_db,
+                                        agent_id,
+                                        user_id,
+                                        onboarding_target_phase,
+                                    )
                                 # Tell the frontend to refresh its cached agent
                                 # record so subsequent sessions (or other open
                                 # tabs) see onboarded_for_me=true and skip the
@@ -636,9 +640,17 @@ async def websocket_chat(
                                 })
                             except Exception as _ob_err:
                                 logger.warning(f"[WS] mark_onboarded failed (non-fatal): {_ob_err}")
+
+                    async def stream_to_ws(text: str):
+                        """Send each chunk to client in real-time."""
+                        partial_chunks.append(text)
+                        await websocket.send_json({"type": "chunk", "content": text})
+                        await maybe_mark_onboarding_progress()
                     
                     async def tool_call_to_ws(data: dict):
                         """Send tool call info to client and persist completed ones."""
+                        if data.get("status") in {"running", "done"}:
+                            await maybe_mark_onboarding_progress()
                         if data.get("status") == "done":
                             try:
                                 from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
@@ -668,6 +680,7 @@ async def websocket_chat(
                             _WORKSPACE_TOOL_ACTIONS: dict[str, str] = {
                                 "write_file": "write",
                                 "edit_file": "edit",
+                                "move_file": "move",
                                 "delete_file": "delete",
                                 "convert_markdown_to_docx": "convert",
                                 "convert_csv_to_xlsx": "convert",
@@ -684,7 +697,7 @@ async def websocket_chat(
                                         _ws_args = _json_wsa.loads(_ws_args)
                                     except Exception:
                                         _ws_args = {}
-                                _ws_path = _ws_args.get("output_path") or _ws_args.get("path", "")
+                                _ws_path = _ws_args.get("output_path") or _ws_args.get("destination_path") or _ws_args.get("path", "")
                                 _ws_result = str(data.get("result") or "")
                                 _pending_approval = "requires approval" in _ws_result.lower()
                                 data["workspace_activity"] = {
@@ -742,6 +755,7 @@ async def websocket_chat(
                         if tool_name not in {
                             "write_file",
                             "edit_file",
+                            "move_file",
                             "delete_file",
                             "convert_markdown_to_docx",
                             "convert_csv_to_xlsx",
@@ -778,7 +792,7 @@ async def websocket_chat(
 
                     # Run call_llm_with_failover as a cancellable task
                     async def _call_with_failover():
-                        nonlocal needs_onboarding_mark
+                        nonlocal needs_onboarding_mark, onboarding_target_phase
 
                         async def _on_failover(reason: str):
                             await websocket.send_json({"type": "info", "content": f"Primary model error, {reason}"})
@@ -788,15 +802,12 @@ async def websocket_chat(
                         while _truncated and _truncated[0].get("role") == "tool":
                             _truncated.pop(0)
 
-                        # Per-(user, agent) onboarding: if the junction table
-                        # has no row for this pair yet, prepend a system prompt.
-                        # The prompt is turn-aware — on the greeting turn it
-                        # tells the agent to greet + ask one question; on the
-                        # deliverable turn it tells the agent to drop question
-                        # mode and immediately produce a concrete output. The
-                        # junction row is only committed on the deliverable
-                        # turn (see lock_on_first_chunk below), so the full
-                        # two-step ritual stays guarded.
+                        # Per-(user, agent) onboarding. With no row, prepend the
+                        # greeting prompt and mark the pair as "greeted" once it
+                        # starts streaming. With phase="greeted", prepend the
+                        # configuration prompt to the user's first real reply
+                        # and mark the pair as "completed" once that reply
+                        # starts streaming.
                         from app.services.onboarding import resolve_onboarding_prompt
                         skip_tools_for_greeting = False
                         try:
@@ -810,6 +821,7 @@ async def websocket_chat(
                                 _truncated = [{"role": "system", "content": _onb.prompt}] + _truncated
                                 if _onb.lock_on_first_chunk:
                                     needs_onboarding_mark = True
+                                    onboarding_target_phase = _onb.target_phase
                                 # Greeting turn produces a templated reply that
                                 # never calls tools, so suppress the tool list
                                 # to cut prompt size by ~50% and improve TTFT.

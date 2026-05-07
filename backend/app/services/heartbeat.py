@@ -296,10 +296,16 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         reply = ""
         plaza_posts_made = 0       # hard limit: 1 new post per heartbeat
         plaza_comments_made = 0    # hard limit: 2 comments per heartbeat
-        _hb_accumulated_tokens = 0
+        _hb_accumulated_usage = None
 
         # Token tracking helpers
-        from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
+        from app.services.token_tracker import (
+            TokenUsage,
+            record_token_usage,
+            extract_token_usage,
+            estimate_token_usage_from_chars,
+        )
+        _hb_accumulated_usage = TokenUsage()
 
         # Convert messages to LLMMessage format
         llm_messages = [
@@ -325,12 +331,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 break
 
             # Track tokens for this round
-            real_tokens = extract_usage_tokens(response.usage)
-            if real_tokens:
-                _hb_accumulated_tokens += real_tokens
+            usage = extract_token_usage(response.usage)
+            if usage:
+                _hb_accumulated_usage.add(usage)
             else:
                 round_chars = sum(len(m.content or '') for m in llm_messages) + len(response.content or '')
-                _hb_accumulated_tokens += estimate_tokens_from_chars(round_chars)
+                _hb_accumulated_usage.add(estimate_token_usage_from_chars(round_chars))
 
             if response.tool_calls:
                 # Add assistant message with tool calls
@@ -405,8 +411,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         # ── Phase 3: Write results back to DB (short transaction) ──
         async with async_session() as db:
             # Record accumulated heartbeat token usage
-            if _hb_accumulated_tokens > 0:
-                await record_token_usage(agent_id, _hb_accumulated_tokens)
+            if _hb_accumulated_usage and _hb_accumulated_usage.total_tokens > 0:
+                await record_token_usage(agent_id, _hb_accumulated_usage)
 
             # Update last_heartbeat_at
             # Using an update statement is safer to avoid state drift if the object was updated elsewhere
@@ -618,9 +624,10 @@ async def run_agent_oneshot(
         )
         from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
         from app.services.token_tracker import (
+            TokenUsage,
             record_token_usage,
-            extract_usage_tokens,
-            estimate_tokens_from_chars,
+            extract_token_usage,
+            estimate_token_usage_from_chars,
         )
 
         try:
@@ -644,7 +651,7 @@ async def run_agent_oneshot(
         ]
 
         reply = ""
-        accumulated_tokens = 0
+        accumulated_usage = TokenUsage()
 
         for round_i in range(max_rounds):
             try:
@@ -670,12 +677,12 @@ async def run_agent_oneshot(
                 break
 
             # Track token usage
-            real_tokens = extract_usage_tokens(response.usage)
-            if real_tokens:
-                accumulated_tokens += real_tokens
+            usage = extract_token_usage(response.usage)
+            if usage:
+                accumulated_usage.add(usage)
             else:
                 round_chars = sum(len(m.content or "") for m in llm_messages) + len(response.content or "")
-                accumulated_tokens += estimate_tokens_from_chars(round_chars)
+                accumulated_usage.add(estimate_token_usage_from_chars(round_chars))
 
             if response.tool_calls:
                 llm_messages.append(LLMMessage(
@@ -714,9 +721,9 @@ async def run_agent_oneshot(
         await client.close()
 
         # ── Phase 3: Record token usage (best-effort) ───────────────────────────
-        if accumulated_tokens > 0:
+        if accumulated_usage.total_tokens > 0:
             try:
-                await record_token_usage(agent_id, accumulated_tokens)
+                await record_token_usage(agent_id, accumulated_usage)
             except Exception as e:
                 logger.warning(f"[Oneshot] Failed to record token usage: {e}")
 
@@ -750,7 +757,7 @@ async def run_agent_oneshot(
             except Exception as e:
                 logger.warning(f"[Oneshot] Failed to clear error notifications: {e}")
 
-        logger.info(f"[Oneshot] {agent_name} completed ({round_i + 1} rounds, {accumulated_tokens} tokens)")
+        logger.info(f"[Oneshot] {agent_name} completed ({round_i + 1} rounds, {accumulated_usage.total_tokens} tokens)")
         return reply
 
     except Exception as e:

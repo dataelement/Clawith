@@ -81,6 +81,8 @@ class AgentManager:
                 if src.is_dir():
                     continue
                 rel = src.relative_to(template_dir).as_posix()
+                if rel == "tasks.json" or rel == "todo.json" or rel.startswith("enterprise_info/"):
+                    continue
                 await storage.write_bytes(
                     f"{agent_prefix}/{rel}",
                     src.read_bytes(),
@@ -88,6 +90,14 @@ class AgentManager:
         else:
             logger.info(f"Template dir not found ({template_dir}), creating minimal workspace")
             await storage.write_text(f"{agent_prefix}/tasks.json", "[]", encoding="utf-8")
+            await storage.write_text(f"{agent_prefix}/tasks.json", "[]", encoding="utf-8")
+            for placeholder in (
+                "workspace/.gitkeep",
+                "workspace/knowledge_base/.gitkeep",
+                "memory/.gitkeep",
+                "skills/.gitkeep",
+            ):
+                await storage.write_text(f"{agent_prefix}/{placeholder}", "", encoding="utf-8")
 
         # Customize soul.md
         # Get creator name

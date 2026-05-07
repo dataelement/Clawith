@@ -201,6 +201,9 @@ export const tenantApi = {
 
     me: () =>
         request<{ id: string; name: string; default_model_id: string | null; [k: string]: any }>('/tenants/me'),
+
+    tokenUsage: () =>
+        request<any>('/tenants/me/token-usage'),
 };
 
 export const adminApi = {

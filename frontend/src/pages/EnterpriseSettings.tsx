@@ -13,6 +13,21 @@ import LinearCopyButton from '../components/LinearCopyButton';
 import { useDialog } from '../components/Dialog/DialogProvider';
 import { useToast } from '../components/Toast/ToastProvider';
 import { buildCompanyRegions, type CompanyRegion } from '../utils/companyRegions';
+import {
+    IconBrowser,
+    IconBulb,
+    IconChevronDown,
+    IconClock,
+    IconCheck,
+    IconEdit,
+    IconFileText,
+    IconMessageCircle,
+    IconSearch,
+    IconSettings,
+    IconTerminal2,
+    IconTools,
+    IconUser,
+} from '@tabler/icons-react';
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -616,8 +631,8 @@ function OrgTab({ tenant }: { tenant: any }) {
                 {/* Setup Guide moved to the top */}
                 {['feishu', 'dingtalk', 'google_workspace'].includes(type) && (
                     <div style={{ background: 'var(--bg-primary)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-subtle)', marginBottom: '20px', fontSize: '12px' }}>
-                        <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '8px', color: 'var(--text-primary)' }}>
-                            👉 {t('enterprise.org.syncSetupGuide', 'Setup Guide & Required Permissions')}
+                        <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '8px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <IconSettings size={15} stroke={1.8} /> {t('enterprise.org.syncSetupGuide', 'Setup Guide & Required Permissions')}
                         </div>
                         <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                             {type === 'feishu' && (
@@ -1957,7 +1972,7 @@ function CompanyNameEditor() {
                 <button className="btn btn-primary" onClick={handleSave} disabled={saving || !name.trim()}>
                     {saving ? t('common.loading') : t('common.save', 'Save')}
                 </button>
-                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅</span>}
+                {saved && <IconCheck size={15} stroke={2} style={{ color: 'var(--success)' }} />}
             </div>
         </div>
     );
@@ -2429,6 +2444,7 @@ function BroadcastSection() {
 // ─── OKR Tab ──────────────────────────────────────────
 function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
     const qc = useQueryClient();
+    const dialog = useDialog();
     const { i18n } = useTranslation();
     // Derive language from i18n — same pattern as OKR.tsx
     const zh = i18n.language?.startsWith('zh');
@@ -2701,14 +2717,23 @@ function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                                             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                                         });
                                         if (res.ok) {
-                                            alert(zh ? '关系网络同步成功！' : 'Relationships synced successfully!');
+                                            await dialog.alert(zh ? '关系网络同步成功！' : 'Relationships synced successfully!', {
+                                                type: 'success',
+                                                title: zh ? '同步完成' : 'Sync Complete',
+                                            });
                                             qc.invalidateQueries({ queryKey: ['okr-members-without-okr-settings'] });
                                         } else {
                                             const err = await res.json().catch(() => ({}));
-                                            alert(`Error: ${err.detail || res.status}`);
+                                            await dialog.alert(zh ? '关系网络同步失败' : 'Relationship sync failed', {
+                                                type: 'error',
+                                                details: String(err.detail || res.status),
+                                            });
                                         }
                                     } catch (e) {
-                                        alert(zh ? '同步失败，请重试' : 'Sync failed, please retry');
+                                        await dialog.alert(zh ? '同步失败，请重试' : 'Sync failed, please retry', {
+                                            type: 'error',
+                                            details: String((e as any)?.message || e),
+                                        });
                                     }
                                 }}
                                 style={{
@@ -2885,8 +2910,8 @@ export default function EnterpriseSettings() {
     // Tenant quota defaults
     const [quotaForm, setQuotaForm] = useState({
         default_message_limit: 50, default_message_period: 'permanent',
-        default_max_agents: 2, default_agent_ttl_hours: 48,
-        default_max_llm_calls_per_day: 100, min_heartbeat_interval_minutes: 120,
+        default_max_agents: 2, default_agent_ttl_hours: 0,
+        default_max_llm_calls_per_day: 1000, min_heartbeat_interval_minutes: 120,
         default_max_triggers: 20, min_poll_interval_floor: 5, max_webhook_rate_ceiling: 5,
     });
     const [quotaSaving, setQuotaSaving] = useState(false);
@@ -2977,6 +3002,9 @@ export default function EnterpriseSettings() {
             ],
         },
     };
+    const GLOBAL_CATEGORY_CONFIG_PRIMARY_TOOL: Record<string, string> = {
+        agentbay: 'agentbay_browser_navigate',
+    };
 
     // Labels for tool categories (mirrors AgentDetail getCategoryLabels)
     const categoryLabels: Record<string, string> = {
@@ -2994,8 +3022,87 @@ export default function EnterpriseSettings() {
         general: t('agent.toolCategories.general'),
         agentbay: t('agent.toolCategories.agentbay', 'AgentBay'),
     };
+    const categoryDescriptions: Record<string, string> = {
+        agentbay: 'Browser and cloud computer automation',
+        file: 'Read, write, convert, and manage workspace files',
+        communication: 'Messages and cross-channel collaboration',
+        search: 'Web and knowledge search tools',
+        code: 'Code execution and development utilities',
+        aware: 'Triggers, reminders, and awareness workflows',
+        email: 'Email reading and sending tools',
+        feishu: 'Feishu / Lark messaging and collaboration',
+        okr: 'Objectives, key results, and progress reporting',
+        social: 'Social publishing and community workflows',
+        discovery: 'Tool and capability discovery',
+        custom: 'Company-added or MCP tools',
+        general: 'General purpose tools',
+    };
+    const renderCategoryIcon = (category: string, size = 15) => {
+        const style = { color: 'var(--text-tertiary)' };
+        switch (category) {
+            case 'agentbay': return <IconBrowser size={size} stroke={1.8} style={style} />;
+            case 'file': return <IconFileText size={size} stroke={1.8} style={style} />;
+            case 'communication':
+            case 'feishu':
+            case 'email':
+            case 'social':
+                return <IconMessageCircle size={size} stroke={1.8} style={style} />;
+            case 'search':
+            case 'discovery':
+                return <IconSearch size={size} stroke={1.8} style={style} />;
+            case 'code': return <IconTerminal2 size={size} stroke={1.8} style={style} />;
+            case 'aware': return <IconClock size={size} stroke={1.8} style={style} />;
+            case 'custom': return <IconSettings size={size} stroke={1.8} style={style} />;
+            default: return <IconTools size={size} stroke={1.8} style={style} />;
+        }
+    };
+    const mcpToolGroupKey = (tool: any) => {
+        const serverName = String(tool.mcp_server_name || '').trim();
+        return tool.type === 'mcp' && serverName
+            ? `mcp:${serverName.toLowerCase()}`
+            : (tool.category || 'general');
+    };
+    const getToolGroupMeta = (groupKey: string, toolsInGroup: any[]) => {
+        const first = toolsInGroup.find((tool: any) => tool.type === 'mcp' && tool.mcp_server_name) || toolsInGroup[0];
+        if (groupKey.startsWith('mcp:') && first?.mcp_server_name) {
+            return {
+                label: first.mcp_server_name,
+                description: t('agent.tools.mcpGroupDescription', 'Tools from {{name}}', { name: first.mcp_server_name }),
+                iconCategory: 'custom',
+                configCategory: first.category || 'custom',
+            };
+        }
+        return {
+            label: categoryLabels[groupKey] || groupKey,
+            description: categoryDescriptions[groupKey] || 'Tools in this category',
+            iconCategory: groupKey,
+            configCategory: groupKey,
+        };
+    };
+    const switchTrack = (enabled: boolean, mixed = false) => ({
+        position: 'absolute' as const,
+        inset: 0,
+        background: enabled ? 'var(--accent-primary)' : mixed ? 'var(--border-default)' : 'var(--bg-tertiary)',
+        borderRadius: '11px',
+        transition: 'background 0.2s',
+    });
+    const switchKnob = (enabled: boolean) => ({
+        position: 'absolute' as const,
+        left: enabled ? '20px' : '2px',
+        top: '2px',
+        width: '18px',
+        height: '18px',
+        background: '#fff',
+        borderRadius: '50%',
+        transition: 'left 0.2s',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
+    });
     const [toolsView, setToolsView] = useState<'global' | 'agent-installed'>('global');
     const [agentInstalledTools, setAgentInstalledTools] = useState<any[]>([]);
+    const [toolSearch, setToolSearch] = useState('');
+    const [toolStatusFilter, setToolStatusFilter] = useState<'all' | 'enabled' | 'disabled' | 'default' | 'configured'>('all');
+    const [expandedToolCategories, setExpandedToolCategories] = useState<Set<string>>(() => new Set());
+    const [expandedAgentInstalledGroups, setExpandedAgentInstalledGroups] = useState<Set<string>>(() => new Set());
     const loadAllTools = async () => {
         const tid = selectedTenantId;
         const data = await fetchJson<any[]>(`/tools${tid ? `?tenant_id=${tid}` : ''}`);
@@ -3006,7 +3113,10 @@ export default function EnterpriseSettings() {
             const tid = selectedTenantId;
             const data = await fetchJson<any[]>(`/tools/agent-installed${tid ? `?tenant_id=${tid}` : ''}`);
             setAgentInstalledTools(data);
-        } catch { }
+        } catch (error) {
+            console.warn('[EnterpriseTools] Failed to load agent-installed tools', error);
+            setAgentInstalledTools([]);
+        }
     };
     useEffect(() => { if (activeTab === 'tools') { loadAllTools(); loadAgentInstalledTools(); } }, [activeTab, selectedTenantId]);
 
@@ -3471,7 +3581,7 @@ export default function EnterpriseSettings() {
                                                     setEditingModelId(m.id);
                                                     setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', request_timeout: m.request_timeout ? String(m.request_timeout) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
                                                     setShowAddModel(true);
-                                                }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
+                                                }} style={{ fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><IconEdit size={13} stroke={1.8} /> {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
                                             </div>
                                         </div>
@@ -3550,9 +3660,10 @@ export default function EnterpriseSettings() {
                                         </span>
                                         <span style={{
                                             padding: '1px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 500,
+                                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                                             background: isBg ? 'rgba(99,102,241,0.12)' : 'rgba(34,197,94,0.12)',
                                             color: isBg ? 'var(--accent-color)' : 'rgb(34,197,94)',
-                                        }}>{isBg ? '⚙️' : '👤'}</span>
+                                        }}>{isBg ? <IconSettings size={12} stroke={1.8} /> : <IconUser size={12} stroke={1.8} />}</span>
                                         <span style={{ flex: 1, fontWeight: 500 }}>{log.action}</span>
                                         <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>{log.agent_id?.slice(0, 8) || '-'}</span>
                                     </div>
@@ -3598,9 +3709,9 @@ export default function EnterpriseSettings() {
                                 <button className="btn btn-primary" onClick={saveCompanyIntro} disabled={companyIntroSaving}>
                                     {companyIntroSaving ? t('common.loading') : t('common.save', 'Save')}
                                 </button>
-                                {companyIntroSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
-                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
-                                    💡 {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
+                                {companyIntroSaved && <span style={{ color: 'var(--success)', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><IconCheck size={13} stroke={2} /> {t('enterprise.config.saved', 'Saved')}</span>}
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                    <IconBulb size={13} stroke={1.8} /> {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
                                 </span>
                             </div>
                         </div>
@@ -3694,8 +3805,27 @@ export default function EnterpriseSettings() {
                                 </div>
                                 <div className="form-group">
                                     <label className="form-label">{t('enterprise.quotas.agentTTL')}</label>
-                                    <input className="form-input" type="number" min={1} value={quotaForm.default_agent_ttl_hours}
-                                        onChange={e => setQuotaForm({ ...quotaForm, default_agent_ttl_hours: Number(e.target.value) })} />
+                                    <select
+                                        className="form-input"
+                                        value={quotaForm.default_agent_ttl_hours > 0 ? 'custom' : 'permanent'}
+                                        onChange={e => setQuotaForm({
+                                            ...quotaForm,
+                                            default_agent_ttl_hours: e.target.value === 'permanent' ? 0 : 48,
+                                        })}
+                                    >
+                                        <option value="permanent">{t('enterprise.quotas.permanent')}</option>
+                                        <option value="custom">{t('enterprise.quotas.customHours', 'Custom hours')}</option>
+                                    </select>
+                                    {quotaForm.default_agent_ttl_hours > 0 && (
+                                        <input
+                                            className="form-input"
+                                            type="number"
+                                            min={1}
+                                            value={quotaForm.default_agent_ttl_hours}
+                                            onChange={e => setQuotaForm({ ...quotaForm, default_agent_ttl_hours: Number(e.target.value) })}
+                                            style={{ marginTop: '8px' }}
+                                        />
+                                    )}
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.quotas.agentAutoExpiry')}</div>
                                 </div>
                                 <div className="form-group">
@@ -3749,7 +3879,7 @@ export default function EnterpriseSettings() {
                                 <button className="btn btn-primary" onClick={saveQuotas} disabled={quotaSaving}>
                                     {quotaSaving ? t('common.loading') : t('common.save', 'Save')}
                                 </button>
-                                {quotaSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ Saved</span>}
+                                {quotaSaved && <span style={{ color: 'var(--success)', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><IconCheck size={13} stroke={2} /> Saved</span>}
                             </div>
                         </div>
                     </div>
@@ -3765,13 +3895,19 @@ export default function EnterpriseSettings() {
                 {activeTab === 'tools' && (
                     <div>
                         {/* Sub-tab pills */}
-                        <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px' }}>
+                        <div className="tool-source-tabs enterprise-tool-source-tabs" role="tablist" aria-label={t('enterprise.tools.sourceTabs', 'Tool sources')}>
                             {([['global', t('enterprise.tools.globalTools')], ['agent-installed', t('enterprise.tools.agentInstalled')]] as const).map(([key, label]) => (
-                                <button key={key} onClick={() => { setToolsView(key as any); if (key === 'agent-installed') loadAgentInstalledTools(); }} style={{
-                                    padding: '4px 14px', borderRadius: '12px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', border: 'none',
-                                    background: toolsView === key ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                                    color: toolsView === key ? '#fff' : 'var(--text-secondary)', transition: 'all 0.15s',
-                                }}>{label}</button>
+                                <button
+                                    key={key}
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={toolsView === key}
+                                    className={toolsView === key ? 'active' : ''}
+                                    onClick={() => { setToolsView(key as any); if (key === 'agent-installed') loadAgentInstalledTools(); }}
+                                >
+                                    <span>{label}</span>
+                                    <span className="tool-source-tab-count">{key === 'global' ? allTools.length : agentInstalledTools.length}</span>
+                                </button>
                             ))}
                         </div>
 
@@ -3782,32 +3918,97 @@ export default function EnterpriseSettings() {
                                 {agentInstalledTools.length === 0 ? (
                                     <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('enterprise.tools.noAgentInstalledTools')}</div>
                                 ) : (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                        {agentInstalledTools.map((row: any) => (
-                                            <div key={row.agent_tool_id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px' }}>
-                                                <div style={{ flex: 1, minWidth: 0 }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                        <span style={{ fontWeight: 500, fontSize: '13px' }}>🔌 {row.tool_display_name}</span>
-                                                        {row.mcp_server_name && <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>}
-                                                    </div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                        🤖 {row.installed_by_agent_name || 'Unknown Agent'}
-                                                        {row.installed_at && <span> · {new Date(row.installed_at).toLocaleString()}</span>}
-                                                    </div>
-                                                </div>
-                                                <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={async () => {
-                                                    const ok = await dialog.confirm(t('enterprise.tools.removeFromAgent', { name: row.tool_display_name }), { title: '移除工具', danger: true, confirmLabel: '移除' });
-                                                    if (!ok) return;
-                                                    try {
-                                                        await fetchJson(`/tools/agent-tool/${row.agent_tool_id}`, { method: 'DELETE' });
-                                                    } catch {
-                                                        // Already deleted (e.g. removed via Global Tools) — just refresh
-                                                    }
-                                                    loadAgentInstalledTools();
-                                                }}>🗑️ {t('enterprise.tools.delete')}</button>
+                                    (() => {
+                                        const grouped = agentInstalledTools.reduce((acc: Record<string, any[]>, row: any) => {
+                                            const groupKey = mcpToolGroupKey(row);
+                                            (acc[groupKey] = acc[groupKey] || []).push(row);
+                                            return acc;
+                                        }, {});
+                                        const toggleAgentInstalledGroup = (groupKey: string) => {
+                                            setExpandedAgentInstalledGroups(prev => {
+                                                const next = new Set(prev);
+                                                if (next.has(groupKey)) next.delete(groupKey);
+                                                else next.add(groupKey);
+                                                return next;
+                                            });
+                                        };
+                                        return (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                                {Object.entries(grouped)
+                                                    .sort(([a, aRows], [b, bRows]) => {
+                                                        const aMeta = getToolGroupMeta(a, aRows as any[]);
+                                                        const bMeta = getToolGroupMeta(b, bRows as any[]);
+                                                        return aMeta.label.localeCompare(bMeta.label);
+                                                    })
+                                                    .map(([groupKey, rows]) => {
+                                                        const groupRows = rows as any[];
+                                                        const meta = getToolGroupMeta(groupKey, groupRows);
+                                                        const expanded = expandedAgentInstalledGroups.has(groupKey);
+                                                        return (
+                                                            <div key={groupKey} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', background: 'var(--bg-primary)' }}>
+                                                                <div
+                                                                    role="button"
+                                                                    tabIndex={0}
+                                                                    onClick={() => toggleAgentInstalledGroup(groupKey)}
+                                                                    onKeyDown={(e) => {
+                                                                        if (e.key === 'Enter' || e.key === ' ') {
+                                                                            e.preventDefault();
+                                                                            toggleAgentInstalledGroup(groupKey);
+                                                                        }
+                                                                    }}
+                                                                    style={{ background: 'var(--bg-secondary)', padding: '12px 14px', display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none' }}
+                                                                >
+                                                                    <IconChevronDown size={14} stroke={1.8} style={{ color: 'var(--text-tertiary)', transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s ease', flexShrink: 0 }} />
+                                                                    <span style={{ width: '26px', height: '26px', borderRadius: '7px', border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{renderCategoryIcon(meta.iconCategory, 15)}</span>
+                                                                    <div style={{ minWidth: 0 }}>
+                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                                                            <span style={{ fontSize: '13px', fontWeight: 650, color: 'var(--text-primary)' }}>{meta.label}</span>
+                                                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                                                {groupRows.length} {groupRows.length === 1 ? 'tool' : 'tools'}
+                                                                            </span>
+                                                                        </div>
+                                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{meta.description}</div>
+                                                                    </div>
+                                                                </div>
+                                                                {expanded && groupRows.map((row: any, idx: number) => (
+                                                                    <div key={row.agent_tool_id} style={{
+                                                                        display: 'grid',
+                                                                        gridTemplateColumns: 'minmax(0, 1fr) auto',
+                                                                        gap: '12px',
+                                                                        alignItems: 'center',
+                                                                        padding: '10px 14px',
+                                                                        borderTop: idx === 0 ? '1px solid var(--border-subtle)' : 'none',
+                                                                        borderBottom: idx < groupRows.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                                                                    }}>
+                                                                        <div style={{ minWidth: 0 }}>
+                                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flexWrap: 'wrap' }}>
+                                                                                <span style={{ fontWeight: 500, fontSize: '13px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.tool_display_name}</span>
+                                                                                {row.type === 'mcp' && <span style={{ fontSize: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>}
+                                                                                {row.configured && <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>{t('enterprise.tools.configured', 'Configured')}</span>}
+                                                                            </div>
+                                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                                                {row.installed_by_agent_name || 'Unknown Agent'}
+                                                                                {row.installed_at && <span> · {new Date(row.installed_at).toLocaleString()}</span>}
+                                                                            </div>
+                                                                        </div>
+                                                                        <button className="btn btn-ghost" style={{ color: 'var(--error)', fontSize: '12px' }} onClick={async () => {
+                                                                            const ok = await dialog.confirm(t('enterprise.tools.removeFromAgent', { name: row.tool_display_name }), { title: '移除工具', danger: true, confirmLabel: '移除' });
+                                                                            if (!ok) return;
+                                                                            try {
+                                                                                await fetchJson(`/tools/agent-tool/${row.agent_tool_id}`, { method: 'DELETE' });
+                                                                            } catch {
+                                                                                // Already deleted (e.g. removed via Global Tools) — just refresh
+                                                                            }
+                                                                            loadAgentInstalledTools();
+                                                                        }}>{t('enterprise.tools.delete')}</button>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        );
+                                                    })}
                                             </div>
-                                        ))}
-                                    </div>
+                                        );
+                                    })()
                                 )}
                             </div>
                         )}
@@ -3986,296 +4187,250 @@ export default function EnterpriseSettings() {
 
                             {/* ─── Category-grouped tool list ─── */}
                             {(() => {
-                                // Group tools by category (same pattern as AgentDetail.tsx)
-                                const grouped = allTools.reduce((acc: Record<string, any[]>, tool: any) => {
-                                    const cat = tool.category || 'general';
+                                const normalizedSearch = toolSearch.trim().toLowerCase();
+                                const matchesSearch = (tool: any) => {
+                                    if (!normalizedSearch) return true;
+                                    const category = tool.category || 'general';
+                                    const haystack = [
+                                        tool.name,
+                                        tool.display_name,
+                                        tool.description,
+                                        tool.mcp_server_name,
+                                        category,
+                                        categoryLabels[category],
+                                    ].filter(Boolean).join(' ').toLowerCase();
+                                    return haystack.includes(normalizedSearch);
+                                };
+                                const matchesStatus = (tool: any) => {
+                                    if (toolStatusFilter === 'enabled') return !!tool.enabled;
+                                    if (toolStatusFilter === 'disabled') return !tool.enabled;
+                                    if (toolStatusFilter === 'default') return !!tool.is_default;
+                                    if (toolStatusFilter === 'configured') return !!(tool.config && Object.keys(tool.config).length > 0);
+                                    return true;
+                                };
+                                const filteredTools = allTools.filter(tool => matchesSearch(tool) && matchesStatus(tool));
+                                const groupTools = (toolList: any[]) => toolList.reduce((acc: Record<string, any[]>, tool: any) => {
+                                    const cat = mcpToolGroupKey(tool);
                                     (acc[cat] = acc[cat] || []).push(tool);
                                     return acc;
                                 }, {} as Record<string, any[]>);
+                                const grouped = groupTools(filteredTools);
+                                const allGrouped = groupTools(allTools);
+                                const hasFilters = !!normalizedSearch || toolStatusFilter !== 'all';
+
+                                const toggleCategoryExpanded = (category: string) => {
+                                    setExpandedToolCategories(prev => {
+                                        const next = new Set(prev);
+                                        if (next.has(category)) next.delete(category);
+                                        else next.add(category);
+                                        return next;
+                                    });
+                                };
+
+                                const bulkToggle = async (tools: any[], enabled: boolean) => {
+                                    try {
+                                        const payload = tools.map(t => ({ tool_id: t.id, enabled }));
+                                        await fetchJson('/tools/bulk', { method: 'PUT', body: JSON.stringify(payload) });
+                                        loadAllTools();
+                                    } catch (err: any) {
+                                        toast.error('批量更新失败', { details: String(err?.message || err) });
+                                    }
+                                };
+
+                                const renderToolRow = (tool: any, category: string, idx: number, total: number) => {
+                                    const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[category];
+                                    const hasOwnConfig = tool.config_schema?.fields?.length > 0 && !hasCategoryConfig;
+                                    const isConfigured = tool.config && Object.keys(tool.config).length > 0;
+                                    return (
+                                        <div key={tool.id} style={{
+                                            display: 'grid',
+                                            gridTemplateColumns: 'minmax(0, 1fr) auto',
+                                            alignItems: 'center',
+                                            gap: '12px',
+                                            padding: '10px 14px',
+                                            borderTop: idx === 0 ? '1px solid var(--border-subtle)' : 'none',
+                                            borderBottom: idx < total - 1 ? '1px solid var(--border-subtle)' : 'none',
+                                            background: 'var(--bg-primary)',
+                                        }}>
+                                            <div style={{ minWidth: 0 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flexWrap: 'wrap' }}>
+                                                    <span style={{ fontWeight: 500, fontSize: '13px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.display_name}</span>
+                                                    <span style={{ fontSize: '10px', background: tool.type === 'mcp' ? 'var(--primary)' : 'var(--bg-tertiary)', color: tool.type === 'mcp' ? '#fff' : 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>
+                                                        {tool.type === 'mcp' ? 'MCP' : 'Built-in'}
+                                                    </span>
+                                                    {tool.is_default && <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.15)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>Default</span>}
+                                                    {isConfigured && <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>{t('enterprise.tools.configured', 'Configured')}</span>}
+                                                </div>
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                    {tool.description}
+                                                    {tool.mcp_server_name && <span> · {tool.mcp_server_name}</span>}
+                                                </div>
+                                            </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                                {tool.type === 'mcp' && tool.mcp_server_name && (
+                                                    <button
+                                                        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                                        onClick={() => setEditingMcpServer({
+                                                            server_name: tool.mcp_server_name,
+                                                            server_url: tool.mcp_server_url || '',
+                                                            api_key: '',
+                                                        })}
+                                                    >
+                                                        Edit Server
+                                                    </button>
+                                                )}
+                                                {hasOwnConfig && (
+                                                    <button
+                                                        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                                        title={t('enterprise.tools.configureSettings', 'Configure settings')}
+                                                        onClick={async () => {
+                                                            setEditingToolId(tool.id);
+                                                            const cfg = { ...tool.config };
+                                                            if (tool.name === 'jina_search' || tool.name === 'jina_read') {
+                                                                try {
+                                                                    const token = localStorage.getItem('token');
+                                                                    const res = await fetch('/api/enterprise/system-settings/jina_api_key', { headers: { Authorization: `Bearer ${token}` } });
+                                                                    const d = await res.json();
+                                                                    if (d.value?.api_key) cfg.api_key = d.value.api_key;
+                                                                } catch { }
+                                                            }
+                                                            setEditingConfig(cfg);
+                                                        }}
+                                                    >
+                                                        {t('enterprise.tools.configure')}
+                                                    </button>
+                                                )}
+                                                {tool.type !== 'builtin' && (
+                                                    <button className="btn btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
+                                                        const ok = await dialog.confirm(`确定删除 ${tool.display_name}？`, { title: '删除工具', danger: true, confirmLabel: '删除' });
+                                                        if (!ok) return;
+                                                        await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
+                                                        loadAllTools();
+                                                        loadAgentInstalledTools();
+                                                    }}>{t('common.delete')}</button>
+                                                )}
+                                                <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                                                    <input type="checkbox" checked={tool.enabled} onChange={async (e) => {
+                                                        await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }) });
+                                                        loadAllTools();
+                                                    }} style={{ opacity: 0, width: 0, height: 0 }} />
+                                                    <span style={switchTrack(tool.enabled)}>
+                                                        <span style={switchKnob(tool.enabled)} />
+                                                    </span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    );
+                                };
 
                                 if (allTools.length === 0) {
                                     return <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('enterprise.tools.emptyState')}</div>;
                                 }
+                                if (filteredTools.length === 0) {
+                                    return (
+                                        <>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                                                <div style={{ position: 'relative', flex: '1 1 260px', minWidth: '220px' }}>
+                                                    <IconSearch size={15} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
+                                                    <input value={toolSearch} onChange={(e) => setToolSearch(e.target.value)} placeholder={t('agent.tools.searchTools', 'Search tools...')} style={{ width: '100%', boxSizing: 'border-box', border: '1px solid var(--border-subtle)', borderRadius: '8px', background: 'var(--bg-primary)', color: 'var(--text-primary)', padding: '8px 10px 8px 32px', fontSize: '13px', outline: 'none' }} />
+                                                </div>
+                                            </div>
+                                            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{hasFilters ? t('agent.tools.noMatchingTools', 'No matching tools') : t('enterprise.tools.emptyState')}</div>
+                                        </>
+                                    );
+                                }
 
                                 return (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                                        {Object.entries(grouped).map(([category, catTools]) => {
-                                            const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[category];
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                            <div style={{ position: 'relative', flex: '1 1 260px', minWidth: '220px' }}>
+                                                <IconSearch size={15} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
+                                                <input value={toolSearch} onChange={(e) => setToolSearch(e.target.value)} placeholder={t('agent.tools.searchTools', 'Search tools...')} style={{ width: '100%', boxSizing: 'border-box', border: '1px solid var(--border-subtle)', borderRadius: '8px', background: 'var(--bg-primary)', color: 'var(--text-primary)', padding: '8px 10px 8px 32px', fontSize: '13px', outline: 'none' }} />
+                                            </div>
+                                            {(['all', 'enabled', 'disabled', 'default', 'configured'] as const).map(filter => (
+                                                <button key={filter} type="button" onClick={() => setToolStatusFilter(filter)} style={{ border: '1px solid var(--border-subtle)', borderRadius: '999px', background: toolStatusFilter === filter ? 'var(--text-primary)' : 'var(--bg-primary)', color: toolStatusFilter === filter ? 'var(--bg-primary)' : 'var(--text-secondary)', padding: '6px 10px', fontSize: '11px', cursor: 'pointer' }}>
+                                                    {filter === 'all' ? t('common.all', 'All')
+                                                        : filter === 'enabled' ? t('common.enabled', 'Enabled')
+                                                            : filter === 'disabled' ? t('common.disabled', 'Disabled')
+                                                                : filter === 'default' ? 'Default'
+                                                                    : t('agent.tools.configured', 'Configured')}
+                                                </button>
+                                            ))}
+                                            <button type="button" onClick={() => {
+                                                const categories = Object.keys(allGrouped);
+                                                setExpandedToolCategories(prev => prev.size >= categories.length ? new Set() : new Set(categories));
+                                            }} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', background: 'var(--bg-primary)', color: 'var(--text-secondary)', padding: '6px 10px', fontSize: '11px', cursor: 'pointer' }}>
+                                                {expandedToolCategories.size >= Object.keys(allGrouped).length ? t('agent.tools.collapseAll', 'Collapse all') : t('agent.tools.expandAll', 'Expand all')}
+                                            </button>
+                                        </div>
 
-                                            // For 'custom' category: sub-group MCP tools by mcp_server_name
-                                            // so that Edit Server is presented once per server, not per tool.
-                                            if (category === 'custom') {
-                                                const mcpByServer: Record<string, any[]> = {};
-                                                const nonMcpTools: any[] = [];
-                                                (catTools as any[]).forEach((t: any) => {
-                                                    if (t.type === 'mcp' && t.mcp_server_name) {
-                                                        (mcpByServer[t.mcp_server_name] = mcpByServer[t.mcp_server_name] || []).push(t);
-                                                    } else {
-                                                        nonMcpTools.push(t);
-                                                    }
-                                                });
-
-                                                return (
-                                                    <div key={category}>
-                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 14px', marginBottom: '8px' }}>
-                                                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                                                                {categoryLabels[category] || category}
-                                                            </div>
-                                                        </div>
-                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                                                            {/* MCP servers sub-grouped */}
-                                                            {Object.entries(mcpByServer).map(([serverName, serverTools]) => (
-                                                                <div key={serverName} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden' }}>
-                                                                    {/* Server sub-header */}
-                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 14px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)' }}>
-                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-                                                                            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)' }} title={serverName}>{(() => { try { if (serverName.startsWith('http')) { return new URL(serverName).hostname; } } catch {} return serverName; })()}</span>
-                                                                            <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.12)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
-                                                                            {(serverTools as any[]).some((t: any) => t.config && Object.keys(t.config).length > 0) && (
-                                                                                <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.12)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>Configured</span>
-                                                                            )}
-                                                                        </div>
-                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                                            <button
-                                                                                style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 9px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                                                                                onClick={() => {
-                                                                                    // Pre-fill with current server URL from first tool
-                                                                                    const firstTool = (serverTools as any[])[0];
-                                                                                    setEditingMcpServer({
-                                                                                        server_name: serverName,
-                                                                                        server_url: firstTool?.mcp_server_url || '',
-                                                                                        api_key: '',
-                                                                                    });
-                                                                                }}
-                                                                            >Edit Server</button>
-                                                                            {/* Server-level enable/disable all toggle */}
-                                                                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${serverName} tools`}>
-                                                                                <input type="checkbox"
-                                                                                    checked={(serverTools as any[]).every(t => t.enabled)}
-                                                                                    onChange={async (e) => {
-                                                                                        const payload = (serverTools as any[]).map(t => ({ tool_id: t.id, enabled: e.target.checked }));
-                                                                                        await fetchJson('/tools/bulk', { method: 'PUT', body: JSON.stringify(payload) });
-                                                                                        loadAllTools();
-                                                                                    }}
-                                                                                    style={{ opacity: 0, width: 0, height: 0 }} />
-                                                                                <span style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: '22px', background: (serverTools as any[]).every(t => t.enabled) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', transition: '0.3s' }}>
-                                                                                    <span style={{ position: 'absolute', left: (serverTools as any[]).every(t => t.enabled) ? '20px' : '2px', top: '2px', width: '18px', height: '18px', borderRadius: '50%', background: '#fff', transition: '0.3s' }} />
-                                                                                </span>
-                                                                            </label>
-                                                                        </div>
-                                                                    </div>
-                                                                    {/* Tools under this server */}
-                                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                                                                        {(serverTools as any[]).map((tool: any, toolIdx: number) => (
-                                                                            <div key={tool.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 14px', borderBottom: toolIdx < serverTools.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
-                                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
-                                                                                    <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>·</span>
-                                                                                    <div style={{ minWidth: 0 }}>
-                                                                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</div>
-                                                                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.description?.slice(0, 90)}</div>
-                                                                                    </div>
-                                                                                </div>
-                                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                                                                                    <button className="btn btn-danger" style={{ padding: '3px 7px', fontSize: '10px' }} onClick={async () => {
-                                                                                        const ok = await dialog.confirm(`确定删除 ${tool.display_name}？`, { title: '删除工具', danger: true, confirmLabel: '删除' });
-                                                                                        if (!ok) return;
-                                                                                        await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
-                                                                                        await loadAllTools();
-                                                                                    }}>{t('common.delete')}</button>
-                                                                                    <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
-                                                                                        <input type="checkbox" checked={tool.enabled} onChange={async (e) => {
-                                                                                            await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }) });
-                                                                                            loadAllTools();
-                                                                                        }} style={{ opacity: 0, width: 0, height: 0 }} />
-                                                                                        <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
-                                                                                            <span style={{ position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
-                                                                                        </span>
-                                                                                    </label>
-                                                                                </div>
-                                                                            </div>
-                                                                        ))}
-                                                                    </div>
-                                                                </div>
-                                                            ))}
-                                                            {/* Non-MCP custom tools shown normally */}
-                                                            {nonMcpTools.length > 0 && (
-                                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                                                    {nonMcpTools.map((tool: any) => {
-                                                                        const hasOwnConfig = tool.config_schema?.fields?.length > 0;
-                                                                        return (
-                                                                            <div key={tool.id} className="card" style={{ padding: '0', overflow: 'hidden' }}>
-                                                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
-                                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
-                                                                                        <span style={{ fontSize: '18px' }}>{tool.icon}</span>
-                                                                                        <div style={{ minWidth: 0 }}>
-                                                                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</div>
-                                                                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.description?.slice(0, 80)}</div>
-                                                                                        </div>
-                                                                                    </div>
-                                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                                                                                        {hasOwnConfig && (
-                                                                                            <button style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }} onClick={() => { setEditingToolId(tool.id); setEditingConfig({ ...tool.config }); }}>Configure</button>
-                                                                                        )}
-                                                                                        <button className="btn btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
-                                                                                            const ok = await dialog.confirm(`确定删除 ${tool.display_name}？`, { title: '删除工具', danger: true, confirmLabel: '删除' });
-                                                                                            if (!ok) return;
-                                                                                            await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
-                                                                                            loadAllTools();
-                                                                                        }}>{t('common.delete')}</button>
-                                                                                        <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
-                                                                                            <input type="checkbox" checked={tool.enabled} onChange={async (e) => {
-                                                                                                await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }) });
-                                                                                                loadAllTools();
-                                                                                            }} style={{ opacity: 0, width: 0, height: 0 }} />
-                                                                                            <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
-                                                                                                <span style={{ position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
-                                                                                            </span>
-                                                                                        </label>
-                                                                                    </div>
-                                                                                </div>
-                                                                            </div>
-                                                                        );
-                                                                    })}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                );
-                                            }
+                                        {Object.entries(grouped)
+                                            .sort(([a, aTools], [b, bTools]) => {
+                                                const aMeta = getToolGroupMeta(a, allGrouped[a] || aTools as any[]);
+                                                const bMeta = getToolGroupMeta(b, allGrouped[b] || bTools as any[]);
+                                                return aMeta.label.localeCompare(bMeta.label);
+                                            })
+                                            .map(([category, catTools]) => {
+                                            const allCatTools = allGrouped[category] || catTools;
+                                            const meta = getToolGroupMeta(category, allCatTools);
+                                            const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[meta.configCategory];
+                                            const label = meta.label;
+                                            const enabledCount = allCatTools.filter((tool: any) => tool.enabled).length;
+                                            const defaultCount = allCatTools.filter((tool: any) => tool.is_default).length;
+                                            const configuredCount = allCatTools.filter((tool: any) => tool.config && Object.keys(tool.config).length > 0).length;
+                                            const allEnabled = allCatTools.length > 0 && enabledCount === allCatTools.length;
+                                            const mixed = enabledCount > 0 && enabledCount < allCatTools.length;
+                                            const expanded = expandedToolCategories.has(category) || !!toolSearch.trim();
+                                            const visibleCount = (catTools as any[]).length;
 
                                             return (
-                                                <div key={category}>
-                                                    {/* Category header */}
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 14px', marginBottom: '8px' }}>
-                                                        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                                                            {categoryLabels[category] || category}
+                                                <div key={category} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', background: 'var(--bg-primary)' }}>
+                                                    <div role="button" tabIndex={0} onClick={() => toggleCategoryExpanded(category)} onKeyDown={(e) => {
+                                                        if (e.key === 'Enter' || e.key === ' ') {
+                                                            e.preventDefault();
+                                                            toggleCategoryExpanded(category);
+                                                        }
+                                                    }} style={{ width: '100%', background: 'var(--bg-secondary)', padding: '13px 16px', display: 'grid', gridTemplateColumns: '1fr auto', gap: '14px', alignItems: 'center', cursor: 'pointer', textAlign: 'left', boxSizing: 'border-box' }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
+                                                            <IconChevronDown size={16} style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 120ms ease', color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                                                            <span style={{ width: '28px', height: '28px', borderRadius: '7px', border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{renderCategoryIcon(meta.iconCategory, 16)}</span>
+                                                            <div style={{ minWidth: 0 }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                                                    <span style={{ fontSize: '13px', fontWeight: 650, color: 'var(--text-primary)' }}>{label}</span>
+                                                                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                                        {allCatTools.length} tools · {enabledCount} enabled
+                                                                        {defaultCount > 0 ? ` · ${defaultCount} default` : ''}
+                                                                        {visibleCount !== allCatTools.length ? ` · ${visibleCount} shown` : ''}
+                                                                    </span>
+                                                                    {configuredCount > 0 && <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>{configuredCount} configured</span>}
+                                                                </div>
+                                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{meta.description}</div>
+                                                            </div>
                                                         </div>
-                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} onClick={(e) => e.stopPropagation()}>
                                                             {hasCategoryConfig && (
-                                                                <button
-                                                                    onClick={() => {
-                                                                        setConfigCategory(category);
-                                                                        setEditingConfig({});
-                                                                        // Load existing global config from the first tool in this category that has a non-empty config.
-                                                                        // Do NOT require config_schema — some categories (e.g. AgentBay)
-                                                                        // define their schema only in frontend CATEGORY_CONFIG_SCHEMAS.
-                                                                        const firstToolWithConfig = (catTools as any[]).find((tl: any) => tl.config && Object.keys(tl.config).length > 0);
-                                                                        if (firstToolWithConfig?.config) {
-                                                                            setEditingConfig({ ...firstToolWithConfig.config });
-                                                                        }
-                                                                    }}
-                                                                    style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                                                                    title={`Configure ${category}`}
-                                                                >
-                                                                    ⚙️ {t('enterprise.tools.configure', 'Configure')}
+                                                                <button onClick={() => {
+                                                                    setConfigCategory(meta.configCategory);
+                                                                    setEditingConfig({});
+                                                                    const firstToolWithConfig = (allCatTools as any[]).find((tl: any) => tl.category === meta.configCategory && tl.config && Object.keys(tl.config).length > 0);
+                                                                    if (firstToolWithConfig?.config) setEditingConfig({ ...firstToolWithConfig.config });
+                                                                }} style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }} title={`Configure ${label}`}>
+                                                                    {t('enterprise.tools.configure', 'Configure')}
                                                                 </button>
                                                             )}
-                                                            {/* Category Bulk Toggle */}
-                                                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${categoryLabels[category] || category} tools`}>
-                                                                <input type="checkbox"
-                                                                    checked={(catTools as any[]).every(t => t.enabled)}
-                                                                    onChange={async (e) => {
-                                                                        const targetEnabled = e.target.checked;
-                                                                        try {
-                                                                            const payload = (catTools as any[]).map(t => ({ tool_id: t.id, enabled: targetEnabled }));
-                                                                            await fetchJson('/tools/bulk', { method: 'PUT', body: JSON.stringify(payload) });
-                                                                            loadAllTools();
-                                                                        } catch (err: any) {
-                                                                            toast.error('批量更新失败', { details: String(err?.message || err) });
-                                                                        }
-                                                                    }}
-                                                                    style={{ opacity: 0, width: 0, height: 0 }} />
-                                                                <span style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: '22px', background: (catTools as any[]).every(t => t.enabled) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', transition: '0.3s', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)' }}>
-                                                                    <span style={{ position: 'absolute', left: (catTools as any[]).every(t => t.enabled) ? '20px' : '2px', top: '2px', width: '18px', height: '18px', borderRadius: '50%', background: '#fff', transition: '0.3s', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }} />
+                                                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${label} tools`}>
+                                                                <input type="checkbox" checked={allEnabled} onChange={(e) => void bulkToggle(allCatTools, e.target.checked)} style={{ opacity: 0, width: 0, height: 0 }} />
+                                                                <span style={switchTrack(allEnabled, mixed)}>
+                                                                    <span style={switchKnob(allEnabled)} />
                                                                 </span>
                                                             </label>
                                                         </div>
                                                     </div>
-
-                                                    {/* Tools in this category */}
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                                        {(catTools as any[]).map((tool: any) => {
-                                                            // If this category has shared config, individual tool config buttons are hidden
-                                                            const hasOwnConfig = tool.config_schema?.fields?.length > 0 && !hasCategoryConfig;
-                                                            const isEditing = editingToolId === tool.id;
-
-                                                            return (
-                                                                <div key={tool.id} className="card" style={{ padding: '0', overflow: 'hidden' }}>
-                                                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
-                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
-                                                                            <span style={{ fontSize: '18px' }}>{tool.icon}</span>
-                                                                            <div style={{ minWidth: 0 }}>
-                                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                                                    <span style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</span>
-                                                                                    <span style={{ fontSize: '10px', background: tool.type === 'mcp' ? 'var(--primary)' : 'var(--bg-tertiary)', color: tool.type === 'mcp' ? '#fff' : 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>
-                                                                                        {tool.type === 'mcp' ? 'MCP' : 'Built-in'}
-                                                                                    </span>
-                                                                                    {tool.is_default && <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.15)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>Default</span>}
-                                                                                    {tool.config && Object.keys(tool.config).length > 0 && (
-                                                                                        <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>{t('enterprise.tools.configured', 'Configured')}</span>
-                                                                                    )}
-                                                                                </div>
-                                                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                                                    {tool.description?.slice(0, 80)}
-                                                                                    {tool.mcp_server_name && <span> · {tool.mcp_server_name}</span>}
-                                                                                </div>
-                                                                            </div>
-                                                                        </div>
-
-                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                                                                            {/* Per-tool config button: only if the tool has its own schema AND is NOT part of a category config */}
-                                                                            {hasOwnConfig && (
-                                                                                <button
-                                                                                    style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                                                                                    title={t('enterprise.tools.configureSettings', 'Configure settings')}
-                                                                                    onClick={async () => {
-                                                                                        setEditingToolId(tool.id);
-                                                                                        const cfg = { ...tool.config };
-                                                                                        if (tool.name === 'jina_search' || tool.name === 'jina_read') {
-                                                                                            try {
-                                                                                                const token = localStorage.getItem('token');
-                                                                                                const res = await fetch('/api/enterprise/system-settings/jina_api_key', { headers: { Authorization: `Bearer ${token}` } });
-                                                                                                const d = await res.json();
-                                                                                                if (d.value?.api_key) cfg.api_key = d.value.api_key;
-                                                                                            } catch { }
-                                                                                        }
-                                                                                        setEditingConfig(cfg);
-                                                                                    }}
-                                                                                >
-                                                                                    ⚙️ {t('enterprise.tools.configure')}
-                                                                                </button>
-                                                                            )}
-
-                                                                            {/* Delete (non-builtin only) */}
-                                                                            {tool.type !== 'builtin' && (
-                                                                                <button className="btn btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
-                                                                                    const ok = await dialog.confirm(`确定删除 ${tool.display_name}？`, { title: '删除工具', danger: true, confirmLabel: '删除' });
-                                                                                    if (!ok) return;
-                                                                                    await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
-                                                                                    loadAllTools();
-                                                                                    loadAgentInstalledTools();
-                                                                                }}>{t('common.delete')}</button>
-                                                                            )}
-
-                                                                            {/* Enable toggle */}
-                                                                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
-                                                                                <input type="checkbox" checked={tool.enabled} onChange={async (e) => {
-                                                                                    await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }) });
-                                                                                    loadAllTools();
-                                                                                }} style={{ opacity: 0, width: 0, height: 0 }} />
-                                                                                <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
-                                                                                    <span style={{ position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
-                                                                                </span>
-                                                                            </label>
-                                                                        </div>
-                                                                    </div>
-
-                                                                    {/* Inline config editing form (per-tool only) */}
-                                                                    {/* Inline config editing form replaced by global modal */}
-                                                                </div>
-                                                            );
-                                                        })}
-                                                    </div>
+                                                    {expanded && (
+                                                        <div>
+                                                            {(catTools as any[]).map((tool: any, idx: number) => renderToolRow(tool, category, idx, (catTools as any[]).length))}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             );
                                         })}
@@ -4368,7 +4523,7 @@ export default function EnterpriseSettings() {
                                         <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                                                 <div>
-                                                    <h3 style={{ margin: 0 }}>⚙️ {tool.display_name}</h3>
+                                                    <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}><IconSettings size={20} stroke={1.8} /> {tool.display_name}</h3>
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>Global configuration used by all agents</div>
                                                 </div>
                                                 <button onClick={() => setEditingToolId(null)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
@@ -4481,12 +4636,12 @@ export default function EnterpriseSettings() {
                                             <div style={{ display: 'flex', gap: '8px', marginTop: '8px', justifyContent: 'flex-end' }}>
                                                 <button className="btn btn-secondary" onClick={() => setConfigCategory(null)}>{t('common.cancel')}</button>
                                                 <button className="btn btn-primary" onClick={async () => {
-                                                    // Save config to the first tool in this category.
-                                                    // We write to one representative tool per category;
-                                                    // get_category_config endpoint reads it back.
+                                                    // Save config to the category's runtime representative tool.
                                                     const catTools = allTools.filter((tl: any) => (tl.category || 'general') === configCategory);
-                                                    if (catTools.length > 0) {
-                                                        await fetchJson(`/tools/${catTools[0].id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
+                                                    const primaryToolName = GLOBAL_CATEGORY_CONFIG_PRIMARY_TOOL[configCategory];
+                                                    const representativeTool = catTools.find((tl: any) => tl.name === primaryToolName) || catTools[0];
+                                                    if (representativeTool) {
+                                                        await fetchJson(`/tools/${representativeTool.id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
                                                     }
                                                     setConfigCategory(null);
                                                     loadAllTools();

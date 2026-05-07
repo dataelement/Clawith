@@ -148,6 +148,7 @@ class UserOut(BaseModel):
     display_name: str
     avatar_url: str | None = None
     role: str
+    is_platform_admin: bool = False
     tenant_id: uuid.UUID | None = None
     title: str | None = None
     primary_mobile: str | None = None
@@ -249,6 +250,12 @@ class AgentOut(BaseModel):
     tokens_used_today: int
     tokens_used_month: int
     tokens_used_total: int = 0
+    cache_read_tokens_today: int = 0
+    cache_read_tokens_month: int = 0
+    cache_read_tokens_total: int = 0
+    cache_creation_tokens_today: int = 0
+    cache_creation_tokens_month: int = 0
+    cache_creation_tokens_total: int = 0
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None
     context_window_size: int = 100
@@ -265,7 +272,7 @@ class AgentOut(BaseModel):
     is_expired: bool = False
     is_system: bool = False
     llm_calls_today: int = 0
-    max_llm_calls_per_day: int = 100
+    max_llm_calls_per_day: int = 1000
     agent_type: str = "native"
     openclaw_last_seen: datetime | None = None
     unread_count: int = 0

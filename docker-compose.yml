@@ -178,6 +178,7 @@ services:
       - "${FRONTEND_PORT:-3008}:3000"
     environment:
       VITE_API_URL: http://localhost:8000
+      API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public

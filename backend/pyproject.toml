@@ -26,6 +26,7 @@ dependencies = [
     "lxml-html-clean>=0.4.0",
     "PyNaCl>=1.5.0",
     "pdfplumber>=0.11.0",
+    "PyMuPDF>=1.24.0",
     "python-docx>=1.1.0",
     "openpyxl>=3.1.0",
     "python-pptx>=1.0.0",
@@ -42,6 +43,7 @@ dependencies = [
     "weasyprint>=62.0",
     "markdown>=3.6",
     "beautifulsoup4>=4.12.0",
+    "boto3>=1.35.0",
 ]
 
 [project.optional-dependencies]

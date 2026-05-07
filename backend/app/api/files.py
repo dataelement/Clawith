@@ -35,6 +35,7 @@ from app.services.storage import (
     guess_content_type,
     normalize_storage_key,
 )
+from app.services.workspace_paths import WorkspacePathError, resolve_agent_visible_path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -91,6 +92,35 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     return full
 
 
+def _visible_path(agent_id: uuid.UUID, rel_path: str, tenant_id: uuid.UUID | None) -> tuple[Path, Path, bool]:
+    """Resolve an agent-visible path, including virtual enterprise_info/."""
+    try:
+        resolved = resolve_agent_visible_path(
+            _agent_base_dir(agent_id),
+            rel_path,
+            workspace_root=Path(settings.AGENT_DATA_DIR),
+            tenant_id=str(tenant_id) if tenant_id else None,
+        )
+    except WorkspacePathError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return resolved.path, resolved.relative_root, resolved.is_enterprise
+
+
+def _is_enterprise_visible_path(rel_path: str) -> bool:
+    normalized = (rel_path or "").strip().strip("/")
+    return normalized == "enterprise_info" or normalized.startswith("enterprise_info/")
+
+
+def _visible_storage_key(agent_id: uuid.UUID, rel_path: str, tenant_id: uuid.UUID | None) -> tuple[str, bool]:
+    normalized = (rel_path or "").strip().strip("/")
+    if _is_enterprise_visible_path(normalized):
+        if not tenant_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No tenant associated")
+        sub_path = normalized[len("enterprise_info"):].lstrip("/")
+        return _enterprise_storage_key(str(tenant_id), sub_path), True
+    return _agent_storage_key(agent_id, normalized), False
+
+
 @router.get("/", response_model=list[FileInfo])
 async def list_files(
     agent_id: uuid.UUID,
@@ -101,15 +131,30 @@ async def list_files(
     """List files and directories in an agent's file system."""
     await check_agent_access(db, current_user, agent_id)
     storage = get_storage_backend()
-    storage_key = _agent_storage_key(agent_id, path)
+    storage_key, is_enterprise = _visible_storage_key(agent_id, path, current_user.tenant_id)
     if not await storage.exists(storage_key):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
-    if not await storage.is_dir(storage_key):
+        if not (is_enterprise and (path or "").strip().strip("/") == "enterprise_info"):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
+    elif not await storage.is_dir(storage_key):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a directory")
 
     items = []
-    for entry in await storage.list_dir(storage_key):
-        rel_path = str(Path(entry.key).relative_to(str(agent_id)))
+    if not path and current_user.tenant_id:
+        items.append(FileInfo(
+            name="enterprise_info",
+            path="enterprise_info",
+            is_dir=True,
+            size=0,
+            modified_at="",
+            url=None,
+        ))
+    entries = await storage.list_dir(storage_key) if await storage.exists(storage_key) else []
+    for entry in entries:
+        if is_enterprise:
+            rel = str(Path(entry.key).relative_to(f"enterprise_info_{current_user.tenant_id}"))
+            rel_path = f"enterprise_info/{rel}" if rel != "." else "enterprise_info"
+        else:
+            rel_path = str(Path(entry.key).relative_to(str(agent_id)))
         items.append(FileInfo(
             name=entry.name,
             path=rel_path,
@@ -131,7 +176,7 @@ async def read_file(
     """Read the content of a file."""
     await check_agent_access(db, current_user, agent_id)
     storage = get_storage_backend()
-    key = _agent_storage_key(agent_id, path)
+    key, _ = _visible_storage_key(agent_id, path, current_user.tenant_id)
     if not await storage.exists(key) or not await storage.is_file(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
@@ -247,7 +292,7 @@ async def preview_file(
     """Return a browser-friendly preview payload for Workspace files."""
     await check_agent_access(db, current_user, agent_id)
     storage = get_storage_backend()
-    key = _agent_storage_key(agent_id, path)
+    key, _ = _visible_storage_key(agent_id, path, current_user.tenant_id)
     if not await storage.exists(key) or not await storage.is_file(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
@@ -334,7 +379,7 @@ async def preview_file(
             "kind": kind,
             "mime_type": mime_type,
             "text": companion_content or extracted_text,
-            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())) if companion is not None else None,
+            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())) if companion is not None and not path.startswith("enterprise_info") else None,
             "download_url": download_url,
         }
 
@@ -350,7 +395,7 @@ async def preview_file(
             "mime_type": "text/markdown" if companion.suffix.lower() == ".md" else "text/plain",
             "content": content or "",
             "content_hash": content_hash(content or ""),
-            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())),
+            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())) if not path.startswith("enterprise_info") else None,
             "download_url": download_url,
         }
 
@@ -403,7 +448,7 @@ async def download_file(
 
     await check_agent_access(db, user, agent_id)
     storage = get_storage_backend()
-    key = _agent_storage_key(agent_id, path)
+    key, _ = _visible_storage_key(agent_id, path, user.tenant_id)
     if not await storage.exists(key) or not await storage.is_file(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     presigned = await storage.presign_download_url(key, filename=Path(path).name, inline=inline)
@@ -438,6 +483,17 @@ async def write_file(
 ):
     """Write content to a file (create or overwrite)."""
     await check_agent_access(db, current_user, agent_id)
+    if path.startswith("enterprise_info"):
+        if current_user.role not in ("platform_admin", "org_admin"):
+            raise HTTPException(status_code=403, detail="Only admins can edit enterprise knowledge base")
+        if path.strip("/") == "enterprise_info":
+            raise HTTPException(status_code=400, detail="Cannot overwrite enterprise_info root")
+        target, _, _ = _visible_path(agent_id, path, current_user.tenant_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(target, "w", encoding="utf-8") as f:
+            await f.write(data.content)
+        return {"status": "ok", "path": path, "revision_id": None}
+
     result = await write_workspace_file(
         db,
         agent_id=agent_id,
@@ -500,6 +556,8 @@ async def get_file_revisions(
 ):
     """List version history for the currently opened Workspace file."""
     await check_agent_access(db, current_user, agent_id)
+    if path.startswith("enterprise_info"):
+        return []
     revisions = await list_revisions(db, agent_id=agent_id, path=path)
     return [
         {
@@ -567,7 +625,11 @@ async def delete_file(
     """Delete a file."""
     await check_agent_access(db, current_user, agent_id)
     storage = get_storage_backend()
-    key = _agent_storage_key(agent_id, path)
+    if path.startswith("enterprise_info") and current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Only admins can delete enterprise knowledge base files")
+    if path.strip("/") == "enterprise_info":
+        raise HTTPException(status_code=400, detail="Cannot delete enterprise_info root")
+    key, _ = _visible_storage_key(agent_id, path, current_user.tenant_id)
     if not await storage.exists(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     if await storage.is_dir(key):
@@ -856,37 +918,25 @@ async def agent_import_from_clawhub(
     await check_agent_access(db, current_user, agent_id)
 
     from app.api.skills import (
-        CLAWHUB_BASE, _fetch_github_directory, _parse_skill_md_frontmatter, _get_github_token,
+        _fetch_clawhub_skill_archive, _fetch_clawhub_skill_meta, _get_clawhub_key,
     )
-    import httpx
 
     slug = body.slug
+    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    api_key = await _get_clawhub_key(tenant_id)
 
     # 1. Fetch metadata from ClawHub
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{CLAWHUB_BASE}/v1/skills/{slug}")
-            if resp.status_code == 429:
-                raise HTTPException(429, "ClawHub rate limit exceeded. Please wait and try again.")
-            if resp.status_code != 200:
-                raise HTTPException(502, f"ClawHub API error: {resp.status_code}")
-            meta = resp.json()
+        meta, meta_base = await _fetch_clawhub_skill_meta(slug, api_key=api_key)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(502, f"Failed to connect to ClawHub: {e}")
 
     skill_info = meta.get("skill", {})
-    owner_info = meta.get("owner", {})
-    handle = owner_info.get("handle", "").lower()
-    if not handle:
-        raise HTTPException(400, "Could not determine skill owner from ClawHub metadata")
 
-    # 2. Fetch files from GitHub
-    github_path = f"skills/{handle}/{slug}"
-    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
-    token = await _get_github_token(tenant_id)
-    files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token)
+    # 2. Fetch files from the ClawHub archive
+    files, _ = await _fetch_clawhub_skill_archive(slug, api_key=api_key, preferred_base=meta_base)
 
     # 3. Write to agent workspace: skills/<slug>/
     base = _agent_base_dir(agent_id)

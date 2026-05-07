@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     AGENT_DATA_DIR: str = _default_agent_data_dir()
     AGENT_TEMPLATE_DIR: str = _default_agent_template_dir()
     STORAGE_LOCAL_ROOT: str = _default_agent_data_dir()
+    STORAGE_LOCAL_FALLBACK_ENABLED: bool = True
     S3_BUCKET: str = ""
     S3_REGION: str = ""
     S3_ENDPOINT_URL: str = ""

@@ -359,8 +359,15 @@ class AgentBayClient:
     async def computer_click(self, x: int, y: int, button: str = "left") -> dict:
         """Click the mouse at coordinates (x, y)."""
         await self._ensure_computer_session()
+        move_result = await asyncio.to_thread(self._session.computer.move_mouse, x, y)
         result = await asyncio.to_thread(self._session.computer.click_mouse, x, y, button)
-        return {"success": result.success, "x": x, "y": y, "button": button}
+        return {
+            "success": result.success,
+            "moved": getattr(move_result, "success", False),
+            "x": x,
+            "y": y,
+            "button": button,
+        }
 
     async def computer_input_text(self, text: str) -> dict:
         """Input text at the current cursor position."""
@@ -420,6 +427,29 @@ class AgentBayClient:
             "error_message": result.error_message or "",
         }
 
+    async def computer_get_installed_apps(
+        self,
+        start_menu: bool = True,
+        desktop: bool = True,
+        ignore_system_apps: bool = True,
+    ) -> dict:
+        """List installed applications and their launch commands."""
+        await self._ensure_computer_session()
+        result = await asyncio.to_thread(
+            self._session.computer.get_installed_apps,
+            start_menu,
+            desktop,
+            ignore_system_apps,
+        )
+        apps = []
+        for app in (getattr(result, "data", None) or []):
+            apps.append(vars(app) if hasattr(app, "__dict__") else str(app))
+        return {
+            "success": result.success,
+            "apps": apps,
+            "error_message": result.error_message or "",
+        }
+
     async def computer_get_cursor_position(self) -> dict:
         """Get current cursor position."""
         await self._ensure_computer_session()
@@ -441,11 +471,34 @@ class AgentBayClient:
             "error_message": result.error_message or "",
         }
 
+    async def computer_list_windows(self, timeout_ms: int = 3000) -> dict:
+        """List root desktop windows with IDs and geometry."""
+        await self._ensure_computer_session()
+        result = await asyncio.to_thread(self._session.computer.list_root_windows, timeout_ms)
+        windows = []
+        for window in (getattr(result, "windows", None) or []):
+            windows.append(vars(window) if hasattr(window, "__dict__") else str(window))
+        return {
+            "success": result.success,
+            "windows": windows,
+            "error_message": result.error_message or "",
+        }
+
     async def computer_activate_window(self, window_id: int) -> dict:
         """Activate (bring to front) a window by its ID."""
         await self._ensure_computer_session()
         result = await asyncio.to_thread(self._session.computer.activate_window, window_id)
         return {"success": result.success, "window_id": window_id}
+
+    async def computer_close_window(self, window_id: int) -> dict:
+        """Close a desktop window by its ID."""
+        await self._ensure_computer_session()
+        result = await asyncio.to_thread(self._session.computer.close_window, window_id)
+        return {
+            "success": result.success,
+            "window_id": window_id,
+            "error_message": result.error_message or "",
+        }
 
     async def computer_list_visible_apps(self) -> dict:
         """List currently visible/running applications."""
@@ -606,6 +659,16 @@ _AGENTBAY_SESSION_TIMEOUT = timedelta(minutes=5)
 AGENTBAY_API_URL = "https://api.agentbay.ai/v1"
 
 
+def _is_plausible_agentbay_api_key(value: str | None) -> bool:
+    """AgentBay API keys use an akm-* token format.
+
+    This keeps encrypted blobs that failed to decrypt from being treated as
+    plaintext keys and sent to AgentBay, where they surface as
+    "invalid apiKey or token".
+    """
+    return bool(isinstance(value, str) and value.strip().startswith("akm-"))
+
+
 async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Optional[str]:
     """Return the configured AgentBay API key for the given agent.
 
@@ -633,9 +696,11 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
         if config and config.app_secret:
             # Try to decrypt, fallback to plaintext if it fails
             try:
-                return decrypt_data(config.app_secret, get_settings().SECRET_KEY)
+                candidate = decrypt_data(config.app_secret, get_settings().SECRET_KEY)
             except Exception:
-                return config.app_secret
+                candidate = config.app_secret
+            if _is_plausible_agentbay_api_key(candidate):
+                return candidate
 
         # 2) Fallback: check global Tool.config.api_key for agentbay tools.
         #
@@ -646,6 +711,7 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
         # tools — this prevents a non-deterministic .limit(1) from returning a
         # tool with an empty config (e.g. agentbay_computer_screenshot), which
         # would silently return None even when a key IS configured.
+        candidate_tools: list[Tool] = []
         tool_result = await session.execute(
             select(Tool).where(
                 Tool.name == "agentbay_browser_navigate",
@@ -653,27 +719,33 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
             ).limit(1)
         )
         tool = tool_result.scalar_one_or_none()
+        if tool:
+            candidate_tools.append(tool)
 
-        # Also scan all agentbay tools in case the key was stored differently
-        if not (tool and tool.config and tool.config.get("api_key")):
-            all_result = await session.execute(
-                select(Tool).where(
-                    Tool.category == "agentbay",
-                    Tool.enabled == True,
-                )
-            )
-            for candidate in all_result.scalars().all():
-                if candidate.config and candidate.config.get("api_key"):
-                    tool = candidate
-                    break
+        # Also scan all agentbay tools in case the key was stored on a
+        # different category representative by an older UI.
+        all_result = await session.execute(
+            select(Tool).where(
+                Tool.category == "agentbay",
+                Tool.enabled == True,
+            ).order_by(Tool.name)
+        )
+        candidate_tools.extend(
+            candidate
+            for candidate in all_result.scalars().all()
+            if not tool or candidate.id != tool.id
+        )
 
-        if tool and tool.config and tool.config.get("api_key"):
-            api_key = tool.config["api_key"]
-            # Try to decrypt (global config is encrypted via _encrypt_sensitive_fields)
+        for candidate_tool in candidate_tools:
+            if not (candidate_tool.config and candidate_tool.config.get("api_key")):
+                continue
+            api_key = candidate_tool.config["api_key"]
             try:
-                return decrypt_data(api_key, get_settings().SECRET_KEY)
+                candidate = decrypt_data(api_key, get_settings().SECRET_KEY)
             except Exception:
-                return api_key
+                candidate = api_key
+            if _is_plausible_agentbay_api_key(candidate):
+                return candidate
 
         return None
 
@@ -747,7 +819,10 @@ async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str, se
             api_key = decrypt_data(api_key, get_settings().SECRET_KEY)
         except Exception:
             pass  # Fallback if it's somehow plaintext
-    else:
+        if not _is_plausible_agentbay_api_key(api_key):
+            api_key = None
+
+    if not api_key:
         api_key = await get_agentbay_api_key_for_agent(agent_id)
 
     if not api_key:

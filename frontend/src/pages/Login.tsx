@@ -4,6 +4,15 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import { authApi, tenantApi, fetchJson } from '../services/api';
 import type { TokenResponse } from '../types';
+import {
+    IconAlertTriangle,
+    IconArrowRight,
+    IconBuildingCommunity,
+    IconCheck,
+    IconDatabase,
+    IconLanguage,
+    IconUsersGroup,
+} from '@tabler/icons-react';
 
 export default function Login() {
     const { t, i18n } = useTranslation();
@@ -282,21 +291,21 @@ export default function Login() {
                     <p className="login-hero-desc" dangerouslySetInnerHTML={{ __html: t('login.hero.description') }} />
                     <div className="login-hero-features">
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🤖</span>
+                            <span className="login-hero-feature-icon"><IconUsersGroup size={20} stroke={1.8} /></span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.multiAgent.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.multiAgent.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🧠</span>
+                            <span className="login-hero-feature-icon"><IconDatabase size={20} stroke={1.8} /></span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.persistentMemory.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.persistentMemory.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🏛️</span>
+                            <span className="login-hero-feature-icon"><IconBuildingCommunity size={20} stroke={1.8} /></span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.agentPlaza.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.agentPlaza.description')}</div>
@@ -308,19 +317,16 @@ export default function Login() {
 
             {/* ── Right: Form Panel ── */}
             <div className="login-form-panel">
-                {/* Language Switcher */}
-                <div style={{
-                    position: 'absolute', top: '16px', right: '16px',
-                    cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)',
-                    display: 'flex', alignItems: 'center', gap: '4px',
-                    padding: '6px 12px', borderRadius: '8px',
-                    background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
-                    zIndex: 101,
-                }} onClick={toggleLang}>
-                    🌐
-                </div>
-
                 <div className="login-form-wrapper">
+                    <button
+                        type="button"
+                        className="login-language-switcher"
+                        onClick={toggleLang}
+                        aria-label={t('common.switchLanguage', 'Switch language')}
+                        title={t('common.switchLanguage', 'Switch language')}
+                    >
+                        <span className="login-language-switcher-icon" aria-hidden="true"><IconLanguage size={16} stroke={1.8} /></span>
+                    </button>
                     {checkingEmail ? (
                         // While resolving invitation email, show a minimal loading indicator
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '200px', gap: '16px' }}>
@@ -343,7 +349,7 @@ export default function Login() {
 
                     {error && (
                         <div className="login-error">
-                            <span>⚠</span> {error}
+                            <IconAlertTriangle size={16} stroke={1.8} /> {error}
                         </div>
                     )}
 
@@ -360,7 +366,7 @@ export default function Login() {
                             gap: '8px',
                             border: '1px solid rgba(34, 197, 94, 0.2)',
                         }}>
-                            <span>✓</span> {successMessage}
+                            <IconCheck size={16} stroke={1.8} /> {successMessage}
                         </div>
                     )}
 
@@ -476,7 +482,7 @@ export default function Login() {
                             ) : (
                                 <>
                                     {isRegister ? t('auth.register') : t('auth.login')}
-                                    <span style={{ marginLeft: '6px' }}>→</span>
+                                    <IconArrowRight size={17} stroke={1.9} style={{ marginLeft: '6px' }} />
                                 </>
                             )}
                         </button>

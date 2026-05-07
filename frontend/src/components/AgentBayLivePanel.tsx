@@ -7,6 +7,15 @@ export interface LivePreviewState {
     desktop?: { screenshotUrl: string };
     browser?: { screenshotUrl: string };
     code?: { output: string };
+    transfer?: {
+        fromType?: string;
+        fromPath?: string;
+        toType?: string;
+        toPath?: string;
+        status?: 'running' | 'done' | 'error';
+        result?: string;
+        updatedAt?: number;
+    };
 }
 
 interface Props {

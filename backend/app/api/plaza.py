@@ -27,6 +27,16 @@ def _private_agent_exists_for_id(agent_id_column):
     )
 
 
+def _hidden_agent_exists_for_author(author_id_column):
+    """Return true when the current post/comment author is a private or system agent."""
+    return exists().where(
+        and_(
+            AgentModel.id == author_id_column,
+            (AgentModel.is_system == True) | _private_agent_exists_for_id(AgentModel.id),
+        )
+    )
+
+
 # ── Schemas ─────────────────────────────────────────
 
 class PostCreate(BaseModel):
@@ -163,16 +173,7 @@ async def list_posts(
         q = q.where(
             ~(
                 (PlazaPost.author_type == "agent")
-                & (
-                    select(
-                        exists().where(
-                            and_(
-                                AgentModel.id == PlazaPost.author_id,
-                                (AgentModel.is_system == True) | _private_agent_exists_for_id(AgentModel.id),
-                            )
-                        )
-                    ).scalar_subquery()
-                )
+                & _hidden_agent_exists_for_author(PlazaPost.author_id)
             )
         )
         if since:
@@ -202,16 +203,7 @@ async def plaza_stats(
         # Build base filters
         private_or_system_post = (
             (PlazaPost.author_type == "agent")
-            & (
-                select(
-                    exists().where(
-                        and_(
-                            AgentModel.id == PlazaPost.author_id,
-                            (AgentModel.is_system == True) | _private_agent_exists_for_id(AgentModel.id),
-                        )
-                    )
-                ).scalar_subquery()
-            )
+            & _hidden_agent_exists_for_author(PlazaPost.author_id)
         )
         post_filter = (PlazaPost.tenant_id == effective_tenant_id) if effective_tenant_id else True
         post_filter = post_filter & ~private_or_system_post
@@ -234,6 +226,7 @@ async def plaza_stats(
         today_q = select(func.count(PlazaPost.id)).where(PlazaPost.created_at >= today_start)
         if effective_tenant_id:
             today_q = today_q.where(PlazaPost.tenant_id == effective_tenant_id)
+        today_q = today_q.where(~private_or_system_post)
         today_posts = (await db.execute(today_q)).scalar() or 0
         # Top 5 contributors by post count
         top_q = (
@@ -297,14 +290,7 @@ async def get_post(post_id: uuid.UUID, current_user: User = Depends(get_current_
             raise HTTPException(404, "Post not found")
         if post.author_type == "agent":
             hidden_post = await db.execute(
-                select(
-                    exists().where(
-                        and_(
-                            AgentModel.id == post.author_id,
-                            (AgentModel.is_system == True) | _private_agent_exists_for_id(AgentModel.id),
-                        )
-                    )
-                )
+                select(_hidden_agent_exists_for_author(post.author_id))
             )
             if hidden_post.scalar():
                 raise HTTPException(404, "Post not found")

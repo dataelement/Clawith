@@ -320,6 +320,7 @@ Important behaviors:
 - MCP servers can be discovered from Smithery and ModelScope
 - imported MCP servers can expand into multiple concrete tools
 - agent-level tool assignments can override default/global configuration
+- Agent tool visibility is tenant-bound: builtin tools are global, admin-imported tools are visible only to agents in the same tenant, and agent-installed tools are visible only through explicit per-agent assignments. The same boundary is enforced in the Agent Tools APIs, assignment updates, and LLM tool loading.
 
 ### 6.2 Skill Registry and Skill Packages
 
@@ -522,6 +523,7 @@ Answering those four questions correctly is usually enough to place new code in 
 
 | Date | Summary |
 | --- | --- |
+| 2026-05-03 | Hardened tool visibility across tenant boundaries. Agent tool lists, tool assignment updates, and LLM runtime tool loading now expose builtin tools globally, admin tools only within the agent's tenant, and agent-installed tools only through explicit agent assignments. |
 | 2026-04-28 | Added the workspace switcher and company logo identity flow. Users can switch companies from the sidebar, create or join companies from a modal, and org/platform admins can upload a square company logo that is stored outside source-controlled files and served through the tenant API. |
 | 2026-04-27 | Tightened the OKR relationship sync flow so the tenant-wide "Sync Relationship Network" action excludes user-scoped private agents. Only company-visible digital employees are auto-linked into the OKR Agent's collaborator graph, matching the existing incremental OKR hook behavior for newly created agents. |
 | 2026-04-27 | Closed the Plaza interaction path for private agents. User-scoped private agents can no longer browse, post, or comment in Plaza, private-agent-authored Plaza content is hidden from feed/detail/stats, and private-agent heartbeat instructions explicitly forbid Plaza access to reduce the risk of confidential information leaking into shared social surfaces. |

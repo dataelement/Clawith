@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { IconAlertTriangle, IconBulb, IconCheck } from '@tabler/icons-react';
 import { authApi } from '../services/api';
 
 export default function ForgotPassword() {
@@ -68,19 +69,19 @@ export default function ForgotPassword() {
 
                     {error && (
                         <div className="login-error">
-                            <span>⚠</span> {error}
+                            <span><IconAlertTriangle size={14} stroke={1.8} /></span> {error}
                         </div>
                     )}
 
                     {message && (
                         <div className="login-error" style={{ background: 'rgba(34,197,94,0.14)', borderColor: 'rgba(34,197,94,0.35)', color: '#dcfce7' }}>
-                            <span>✓</span> {message}
+                            <span><IconCheck size={14} stroke={1.8} /></span> {message}
                         </div>
                     )}
 
                     {hintResult && (
                         <div className="login-error" style={{ background: 'rgba(56,189,248,0.1)', borderColor: 'rgba(56,189,248,0.3)', color: '#bae6fd' }}>
-                            <span style={{ marginRight: '6px' }}>💡</span>
+                            <IconBulb size={14} stroke={1.8} style={{ marginRight: '6px' }} />
                             {t('auth.emailHintResult', 'Email hint')}: <strong>{hintResult}</strong>
                         </div>
                     )}

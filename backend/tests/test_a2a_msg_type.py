@@ -378,37 +378,41 @@ async def test_no_relationship_returns_error():
 
 
 @pytest.mark.asyncio
-async def test_append_focus_item_creates_file(tmp_path):
+async def test_append_focus_item_creates_file():
     """_append_focus_item should create/append to focus.md."""
-    from app.services.agent_tools import _append_focus_item, WORKSPACE_ROOT
+    from app.services.agent_tools import _append_focus_item
 
     agent_id = uuid.uuid4()
-    with patch("app.services.agent_tools.WORKSPACE_ROOT", tmp_path):
+    storage = AsyncMock()
+    storage.exists.return_value = False
+    storage.is_file.return_value = False
+
+    with patch("app.services.agent_tools.get_storage_backend", return_value=storage):
         await _append_focus_item(agent_id, "test_item", "Test description")
 
-        focus_path = tmp_path / str(agent_id) / "focus.md"
-        assert focus_path.exists()
-        content = focus_path.read_text()
-        assert "test_item" in content
-        assert "Test description" in content
-        assert "- [ ]" in content
+    storage.write_text.assert_awaited_once()
+    key, content = storage.write_text.await_args.args[:2]
+    assert key == f"{agent_id}/focus.md"
+    assert "test_item" in content
+    assert "Test description" in content
+    assert "- [ ]" in content
 
 
 @pytest.mark.asyncio
-async def test_append_focus_item_no_duplicate(tmp_path):
+async def test_append_focus_item_no_duplicate():
     """_append_focus_item should not duplicate existing items."""
     from app.services.agent_tools import _append_focus_item
 
     agent_id = uuid.uuid4()
-    focus_path = tmp_path / str(agent_id) / "focus.md"
-    focus_path.parent.mkdir(parents=True, exist_ok=True)
-    focus_path.write_text("# Focus\n\n- [ ] test_item: Existing description\n")
+    storage = AsyncMock()
+    storage.exists.return_value = True
+    storage.is_file.return_value = True
+    storage.read_text.return_value = "# Focus\n\n- [ ] test_item: Existing description\n"
 
-    with patch("app.services.agent_tools.WORKSPACE_ROOT", tmp_path):
+    with patch("app.services.agent_tools.get_storage_backend", return_value=storage):
         await _append_focus_item(agent_id, "test_item", "New description")
 
-    content = focus_path.read_text()
-    assert content.count("test_item") == 1
+    storage.write_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio

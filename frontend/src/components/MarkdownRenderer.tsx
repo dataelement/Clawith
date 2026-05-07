@@ -13,8 +13,69 @@ function escapeHtml(str: string): string {
         .replace(/"/g, '&quot;');
 }
 
+function escapeAttribute(str: string): string {
+    return escapeHtml(str).replace(/'/g, '&#39;');
+}
+
+function prepareUrl(url: string, kind: 'link' | 'image' = 'link'): string | null {
+    let finalUrl = url.trim().replace(/^<|>$/g, '');
+    const lower = finalUrl.toLowerCase();
+    const isAllowed =
+        lower.startsWith('http://') ||
+        lower.startsWith('https://') ||
+        lower.startsWith('mailto:') ||
+        finalUrl.startsWith('/') ||
+        (kind === 'image' && lower.startsWith('data:image/'));
+
+    if (!isAllowed) return null;
+
+    if (finalUrl.startsWith('/api/agents/')) {
+        const token = localStorage.getItem('token');
+        if (token && !finalUrl.includes('token=')) {
+            finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+        }
+    }
+    return finalUrl;
+}
+
+function renderLink(url: string, label: string): string {
+    const finalUrl = prepareUrl(url);
+    if (!finalUrl) return label;
+    return `<a href="${escapeAttribute(finalUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);text-decoration:underline;text-underline-offset:2px;word-break:break-all">${label}</a>`;
+}
+
+function autolinkBareUrls(html: string): string {
+    return html.replace(/https?:\/\/[^\s<>"']+/g, (rawUrl) => {
+        const trailingMatch = rawUrl.match(/[),.;:!?，。！？；：、）】》]+$/);
+        const trailing = trailingMatch?.[0] ?? '';
+        const url = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
+        if (!url) return rawUrl;
+        return renderLink(url, url) + trailing;
+    });
+}
+
 function renderInline(text: string): string {
-    return text
+    const tokens: string[] = [];
+    const stash = (html: string) => {
+        const key = `@@__MD_TOKEN_${tokens.length}__@@`;
+        tokens.push(html);
+        return key;
+    };
+
+    let working = text
+        // Inline code
+        .replace(/`([^`]+)`/g, (_match, code) => stash(`<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">${escapeHtml(code)}</code>`))
+        // Images
+        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+            const finalUrl = prepareUrl(url, 'image');
+            if (!finalUrl) return escapeHtml(match);
+            const safeUrl = escapeAttribute(finalUrl);
+            return stash(`<a href="${safeUrl}" target="_blank" rel="noopener noreferrer"><img src="${safeUrl}" alt="${escapeAttribute(alt)}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`);
+        })
+        // Links
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, url) => stash(renderLink(url, escapeHtml(label))));
+
+    working = escapeHtml(working)
         // Bold + italic
         .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
         // Bold
@@ -23,34 +84,14 @@ function renderInline(text: string): string {
         // Italic
         .replace(/\*(.*?)\*/g, '<em>$1</em>')
         .replace(/_(.*?)_/g, '<em>$1</em>')
-        // Inline code
-        .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
-        // Images
-        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
-            }
-            return `<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${alt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`;
-        })
-        // Links
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-            // Avoid matching images that snuck through or weird nested stuff
-            if (match.startsWith('!')) return match;
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
-            }
-            return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">${text}</a>`;
-        })
         // Strikethrough
         .replace(/~~(.*?)~~/g, '<del>$1</del>');
+
+    working = autolinkBareUrls(working);
+    tokens.forEach((html, i) => {
+        working = working.replace(new RegExp(`@@__MD_TOKEN_${i}__@@`, 'g'), html);
+    });
+    return working;
 }
 
 function markdownToHtml(md: string): string {

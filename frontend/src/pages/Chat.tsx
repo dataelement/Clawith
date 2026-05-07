@@ -284,6 +284,9 @@ export default function Chat() {
     const [wsSessionId, setWsSessionId] = useState<string>('');
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messagesContainerRef = useRef<HTMLDivElement>(null);
+    const isNearBottomRef = useRef(true);
+    const userPinnedAwayFromBottomRef = useRef(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     // Ref to the chat textarea for direct DOM height manipulation
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -682,8 +685,31 @@ export default function Chat() {
         }
     }, [connected]);
 
+    const handleMessagesScroll = () => {
+        const el = messagesContainerRef.current;
+        if (!el) return;
+        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        isNearBottomRef.current = distFromBottom < 120;
+        userPinnedAwayFromBottomRef.current = distFromBottom > 220;
+    };
+
+    const handleMessagesWheelCapture = (event: React.WheelEvent<HTMLDivElement>) => {
+        const el = messagesContainerRef.current;
+        if (!el) return;
+        if (event.deltaY < 0 && el.scrollTop > 0) {
+            userPinnedAwayFromBottomRef.current = true;
+            isNearBottomRef.current = false;
+        }
+    };
+
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (userPinnedAwayFromBottomRef.current || !isNearBottomRef.current) return;
+        const el = messagesContainerRef.current;
+        if (!el) return;
+        requestAnimationFrame(() => {
+            if (userPinnedAwayFromBottomRef.current) return;
+            el.scrollTop = el.scrollHeight;
+        });
     }, [messages]);
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -730,6 +756,8 @@ export default function Chat() {
         pendingToolCalls.current = [];
         streamContent.current = '';
         thinkingContent.current = '';
+        userPinnedAwayFromBottomRef.current = false;
+        isNearBottomRef.current = true;
         setIsWaiting(true);
         setStreaming(true);
 
@@ -851,13 +879,18 @@ export default function Chat() {
                 {/* Drop overlay */}
                 {isChatDragging && (
                     <div className="drop-zone-overlay">
-                        <div className="drop-zone-overlay__icon">📎</div>
+                        <div className="drop-zone-overlay__icon"><IconPaperclip size={28} stroke={1.8} /></div>
                         <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop file to attach')}</div>
                     </div>
                 )}
                 {/* Wrap chat area in a column so it coexists with the live panel in flex-row */}
                 <div className="chat-main">
-                <div className="chat-messages">
+                <div
+                    ref={messagesContainerRef}
+                    className="chat-messages"
+                    onScroll={handleMessagesScroll}
+                    onWheelCapture={handleMessagesWheelCapture}
+                >
                     {messages.length === 0 && (
                         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--text-tertiary)' }}>
                             <div style={{ marginBottom: '12px', display: 'flex', justifyContent: 'center' }}>{Icons.chat}</div>
@@ -891,8 +924,7 @@ export default function Chat() {
                                             <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '240px', maxHeight: '180px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} />
                                         </div>);
                                     }
-                                    const fi = fe === 'pdf' ? '\uD83D\uDCC4' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '\uD83D\uDCCA' : (fe === 'docx' || fe === 'doc') ? '\uD83D\uDCDD' : '\uD83D\uDCCE';
-                                    return (<div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}><span>{fi}</span><span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span></div>);
+                                    return (<div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}><IconPaperclip size={13} stroke={1.8} /><span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span></div>);
                                 })()}
                                 {msg.thinking && (
                                     <details className="thinking-panel">
@@ -922,7 +954,7 @@ export default function Chat() {
                                         <MarkdownRenderer content={msg.content} />
                                     )
                                 ) : (
-                                    <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                                    <MarkdownRenderer content={msg.content} />
                                 )}
                                 {msg.timestamp && (
                                     <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.7 }}>

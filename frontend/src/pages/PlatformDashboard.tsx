@@ -522,7 +522,10 @@ export default function PlatformDashboard() {
                                 <span style={{ fontWeight: 500 }}>{c.name}</span>
                             </div>
                             <div style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                {formatTokens(c.tokens)}
+                                <div>{formatTokens(c.tokens)}</div>
+                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                                    Cache {formatTokens(c.cache_read_tokens || 0)} · {Math.round((c.cache_hit_rate || 0) * 100)}%
+                                </div>
                             </div>
                         </div>
                     )}
@@ -541,7 +544,10 @@ export default function PlatformDashboard() {
                                 </div>
                             </div>
                             <div style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                {formatTokens(a.tokens)}
+                                <div>{formatTokens(a.tokens)}</div>
+                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                                    Cache {formatTokens(a.cache_read_tokens || 0)} · {Math.round((a.cache_hit_rate || 0) * 100)}%
+                                </div>
                             </div>
                         </div>
                     )}

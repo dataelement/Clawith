@@ -3,7 +3,9 @@
 node_modules/
 dist/
 *.zip
+uv.lock
 .vite/
+*.log
 build/
 __pycache__/
 *.pyc

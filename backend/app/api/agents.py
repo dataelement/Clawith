@@ -95,12 +95,16 @@ async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
     last_daily = agent.last_daily_reset
     if last_daily is None or last_daily.date() < now.date():
         agent.tokens_used_today = 0
+        agent.cache_read_tokens_today = 0
+        agent.cache_creation_tokens_today = 0
         agent.last_daily_reset = now
         changed = True
 
     last_monthly = agent.last_monthly_reset
     if last_monthly is None or (last_monthly.year, last_monthly.month) < (now.year, now.month):
         agent.tokens_used_month = 0
+        agent.cache_read_tokens_month = 0
+        agent.cache_creation_tokens_month = 0
         agent.last_monthly_reset = now
         changed = True
 
@@ -258,9 +262,9 @@ async def create_agent(
     except QuotaExceeded as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
 
-    # Calculate expiry time
+    # A TTL of 0 or less means the agent never expires.
     from datetime import datetime, timedelta, timezone as tz
-    expires_at = datetime.now(tz.utc) + timedelta(hours=current_user.quota_agent_ttl_hours or 48)
+    ttl_hours = current_user.quota_agent_ttl_hours
 
     # Determine target tenant: normally user's tenant; admins can override via payload
     target_tenant_id = current_user.tenant_id
@@ -268,7 +272,7 @@ async def create_agent(
         target_tenant_id = data.tenant_id
 
     # Get default limits from target tenant
-    max_llm_calls = 100
+    max_llm_calls = 1000
     default_max_triggers = 20
     default_min_poll = 5
     default_webhook_rate = 5
@@ -279,7 +283,8 @@ async def create_agent(
         tenant_result = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
         tenant = tenant_result.scalar_one_or_none()
         if tenant:
-            max_llm_calls = tenant.default_max_llm_calls_per_day or 100
+            ttl_hours = tenant.default_agent_ttl_hours
+            max_llm_calls = tenant.default_max_llm_calls_per_day or 1000
             default_max_triggers = tenant.default_max_triggers or 20
             default_min_poll = tenant.min_poll_interval_floor or 5
             default_webhook_rate = tenant.max_webhook_rate_ceiling or 5
@@ -290,6 +295,7 @@ async def create_agent(
 
     # If the caller didn't pick a model, fall back to the tenant's default.
     effective_primary_model_id = data.primary_model_id or tenant_default_model_id
+    expires_at = datetime.now(tz.utc) + timedelta(hours=ttl_hours) if ttl_hours and ttl_hours > 0 else None
 
     agent = Agent(
         name=data.name,
@@ -522,12 +528,22 @@ async def get_agent_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     """Get agent permission scope."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(select(AgentPermission).where(AgentPermission.agent_id == agent_id))
     perms = result.scalars().all()
 
+    can_manage = access_level == "manage"
+    is_owner = is_agent_creator(current_user, agent)
+
     if not perms:
-        return {"scope_type": "user", "scope_ids": [], "access_level": "manage" if is_agent_creator(current_user, agent) else "use", "is_owner": is_agent_creator(current_user, agent)}
+        return {
+            "scope_type": "user",
+            "scope_ids": [],
+            "access_level": "manage" if is_owner else "use",
+            "effective_access_level": access_level,
+            "can_manage": can_manage,
+            "is_owner": is_owner,
+        }
 
     scope_type = perms[0].scope_type
     scope_ids = [str(p.scope_id) for p in perms if p.scope_id]
@@ -547,7 +563,9 @@ async def get_agent_permissions(
         "scope_ids": scope_ids,
         "scope_names": scope_names,
         "access_level": perm_access_level,
-        "is_owner": is_agent_creator(current_user, agent),
+        "effective_access_level": access_level,
+        "can_manage": can_manage,
+        "is_owner": is_owner,
     }
 
 
@@ -559,9 +577,9 @@ async def update_agent_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     """Update agent permission scope (owner or platform_admin only)."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only owner or admin can change permissions")
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only manager can change permissions")
 
     scope_type = data.get("scope_type", "company")
     scope_ids = data.get("scope_ids", [])
@@ -583,8 +601,9 @@ async def update_agent_permissions(
             for sid in scope_ids:
                 db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uuid.UUID(sid), access_level=access_level))
         else:
-            # "仅自己"
-            db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=current_user.id, access_level="manage"))
+            # "Only me" means private to the agent creator, even when an org admin
+            # is managing a company-visible agent created by someone else.
+            db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=agent.creator_id or current_user.id, access_level="manage"))
 
     await db.commit()
     return {"status": "ok"}
@@ -804,9 +823,9 @@ async def start_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Start an agent's container."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can start agent")
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only manager can start agent")
 
     from app.services.agent_manager import agent_manager
     await agent_manager.start_container(db, agent)
@@ -821,9 +840,9 @@ async def stop_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Stop an agent's container."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can stop agent")
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only manager can stop agent")
 
     from app.services.agent_manager import agent_manager
     await agent_manager.stop_container(agent)

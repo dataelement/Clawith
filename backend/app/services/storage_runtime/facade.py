@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.services.storage_runtime.base import StorageBackend
+from app.services.storage_runtime.fallback import FallbackStorageBackend
 from app.services.storage_runtime.local import LocalStorageBackend
 from app.services.storage_runtime.s3 import S3StorageBackend
 from app.services.storage_runtime.utils import (
@@ -26,7 +27,7 @@ def get_storage_backend() -> StorageBackend:
     settings = get_settings()
     backend = (settings.STORAGE_BACKEND or "local").strip().lower()
     if backend == "s3":
-        _storage_backend = S3StorageBackend(
+        primary = S3StorageBackend(
             bucket=settings.S3_BUCKET,
             prefix=settings.S3_PREFIX,
             region=settings.S3_REGION,
@@ -35,6 +36,11 @@ def get_storage_backend() -> StorageBackend:
             secret_access_key=settings.S3_SECRET_ACCESS_KEY,
             presign_ttl_seconds=settings.S3_PRESIGN_TTL_SECONDS,
         )
+        if settings.STORAGE_LOCAL_FALLBACK_ENABLED:
+            fallback = LocalStorageBackend(settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR)
+            _storage_backend = FallbackStorageBackend(primary=primary, fallback=fallback)
+        else:
+            _storage_backend = primary
     else:
         _storage_backend = LocalStorageBackend(settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR)
     return _storage_backend

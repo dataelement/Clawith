@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { IconAlertTriangle, IconCheck } from '@tabler/icons-react';
 import { authApi } from '../services/api';
 
 export default function ResetPassword() {
@@ -64,13 +65,13 @@ export default function ResetPassword() {
 
                     {error && (
                         <div className="login-error">
-                            <span>⚠</span> {error}
+                            <span><IconAlertTriangle size={14} stroke={1.8} /></span> {error}
                         </div>
                     )}
 
                     {success && (
                         <div className="login-error" style={{ background: 'rgba(34,197,94,0.14)', borderColor: 'rgba(34,197,94,0.35)', color: '#dcfce7' }}>
-                            <span>✓</span> {t('auth.resetPasswordSuccess', 'Password updated. Redirecting to login...')}
+                            <span><IconCheck size={14} stroke={1.8} /></span> {t('auth.resetPasswordSuccess', 'Password updated. Redirecting to login...')}
                         </div>
                     )}
 

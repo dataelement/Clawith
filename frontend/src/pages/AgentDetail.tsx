@@ -22,7 +22,35 @@ import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
 import { formatFileSize } from '../utils/formatFileSize';
-import { IconBrain, IconFolder, IconMessageCircle, IconPaperclip, IconSettings, IconSend } from '@tabler/icons-react';
+import {
+    IconBrain,
+    IconBrowser,
+    IconBuilding,
+    IconCheck,
+    IconChevronDown,
+    IconClock,
+    IconDna,
+    IconDownload,
+    IconEye,
+    IconFileText,
+    IconFolder,
+    IconHeartbeat,
+    IconLock,
+    IconMailForward,
+    IconMessageCircle,
+    IconPaperclip,
+    IconPlugConnected,
+    IconRobot,
+    IconSearch,
+    IconSend,
+    IconSettings,
+    IconTerminal2,
+    IconTools,
+    IconUser,
+    IconWorld,
+    IconBolt,
+    IconAlertTriangle,
+} from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 
 const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
@@ -30,6 +58,7 @@ const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'wo
 const WORKSPACE_TOOLS = new Set([
     'write_file',
     'edit_file',
+    'move_file',
     'delete_file',
     'convert_markdown_to_docx',
     'convert_csv_to_xlsx',
@@ -38,8 +67,27 @@ const WORKSPACE_TOOLS = new Set([
     'convert_html_to_pptx',
 ]);
 
+const AWARE_TOOLS = new Set(['set_trigger', 'update_trigger', 'cancel_trigger', 'list_triggers']);
+const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
+const trimLeadingPictograph = (value: string) => value.replace(/^\p{Extended_Pictographic}\s*/u, '');
+const safeDisplayIcon = (icon?: string | null, fallback: React.ReactNode = <IconTools size={18} stroke={1.8} />) =>
+    icon && !EMOJI_RE.test(icon) ? icon : fallback;
+
+type FocusItem = {
+    id: string;
+    name: string;
+    description: string;
+    done: boolean;
+    inProgress: boolean;
+};
+
+function isFocusPath(path?: string | null): boolean {
+    return !!path && path.replace(/^\/+/, '').toLowerCase() === 'focus.md';
+}
+
 function workspaceActionForTool(tool: string): WorkspaceLiveDraft['action'] {
     if (tool === 'edit_file') return 'edit';
+    if (tool === 'move_file') return 'move';
     if (tool === 'delete_file') return 'delete';
     if (tool.startsWith('convert_')) return 'convert';
     return 'write';
@@ -93,10 +141,56 @@ function parseWorkspaceDraftArgs(tool: string, raw: string): Pick<WorkspaceLiveD
         return readPartialJsonString(raw || '', key);
     };
     const sourcePath = getString('source_path');
-    const path = getString('path') || getString('target_path') || sourcePath;
+    const destinationPath = getString('destination_path');
+    const path = destinationPath || getString('path') || getString('target_path') || sourcePath;
     let content = getString('content');
     if (tool === 'edit_file') content = getString('new_string') || content;
     return { path, content };
+}
+
+function parseFocusItems(raw: string): FocusItem[] {
+    const lines = raw.split('\n');
+    const focusItems: FocusItem[] = [];
+    let currentItem: FocusItem | null = null;
+    for (const line of lines) {
+        const match = line.match(/^\s*-\s*\[([ x/])\]\s*(.+)/i);
+        if (match) {
+            if (currentItem) focusItems.push(currentItem);
+            const marker = match[1];
+            const fullText = match[2].trim();
+            const colonIdx = fullText.indexOf(':');
+            const itemName = colonIdx > 0 ? fullText.substring(0, colonIdx).trim() : fullText;
+            const itemDesc = colonIdx > 0 ? fullText.substring(colonIdx + 1).trim() : '';
+            currentItem = {
+                id: itemName,
+                name: itemName,
+                description: itemDesc,
+                done: marker.toLowerCase() === 'x',
+                inProgress: marker === '/',
+            };
+        } else if (currentItem && line.trim() && /^\s{2,}/.test(line)) {
+            currentItem.description = currentItem.description
+                ? `${currentItem.description} ${line.trim()}`
+                : line.trim();
+        }
+    }
+    if (currentItem) focusItems.push(currentItem);
+    return focusItems;
+}
+
+function parseAgentBayTransferArgs(rawArgs: any): NonNullable<LivePreviewState['transfer']> {
+    const parsed = typeof rawArgs === 'string'
+        ? (() => {
+            try { return JSON.parse(rawArgs || '{}'); } catch { return {}; }
+        })()
+        : (rawArgs || {});
+    return {
+        fromType: typeof parsed.from_type === 'string' ? parsed.from_type : undefined,
+        fromPath: typeof parsed.from_path === 'string' ? parsed.from_path : undefined,
+        toType: typeof parsed.to_type === 'string' ? parsed.to_type : undefined,
+        toPath: typeof parsed.to_path === 'string' ? parsed.to_path : undefined,
+        updatedAt: Date.now(),
+    };
 }
 
 function workspaceFileName(path: string): string {
@@ -148,6 +242,9 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const [deletingToolId, setDeletingToolId] = useState<string | null>(null);
     const [configCategory, setConfigCategory] = useState<string | null>(null);
     const [focusedField, setFocusedField] = useState<string | null>(null);
+    const [expandedCategories, setExpandedCategories] = useState<Set<string>>(() => new Set());
+    const [toolSearch, setToolSearch] = useState('');
+    const [toolStatusFilter, setToolStatusFilter] = useState<'all' | 'enabled' | 'disabled' | 'configured'>('all');
     // Global (company-level) config for the currently open modal — used to show
     // lock hints and prevent agent from overriding company-set fields.
     const [configGlobalData, setConfigGlobalData] = useState<Record<string, any>>({});
@@ -315,190 +412,443 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const companyTools = tools.filter(t => t.source === 'builtin' || t.source === 'admin');
     const agentInstalledTools = tools.filter(t => t.source === 'agent');
 
+    const mcpGroupKey = (tool: any) => {
+        const serverName = String(tool.mcp_server_name || '').trim();
+        return tool.type === 'mcp' && serverName
+            ? `mcp:${serverName.toLowerCase()}`
+            : (tool.category || 'general');
+    };
+
+    const getToolGroupMeta = (groupKey: string, toolsInGroup: any[]) => {
+        const first = toolsInGroup.find((tool) => tool.type === 'mcp' && tool.mcp_server_name) || toolsInGroup[0];
+        if (groupKey.startsWith('mcp:') && first?.mcp_server_name) {
+            return {
+                label: first.mcp_server_name,
+                description: t('agent.tools.mcpGroupDescription', 'Tools from {{name}}', { name: first.mcp_server_name }),
+                iconCategory: 'custom',
+                configCategory: first.category || 'custom',
+            };
+        }
+        return {
+            label: categoryLabels[groupKey] || groupKey,
+            description: categoryDescriptions[groupKey] || 'Tools in this category',
+            iconCategory: groupKey,
+            configCategory: groupKey,
+        };
+    };
+
     const groupByCategory = (toolList: any[]) =>
         toolList.reduce((acc: Record<string, any[]>, t) => {
-            const cat = t.category || 'general';
+            const cat = mcpGroupKey(t);
             (acc[cat] = acc[cat] || []).push(t);
             return acc;
         }, {});
 
-    const renderToolGroup = (groupedTools: Record<string, any[]>) =>
-        Object.entries(groupedTools).map(([category, catTools]) => (
-            <div key={category}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 14px', marginBottom: '8px' }}>
-                    <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                        {getCategoryLabels(t)[category] || category}
+    const categoryLabels = getCategoryLabels(t);
+    const categoryDescriptions: Record<string, string> = {
+        agentbay: 'Browser and cloud computer automation',
+        file: 'Read, write, convert, and manage workspace files',
+        communication: 'Messages and cross-channel collaboration',
+        search: 'Web and knowledge search tools',
+        code: 'Code execution and development utilities',
+        aware: 'Triggers, reminders, and awareness workflows',
+        email: 'Email reading and sending tools',
+        feishu: 'Feishu / Lark messaging and collaboration',
+        okr: 'Objectives, key results, and progress reporting',
+        social: 'Social publishing and community workflows',
+        discovery: 'Tool and capability discovery',
+        custom: 'Company-added or MCP tools',
+        general: 'General purpose tools',
+    };
+    const renderCategoryIcon = (category: string, size = 15) => {
+        const style = { color: 'var(--text-tertiary)' };
+        switch (category) {
+            case 'agentbay': return <IconBrowser size={size} stroke={1.8} style={style} />;
+            case 'file': return <IconFileText size={size} stroke={1.8} style={style} />;
+            case 'communication':
+            case 'feishu':
+            case 'email':
+            case 'social':
+                return <IconMessageCircle size={size} stroke={1.8} style={style} />;
+            case 'search':
+            case 'discovery':
+                return <IconSearch size={size} stroke={1.8} style={style} />;
+            case 'code': return <IconTerminal2 size={size} stroke={1.8} style={style} />;
+            case 'aware': return <IconClock size={size} stroke={1.8} style={style} />;
+            case 'custom': return <IconSettings size={size} stroke={1.8} style={style} />;
+            default: return <IconTools size={size} stroke={1.8} style={style} />;
+        }
+    };
+
+    const switchTrack = (enabled: boolean, mixed = false) => ({
+        position: 'absolute' as const,
+        inset: 0,
+        background: enabled ? 'var(--accent-primary)' : mixed ? 'var(--border-default)' : 'var(--bg-tertiary)',
+        borderRadius: '11px',
+        transition: 'background 0.2s',
+    });
+
+    const switchKnob = (enabled: boolean) => ({
+        position: 'absolute' as const,
+        left: enabled ? '20px' : '2px',
+        top: '2px',
+        width: '18px',
+        height: '18px',
+        background: '#fff',
+        borderRadius: '50%',
+        transition: 'left 0.2s',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
+    });
+
+    const toggleCategoryExpanded = (category: string) => {
+        setExpandedCategories(prev => {
+            const next = new Set(prev);
+            if (next.has(category)) next.delete(category);
+            else next.add(category);
+            return next;
+        });
+    };
+
+    const bulkToggleCategory = async (catTools: any[], enabled: boolean) => {
+        const catToolIds = new Set(catTools.map(t => t.id));
+        setTools(prev => prev.map(t => catToolIds.has(t.id) ? { ...t, enabled } : t));
+        try {
+            const token = localStorage.getItem('token');
+            const payload = Array.from(catToolIds).map(id => ({ tool_id: id, enabled }));
+            await fetch(`/api/tools/agents/${agentId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify(payload),
+            });
+        } catch (err: any) {
+            console.error('Bulk update failed', err);
+            loadTools();
+        }
+    };
+
+    const renderToolRow = (tool: any, category: string) => {
+        const hasConfig = tool.config_schema?.fields?.length > 0 || tool.type === 'mcp';
+        const hasAgentOverride = tool.agent_config && Object.keys(tool.agent_config).length > 0;
+        const isGlobalCategoryConfig = category === 'agentbay' && tool.name === 'agentbay_browser_navigate';
+        return (
+            <div key={tool.id} style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(0, 1fr) auto',
+                alignItems: 'center',
+                gap: '12px',
+                padding: '10px 14px',
+                borderTop: '1px solid var(--border-subtle)',
+                background: 'var(--bg-primary)',
+            }}>
+                <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                        <span style={{ fontWeight: 500, fontSize: '13px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.display_name}</span>
+                        {tool.type === 'mcp' && (
+                            <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>MCP</span>
+                        )}
+                        {tool.type === 'builtin' && (
+                            <span style={{ fontSize: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>Built-in</span>
+                        )}
+                        {hasAgentOverride && (
+                            <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>{t('enterprise.tools.configured', 'Configured')}</span>
+                        )}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        {CATEGORY_CONFIG_SCHEMAS[category] && canManage && (
-                            <button
-                                onClick={() => openCategoryConfig(category)}
-                                style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                                title={`Configure ${category}`}
-                            >⚙️ Config</button>
-                        )}
-                        {canManage && (
-                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${getCategoryLabels(t)[category] || category} tools`}>
-                                <input type="checkbox"
-                                    checked={(catTools as any[]).every(t => t.enabled)}
-                                    onChange={async (e) => {
-                                        const targetEnabled = e.target.checked;
-                                        // Optimistic fast update
-                                        const catToolIds = new Set((catTools as any[]).map(t => t.id));
-                                        setTools(prev => prev.map(t => catToolIds.has(t.id) ? { ...t, enabled: targetEnabled } : t));
-                                        try {
-                                            const token = localStorage.getItem('token');
-                                            const payload = Array.from(catToolIds).map(id => ({ tool_id: id, enabled: targetEnabled }));
-                                            await fetch(`/api/tools/agents/${agentId}`, {
-                                                method: 'PUT',
-                                                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                body: JSON.stringify(payload),
-                                            });
-                                        } catch (err: any) {
-                                            console.error('Bulk update failed', err);
-                                            loadTools();
-                                        }
-                                    }}
-                                    style={{ opacity: 0, width: 0, height: 0 }} />
-                                <span style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: '22px', background: (catTools as any[]).every(t => t.enabled) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', transition: '0.3s', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)' }}>
-                                    <span style={{ position: 'absolute', left: (catTools as any[]).every(t => t.enabled) ? '20px' : '2px', top: '2px', width: '18px', height: '18px', borderRadius: '50%', background: '#fff', transition: '0.3s', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }} />
-                                </span>
-                            </label>
-                        )}
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {tool.description}
+                        {tool.mcp_server_name && <span> · {tool.mcp_server_name}</span>}
                     </div>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {(catTools as any[]).map((tool: any) => {
-                        const hasConfig = tool.config_schema?.fields?.length > 0 || tool.type === 'mcp';
-                        const hasAgentOverride = tool.agent_config && Object.keys(tool.agent_config).length > 0;
-                        const isGlobalCategoryConfig = category === 'agentbay' && tool.name === 'agentbay_browser_navigate';
-                        return (
-                            <div key={tool.id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
-                                    <span style={{ fontSize: '18px' }}>{tool.icon}</span>
-                                    <div style={{ minWidth: 0 }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <span style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</span>
-                                            {tool.type === 'mcp' && (
-                                                <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
-                                            )}
-                                            {tool.type === 'builtin' && (
-                                                <span style={{ fontSize: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>Built-in</span>
-                                            )}
-                                            {hasAgentOverride && (
-                                                <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>{t('enterprise.tools.configured', 'Configured')}</span>
-                                            )}
-                                        </div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                            {tool.description}
-                                            {tool.mcp_server_name && <span> · {tool.mcp_server_name}</span>}
-                                        </div>
-                                    </div>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                                    {canManage && hasConfig && !isGlobalCategoryConfig && (
-                                        <button
-                                            onClick={() => openConfig(tool)}
-                                            style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                                            title="Configure per-agent settings"
-                                        >⚙️ Config</button>
-                                    )}
-                                    {canManage && tool.source === 'agent' && tool.agent_tool_id && (
-                                        <button
-                                            onClick={async () => {
-                                                const ok = await dialog.confirm(
-                                                    t('agent.tools.confirmDelete', `Remove "${tool.display_name}" from this agent?`),
-                                                    { danger: true, confirmLabel: '移除' },
-                                                );
-                                                if (!ok) return;
-                                                setDeletingToolId(tool.id);
-                                                try {
-                                                    const token = localStorage.getItem('token');
-                                                    const res = await fetch(`/api/tools/agent-tool/${tool.agent_tool_id}`, {
-                                                        method: 'DELETE',
-                                                        headers: { Authorization: `Bearer ${token}` },
-                                                    });
-                                                    if (res.ok) await loadTools();
-                                                    else toast.error('删除失败');
-                                                } catch (e: any) { toast.error('删除失败', { details: String(e?.message || e) }); }
-                                                setDeletingToolId(null);
-                                            }}
-                                            disabled={deletingToolId === tool.id}
-                                            style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-tertiary)', opacity: deletingToolId === tool.id ? 0.5 : 1 }}
-                                            title={t('agent.tools.removeTool', 'Remove from agent')}
-                                        >{deletingToolId === tool.id ? '...' : '✕'}</button>
-                                    )}
-                                    {canManage ? (
-                                        <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={tool.enabled}
-                                                onChange={e => toggleTool(tool.id, e.target.checked)}
-                                                style={{ opacity: 0, width: 0, height: 0 }}
-                                            />
-                                            <span style={{
-                                                position: 'absolute', inset: 0,
-                                                background: tool.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                                                borderRadius: '11px', transition: 'background 0.2s',
-                                            }}>
-                                                <span style={{
-                                                    position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px',
-                                                    width: '18px', height: '18px', background: '#fff',
-                                                    borderRadius: '50%', transition: 'left 0.2s',
-                                                }} />
-                                            </span>
-                                        </label>
-                                    ) : (
-                                        <span style={{ fontSize: '11px', color: tool.enabled ? 'var(--accent-primary)' : 'var(--text-tertiary)', fontWeight: 500 }}>
-                                            {tool.enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
-                                        </span>
-                                    )}
-                                </div>
-                            </div>
-                        );
-                    })}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                    {canManage && hasConfig && !isGlobalCategoryConfig && (
+                        <button
+                            onClick={() => openConfig(tool)}
+                            style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                            title={t('agent.tools.configurePerAgent', 'Configure per-agent settings')}
+                        ><IconSettings size={12} stroke={1.8} /> {t('agent.tools.config', 'Config')}</button>
+                    )}
+                    {canManage && tool.source === 'agent' && tool.agent_tool_id && (
+                        <button
+                            onClick={async () => {
+                                const ok = await dialog.confirm(
+                                    t('agent.tools.confirmDelete', `Remove "${tool.display_name}" from this agent?`),
+                                    { danger: true, confirmLabel: '移除' },
+                                );
+                                if (!ok) return;
+                                setDeletingToolId(tool.id);
+                                try {
+                                    const token = localStorage.getItem('token');
+                                    const res = await fetch(`/api/tools/agent-tool/${tool.agent_tool_id}`, {
+                                        method: 'DELETE',
+                                        headers: { Authorization: `Bearer ${token}` },
+                                    });
+                                    if (res.ok) await loadTools();
+                                    else toast.error(t('agent.tools.deleteFailed', 'Delete failed'));
+                                } catch (e: any) { toast.error(t('agent.tools.deleteFailed', 'Delete failed'), { details: String(e?.message || e) }); }
+                                setDeletingToolId(null);
+                            }}
+                            disabled={deletingToolId === tool.id}
+                            style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-tertiary)', opacity: deletingToolId === tool.id ? 0.5 : 1 }}
+                            title={t('agent.tools.removeTool', 'Remove from agent')}
+                        >{deletingToolId === tool.id ? '...' : '✕'}</button>
+                    )}
+                    {canManage ? (
+                        <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                            <input
+                                type="checkbox"
+                                checked={tool.enabled}
+                                onChange={e => toggleTool(tool.id, e.target.checked)}
+                                style={{ opacity: 0, width: 0, height: 0 }}
+                            />
+                            <span style={switchTrack(tool.enabled)}>
+                                <span style={switchKnob(tool.enabled)} />
+                            </span>
+                        </label>
+                    ) : (
+                        <span style={{ fontSize: '11px', color: tool.enabled ? 'var(--accent-primary)' : 'var(--text-tertiary)', fontWeight: 500 }}>
+                            {tool.enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
+                        </span>
+                    )}
                 </div>
             </div>
-        ));
+        );
+    };
+
+    const renderToolGroup = (groupedTools: Record<string, any[]>, allGroupedTools: Record<string, any[]>) =>
+        Object.entries(groupedTools)
+            .sort(([a, aTools], [b, bTools]) => {
+                const aMeta = getToolGroupMeta(a, allGroupedTools[a] || aTools);
+                const bMeta = getToolGroupMeta(b, allGroupedTools[b] || bTools);
+                return aMeta.label.localeCompare(bMeta.label);
+            })
+            .map(([category, catTools]) => {
+                const allCatTools = allGroupedTools[category] || catTools;
+                const meta = getToolGroupMeta(category, allCatTools);
+                const label = meta.label;
+                const enabledCount = allCatTools.filter((tool: any) => tool.enabled).length;
+                const configuredCount = allCatTools.filter((tool: any) => tool.agent_config && Object.keys(tool.agent_config).length > 0).length;
+                const allEnabled = allCatTools.length > 0 && enabledCount === allCatTools.length;
+                const mixed = enabledCount > 0 && enabledCount < allCatTools.length;
+                const expanded = expandedCategories.has(category) || !!toolSearch.trim();
+                const visibleCount = (catTools as any[]).length;
+                return (
+                    <div key={category} style={{
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: '8px',
+                        overflow: 'hidden',
+                        background: 'var(--bg-primary)',
+                    }}>
+                        <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => toggleCategoryExpanded(category)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    toggleCategoryExpanded(category);
+                                }
+                            }}
+                            style={{
+                                width: '100%',
+                                background: 'var(--bg-secondary)',
+                                padding: '13px 16px',
+                                display: 'grid',
+                                gridTemplateColumns: '1fr auto',
+                                gap: '14px',
+                                alignItems: 'center',
+                                cursor: 'pointer',
+                                textAlign: 'left',
+                                boxSizing: 'border-box',
+                            }}
+                        >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
+                                <IconChevronDown
+                                    size={16}
+                                    style={{
+                                        transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+                                        transition: 'transform 120ms ease',
+                                        color: 'var(--text-tertiary)',
+                                        flexShrink: 0,
+                                    }}
+                                />
+                                <span style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '7px',
+                                    border: '1px solid var(--border-subtle)',
+                                    background: 'var(--bg-primary)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    flexShrink: 0,
+                                }}>{renderCategoryIcon(meta.iconCategory, 16)}</span>
+                                <div style={{ minWidth: 0 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                        <span style={{ fontSize: '13px', fontWeight: 650, color: 'var(--text-primary)' }}>{label}</span>
+                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                            {allCatTools.length} tools · {enabledCount} enabled
+                                            {visibleCount !== allCatTools.length ? ` · ${visibleCount} shown` : ''}
+                                        </span>
+                                        {configuredCount > 0 && (
+                                            <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>
+                                                {configuredCount} configured
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {meta.description}
+                                    </div>
+                                </div>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} onClick={(e) => e.stopPropagation()}>
+                                {CATEGORY_CONFIG_SCHEMAS[meta.configCategory] && canManage && (
+                                    <button
+                                        type="button"
+                                        onClick={() => openCategoryConfig(meta.configCategory)}
+                                        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                        title={t('agent.tools.configureCategory', 'Configure {{category}}', { category: label })}
+                                    ><IconSettings size={12} stroke={1.8} /> {t('agent.tools.config', 'Config')}</button>
+                                )}
+                                {canManage && (
+                                    <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={t('agent.tools.enableDisableAll', 'Enable/Disable all {{category}} tools', { category: label })}>
+                                        <input type="checkbox"
+                                            checked={allEnabled}
+                                            onChange={(e) => void bulkToggleCategory(allCatTools, e.target.checked)}
+                                            style={{ opacity: 0, width: 0, height: 0 }} />
+                                        <span style={switchTrack(allEnabled, mixed)}>
+                                            <span style={switchKnob(allEnabled)} />
+                                        </span>
+                                    </label>
+                                )}
+                            </div>
+                        </div>
+                        {expanded && (
+                            <div>
+                                {(catTools as any[]).map((tool: any) => renderToolRow(tool, category))}
+                            </div>
+                        )}
+                    </div>
+                );
+            });
 
     const activeTools = toolTab === 'company' ? companyTools : agentInstalledTools;
+    const normalizedToolSearch = toolSearch.trim().toLowerCase();
+    const matchesToolSearch = (tool: any) => {
+        if (!normalizedToolSearch) return true;
+        const category = tool.category || 'general';
+        const haystack = [
+            tool.name,
+            tool.display_name,
+            tool.description,
+            tool.mcp_server_name,
+            category,
+            categoryLabels[category],
+        ].filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(normalizedToolSearch);
+    };
+    const matchesStatusFilter = (tool: any) => {
+        if (toolStatusFilter === 'enabled') return !!tool.enabled;
+        if (toolStatusFilter === 'disabled') return !tool.enabled;
+        if (toolStatusFilter === 'configured') return !!(tool.agent_config && Object.keys(tool.agent_config).length > 0);
+        return true;
+    };
+    const filteredTools = activeTools.filter(tool => matchesToolSearch(tool) && matchesStatusFilter(tool));
+    const groupedActiveTools = groupByCategory(activeTools);
+    const groupedFilteredTools = groupByCategory(filteredTools);
+    const hasFilters = !!normalizedToolSearch || toolStatusFilter !== 'all';
 
     return (
         <>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <div style={{ display: 'flex', gap: '4px', padding: '4px', background: 'var(--bg-secondary)', borderRadius: '8px', marginBottom: '12px' }}>
+                <div className="tool-source-tabs" role="tablist" aria-label={t('agent.tools.sourceTabs', 'Tool sources')}>
                     <button
+                        type="button"
+                        role="tab"
+                        aria-selected={toolTab === 'company'}
+                        className={toolTab === 'company' ? 'active' : ''}
                         onClick={() => setToolTab('company')}
-                        style={{
-                            flex: 1, padding: '7px 12px', border: 'none', borderRadius: '6px', cursor: 'pointer',
-                            fontSize: '12px', fontWeight: 600, transition: 'all 0.2s',
-                            background: toolTab === 'company' ? 'var(--bg-primary)' : 'transparent',
-                            color: toolTab === 'company' ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                            boxShadow: toolTab === 'company' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                        }}
                     >
-                        {t('agent.tools.companyTools', 'Company Tools')} ({companyTools.length})
+                        <span>{t('agent.tools.companyTools', 'Company Tools')}</span>
+                        <span className="tool-source-tab-count">{companyTools.length}</span>
                     </button>
                     <button
+                        type="button"
+                        role="tab"
+                        aria-selected={toolTab === 'installed'}
+                        className={toolTab === 'installed' ? 'active' : ''}
                         onClick={() => setToolTab('installed')}
+                    >
+                        <span>{t('agent.tools.agentInstalled', 'Agent Self-Installed Tools')}</span>
+                        <span className="tool-source-tab-count">{agentInstalledTools.length}</span>
+                    </button>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <div style={{ position: 'relative', flex: '1 1 260px', minWidth: '220px' }}>
+                        <IconSearch size={15} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
+                        <input
+                            value={toolSearch}
+                            onChange={(e) => setToolSearch(e.target.value)}
+                            placeholder={t('agent.tools.searchTools', 'Search tools...')}
+                            style={{
+                                width: '100%',
+                                boxSizing: 'border-box',
+                                border: '1px solid var(--border-subtle)',
+                                borderRadius: '8px',
+                                background: 'var(--bg-primary)',
+                                color: 'var(--text-primary)',
+                                padding: '8px 10px 8px 32px',
+                                fontSize: '13px',
+                                outline: 'none',
+                            }}
+                        />
+                    </div>
+                    {(['all', 'enabled', 'disabled', 'configured'] as const).map(filter => (
+                        <button
+                            key={filter}
+                            type="button"
+                            onClick={() => setToolStatusFilter(filter)}
+                            style={{
+                                border: '1px solid var(--border-subtle)',
+                                borderRadius: '999px',
+                                background: toolStatusFilter === filter ? 'var(--text-primary)' : 'var(--bg-primary)',
+                                color: toolStatusFilter === filter ? 'var(--bg-primary)' : 'var(--text-secondary)',
+                                padding: '6px 10px',
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                            }}
+                        >
+                            {filter === 'all' ? t('common.all', 'All')
+                                : filter === 'enabled' ? t('common.enabled', 'Enabled')
+                                    : filter === 'disabled' ? t('common.disabled', 'Disabled')
+                                        : t('agent.tools.configured', 'Configured')}
+                        </button>
+                    ))}
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const categories = Object.keys(groupedActiveTools);
+                            setExpandedCategories(prev => prev.size >= categories.length ? new Set() : new Set(categories));
+                        }}
                         style={{
-                            flex: 1, padding: '7px 12px', border: 'none', borderRadius: '6px', cursor: 'pointer',
-                            fontSize: '12px', fontWeight: 600, transition: 'all 0.2s',
-                            background: toolTab === 'installed' ? 'var(--bg-primary)' : 'transparent',
-                            color: toolTab === 'installed' ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                            boxShadow: toolTab === 'installed' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '8px',
+                            background: 'var(--bg-primary)',
+                            color: 'var(--text-secondary)',
+                            padding: '6px 10px',
+                            fontSize: '11px',
+                            cursor: 'pointer',
                         }}
                     >
-                        {t('agent.tools.agentInstalled', 'Agent Self-Installed Tools')} ({agentInstalledTools.length})
+                        {expandedCategories.size >= Object.keys(groupedActiveTools).length ? t('agent.tools.collapseAll', 'Collapse all') : t('agent.tools.expandAll', 'Expand all')}
                     </button>
                 </div>
 
                 {/* Tool List */}
-                {activeTools.length > 0 ? (
-                    renderToolGroup(groupByCategory(activeTools))
+                {filteredTools.length > 0 ? (
+                    renderToolGroup(groupedFilteredTools, groupedActiveTools)
                 ) : (
                     <div className="card" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-tertiary)' }}>
-                        {toolTab === 'installed' ? t('agent.tools.noInstalled', 'No agent-installed tools yet') : t('agent.tools.noCompany', 'No company-configured tools')}
+                        {hasFilters ? t('agent.tools.noMatchingTools', 'No matching tools') : toolTab === 'installed' ? t('agent.tools.noInstalled', 'No agent-installed tools yet') : t('agent.tools.noCompany', 'No company-configured tools')}
                     </div>
                 )}
             </div>
@@ -520,7 +870,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                         <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                                 <div>
-                                    <h3 style={{ margin: 0 }}>⚙️ {title}</h3>
+                                    <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}><IconSettings size={20} stroke={1.8} /> {title}</h3>
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{isCat ? 'Shared category configuration (affects all tools in this category)' : 'Per-agent configuration (overrides global defaults)'}</div>
                                 </div>
                                 <button onClick={() => { setConfigTool(null); setConfigCategory(null); }} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
@@ -879,197 +1229,335 @@ type AnalysisItem =
     | { type: 'thinking'; content: string }
     | { type: 'tool'; name: string; args: any; status: 'running' | 'done'; result?: string };
 
+type AnalysisToolMeta = {
+    title: string;
+    label: string;
+    target?: string;
+    kind: 'command' | 'file' | 'search' | 'browser' | 'message' | 'agent' | 'mcp' | 'unknown';
+};
+
+function getToolProvider(name: string): string {
+    const lower = (name || '').toLowerCase();
+    if (lower.startsWith('agentbay_')) return 'AgentBay';
+    if (lower.includes('tavily')) return 'Tavily';
+    if (lower.includes('jina')) return 'Jina';
+    if (lower.includes('duckduckgo')) return 'DuckDuckGo';
+    if (lower.includes('exa')) return 'Exa';
+    if (lower.includes('google')) return 'Google';
+    if (lower.includes('bing')) return 'Bing';
+    if (lower.includes('e2b')) return 'E2B';
+    if (lower.startsWith('feishu_') || lower.includes('lark')) return 'Feishu';
+    if (lower.startsWith('mcp_') || lower.includes(':')) return 'MCP';
+    if (lower.includes('web_search') || lower.includes('read_webpage')) return 'Built-in';
+    return 'Built-in';
+}
+
+function titleCaseToolName(name: string): string {
+    return (name || 'tool')
+        .replace(/^mcp[_:-]/i, '')
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/\b\w/g, ch => ch.toUpperCase());
+}
+
+function basename(path?: string): string {
+    if (!path) return '';
+    const clean = String(path).split('?')[0].replace(/\\/g, '/');
+    return clean.split('/').filter(Boolean).pop() || clean;
+}
+
+function firstString(...values: any[]): string | undefined {
+    for (const value of values) {
+        if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return undefined;
+}
+
+function getToolMeta(item: Extract<AnalysisItem, { type: 'tool' }>): AnalysisToolMeta {
+    const name = item.name || 'tool';
+    const args = item.args && typeof item.args === 'object' && !Array.isArray(item.args) ? item.args : {};
+    const resultText = typeof item.result === 'string' ? item.result : '';
+    const path = firstString(args.output_path, args.path, args.file_path, args.filename, args.name);
+    const url = firstString(args.url, args.link, args.uri);
+    const query = firstString(args.query, args.q, args.keyword, args.search);
+    const recipient = firstString(args.to, args.recipient, args.user, args.channel, args.agent_name);
+    const target = path || url || query || recipient;
+    const lower = name.toLowerCase();
+
+    if (lower.includes('write_file') || lower.includes('create_file')) {
+        return { title: path ? `Created ${basename(path)}` : 'Created a file', label: 'Workspace', target: path, kind: 'file' };
+    }
+    if (lower.includes('edit_file') || lower.includes('update_file')) {
+        return { title: path ? `Updated ${basename(path)}` : 'Updated a file', label: 'Workspace', target: path, kind: 'file' };
+    }
+    if (lower.includes('move_file')) {
+        const destinationPath = firstString(args.destination_path, args.to_path, args.target_path);
+        const sourcePath = firstString(args.source_path, args.from_path, args.path);
+        const titlePath = destinationPath || sourcePath;
+        return { title: titlePath ? `Moved ${basename(titlePath)}` : 'Moved a file', label: 'Workspace', target: titlePath, kind: 'file' };
+    }
+    if (lower.includes('delete_file')) {
+        return { title: path ? `Deleted ${basename(path)}` : 'Deleted a file', label: 'Workspace', target: path, kind: 'file' };
+    }
+    if (lower.startsWith('convert_') || lower.includes('convert_')) {
+        return { title: path ? `Converted ${basename(path)}` : titleCaseToolName(name), label: 'Workspace', target: path, kind: 'file' };
+    }
+    if (lower.includes('read_webpage') || lower.includes('browser') || lower.includes('webpage')) {
+        return { title: url ? `Read ${url.replace(/^https?:\/\//, '').split('/')[0]}` : titleCaseToolName(name), label: 'Browser', target: url, kind: 'browser' };
+    }
+    if (lower.includes('search')) {
+        return { title: query ? `Searched ${query}` : titleCaseToolName(name), label: 'Search', target: query, kind: 'search' };
+    }
+    if (lower.includes('send_') || lower.includes('message')) {
+        return { title: recipient ? `Sent message to ${recipient}` : titleCaseToolName(name), label: 'Message', target: recipient, kind: 'message' };
+    }
+    if (lower.includes('agent')) {
+        return { title: titleCaseToolName(name), label: 'Agent', target, kind: 'agent' };
+    }
+    if (lower.includes('mcp') || lower.includes(':')) {
+        return { title: titleCaseToolName(name), label: 'MCP', target, kind: 'mcp' };
+    }
+    if (/created|saved|updated|wrote/i.test(resultText) && path) {
+        return { title: `Updated ${basename(path)}`, label: 'Workspace', target: path, kind: 'file' };
+    }
+    return { title: titleCaseToolName(name), label: 'Tool', target, kind: 'command' };
+}
+
+function getToolIcon(kind: AnalysisToolMeta['kind']) {
+    switch (kind) {
+        case 'file': return IconFileText;
+        case 'search': return IconSearch;
+        case 'browser': return IconBrowser;
+        case 'message': return IconMessageCircle;
+        case 'agent': return IconBrain;
+        case 'mcp': return IconTools;
+        case 'command':
+        case 'unknown':
+        default:
+            return IconTerminal2;
+    }
+}
+
+function describeAnalysis(items: AnalysisItem[], t: (k: string, opts?: any) => string): string {
+    const toolItems = items.filter(i => i.type === 'tool') as Extract<AnalysisItem, { type: 'tool' }>[];
+    if (toolItems.length === 0) return t('agent.chat.thoughtProcess');
+
+    let created = 0;
+    let updated = 0;
+    let deleted = 0;
+    let commands = 0;
+    let agents = 0;
+    const agentMessageTools = new Set([
+        'send_message_to_agent',
+        'send_file_to_agent',
+    ]);
+    for (const item of toolItems) {
+        const name = item.name.toLowerCase();
+        if (name.includes('write_file') || name.includes('create_file')) created += 1;
+        else if (name.includes('edit_file') || name.includes('update_file') || name.includes('move_file') || name.startsWith('convert_')) updated += 1;
+        else if (name.includes('delete_file')) deleted += 1;
+        else if (agentMessageTools.has(name)) agents += 1;
+        else commands += 1;
+    }
+
+    const parts: string[] = [];
+    if (created) parts.push(t('agent.chat.createdFiles', { count: created }));
+    if (updated) parts.push(t('agent.chat.updatedFiles', { count: updated }));
+    if (deleted) parts.push(t('agent.chat.deletedFiles', { count: deleted }));
+    if (commands) parts.push(t('agent.chat.ranCommands', { count: commands }));
+    if (agents) parts.push(t('agent.chat.ranAgents', { count: agents }));
+    if (!parts.length) parts.push(t('agent.chat.ranCommands', { count: toolItems.length }));
+    return parts.join(', ');
+}
+
 function AnalysisCard({
     items, t, expanded, onToggle, isGroupRunning,
 }: {
     items: AnalysisItem[];
-    t: (k: string) => string;
+    t: (k: string, opts?: any) => string;
     expanded: boolean;
     onToggle: () => void;
     /** True when parent isWaiting/isStreaming AND this is the last active group */
     isGroupRunning: boolean;
 }) {
     const toolItems = items.filter(i => i.type === 'tool') as Extract<AnalysisItem, { type: 'tool' }>[];
-    const thinkingItems = items.filter(i => i.type === 'thinking') as Extract<AnalysisItem, { type: 'thinking' }>[];
     const hasTools = toolItems.length > 0;
-    const toolCount = toolItems.length;
-
-    // Check if any tool is still running
     const hasRunningTool = toolItems.some(tc => tc.status === 'running');
-    const isRunning = hasRunningTool || isGroupRunning;
-
-    // Last running tool name (displayed in header while active)
+    const isRunning = hasRunningTool || (!hasTools && isGroupRunning);
     const runningTool = [...toolItems].reverse().find(tc => tc.status === 'running') ?? null;
-
-    // For collapsed thinking-only state: show a one-line preview of thinking content
-    const allThinkingText = thinkingItems.map(it => it.content).join(' ').trim();
-    const thinkingSummary = allThinkingText.length > 55
-        ? allThinkingText.slice(0, 55) + '…'
-        : allThinkingText;
+    const headerTitle = isRunning && runningTool ? getToolMeta(runningTool).title : describeAnalysis(items, t);
 
     return (
-        <div style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-            <div style={{
-                borderRadius: '8px',
-                background: isRunning ? 'color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary))' : 'var(--bg-primary)',
-                border: `1px solid ${isRunning ? 'var(--border-default)' : 'var(--border-subtle)'}`,
-                fontSize: '12px',
-                overflow: 'hidden',
-                transition: 'border-color 0.3s ease',
-            }}>
-                {/* ── Header toggle ── */}
+        <div className={`analysis-trace${expanded ? ' analysis-trace--open' : ''}${isRunning ? ' analysis-trace--running' : ''}`}>
+            <div className="analysis-trace-shell">
                 <button
+                    className="analysis-trace-header"
                     onClick={onToggle}
-                    style={{
-                        background: 'none', border: 'none', cursor: 'pointer',
-                        width: '100%', display: 'flex', alignItems: 'center', gap: '6px',
-                        padding: '7px 10px',
-                        color: 'var(--text-secondary)',
-                    }}
                 >
-                    {/* Status indicator: pulse when running, static green when done */}
-                    {isRunning ? (
-                        <span className="cw-running-led" style={{
-                            display: 'inline-block', width: '6px', height: '6px',
-                            borderRadius: '50%', background: 'var(--text-tertiary)', flexShrink: 0,
-                        }} />
-                    ) : (
-                        <span style={{
-                            display: 'inline-block', width: '6px', height: '6px',
-                            borderRadius: '50%', background: '#22c55e', flexShrink: 0, opacity: 0.85,
-                        }} />
-                    )}
-
-                    {/* Title + contextual subtitle */}
-                    <span style={{ flex: 1, textAlign: 'left', display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 }}>
-                        <span style={{ fontWeight: 500, flexShrink: 0, color: 'var(--text-primary)' }}>{t('agent.chat.analysing')}</span>
-                        <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>·</span>
-                        {isRunning ? (
-                            // Running: show current tool name, or 'Thinking...' if no active tool
-                            <span style={{
-                                fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-secondary)',
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}>
-                                {runningTool ? runningTool.name : t('agent.chat.thinking')}
-                            </span>
-                        ) : !hasTools && thinkingSummary ? (
-                            // Done + thinking only: single-line preview
-                            <span style={{
-                                fontSize: '11px', color: 'var(--text-tertiary)',
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}>{thinkingSummary}</span>
-                        ) : null}
+                    <span className="analysis-trace-signal" aria-hidden="true">
+                        <span />
+                        <span />
+                        <span />
                     </span>
-
-                    {/* Tool count badge (hidden when no tools) */}
-                    {toolCount > 0 && (
-                        <span style={{
-                            background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
-                            borderRadius: '10px', padding: '1px 7px',
-                            fontSize: '10px', fontWeight: 600, flexShrink: 0,
-                        }}>{toolCount}</span>
-                    )}
-
-                    {/* Expand chevron */}
-                    <span style={{
-                        fontSize: '10px', color: 'var(--text-tertiary)',
-                        transition: 'transform 0.2s', display: 'inline-block',
-                        transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
-                        flexShrink: 0,
-                    }}>▶</span>
+                    <span className="analysis-trace-title">
+                        {headerTitle}
+                    </span>
+                    <IconChevronDown
+                        className="analysis-trace-chevron"
+                        size={15}
+                        stroke={1.8}
+                    />
                 </button>
-
-                {/* ── Collapsed: tool name pills (only when tools present) ── */}
-                {!expanded && hasTools && (
-                    <div style={{ padding: '0 10px 7px 10px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                        {toolItems.map((tc, i) => {
-                            const running = tc.status === 'running';
-                            return (
-                                <span key={i} style={{
-                                    background: running ? 'var(--bg-secondary)' : 'var(--bg-primary)',
-                                    border: '1px solid var(--border-subtle)',
-                                    borderRadius: '4px', padding: '1px 6px',
-                                    fontSize: '10px', color: 'var(--text-secondary)',
-                                    fontFamily: 'var(--font-mono)',
-                                    display: 'inline-flex', alignItems: 'center', gap: '4px',
-                                }}>
-                                    {running && (
-                                        <span className="cw-running-led" style={{
-                                            display: 'inline-block', width: '4px', height: '4px',
-                                            borderRadius: '50%', background: 'var(--text-tertiary)', flexShrink: 0,
-                                        }} />
-                                    )}
-                                    {tc.name}
-                                </span>
-                            );
-                        })}
-                    </div>
-                )}
-
-                {/* ── Expanded: all items in chronological order ── */}
                 {expanded && (
-                    <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <div className="analysis-trace-body">
                         {items.map((item, idx) => {
+                            const isLast = idx === items.length - 1;
                             if (item.type === 'thinking') {
-                                // Thinking block: plain italic text, scrollable
+                                const itemPreview = item.content.length > 360 ? item.content.slice(0, 360).trimEnd() + '...' : item.content;
                                 return (
-                                    <div key={idx} style={{
-                                        padding: '8px 12px',
-                                        borderBottom: idx < items.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-                                        fontSize: '11px', lineHeight: '1.7',
-                                        color: 'var(--text-tertiary)',
-                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                        maxHeight: '200px', overflowY: 'auto',
-                                        fontStyle: 'italic',
-                                        background: 'var(--bg-secondary)',
-                                    }}>
-                                        {item.content}
+                                    <div key={idx} className="analysis-trace-row">
+                                        <div className="analysis-trace-node-wrap">
+                                            <div className="analysis-trace-node analysis-trace-node--thought">
+                                                <IconClock size={18} stroke={1.65} />
+                                            </div>
+                                            {!isLast && <div className="analysis-trace-rail" />}
+                                        </div>
+                                        <div className="analysis-trace-row-content" style={{ paddingBottom: isLast ? 0 : '18px' }}>
+                                            <div style={{ fontSize: '15px', lineHeight: 1.5, color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                                {itemPreview}
+                                            </div>
+                                            {item.content.length > itemPreview.length && (
+                                                <details style={{ marginTop: '8px' }}>
+                                                    <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '12px', listStyle: 'none' }}>
+                                                        {t('agent.chat.showMore')}
+                                                    </summary>
+                                                    <div style={{ marginTop: '8px', color: 'var(--text-secondary)', fontSize: '13px', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                                        {item.content}
+                                                    </div>
+                                                </details>
+                                            )}
+                                        </div>
                                     </div>
                                 );
                             }
 
-                            // Tool row: native <details> for per-item collapse
                             const tc = item;
                             const running = tc.status === 'running';
+                            const meta = getToolMeta(tc);
+                            const ToolIcon = getToolIcon(meta.kind);
+                            const provider = getToolProvider(tc.name);
                             const argsStr = tc.args && Object.keys(tc.args).length > 0
                                 ? JSON.stringify(tc.args, null, 2) : '';
-                            const hasDetail = !!(argsStr || tc.result);
+                            const hasDetail = true;
                             return (
-                                <details
-                                    key={idx}
-                                    open={running}
-                                    style={{
-                                        borderBottom: idx < items.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-                                    }}
-                                >
-                                    <summary style={{
-                                        padding: '7px 10px',
-                                        display: 'flex', alignItems: 'center', gap: '5px',
-                                        cursor: hasDetail ? 'pointer' : 'default',
-                                        listStyle: 'none', userSelect: 'none',
-                                    }}>
-                                        <span
-                                            className={running ? 'cw-running-led' : undefined}
-                                            style={{
-                                                display: 'inline-block', width: '5px', height: '5px',
-                                                borderRadius: '50%',
-                                                background: running ? '#f59e0b' : '#22c55e',
-                                                flexShrink: 0,
-                                            }}
-                                        />
-                                        <span style={{
-                                            fontFamily: 'var(--font-mono)', fontSize: '11px',
-                                            color: 'var(--text-secondary)', fontWeight: 600, flex: 1,
-                                        }}>{tc.name}</span>
-                                        {running && (
-                                            <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
-                                                {t('common.loading')}
+                                <div key={idx} className={`analysis-trace-row${running ? ' analysis-trace-row--running' : ''}`}>
+                                    <div className="analysis-trace-node-wrap">
+                                        <div
+                                            className={`analysis-trace-node analysis-trace-node--tool analysis-tool-icon${running ? ' analysis-tool-icon--running' : ''}`}
+                                        >
+                                            <ToolIcon size={18} stroke={1.65} />
+                                        </div>
+                                        {!isLast && <div className="analysis-trace-rail" />}
+                                    </div>
+                                    <div className="analysis-trace-row-content" style={{ paddingBottom: isLast ? 0 : '18px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                                            <div style={{
+                                                minWidth: 0,
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap',
+                                                color: running ? 'var(--text-primary)' : 'var(--text-secondary)',
+                                                fontSize: '15px',
+                                                lineHeight: 1.45,
+                                            }}>
+                                                {meta.title}
+                                            </div>
+                                            {running && (
+                                                <span style={{ color: 'var(--text-tertiary)', fontSize: '12px', flexShrink: 0 }}>
+                                                    {t('common.loading')}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
+                                            <span style={{
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                height: '24px',
+                                                padding: '0 10px',
+                                                borderRadius: '7px',
+                                                background: 'color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary))',
+                                                color: 'var(--text-tertiary)',
+                                                fontSize: '12px',
+                                                lineHeight: 1,
+                                            }}>
+                                                {meta.label}
                                             </span>
-                                        )}
-                                        {hasDetail && <span style={{ fontSize: '9px', color: 'var(--text-tertiary)' }}>▶</span>}
-                                    </summary>
+                                            {meta.target && (
+                                                <span style={{
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    maxWidth: 'min(520px, 100%)',
+                                                    height: '24px',
+                                                    padding: '0 10px',
+                                                    borderRadius: '7px',
+                                                    background: 'var(--bg-secondary)',
+                                                    color: 'var(--text-secondary)',
+                                                    fontSize: '12px',
+                                                    lineHeight: 1,
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                }}>
+                                                    {meta.target}
+                                                </span>
+                                            )}
+                                        </div>
                                     {hasDetail && (
-                                        <div style={{ padding: '0 10px 8px 20px' }}>
+                                        <details style={{ marginTop: '8px' }}>
+                                            <summary style={{
+                                                cursor: 'pointer',
+                                                color: 'var(--text-tertiary)',
+                                                fontSize: '12px',
+                                                listStyle: 'none',
+                                                userSelect: 'none',
+                                            }}>
+                                                {t('agent.chat.viewDetails')}
+                                            </summary>
+                                            <div style={{ marginTop: '8px' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                                                <span style={{
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    height: '22px',
+                                                    padding: '0 8px',
+                                                    borderRadius: '6px',
+                                                    background: 'var(--bg-secondary)',
+                                                    color: 'var(--text-tertiary)',
+                                                    fontSize: '11px',
+                                                    lineHeight: 1,
+                                                }}>
+                                                    {t('agent.chat.provider', 'Provider')}: {provider}
+                                                </span>
+                                                <span style={{
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    maxWidth: '100%',
+                                                    height: '22px',
+                                                    padding: '0 8px',
+                                                    borderRadius: '6px',
+                                                    background: 'var(--bg-secondary)',
+                                                    color: 'var(--text-secondary)',
+                                                    fontFamily: 'var(--font-mono)',
+                                                    fontSize: '11px',
+                                                    lineHeight: 1,
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                }}>
+                                                    {t('agent.chat.toolName', 'Tool')}: {tc.name || 'tool'}
+                                                </span>
+                                            </div>
                                             {argsStr && (
                                                 <div style={{
                                                     fontFamily: 'var(--font-mono)', fontSize: '10px',
@@ -1090,15 +1578,104 @@ function AnalysisCard({
                                                     {tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}
                                                 </div>
                                             )}
-                                        </div>
+                                            </div>
+                                        </details>
                                     )}
-                                </details>
+                                    </div>
+                                </div>
                             );
                         })}
+                        {isRunning && (
+                            <div className="analysis-trace-row analysis-trace-row--done">
+                                <div className="analysis-trace-node-wrap">
+                                    <div className="analysis-trace-node analysis-trace-node--done analysis-trace-node--pending">
+                                    <IconClock size={18} stroke={1.65} />
+                                    </div>
+                                </div>
+                                <div style={{ color: 'var(--text-tertiary)', fontSize: '15px', lineHeight: 1.45 }}>
+                                    {t('agent.chat.inProgress')}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
         </div>
+    );
+}
+
+function ThoughtDisclosure({
+    content,
+    t,
+    streaming = false,
+}: {
+    content: string;
+    t: (k: string, opts?: any) => string;
+    streaming?: boolean;
+}) {
+    const [expanded, setExpanded] = React.useState(false);
+    const text = content.trim();
+    if (!text) return null;
+
+    return (
+        <details
+            className={`thought-disclosure analysis-trace thought-trace${streaming ? ' analysis-trace--running' : ''}`}
+            open={expanded}
+            onToggle={(event) => setExpanded(event.currentTarget.open)}
+        >
+            <summary className="analysis-trace-shell analysis-trace-header thought-trace-header">
+                <span className="analysis-trace-signal thought-trace-signal" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                </span>
+                <span className="analysis-trace-title">
+                    {streaming ? t('agent.chat.thinkingLabel') : t('agent.chat.thoughtProcess')}
+                </span>
+                <IconChevronDown
+                    className="thought-disclosure-chevron analysis-trace-chevron"
+                    size={14}
+                    stroke={1.8}
+                />
+            </summary>
+            <div className="analysis-trace-body thought-trace-body">
+                <div className="analysis-trace-row">
+                    <div className="analysis-trace-node-wrap">
+                        <div
+                            className={`analysis-trace-node analysis-trace-node--thought${streaming ? ' cw-running-led' : ''}`}
+                        >
+                            <IconClock size={18} stroke={1.65} />
+                        </div>
+                        <div className="analysis-trace-rail" />
+                    </div>
+                    <div style={{
+                        paddingBottom: '14px',
+                        color: 'var(--text-secondary)',
+                        fontSize: '15px',
+                        lineHeight: 1.65,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        maxHeight: '260px',
+                        overflow: 'auto',
+                        minWidth: 0,
+                    }}>
+                        {text}
+                    </div>
+                </div>
+                {streaming && (
+                    <div className="analysis-trace-row analysis-trace-row--done">
+                        <div className="analysis-trace-node-wrap">
+                            <div className="analysis-trace-node analysis-trace-node--done analysis-trace-node--pending">
+                            <IconClock size={18} stroke={1.65} />
+                            </div>
+                        </div>
+                        <div style={{ color: 'var(--text-tertiary)', fontSize: '15px', lineHeight: 1.45 }}>
+                            {t('agent.chat.inProgress')}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </details>
     );
 }
 
@@ -1812,6 +2389,22 @@ function AgentDetailInner() {
     const REFLECTIONS_PAGE_SIZE = 10;
     const SECTION_PAGE_SIZE = 5;
 
+    const loadReflectionMessages = async (sessionId: string) => {
+        if (!id || reflectionMessages[sessionId]) return;
+        try {
+            const tkn = localStorage.getItem('token');
+            const res = await fetch(`/api/agents/${id}/sessions/${sessionId}/messages`, {
+                headers: { Authorization: `Bearer ${tkn}` },
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setReflectionMessages(prev => ({ ...prev, [sessionId]: data }));
+            }
+        } catch {
+            // Reflection details are informational; keep the list usable if loading fails.
+        }
+    };
+
     const { data: soulContent } = useQuery({
         queryKey: ['file', id, 'soul.md'],
         queryFn: () => fileApi.read(id!, 'soul.md'),
@@ -1865,7 +2458,6 @@ function AgentDetailInner() {
     // Websocket chat state (for 'me' conversation)
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
-    const isAdmin = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin';
     const isAgentOwner =
         currentUser?.id != null &&
         (agent as any)?.creator_id != null &&
@@ -2074,7 +2666,13 @@ function AgentDetailInner() {
         if (!targetAgentId) return;
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, String(sess.id));
         const runtimeState = sessionUiStateRef.current[runtimeKey] || { isWaiting: false, isStreaming: false };
+        const writable = isWritableSession(sess, scopeOverride);
         activeSessionIdRef.current = sess.id;
+        isFirstLoad.current = true;
+        isNearBottom.current = true;
+        userPinnedAwayFromBottomRef.current = false;
+        pendingLiveInitialScrollRef.current = writable;
+        pendingHistoryInitialScrollRef.current = !writable;
         setChatMessages([]);
         setHistoryMsgs([]);
         setIsStreaming(runtimeState.isStreaming);
@@ -2082,6 +2680,7 @@ function AgentDetailInner() {
         setActiveSession(sess);
         setAgentExpired(false);
         syncActiveSocketState(sess, targetAgentId);
+        if (writable) scheduleComposerFocus();
 
         // Abort any pending message load and increment sequence
         sessionMsgAbortRef.current?.abort();
@@ -2101,13 +2700,13 @@ function AgentDetailInner() {
             if (activeSessionIdRef.current !== sess.id) return;
             const preParsed = msgs.map((m: any) => parseChatMsg({
                 role: m.role, content: m.content || '',
-                ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult }),
+                ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult, toolThinking: m.toolThinking }),
                 ...(m.thinking && { thinking: m.thinking }),
                 ...(m.created_at && { timestamp: m.created_at }),
                 ...(m.id && { id: m.id }),
             }));
 
-            if (isWritableSession(sess, scopeOverride)) {
+            if (writable) {
                 setChatMessages(preParsed);
             } else {
                 setHistoryMsgs(preParsed);
@@ -2178,12 +2777,14 @@ function AgentDetailInner() {
     // Expiry editor modal state
     const [showExpiryModal, setShowExpiryModal] = useState(false);
     const [expiryValue, setExpiryValue] = useState('');       // datetime-local string or ''
+    const [expiryQuickHours, setExpiryQuickHours] = useState<number | null>(null);
     const [expirySaving, setExpirySaving] = useState(false);
 
     const openExpiryModal = () => {
         const cur = (agent as any)?.expires_at;
         // Convert ISO to datetime-local format (YYYY-MM-DDTHH:MM)
         setExpiryValue(cur ? new Date(cur).toISOString().slice(0, 16) : '');
+        setExpiryQuickHours(null);
         setShowExpiryModal(true);
     };
 
@@ -2191,6 +2792,7 @@ function AgentDetailInner() {
         const base = (agent as any)?.expires_at ? new Date((agent as any).expires_at) : new Date();
         const next = new Date(base.getTime() + h * 3600_000);
         setExpiryValue(next.toISOString().slice(0, 16));
+        setExpiryQuickHours(h);
     };
 
     const saveExpiry = async (permanent = false) => {
@@ -2208,8 +2810,48 @@ function AgentDetailInner() {
         } catch (e: any) { toast.error('保存失败', { details: String(e?.message || e) }); }
         setExpirySaving(false);
     };
-    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
+    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolCallId?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; toolThinking?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+    const getToolTargetKey = (args: any): string => {
+        if (!args) return '';
+        const parsed = typeof args === 'string'
+            ? (() => {
+                try { return JSON.parse(args); } catch { return null; }
+            })()
+            : args;
+        if (!parsed || typeof parsed !== 'object') return '';
+        const value = parsed.path
+            || parsed.file_path
+            || parsed.output_path
+            || parsed.target_path
+            || parsed.filename
+            || parsed.url
+            || parsed.query
+            || parsed.name
+            || '';
+        return typeof value === 'string' ? value.trim() : '';
+    };
+    const upsertToolCallMessage = (toolMsg: ChatMsg) => {
+        setChatMessages(prev => {
+            const incomingTarget = getToolTargetKey(toolMsg.toolArgs);
+            const sameTool = (msg: ChatMsg) => (
+                msg.role === 'tool_call'
+                && msg.toolName === toolMsg.toolName
+                && msg.toolStatus === 'running'
+                && (
+                    (!!toolMsg.toolCallId && !!msg.toolCallId && msg.toolCallId === toolMsg.toolCallId)
+                    || (!!incomingTarget && getToolTargetKey(msg.toolArgs) === incomingTarget)
+                    || (!toolMsg.toolCallId && !incomingTarget)
+                )
+            );
+            const runningIdx = [...prev].reverse().findIndex(sameTool);
+            if (runningIdx >= 0) {
+                const idx = prev.length - 1 - runningIdx;
+                return [...prev.slice(0, idx), { ...prev[idx], ...toolMsg }, ...prev.slice(idx + 1)];
+            }
+            return [...prev, toolMsg];
+        });
+    };
     // Transient info banner (e.g. fallback model switch notification)
     const [chatInfoMsg, setChatInfoMsg] = useState<string | null>(null);
     const chatInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2219,8 +2861,12 @@ function AgentDetailInner() {
     const [toolGroupExpandedVersion, setToolGroupExpandedVersion] = useState(0);
     const toggleToolGroup = (key: number) => {
         const m = toolGroupExpandedRef.current;
-        m.set(key, !m.get(key));
+        const nextExpanded = !m.get(key);
+        m.set(key, nextExpanded);
         setToolGroupExpandedVersion(v => v + 1); // trigger re-render
+        if (nextExpanded) {
+            scheduleLiveScrollToBottom();
+        }
     };
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [workspaceActivePath, setWorkspaceActivePath] = useState<string | null>(null);
@@ -2231,6 +2877,7 @@ function AgentDetailInner() {
     const workspaceLockedPathRef = useRef<string | null>(null);
     const [wsSessionId, setWsSessionId] = useState<string>('');
     const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
+    const livePanelAutoCollapsedRef = useRef(false);
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
@@ -2304,15 +2951,35 @@ function AgentDetailInner() {
     const handleWorkspaceEditingChange = useCallback((editing: boolean) => {
         workspaceEditingRef.current = editing;
     }, []);
+    const collapseSidebarsForLivePanel = useCallback(() => {
+        if (livePanelAutoCollapsedRef.current) return;
+        livePanelAutoCollapsedRef.current = true;
+        setSessionListCollapsed(true);
+        useAppStore.setState({ sidebarCollapsed: true });
+    }, []);
+    useEffect(() => {
+        if (!livePanelVisible) {
+            livePanelAutoCollapsedRef.current = false;
+        }
+    }, [livePanelVisible]);
     const togglePreviewPanel = useCallback((tab: SidePanelTab) => {
         setLivePanelVisible((visible) => {
-            if (visible && sidePanelTab === tab) return false;
+            if (visible && sidePanelTab === tab) {
+                livePanelAutoCollapsedRef.current = false;
+                return false;
+            }
             setSidePanelTab(tab);
-            setSessionListCollapsed(true);
-            useAppStore.setState({ sidebarCollapsed: true });
+            collapseSidebarsForLivePanel();
             return true;
         });
-    }, [sidePanelTab]);
+    }, [collapseSidebarsForLivePanel, sidePanelTab]);
+
+    const openAwarePanel = useCallback(() => {
+        if (!allowLivePanelAutoFocus()) return;
+        setSidePanelTab('aware');
+        setLivePanelVisible(true);
+        collapseSidebarsForLivePanel();
+    }, [allowLivePanelAutoFocus, collapseSidebarsForLivePanel]);
 
     // Settings form local state
     const [settingsForm, setSettingsForm] = useState({
@@ -2540,8 +3207,8 @@ function AgentDetailInner() {
                 return;
             }
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
-            if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
-                const nextStreaming = ['thinking', 'chunk', 'tool_call'].includes(d.type);
+            if (['thinking', 'chunk', 'workspace_draft', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
+                const nextStreaming = ['thinking', 'chunk', 'workspace_draft', 'tool_call'].includes(d.type);
                 const endStreaming = ['done', 'error', 'quota_exceeded'].includes(d.type);
                 setSessionUiState(key, {
                     isWaiting: false,
@@ -2559,9 +3226,9 @@ function AgentDetailInner() {
                 return;
             }
 
-            if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
+            if (['thinking', 'chunk', 'workspace_draft', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
                 setIsWaiting(false);
-                if (['thinking', 'chunk', 'tool_call'].includes(d.type)) setIsStreaming(true);
+                if (['thinking', 'chunk', 'workspace_draft', 'tool_call'].includes(d.type)) setIsStreaming(true);
                 if (['done', 'error', 'quota_exceeded'].includes(d.type)) setIsStreaming(false);
             }
 
@@ -2593,14 +3260,54 @@ function AgentDetailInner() {
                     if (allowWorkspaceAutoSwitch(draft.path)) {
                         setWorkspaceActivePath(draft.path!);
                     }
-                    if (allowLivePanelAutoFocus()) {
+                    if (isFocusPath(draft.path)) {
+                        openAwarePanel();
+                    } else if (allowLivePanelAutoFocus()) {
                         setSidePanelTab('workspace');
                         setLivePanelVisible(true);
-                        setSessionListCollapsed(true);
-                        useAppStore.setState({ sidebarCollapsed: true });
+                        collapseSidebarsForLivePanel();
                     }
+                    let toolArgs: any = parsedDraft;
+                    try {
+                        toolArgs = JSON.parse(d.arguments || '{}');
+                    } catch {
+                        toolArgs = parsedDraft;
+                    }
+                    upsertToolCallMessage({
+                        role: 'tool_call',
+                        content: '',
+                        toolName: d.name,
+                        toolCallId: draft.id,
+                        toolArgs,
+                        toolStatus: 'running',
+                    });
                 }
             } else if (d.type === 'tool_call') {
+                if (AWARE_TOOLS.has(d.name)) {
+                    openAwarePanel();
+                    if (d.status === 'done') {
+                        refetchTriggers();
+                        queryClient.invalidateQueries({ queryKey: ['file', id, 'focus.md'] });
+                    }
+                }
+                if (d.name === 'agentbay_file_transfer') {
+                    const transfer = parseAgentBayTransferArgs(d.args);
+                    setLiveState(prev => ({
+                        ...prev,
+                        transfer: {
+                            ...prev.transfer,
+                            ...transfer,
+                            status: d.status === 'done' ? 'done' : 'running',
+                            result: d.status === 'done' && typeof d.result === 'string' ? d.result : prev.transfer?.result,
+                            updatedAt: Date.now(),
+                        },
+                    }));
+                    if (allowLivePanelAutoFocus()) {
+                        setSidePanelTab('transfer');
+                        setLivePanelVisible(true);
+                        collapseSidebarsForLivePanel();
+                    }
+                }
                 if (WORKSPACE_TOOLS.has(d.name)) {
                     if (d.status === 'running') {
                         const rawArgs = typeof d.args === 'string' ? d.args : JSON.stringify(d.args || {});
@@ -2616,11 +3323,12 @@ function AgentDetailInner() {
                         if (allowWorkspaceAutoSwitch(draft.path)) {
                             setWorkspaceActivePath(draft.path!);
                         }
-                        if (allowLivePanelAutoFocus()) {
+                        if (isFocusPath(draft.path)) {
+                            openAwarePanel();
+                        } else if (allowLivePanelAutoFocus()) {
                             setSidePanelTab('workspace');
                             setLivePanelVisible(true);
-                            setSessionListCollapsed(true);
-                            useAppStore.setState({ sidebarCollapsed: true });
+                            collapseSidebarsForLivePanel();
                         }
                     } else if (d.status === 'done') {
                         setWorkspaceLiveDraft(null);
@@ -2643,8 +3351,7 @@ function AgentDetailInner() {
                     });
                     if (allowLivePanelAutoFocus()) {
                         setLivePanelVisible(true);
-                        setSessionListCollapsed(true);
-                        useAppStore.setState({ sidebarCollapsed: true });
+                        collapseSidebarsForLivePanel();
                     }
                 }
                     if (d.workspace_activity) {
@@ -2657,22 +3364,25 @@ function AgentDetailInner() {
                         if (activity.action !== 'delete' && activity.ok !== false && allowWorkspaceAutoSwitch(activity.path)) {
                             setWorkspaceActivePath(activity.path);
                         }
-                    if (allowLivePanelAutoFocus()) {
+                    if (isFocusPath(activity.path)) {
+                        openAwarePanel();
+                        queryClient.invalidateQueries({ queryKey: ['file', id, 'focus.md'] });
+                    } else if (allowLivePanelAutoFocus()) {
                         setSidePanelTab('workspace');
                         setLivePanelVisible(true);
-                        setSessionListCollapsed(true);
-                        useAppStore.setState({ sidebarCollapsed: true });
+                        collapseSidebarsForLivePanel();
                     }
                     queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                 }
-                setChatMessages(prev => {
-                    const toolMsg: ChatMsg = { role: 'tool_call', content: '', toolName: d.name, toolArgs: d.args, toolStatus: d.status, toolResult: d.result };
-                    if (d.status === 'done') {
-                        const lastIdx = prev.length - 1;
-                        const last = prev[lastIdx];
-                        if (last && last.role === 'tool_call' && last.toolName === d.name && last.toolStatus === 'running') return [...prev.slice(0, lastIdx), toolMsg];
-                    }
-                    return [...prev, toolMsg];
+                upsertToolCallMessage({
+                    role: 'tool_call',
+                    content: '',
+                    toolName: d.name,
+                    toolCallId: String(d.call_id || d.id || d.index || ''),
+                    toolArgs: d.args,
+                    toolStatus: d.status,
+                    toolResult: d.result,
+                    toolThinking: d.reasoning_content,
                 });
                 if (d.status === 'done') {
                     const currentSessionId = activeSessionIdRef.current ? String(activeSessionIdRef.current) : '';
@@ -2703,8 +3413,9 @@ function AgentDetailInner() {
                 const msg = d.content || d.detail || d.message || 'Request denied';
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
-                    if (last && last.role === 'assistant' && last.content === `⚠️ ${msg}`) return prev;
-                    return [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })];
+                    const warningText = `Warning: ${msg}`;
+                    if (last && last.role === 'assistant' && last.content === warningText) return prev;
+                    return [...prev, parseChatMsg({ role: 'assistant', content: warningText })];
                 });
                 if (msg.includes('expired') || msg.includes('Setup failed') || msg.includes('no LLM model') || msg.includes('No model')) {
                     reconnectDisabledRef.current[key] = true;
@@ -2817,11 +3528,81 @@ function AgentDetailInner() {
     // Smart scroll: only auto-scroll if user is at the bottom
     const isNearBottom = useRef(true);
     const isFirstLoad = useRef(true);
+    const pendingLiveInitialScrollRef = useRef(false);
+    const pendingHistoryInitialScrollRef = useRef(false);
+    const liveAutoFollowUntilRef = useRef(0);
+    const userPinnedAwayFromBottomRef = useRef(false);
+    const liveScrollJobRef = useRef(0);
+    const liveScrollTimersRef = useRef<number[]>([]);
+    const chatTouchStartYRef = useRef<number | null>(null);
     const [showScrollBtn, setShowScrollBtn] = useState(false);
     const [chatScrollBtnBottom, setChatScrollBtnBottom] = useState(96);
     // Read-only history scroll-to-bottom
     const historyContainerRef = useRef<HTMLDivElement>(null);
     const [showHistoryScrollBtn, setShowHistoryScrollBtn] = useState(false);
+    const scheduleComposerFocus = useCallback(() => {
+        let attempts = 0;
+        const focusWhenReady = () => {
+            const el = chatInputRef.current;
+            if (!el || activeTab !== 'chat') {
+                if (attempts++ < 8) requestAnimationFrame(focusWhenReady);
+                return;
+            }
+            el.focus({ preventScroll: true });
+            const caret = el.value.length;
+            try {
+                el.setSelectionRange(caret, caret);
+            } catch { }
+        };
+        requestAnimationFrame(focusWhenReady);
+    }, [activeTab]);
+    const cancelLiveAutoFollow = useCallback(() => {
+        liveAutoFollowUntilRef.current = 0;
+        liveScrollJobRef.current += 1;
+        liveScrollTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+        liveScrollTimersRef.current = [];
+    }, []);
+    const pinChatAwayFromBottom = useCallback(() => {
+        cancelLiveAutoFollow();
+        userPinnedAwayFromBottomRef.current = true;
+        isNearBottom.current = false;
+        setShowScrollBtn(true);
+    }, [cancelLiveAutoFollow]);
+    const scheduleLiveScrollToBottom = useCallback(() => {
+        if (userPinnedAwayFromBottomRef.current) return;
+        cancelLiveAutoFollow();
+        const jobId = liveScrollJobRef.current;
+        liveAutoFollowUntilRef.current = Date.now() + 1500;
+        let attempts = 0;
+        const scroll = () => {
+            if (jobId !== liveScrollJobRef.current) return;
+            if (userPinnedAwayFromBottomRef.current) return;
+            const el = chatContainerRef.current;
+            if (el) el.scrollTop = el.scrollHeight;
+            setShowScrollBtn(false);
+            if (attempts++ < 2) requestAnimationFrame(scroll);
+        };
+        requestAnimationFrame(scroll);
+        liveScrollTimersRef.current = [
+            window.setTimeout(scroll, 80),
+            window.setTimeout(scroll, 220),
+        ];
+    }, [cancelLiveAutoFollow]);
+    useEffect(() => {
+        return () => cancelLiveAutoFollow();
+    }, [cancelLiveAutoFollow]);
+    const scheduleHistoryScrollToBottom = useCallback(() => {
+        let attempts = 0;
+        const scroll = () => {
+            const el = historyContainerRef.current;
+            if (el) el.scrollTop = el.scrollHeight;
+            setShowHistoryScrollBtn(false);
+            if (attempts++ < 8) requestAnimationFrame(scroll);
+        };
+        requestAnimationFrame(scroll);
+        window.setTimeout(scroll, 120);
+        window.setTimeout(scroll, 360);
+    }, []);
     const handleHistoryScroll = () => {
         const el = historyContainerRef.current;
         if (!el) return;
@@ -2829,24 +3610,32 @@ function AgentDetailInner() {
         setShowHistoryScrollBtn(distFromBottom > 200);
     };
     const scrollHistoryToBottom = () => {
-        const el = historyContainerRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-        setShowHistoryScrollBtn(false);
+        scheduleHistoryScrollToBottom();
     };
+    useEffect(() => {
+        if (activeTab === 'chat' && activeSession && isWritableSession(activeSession)) {
+            scheduleComposerFocus();
+        }
+    }, [activeTab, activeSession?.id, scheduleComposerFocus]);
     // Auto-show button when history messages overflow the container
     useEffect(() => {
         const el = historyContainerRef.current;
         if (!el) return;
         // Use a small timeout to let the DOM render the messages first
         const timer = setTimeout(() => {
+            if (pendingHistoryInitialScrollRef.current && historyMsgs.length > 0) {
+                pendingHistoryInitialScrollRef.current = false;
+                scheduleHistoryScrollToBottom();
+                return;
+            }
             const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
             setShowHistoryScrollBtn(distFromBottom > 200);
         }, 100);
         return () => clearTimeout(timer);
-    }, [historyMsgs, activeSession?.id]);
+    }, [historyMsgs, activeSession?.id, scheduleHistoryScrollToBottom]);
     // Memoized component for each chat message to avoid re-renders while typing
     const ChatMessageItem = React.useMemo(() => React.memo(({
-        msg, i, isLeft, t, senderLabel, avatarText, forceSenderLabel = false,
+        msg, i, isLeft, t, senderLabel, avatarText, forceSenderLabel = false, hideAvatar = false,
     }: {
         msg: any;
         i: number;
@@ -2855,9 +3644,9 @@ function AgentDetailInner() {
         senderLabel?: string;
         avatarText?: string;
         forceSenderLabel?: boolean;
+        hideAvatar?: boolean;
     }) => {
         const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
-        const fi = fe === 'pdf' ? '📄' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '📊' : (fe === 'docx' || fe === 'doc') ? '📝' : '📎';
         const isImage = msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
         const resolvedSenderLabel = msg.sender_name || senderLabel;
         const resolvedAvatarText = avatarText || (resolvedSenderLabel ? resolvedSenderLabel[0] : (isLeft ? 'A' : 'U'));
@@ -2900,52 +3689,48 @@ function AgentDetailInner() {
 
         return (
             <div key={i} className={`chat-msg-row${isLeft ? '' : ' chat-msg-row--user'}`}>
-                <div className={`chat-msg-avatar${isLeft ? '' : ' chat-msg-avatar--user'}`}>{resolvedAvatarText}</div>
+                <div
+                    className={`chat-msg-avatar${isLeft ? '' : ' chat-msg-avatar--user'}`}
+                    style={hideAvatar ? { visibility: 'hidden' } : undefined}
+                >
+                    {resolvedAvatarText}
+                </div>
                 <div className="chat-msg-col">
-                    <div className={`chat-msg-bubble${isLeft ? '' : ' chat-msg-bubble--user'}`}>
-                        {showSenderLabel && <div className="chat-msg-sender">{resolvedSenderLabel}</div>}
-                        {isImage ? (
-                            <div style={{ marginBottom: '4px' }}>
-                                <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} loading="lazy" />
-                            </div>
-                        ) : (msg.fileName && (
-                            <div className="chat-msg-file-chip" style={{ marginBottom: msg.content ? '4px' : '0' }}>
-                                <span>{fi}</span>
-                                <span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span>
-                            </div>
-                        ))}
-                        {inlineImages.length > 0 && (
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: displayContent ? '6px' : '0' }}>
-                                {inlineImages.map((url, idx) => (
-                                    <img
-                                        key={idx}
-                                        src={url}
-                                        alt="attached image"
-                                        style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)', objectFit: 'cover' }}
-                                        loading="lazy"
-                                    />
-                                ))}
-                            </div>
-                        )}
-                        {msg.thinking && (
-                            <details className="thinking-panel">
-                                <summary className="thinking-summary">
-                                    <span className="thinking-status-dot" />
-                                    {(msg as any)._streaming && !msg.content
-                                        ? t('agent.chat.thinkingLabel', '思考中')
-                                        : t('agent.chat.thoughtLabel', '已思考')}
-                                </summary>
-                                <div className="thinking-content">{msg.thinking}</div>
-                            </details>
-                        )}
-                        {msg.role === 'assistant' ? (
-                            (msg as any)._streaming && !msg.content && !msg.thinking ? (
-                                <div className="thinking-indicator">
-                                    <div className="thinking-dots"><span /><span /><span /></div>
-                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
+                    <div className={isLeft ? '' : 'chat-msg-user-line'}>
+                        <div className={`chat-msg-bubble${isLeft ? '' : ' chat-msg-bubble--user'}${(msg as any)._streaming && !msg.content && !msg.thinking ? ' chat-msg-bubble--thinking' : ''}`}>
+                            {showSenderLabel && <div className="chat-msg-sender">{resolvedSenderLabel}</div>}
+                            {isImage ? (
+                                <div style={{ marginBottom: '4px' }}>
+                                    <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} loading="lazy" />
                                 </div>
-                            ) : <MarkdownRenderer content={displayContent} />
-                        ) : <div style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</div>}
+                            ) : (msg.fileName && (
+                                <div className="chat-msg-file-chip" style={{ marginBottom: msg.content ? '4px' : '0' }}>
+                                    <IconPaperclip size={14} stroke={1.8} />
+                                    <span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span>
+                                </div>
+                            ))}
+                            {inlineImages.length > 0 && (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: displayContent ? '6px' : '0' }}>
+                                    {inlineImages.map((url, idx) => (
+                                        <img
+                                            key={idx}
+                                            src={url}
+                                            alt="attached image"
+                                            style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)', objectFit: 'cover' }}
+                                            loading="lazy"
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                            {msg.role === 'assistant' ? (
+                                (msg as any)._streaming && !msg.content && !msg.thinking ? (
+                                    <div className="thinking-indicator">
+                                        <div className="thinking-dots"><span /><span /><span /></div>
+                                        <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
+                                    </div>
+                                ) : <MarkdownRenderer content={displayContent} />
+                            ) : <MarkdownRenderer content={displayContent} />}
+                        </div>
                     </div>
                     {timestampHtml}
                 </div>
@@ -2957,25 +3742,84 @@ function AgentDetailInner() {
         const el = chatContainerRef.current;
         if (!el) return;
         const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-        isNearBottom.current = distFromBottom < 5;
+        isNearBottom.current = distFromBottom < 160;
+        userPinnedAwayFromBottomRef.current = distFromBottom > 260;
+        if (userPinnedAwayFromBottomRef.current) {
+            cancelLiveAutoFollow();
+        }
         setShowScrollBtn(distFromBottom > 200);
     };
+    const handleChatWheelCapture = (event: React.WheelEvent<HTMLDivElement>) => {
+        const el = chatContainerRef.current;
+        if (!el) return;
+        if (event.deltaY < 0 && el.scrollTop > 0) {
+            pinChatAwayFromBottom();
+        }
+    };
+    const handleChatTouchStartCapture = (event: React.TouchEvent<HTMLDivElement>) => {
+        chatTouchStartYRef.current = event.touches[0]?.clientY ?? null;
+    };
+    const handleChatTouchMoveCapture = (event: React.TouchEvent<HTMLDivElement>) => {
+        const startY = chatTouchStartYRef.current;
+        const currentY = event.touches[0]?.clientY;
+        const el = chatContainerRef.current;
+        if (startY == null || currentY == null || !el) return;
+        if (currentY - startY > 6 && el.scrollTop > 0) {
+            pinChatAwayFromBottom();
+        }
+    };
     const scrollToBottom = () => {
-        chatEndRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
-        setShowScrollBtn(false);
+        userPinnedAwayFromBottomRef.current = false;
+        scheduleLiveScrollToBottom();
     };
     useEffect(() => {
+        if (activeTab !== 'chat' || !activeSession || !isWritableSession(activeSession)) return;
+        const el = chatContainerRef.current;
+        if (!el) return;
+        const shouldFollow = () => (
+            !userPinnedAwayFromBottomRef.current &&
+            (isNearBottom.current || Date.now() < liveAutoFollowUntilRef.current)
+        );
+        const maybeFollow = () => {
+            if (shouldFollow()) scheduleLiveScrollToBottom();
+        };
+        const mutationObserver = new MutationObserver(maybeFollow);
+        mutationObserver.observe(el, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['open', 'class', 'style'],
+        });
+        let resizeObserver: ResizeObserver | null = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            resizeObserver = new ResizeObserver(maybeFollow);
+            resizeObserver.observe(el);
+            Array.from(el.children).forEach(child => resizeObserver?.observe(child));
+        }
+        return () => {
+            mutationObserver.disconnect();
+            resizeObserver?.disconnect();
+        };
+    }, [activeTab, activeSession?.id, scheduleLiveScrollToBottom]);
+    useEffect(() => {
         if (!chatEndRef.current) return;
+        if (pendingLiveInitialScrollRef.current && chatMessages.length > 0) {
+            pendingLiveInitialScrollRef.current = false;
+            isFirstLoad.current = false;
+            isNearBottom.current = true;
+            scheduleLiveScrollToBottom();
+            return;
+        }
         if (isFirstLoad.current && chatMessages.length > 0) {
             // First load: instant jump to bottom, no animation
-            chatEndRef.current.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
+            scheduleLiveScrollToBottom();
             isFirstLoad.current = false;
             return;
         }
         if (isNearBottom.current) {
-            chatEndRef.current.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
+            scheduleLiveScrollToBottom();
         }
-    }, [chatMessages]);
+    }, [chatMessages, scheduleLiveScrollToBottom]);
 
     useEffect(() => {
         const gapAboveComposer = 14;
@@ -3007,7 +3851,7 @@ function AgentDetailInner() {
             let filesDisplay = '';
 
             attachedFiles.forEach(file => {
-                filesDisplay += `[📎 ${file.name}] `;
+                filesDisplay += `[Attachment: ${file.name}] `;
                 if (file.imageUrl && supportsVision) {
                     filesPrompt += `[image_data:${file.imageUrl}]\n`;
                 } else if (file.imageUrl) {
@@ -3044,6 +3888,8 @@ function AgentDetailInner() {
         };
 
         setChatInput('');
+        userPinnedAwayFromBottomRef.current = false;
+        isNearBottom.current = true;
         // Reset textarea height after clearing content
         if (chatInputRef.current) {
             chatInputRef.current.style.height = 'auto';
@@ -3296,7 +4142,7 @@ function AgentDetailInner() {
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['schedules', id] });
-            showToast('✅ Schedule triggered — executing in background', 'success');
+            showToast('Schedule triggered — executing in background', 'success');
         },
         onError: (err: any) => {
             const msg = err?.response?.data?.detail || err?.message || 'Failed to trigger schedule';
@@ -3435,7 +4281,7 @@ function AgentDetailInner() {
         return agent.status === 'running' ? 'running' : 'idle';
     };
     const statusKey = computeStatusKey();
-    const canManage = (agent as any).access_level === 'manage' || isAdmin;
+    const canManage = (agent as any).access_level === 'manage';
     const formatAgentDate = (d?: string | null) => {
         if (!d) return '—';
         try { return new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); } catch { return d; }
@@ -3446,76 +4292,36 @@ function AgentDetailInner() {
     const todayParts = formatTokensParts(agent.tokens_used_today || 0);
     const monthParts = formatTokensParts(agent.tokens_used_month || 0);
     const totalParts = formatTokensParts((agent as any).tokens_used_total || 0);
+    const cacheReadToday = (agent as any).cache_read_tokens_today || metrics?.tokens?.cache_read_today || 0;
+    const cacheReadMonth = (agent as any).cache_read_tokens_month || metrics?.tokens?.cache_read_month || 0;
+    const cacheReadTotal = (agent as any).cache_read_tokens_total || metrics?.tokens?.cache_read_total || 0;
+    const cacheHitRateToday = (agent.tokens_used_today || 0) > 0 ? Math.round((cacheReadToday / (agent.tokens_used_today || 1)) * 100) : 0;
+    const cacheHitRateMonth = (agent.tokens_used_month || 0) > 0 ? Math.round((cacheReadMonth / (agent.tokens_used_month || 1)) * 100) : 0;
+    const cacheHitRateTotal = ((agent as any).tokens_used_total || 0) > 0 ? Math.round((cacheReadTotal / ((agent as any).tokens_used_total || 1)) * 100) : 0;
+    const expiryLabel = (agent as any).is_expired
+        ? t('agent.settings.expiry.expired')
+        : (agent as any).expires_at
+            ? new Date((agent as any).expires_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+            : t('agent.settings.expiry.neverExpires');
     const renderAgentInfoCard = () => (
         <div className={`agent-info-card${infoCardOpen ? ' agent-info-card--open' : ''}`}>
             <div className="agent-info-card-inner">
                 <div className="agent-info-card-glow" />
                 <div className="agent-info-card-grid">
-                    {/* Token Usage */}
-                    <div className="agent-info-card-section">
-                        <div className="agent-info-card-section-header">
-                            <span className="agent-info-section-icon agent-info-section-icon--blue">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                            </span>
-                            <span className="agent-info-card-section-title">Token</span>
-                        </div>
-                        <div className="agent-info-card-body">
-                            <div className="agent-info-token-glass">
-                                <div className="agent-info-token-hero">
-                                    <span className="agent-info-token-hero-label">{t('agent.settings.today')}</span>
-                                    <span className="agent-info-token-hero-value">
-                                        {todayParts.value}
-                                        {todayParts.unit && <span className="agent-info-token-hero-unit">{todayParts.unit}</span>}
-                                    </span>
-                                </div>
-                                <div className="agent-info-token-stats">
-                                    <div className="agent-info-stat-item">
-                                        <span className="agent-info-stat-label">{t('agent.settings.month')}</span>
-                                        <span className="agent-info-stat-value">
-                                            {monthParts.value}
-                                            {monthParts.unit && <span className="agent-info-stat-unit">{monthParts.unit}</span>}
-                                        </span>
-                                    </div>
-                                    <div className="agent-info-stat-item">
-                                        <span className="agent-info-stat-label">{t('agent.status.totalToken')}</span>
-                                        <span className="agent-info-stat-value">
-                                            {totalParts.value}
-                                            {totalParts.unit && <span className="agent-info-stat-unit">{totalParts.unit}</span>}
-                                        </span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    {/* Configuration */}
+                    {/* Agent Profile */}
                     <div className="agent-info-card-section">
                         <div className="agent-info-card-section-header">
                             <span className="agent-info-section-icon agent-info-section-icon--indigo">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
                             </span>
-                            <span className="agent-info-card-section-title">{t('agent.modelConfig.title', 'Configuration')}</span>
+                            <span className="agent-info-card-section-title">{t('agent.profile.title', 'Agent Profile')}</span>
                         </div>
                         <div className="agent-info-card-body">
-                            <div className="agent-info-model-card">
-                                <div className="agent-info-model-card-text">
-                                    <span className="agent-info-model-card-label">{t('agent.modelConfig.model')}</span>
-                                    <span className="agent-info-model-card-name" title={modelLabel}>{modelLabel}</span>
-                                </div>
-                            </div>
-                            <div className="agent-info-meta-list agent-info-meta-list--model">
-                                <div className="agent-info-meta-row">
-                                    <span>{t('agent.modelConfig.provider', 'Provider')}</span>
-                                    <span>{modelProvider}</span>
-                                </div>
-                            </div>
-                            <div className="agent-info-profile-block">
-                                <div className="agent-info-profile-header">
-                                    <span className="agent-info-section-icon agent-info-section-icon--indigo">
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
-                                    </span>
-                                    <span className="agent-info-card-section-title">{t('agent.profile.title', 'Agent Profile')}</span>
-                                </div>
-                                <div className="agent-info-meta-list">
+                            <div className="agent-info-profile-panel">
+                                {agent.role_description && (
+                                    <div className="agent-info-profile-role" title={agent.role_description}>{agent.role_description}</div>
+                                )}
+                                <div className="agent-info-meta-list agent-info-profile-meta">
                                     <div className="agent-info-meta-row">
                                         <span>{t('agent.profile.created')}</span>
                                         <span>{formatAgentDate(agent.created_at)}</span>
@@ -3528,6 +4334,90 @@ function AgentDetailInner() {
                                         <span>{t('agent.profile.timezone')}</span>
                                         <span>{(agent as any).effective_timezone || agent.timezone || 'UTC'}</span>
                                     </div>
+                                    <div className="agent-info-meta-row">
+                                        <span>{t('agent.settings.expiry.title')}</span>
+                                        <span className={(agent as any).is_expired ? 'agent-info-expiry--expired' : ''}>{expiryLabel}</span>
+                                    </div>
+                                </div>
+                                {canManage && (
+                                    <button
+                                        type="button"
+                                        className="agent-info-expiry-button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            openExpiryModal();
+                                        }}
+                                    >
+                                        {t('agent.settings.expiry.title')}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="agent-info-card-section agent-info-card-section--stacked">
+                        {/* Model Configuration */}
+                        <div className="agent-info-subsection">
+                            <div className="agent-info-card-section-header">
+                                <span className="agent-info-section-icon agent-info-section-icon--indigo">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                                </span>
+                                <span className="agent-info-card-section-title">{t('agent.modelConfig.title', 'Configuration')}</span>
+                            </div>
+                            <div className="agent-info-card-body agent-info-card-body--compact">
+                                <div className="agent-info-model-card">
+                                    <div className="agent-info-model-card-text">
+                                        <span className="agent-info-model-card-label">{t('agent.modelConfig.model')}</span>
+                                        <span className="agent-info-model-card-name" title={modelLabel}>{modelLabel}</span>
+                                    </div>
+                                </div>
+                                <div className="agent-info-meta-list">
+                                    <div className="agent-info-meta-row">
+                                        <span>{t('agent.modelConfig.provider', 'Provider')}</span>
+                                        <span>{modelProvider}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {/* Token Usage */}
+                        <div className="agent-info-subsection">
+                            <div className="agent-info-card-section-header">
+                                <span className="agent-info-section-icon agent-info-section-icon--blue">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                                </span>
+                                <span className="agent-info-card-section-title">Token</span>
+                            </div>
+                            <div className="agent-info-card-body agent-info-card-body--compact">
+                                <div className="agent-info-token-glass">
+                                    <div className="agent-info-token-hero">
+                                        <span className="agent-info-token-hero-label">{t('agent.settings.today')}</span>
+                                        <span className="agent-info-token-hero-value">
+                                            {todayParts.value}
+                                            {todayParts.unit && <span className="agent-info-token-hero-unit">{todayParts.unit}</span>}
+                                        </span>
+                                    </div>
+                                    <div className="agent-info-token-stats">
+                                        <div className="agent-info-stat-item">
+                                            <span className="agent-info-stat-label">{t('agent.settings.month')}</span>
+                                            <span className="agent-info-stat-value">
+                                                {monthParts.value}
+                                                {monthParts.unit && <span className="agent-info-stat-unit">{monthParts.unit}</span>}
+                                            </span>
+                                        </div>
+                                        <div className="agent-info-stat-item">
+                                            <span className="agent-info-stat-label">Cache</span>
+                                            <span className="agent-info-stat-value" title={`Today cache hit: ${formatTokens(cacheReadToday)} · ${cacheHitRateToday}%`}>
+                                                {formatTokens(cacheReadToday)}
+                                                <span className="agent-info-stat-unit">{cacheHitRateToday}%</span>
+                                            </span>
+                                        </div>
+                                        <div className="agent-info-stat-item">
+                                            <span className="agent-info-stat-label">{t('agent.status.totalToken')}</span>
+                                            <span className="agent-info-stat-value">
+                                                {totalParts.value}
+                                                {totalParts.unit && <span className="agent-info-stat-unit">{totalParts.unit}</span>}
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -3538,20 +4428,7 @@ function AgentDetailInner() {
     );
     const renderAwarePreview = () => {
         const raw = focusFile?.content || '';
-        const focusItems = raw
-            .split('\n')
-            .map((line: string) => {
-                const match = line.match(/^\s*-\s*\[([ x/])\]\s*(.+)/i);
-                if (!match) return null;
-                const text = match[2].trim();
-                const colonIdx = text.indexOf(':');
-                return {
-                    marker: match[1],
-                    title: colonIdx > 0 ? text.slice(colonIdx + 1).trim() : text,
-                    key: colonIdx > 0 ? text.slice(0, colonIdx).trim() : text,
-                };
-            })
-            .filter(Boolean) as Array<{ marker: string; title: string; key: string }>;
+        const focusItems = parseFocusItems(raw);
         const isZh = i18n.language?.startsWith('zh');
         const formatTrigger = (trig: any) => {
             if (trig.type === 'cron' && trig.config?.expr) return `Cron ${trig.config.expr}`;
@@ -3559,28 +4436,85 @@ function AgentDetailInner() {
             if (trig.type === 'once' && trig.config?.at) return new Date(trig.config.at).toLocaleString();
             return trig.name || trig.type;
         };
+        const triggersByFocus: Record<string, any[]> = {};
+        const standaloneTriggers: any[] = [];
+        const focusNames = new Set(focusItems.map((item) => item.name));
+        for (const trig of awareTriggers as any[]) {
+            if (trig.focus_ref && focusNames.has(trig.focus_ref)) {
+                if (!triggersByFocus[trig.focus_ref]) triggersByFocus[trig.focus_ref] = [];
+                triggersByFocus[trig.focus_ref].push(trig);
+            } else {
+                standaloneTriggers.push(trig);
+            }
+        }
+        const renderCheck = (state: 'todo' | 'active' | 'done', label: string) => (
+            <span className={`aware-side-check ${state}`} aria-label={label}>
+                {state === 'done' ? '✓' : state === 'active' ? '•' : ''}
+            </span>
+        );
+        const reflectionPreview = (msg: any) => {
+            if (!msg) return '';
+            if (msg.role === 'tool_call') {
+                const name = msg.toolName || (() => { try { return JSON.parse(msg.content || '{}').name; } catch { return ''; } })() || 'tool';
+                return isZh ? `调用工具：${name}` : `Tool call: ${name}`;
+            }
+            if (msg.role === 'tool_result') {
+                const name = msg.toolName || (() => { try { return JSON.parse(msg.content || '{}').name; } catch { return ''; } })() || 'result';
+                return isZh ? `工具结果：${name}` : `Tool result: ${name}`;
+            }
+            return String(msg.content || '').replace(/\s+/g, ' ').trim();
+        };
         return (
             <div className="aware-side-preview">
                 <div className="aware-side-section">
                     <div className="aware-side-section-title">{t('agent.aware.focus')}</div>
                     {focusItems.length === 0 ? (
                         <div className="aware-side-empty">{t('agent.aware.focusEmpty')}</div>
-                    ) : focusItems.slice(0, 12).map((item) => (
-                        <div key={item.key} className="aware-side-item">
-                            <span className={`aware-side-dot ${item.marker.toLowerCase() === 'x' ? 'done' : item.marker === '/' ? 'active' : ''}`} />
-                            <div>
-                                <div className="aware-side-item-title">{item.title || item.key}</div>
-                                {item.title !== item.key && <div className="aware-side-item-meta">{item.key}</div>}
+                    ) : focusItems.slice(0, 12).map((item) => {
+                        const isExpanded = expandedFocus === item.id;
+                        const itemTriggers = triggersByFocus[item.name] || [];
+                        return (
+                            <div key={item.id} className={`aware-side-focus ${item.done ? 'done' : ''}`}>
+                                <button className="aware-side-focus-head" type="button" onClick={() => setExpandedFocus(isExpanded ? null : item.id)}>
+                                    <span
+                                        className={`aware-side-focus-marker ${item.done ? 'done' : item.inProgress ? 'active' : 'todo'}`}
+                                        aria-label={item.done ? t('agent.aware.completed') : item.inProgress ? t('agent.aware.inProgress') : t('agent.aware.focus')}
+                                    />
+                                    <div className="aware-side-trigger-main">
+                                        <div className="aware-side-item-title">{item.description || item.name}</div>
+                                        {item.description && <div className="aware-side-item-meta">{item.name}</div>}
+                                    </div>
+                                    <span className="aware-side-count">
+                                        {isZh ? `${itemTriggers.length} 个` : itemTriggers.length}
+                                    </span>
+                                    <span className={`aware-side-chevron ${isExpanded ? 'open' : ''}`}>▶</span>
+                                </button>
+                                {isExpanded && (
+                                    <div className="aware-side-nested">
+                                        {itemTriggers.length === 0 ? (
+                                            <div className="aware-side-empty compact">{t('agent.aware.noTriggers')}</div>
+                                        ) : itemTriggers.map((trig: any) => (
+                                            <div key={trig.id} className={`aware-side-trigger ${trig.is_enabled ? '' : 'done'}`}>
+                                                {renderCheck(trig.is_enabled ? 'todo' : 'done', trig.is_enabled ? t('agent.aware.inProgress') : t('agent.aware.completed'))}
+                                                <div className="aware-side-trigger-main">
+                                                    <div className="aware-side-item-title">{formatTrigger(trig)}</div>
+                                                    <div className="aware-side-item-meta">{trig.reason || trig.type}</div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
                 <div className="aware-side-section">
                     <div className="aware-side-section-title">{t('agent.aware.standaloneTriggers')}</div>
-                    {(awareTriggers as any[]).length === 0 ? (
+                    {standaloneTriggers.length === 0 ? (
                         <div className="aware-side-empty">{t('agent.aware.noTriggers')}</div>
-                    ) : (awareTriggers as any[]).slice(0, 16).map((trig: any) => (
-                        <div key={trig.id} className="aware-side-trigger">
+                    ) : standaloneTriggers.slice(0, 16).map((trig: any) => (
+                        <div key={trig.id} className={`aware-side-trigger ${trig.is_enabled ? '' : 'done'}`}>
+                            {renderCheck(trig.is_enabled ? 'todo' : 'done', trig.is_enabled ? t('agent.aware.inProgress') : t('agent.aware.completed'))}
                             <div className="aware-side-trigger-main">
                                 <div className="aware-side-item-title">{formatTrigger(trig)}</div>
                                 <div className="aware-side-item-meta">{trig.reason || trig.type}</div>
@@ -3602,18 +4536,51 @@ function AgentDetailInner() {
                     <div className="aware-side-section-title">{t('agent.aware.reflections')}</div>
                     {(reflectionSessions as any[]).length === 0 ? (
                         <div className="aware-side-empty">{isZh ? '暂无自主思考记录' : 'No reflections yet'}</div>
-                    ) : (reflectionSessions as any[]).slice(0, 10).map((session: any) => (
-                        <div key={session.id} className="aware-side-item">
-                            <span className="aware-side-dot active" />
-                            <div>
-                                <div className="aware-side-item-title">{(session.title || 'Trigger execution').replace(/^🤖\s*/, '')}</div>
-                                <div className="aware-side-item-meta">
-                                    {new Date(session.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                    {session.message_count > 0 ? ` · ${session.message_count}` : ''}
-                                </div>
+                    ) : (reflectionSessions as any[]).slice(0, 10).map((session: any) => {
+                        const isExpanded = expandedReflection === session.id;
+                        const msgs = reflectionMessages[session.id] || [];
+                        return (
+                            <div key={session.id} className="aware-side-reflection">
+                                <button
+                                    type="button"
+                                    className="aware-side-reflection-head"
+                                    onClick={async () => {
+                                        if (isExpanded) {
+                                            setExpandedReflection(null);
+                                            return;
+                                        }
+                                        setExpandedReflection(session.id);
+                                        await loadReflectionMessages(session.id);
+                                    }}
+                                >
+                                    <span className="aware-side-dot active" />
+                                    <div className="aware-side-trigger-main">
+                                        <div className="aware-side-item-title">{trimLeadingPictograph(session.title || 'Trigger execution')}</div>
+                                        <div className="aware-side-item-meta">
+                                            {new Date(session.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                            {session.message_count > 0 ? ` · ${session.message_count}` : ''}
+                                        </div>
+                                    </div>
+                                    <span className={`aware-side-chevron ${isExpanded ? 'open' : ''}`}>▶</span>
+                                </button>
+                                {isExpanded && (
+                                    <div className="aware-side-reflection-detail">
+                                        {msgs.length === 0 ? (
+                                            <div className="aware-side-empty compact">{isZh ? '正在加载...' : 'Loading...'}</div>
+                                        ) : msgs.slice(0, 6).map((msg: any, index: number) => (
+                                            <div key={index} className={`aware-side-reflection-message role-${msg.role}`}>
+                                                <span className="aware-side-reflection-role">{msg.role}</span>
+                                                <span className="aware-side-reflection-text">{reflectionPreview(msg).slice(0, 180)}</span>
+                                            </div>
+                                        ))}
+                                        {msgs.length > 6 && (
+                                            <div className="aware-side-empty compact">{isZh ? `还有 ${msgs.length - 6} 条消息` : `${msgs.length - 6} more messages`}</div>
+                                        )}
+                                    </div>
+                                )}
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             </div>
         );
@@ -3776,12 +4743,19 @@ function AgentDetailInner() {
                                     <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_month)}</div>
                                     {agent.max_tokens_per_month && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_month)}</div>}
                                 </div>
+                                <div className="card">
+                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>Cache Hit</div>
+                                    <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(cacheReadToday)}</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                                        Today {cacheHitRateToday}% · Month {formatTokens(cacheReadMonth)} ({cacheHitRateMonth}%)
+                                    </div>
+                                </div>
                                 {/* Native agent metrics */}
                                 {(agent as any)?.agent_type !== 'openclaw' && (<>
                                     <div className="card">
                                         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.llmCallsToday')}</div>
                                         <div style={{ fontSize: '22px', fontWeight: 600 }}>{((agent as any).llm_calls_today || 0).toLocaleString()}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.status.max')}: {((agent as any).max_llm_calls_per_day || 100).toLocaleString()}</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.status.max')}: {((agent as any).max_llm_calls_per_day || 1000).toLocaleString()}</div>
                                     </div>
                                     <div className="card">
                                         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.totalToken')}</div>
@@ -3936,34 +4910,7 @@ function AgentDetailInner() {
                 {activeTab === 'aware' && (() => {
                     // Parse focus.md into focus items with multi-line descriptions
                     const raw = focusFile?.content || '';
-                    const lines = raw.split('\n');
-                    const focusItems: { id: string; name: string; description: string; done: boolean; inProgress: boolean }[] = [];
-                    let currentItem: any = null;
-                    for (const line of lines) {
-                        const match = line.match(/^\s*-\s*\[([ x/])\]\s*(.+)/i);
-                        if (match) {
-                            if (currentItem) focusItems.push(currentItem);
-                            const marker = match[1];
-                            const fullText = match[2].trim();
-                            // Split on first colon: "identifier: description"
-                            const colonIdx = fullText.indexOf(':');
-                            const itemName = colonIdx > 0 ? fullText.substring(0, colonIdx).trim() : fullText;
-                            const itemDesc = colonIdx > 0 ? fullText.substring(colonIdx + 1).trim() : '';
-                            currentItem = {
-                                id: itemName,
-                                name: itemName,
-                                description: itemDesc,
-                                done: marker.toLowerCase() === 'x',
-                                inProgress: marker === '/',
-                            };
-                        } else if (currentItem && line.trim() && /^\s{2,}/.test(line)) {
-                            // Indented continuation line = description
-                            currentItem.description = currentItem.description
-                                ? currentItem.description + ' ' + line.trim()
-                                : line.trim();
-                        }
-                    }
-                    if (currentItem) focusItems.push(currentItem);
+                    const focusItems = parseFocusItems(raw);
 
                     // Helper: convert trigger config to natural language
                     const triggerToHuman = (trig: any): string => {
@@ -4088,6 +5035,7 @@ function AgentDetailInner() {
                         const itemLogs = triggerLogsByFocus[item.name] || [];
                         const displayTitle = item.description || item.name;
                         const displaySubtitle = item.description ? item.name : null;
+                        const focusState = item.done ? 'done' : item.inProgress ? 'active' : 'todo';
 
                         return (
                             <div key={item.id} style={{
@@ -4096,6 +5044,7 @@ function AgentDetailInner() {
                                 overflow: 'hidden',
                                 marginBottom: '6px',
                                 background: 'var(--bg-primary)',
+                                opacity: item.done ? 0.74 : 1,
                             }}>
                                 {/* Focus Item Header */}
                                 <div
@@ -4111,11 +5060,11 @@ function AgentDetailInner() {
                                     onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-secondary)')}
                                     onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                                 >
-                                    {/* Status indicator */}
-                                    <div style={{
-                                        width: '8px', height: '8px', borderRadius: '50%', marginTop: '5px', flexShrink: 0,
-                                        background: item.done ? 'var(--success, #10b981)' : item.inProgress ? 'var(--accent-primary)' : 'var(--border-subtle)',
-                                    }} />
+                                    <span
+                                        className={`aware-side-focus-marker ${focusState}`}
+                                        style={{ marginTop: '2px' }}
+                                        aria-label={focusState === 'done' ? t('agent.aware.completed') : focusState === 'active' ? t('agent.aware.inProgress') : t('agent.aware.focus')}
+                                    />
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{
                                             fontSize: '13px', fontWeight: 500, lineHeight: '20px',
@@ -4129,18 +5078,16 @@ function AgentDetailInner() {
                                         )}
                                     </div>
                                     {/* Trigger count badge */}
-                                    {itemTriggers.length > 0 && (
-                                        <span style={{
-                                            fontSize: '11px', color: 'var(--text-tertiary)',
-                                            padding: '2px 8px', borderRadius: '10px',
-                                            background: 'var(--bg-secondary)',
-                                            whiteSpace: 'nowrap',
-                                        }}>
-                                            {i18n.language?.startsWith('zh')
-                                                ? `${itemTriggers.length} 个触发器`
-                                                : `${itemTriggers.length} trigger${itemTriggers.length > 1 ? 's' : ''}`}
-                                        </span>
-                                    )}
+                                    <span style={{
+                                        fontSize: '11px', color: 'var(--text-tertiary)',
+                                        padding: '2px 8px', borderRadius: '10px',
+                                        background: 'var(--bg-secondary)',
+                                        whiteSpace: 'nowrap',
+                                    }}>
+                                        {i18n.language?.startsWith('zh')
+                                            ? `${itemTriggers.length} 个触发器`
+                                            : `${itemTriggers.length} trigger${itemTriggers.length > 1 ? 's' : ''}`}
+                                    </span>
                                     {/* Expand arrow */}
                                     <span style={{
                                         fontSize: '11px', color: 'var(--text-tertiary)',
@@ -4163,6 +5110,9 @@ function AgentDetailInner() {
                                                         borderRadius: '6px', background: 'var(--bg-secondary)',
                                                         opacity: trig.is_enabled ? 1 : 0.5,
                                                     }}>
+                                                        <span className={`aware-side-check ${trig.is_enabled ? 'todo' : 'done'}`}>
+                                                            {trig.is_enabled ? '' : '✓'}
+                                                        </span>
                                                         <div style={{ flex: 1 }}>
                                                             <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)' }}>
                                                                 {triggerToHuman(trig)}
@@ -4341,6 +5291,9 @@ function AgentDetailInner() {
                                                 opacity: trig.is_enabled ? 1 : 0.5,
                                                 background: 'var(--bg-primary)',
                                             }}>
+                                                <span className={`aware-side-check ${trig.is_enabled ? 'todo' : 'done'}`}>
+                                                    {trig.is_enabled ? '' : '✓'}
+                                                </span>
                                                 <div style={{ flex: 1 }}>
                                                     <div style={{ fontSize: '13px', fontWeight: 500 }}>{triggerToHuman(trig)}</div>
                                                     {triggerReasonText(trig) && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{triggerReasonText(trig)}</div>}
@@ -4432,18 +5385,7 @@ function AgentDetailInner() {
                                                                     return;
                                                                 }
                                                                 setExpandedReflection(session.id);
-                                                                if (!reflectionMessages[session.id]) {
-                                                                    try {
-                                                                        const tkn = localStorage.getItem('token');
-                                                                        const res = await fetch(`/api/agents/${id}/sessions/${session.id}/messages`, {
-                                                                            headers: { Authorization: `Bearer ${tkn}` },
-                                                                        });
-                                                                        if (res.ok) {
-                                                                            const data = await res.json();
-                                                                            setReflectionMessages(prev => ({ ...prev, [session.id]: data }));
-                                                                        }
-                                                                    } catch { /* ignore */ }
-                                                                }
+                                                                await loadReflectionMessages(session.id);
                                                             }}
                                                             style={{
                                                                 padding: '10px 16px',
@@ -4459,7 +5401,7 @@ function AgentDetailInner() {
                                                             }} />
                                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                                 <div style={{ fontSize: '12px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                                    {(session.title || 'Trigger execution').replace(/^🤖\s*/, '')}
+                                                                    {trimLeadingPictograph(session.title || 'Trigger execution')}
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '1px' }}>
                                                                     {new Date(session.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
@@ -4652,7 +5594,7 @@ function AgentDetailInner() {
                                 {/* Soul Section */}
                                 <div>
                                     <h3 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        🧬 {t('agent.soul.title')}
+                                        <IconDna size={18} stroke={1.8} /> {t('agent.soul.title')}
                                     </h3>
                                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                                         {t('agent.mind.soulDesc', 'Core identity, personality, and behavior boundaries.')}
@@ -4663,7 +5605,7 @@ function AgentDetailInner() {
                                 {/* Memory Section */}
                                 <div>
                                     <h3 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        🧠 {t('agent.memory.title')}
+                                        <IconBrain size={18} stroke={1.8} /> {t('agent.memory.title')}
                                     </h3>
                                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                                         {t('agent.mind.memoryDesc', 'Persistent memory accumulated through conversations and experiences.')}
@@ -4674,7 +5616,7 @@ function AgentDetailInner() {
                                 {/* Heartbeat Section */}
                                 <div>
                                     <h3 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        💓 {t('agent.mind.heartbeatTitle', 'Heartbeat')}
+                                        <IconHeartbeat size={18} stroke={1.8} /> {t('agent.mind.heartbeatTitle', 'Heartbeat')}
                                     </h3>
                                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                                         {t('agent.mind.heartbeatDesc', 'Instructions for periodic awareness checks. The agent reads this file during each heartbeat.')}
@@ -4900,21 +5842,21 @@ function AgentDetailInner() {
                                                             onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border-subtle)')}
                                                         >
                                                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
-                                                                <span style={{ fontSize: '20px' }}>{skill.icon || '📋'}</span>
+                                                                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)' }}>{safeDisplayIcon(skill.icon, <IconTools size={20} stroke={1.8} />)}</span>
                                                                 <div>
                                                                     <div style={{ fontWeight: 600, fontSize: '14px' }}>{skill.name}</div>
                                                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                                                                         {skill.description?.substring(0, 100)}{skill.description?.length > 100 ? '...' : ''}
                                                                     </div>
                                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                                        📁 {skill.folder_name}
+                                                                        <IconFolder size={12} stroke={1.8} /> {skill.folder_name}
                                                                         {skill.is_default && <span style={{ marginLeft: '8px', color: 'var(--accent-primary)', fontWeight: 600 }}>✓ Default</span>}
                                                                     </div>
                                                                 </div>
                                                             </div>
                                                             <button
                                                                 className="btn btn-secondary"
-                                                                style={{ whiteSpace: 'nowrap', fontSize: '12px', padding: '6px 14px' }}
+                                                                style={{ whiteSpace: 'nowrap', fontSize: '12px', padding: '6px 14px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
                                                                 disabled={importingSkillId === skill.id}
                                                                 onClick={async () => {
                                                                     setImportingSkillId(skill.id);
@@ -4930,7 +5872,7 @@ function AgentDetailInner() {
                                                                     }
                                                                 }}
                                                             >
-                                                                {importingSkillId === skill.id ? '⏳ ...' : '⬇️ Import'}
+                                                                {importingSkillId === skill.id ? 'Importing...' : <><IconDownload size={13} stroke={1.8} /> Import</>}
                                                             </button>
                                                         </div>
                                                     ))
@@ -5242,7 +6184,11 @@ function AgentDetailInner() {
                                                 pointerEvents: 'none',
                                             }}
                                         >
-                                            {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                                            {activeSession.source_channel === 'agent' ? (
+                                                <><IconRobot size={13} stroke={1.8} /> Agent Conversation · {activeSession.username || 'Agents'}</>
+                                            ) : (
+                                                <>Read-only · {activeSession.username || 'User'}</>
+                                            )}
                                         </div>
                                         <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
                                             {(() => {
@@ -5269,7 +6215,7 @@ function AgentDetailInner() {
                                                             <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
                                                                 <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
                                                                     <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
-                                                                        <span style={{ fontSize: '13px' }}>⚡</span>
+                                                                        <IconBolt size={13} stroke={1.8} />
                                                                         <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
                                                                         {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
                                                                     </summary>
@@ -5283,30 +6229,26 @@ function AgentDetailInner() {
                                                     if (m.role === 'assistant' && !m.content?.trim()) {
                                                         if (m.thinking) {
                                                             return (
-                                                                <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-                                                                    <details className="thinking-panel">
-                                                                        <summary className="thinking-summary">
-                                                                            <span className="thinking-status-dot" />
-                                                                            {t('agent.chat.thoughtLabel', '已思考')}
-                                                                        </summary>
-                                                                        <div className="thinking-content">{m.thinking}</div>
-                                                                    </details>
-                                                                </div>
+                                                                <ThoughtDisclosure key={i} content={m.thinking} t={t} />
                                                             );
                                                         }
                                                         return null;
                                                     }
                                                     return (
-                                                        <ChatMessageItem
-                                                            key={i}
-                                                            msg={m}
-                                                            i={i}
-                                                            isLeft={isLeft}
-                                                            t={t}
-                                                            senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
-                                                            avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
-                                                            forceSenderLabel={isHumanReadonly}
-                                                        />
+                                                        <React.Fragment key={i}>
+                                                            {m.role === 'assistant' && m.thinking && (
+                                                                <ThoughtDisclosure content={m.thinking} t={t} />
+                                                            )}
+                                                            <ChatMessageItem
+                                                                msg={{ ...m, thinking: undefined }}
+                                                                i={i}
+                                                                isLeft={isLeft}
+                                                                t={t}
+                                                                senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
+                                                                avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
+                                                                forceSenderLabel={isHumanReadonly}
+                                                            />
+                                                        </React.Fragment>
                                                     );
                                                 });
                                             })()}
@@ -5321,11 +6263,18 @@ function AgentDetailInner() {
                                         {/* Drop overlay */}
                                         {isChatDragging && (
                                             <div className="drop-zone-overlay">
-                                                <div className="drop-zone-overlay__icon">📎</div>
+                                                <div className="drop-zone-overlay__icon"><IconPaperclip size={28} stroke={1.8} /></div>
                                                 <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop files to attach (max 10)')}</div>
                                             </div>
                                         )}
-                                        <div ref={chatContainerRef} onScroll={handleChatScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+                                        <div
+                                            ref={chatContainerRef}
+                                            onScroll={handleChatScroll}
+                                            onWheelCapture={handleChatWheelCapture}
+                                            onTouchStartCapture={handleChatTouchStartCapture}
+                                            onTouchMoveCapture={handleChatTouchMoveCapture}
+                                            style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}
+                                        >
                                             {chatMessages.length === 0 && (
                                                 <div className="chat-empty-state">
                                                     <div className="chat-empty-state__title">{activeSession?.title || t('agent.chat.startChat')}</div>
@@ -5400,6 +6349,12 @@ function AgentDetailInner() {
                                                         // Open a new group if needed
                                                         if (!currentGroup) { currentGroup = []; groupStartKey = i; }
                                                         if (msg.role === 'tool_call') {
+                                                            if (msg.toolThinking?.trim()) {
+                                                                const lastItem = currentGroup[currentGroup.length - 1];
+                                                                if (!(lastItem?.type === 'thinking' && lastItem.content === msg.toolThinking)) {
+                                                                    currentGroup.push({ type: 'thinking', content: msg.toolThinking });
+                                                                }
+                                                            }
                                                             currentGroup.push({
                                                                 type: 'tool',
                                                                 name: msg.toolName || 'tool',
@@ -5423,6 +6378,13 @@ function AgentDetailInner() {
                                                         }
                                                     } else {
                                                         // 'final': flush any open group first, then emit as chat bubble
+                                                        if (msg.role === 'assistant' && msg.thinking && currentGroup?.some(item => item.type === 'tool')) {
+                                                            currentGroup.push({ type: 'thinking', content: msg.thinking });
+                                                            const contentText = msg.content?.trim() || '';
+                                                            flushGroup();
+                                                            if (contentText) grouped.push({ type: 'msg', msg: { ...msg, thinking: undefined }, i });
+                                                            continue;
+                                                        }
                                                         flushGroup();
                                                         grouped.push({ type: 'msg', msg, i });
                                                     }
@@ -5431,6 +6393,10 @@ function AgentDetailInner() {
 
 
                                                 return grouped.map((entry, entryIdx) => {
+                                                    const previousEntry = grouped[entryIdx - 1];
+                                                    const hideAssistantAvatar = entry.type === 'msg'
+                                                        && entry.msg.role === 'assistant'
+                                                        && previousEntry?.type === 'analysis_group';
                                                     if (entry.type === 'analysis_group') {
                                                         // Group is considered running if it has a running tool,
                                                         // or if it's the very last entry and the agent is still active
@@ -5438,20 +6404,46 @@ function AgentDetailInner() {
                                                         const hasRunningTool = entry.items.some(
                                                             it => it.type === 'tool' && it.status === 'running'
                                                         );
-                                                        const groupIsRunning = hasRunningTool || (isLastEntry && (isWaiting || isStreaming));
+                                                        const hasToolItems = entry.items.some(it => it.type === 'tool');
+                                                        const groupIsRunning = hasRunningTool || (!hasToolItems && isLastEntry && (isWaiting || isStreaming));
                                                         return (
-                                                            <AnalysisCard
-                                                                key={`ag-${entry.key}`}
-                                                                items={entry.items}
-                                                                t={t}
-                                                                expanded={!!toolGroupExpandedRef.current.get(entry.key)}
-                                                                onToggle={() => toggleToolGroup(entry.key)}
-                                                                isGroupRunning={groupIsRunning}
-                                                            />
+                                                            <div key={`ag-${entry.key}`} className="chat-msg-row chat-msg-row--analysis">
+                                                                <div className="chat-msg-avatar">{(((agent as any)?.name || 'Agent')[0])}</div>
+                                                                <AnalysisCard
+                                                                    items={entry.items}
+                                                                    t={t}
+                                                                    expanded={toolGroupExpandedRef.current.has(entry.key) ? !!toolGroupExpandedRef.current.get(entry.key) : false}
+                                                                    onToggle={() => toggleToolGroup(entry.key)}
+                                                                    isGroupRunning={groupIsRunning}
+                                                                />
+                                                            </div>
                                                         );
                                                     }
                                                     const { msg, i } = entry;
                                                     // All remaining messages have real content; render as chat bubbles
+                                                    if (msg.role === 'assistant' && msg.thinking) {
+                                                        const contentText = msg.content?.trim() || '';
+                                                        return (
+                                                            <React.Fragment key={i}>
+                                                                <ThoughtDisclosure
+                                                                    content={msg.thinking}
+                                                                    t={t}
+                                                                    streaming={!!((msg as any)._streaming && !contentText)}
+                                                                />
+                                                                {contentText && (
+                                                                    <ChatMessageItem
+                                                                        msg={{ ...msg, thinking: undefined }}
+                                                                        i={i}
+                                                                        isLeft
+                                                                        t={t}
+                                                                        senderLabel={(agent as any)?.name || 'Agent'}
+                                                                        avatarText={((agent as any)?.name || 'Agent')[0]}
+                                                                        hideAvatar={hideAssistantAvatar}
+                                                                    />
+                                                                )}
+                                                            </React.Fragment>
+                                                        );
+                                                    }
                                                     return (
                                                         <ChatMessageItem
                                                             key={i}
@@ -5461,6 +6453,7 @@ function AgentDetailInner() {
                                                             t={t}
                                                             senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
                                                             avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
+                                                            hideAvatar={hideAssistantAvatar}
                                                         />
                                                     );
                                                 });
@@ -5469,7 +6462,7 @@ function AgentDetailInner() {
                                             {isWaiting && (
                                                 <div className="chat-msg-row">
                                                     <div className="chat-msg-avatar">A</div>
-                                                    <div className="chat-msg-bubble">
+                                                    <div className="chat-msg-bubble chat-msg-bubble--thinking">
                                                         <div className="thinking-indicator">
                                                             <div className="thinking-dots">
                                                                 <span /><span /><span />
@@ -5598,7 +6591,6 @@ function AgentDetailInner() {
                                                     }}
                                                     onPaste={handlePaste}
                                                     placeholder={!wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? 'Connecting...' : t('chat.placeholder')}
-                                                    disabled={!wsConnected}
                                                     rows={1}
                                                 />
                                             </div>
@@ -5711,7 +6703,7 @@ function AgentDetailInner() {
                             filteredLogs = activityLogs.filter((l: any) => messageTypes.includes(l.action_type));
                         }
 
-                        const filterBtn = (key: string, label: string, indent = false) => (
+                        const filterBtn = (key: string, label: React.ReactNode, indent = false) => (
                             <button
                                 key={key}
                                 onClick={() => setLogFilter(key)}
@@ -5726,6 +6718,9 @@ function AgentDetailInner() {
                                     cursor: 'pointer',
                                     transition: 'all 0.15s',
                                     whiteSpace: 'nowrap' as const,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '5px',
                                 }}
                             >
                                 {label}
@@ -5738,15 +6733,15 @@ function AgentDetailInner() {
 
                                 {/* Filter tabs */}
                                 <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
-                                    {filterBtn('user', '👤 ' + t('agent.activityLog.userActions', 'User Actions'))}
+                                    {filterBtn('user', <><IconUser size={13} stroke={1.8} /> {t('agent.activityLog.userActions', 'User Actions')}</>)}
                                     {(agent as any)?.agent_type !== 'openclaw' && (<>
-                                        {filterBtn('backend', '⚙️ ' + t('agent.activityLog.backendServices', 'Backend Services'))}
+                                        {filterBtn('backend', <><IconSettings size={13} stroke={1.8} /> {t('agent.activityLog.backendServices', 'Backend Services')}</>)}
                                         {(logFilter === 'backend' || logFilter === 'heartbeat' || logFilter === 'schedule' || logFilter === 'messages') && (
                                             <>
                                                 <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>│</span>
-                                                {filterBtn('heartbeat', '💓 ' + t('agent.mind.heartbeatTitle'))}
-                                                {filterBtn('schedule', '⏰ ' + t('agent.activityLog.scheduleCron'), true)}
-                                                {filterBtn('messages', '📨 ' + t('agent.activityLog.messages'), true)}
+                                                {filterBtn('heartbeat', <><IconHeartbeat size={13} stroke={1.8} /> {t('agent.mind.heartbeatTitle')}</>)}
+                                                {filterBtn('schedule', <><IconClock size={13} stroke={1.8} /> {t('agent.activityLog.scheduleCron')}</>, true)}
+                                                {filterBtn('messages', <><IconMailForward size={13} stroke={1.8} /> {t('agent.activityLog.messages')}</>, true)}
                                             </>
                                         )}
                                     </>)}
@@ -5755,11 +6750,19 @@ function AgentDetailInner() {
                                 {filteredLogs.length > 0 ? (
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                         {filteredLogs.map((log: any) => {
-                                            const icons: Record<string, string> = {
-                                                chat_reply: '💬', tool_call: '⚡', feishu_msg_sent: '📤',
-                                                agent_msg_sent: '🤖', web_msg_sent: '🌐', task_created: '📋',
-                                                task_updated: '✅', file_written: '📝', error: '❌',
-                                                schedule_run: '⏰', heartbeat: '💓', plaza_post: '🏛️',
+                                            const icons: Record<string, React.ReactNode> = {
+                                                chat_reply: <IconMessageCircle size={16} stroke={1.8} />,
+                                                tool_call: <IconBolt size={16} stroke={1.8} />,
+                                                feishu_msg_sent: <IconSend size={16} stroke={1.8} />,
+                                                agent_msg_sent: <IconRobot size={16} stroke={1.8} />,
+                                                web_msg_sent: <IconWorld size={16} stroke={1.8} />,
+                                                task_created: <IconFileText size={16} stroke={1.8} />,
+                                                task_updated: <IconCheck size={16} stroke={1.8} />,
+                                                file_written: <IconFileText size={16} stroke={1.8} />,
+                                                error: <IconAlertTriangle size={16} stroke={1.8} />,
+                                                schedule_run: <IconClock size={16} stroke={1.8} />,
+                                                heartbeat: <IconHeartbeat size={16} stroke={1.8} />,
+                                                plaza_post: <IconBuilding size={16} stroke={1.8} />,
                                             };
                                             const time = log.created_at ? new Date(log.created_at).toLocaleString('zh-CN', {
                                                 month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -5776,7 +6779,7 @@ function AgentDetailInner() {
                                                     }}
                                                 >
                                                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                                                        <span style={{ fontSize: '16px', flexShrink: 0, marginTop: '1px' }}>
+                                                        <span style={{ width: '18px', height: '18px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '1px', color: 'var(--text-tertiary)' }}>
                                                             {icons[log.action_type] || '·'}
                                                         </span>
                                                         <div style={{ flex: 1, minWidth: 0 }}>
@@ -6086,7 +7089,7 @@ function AgentDetailInner() {
 
                                     {/* Max Tool Call Rounds */}
                                     <div className="card" style={{ marginBottom: '12px' }}>
-                                        <h4 style={{ marginBottom: '12px' }}>🔧 {t('agent.settings.maxToolRounds', 'Max Tool Call Rounds')}</h4>
+                                        <h4 style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}><IconTools size={16} stroke={1.8} /> {t('agent.settings.maxToolRounds', 'Max Tool Call Rounds')}</h4>
                                         <div>
                                             <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxToolRoundsLabel', 'Maximum rounds per message')}</label>
                                             <input
@@ -6299,9 +7302,9 @@ function AgentDetailInner() {
 
                                 {/* Permission Management */}
                                 {(() => {
-                                    const scopeLabels: Record<string, string> = {
-                                        company: '🏢 ' + t('agent.settings.perm.companyWide', 'Company-wide'),
-                                        user: '👤 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
+                                    const scopeLabels: Record<string, React.ReactNode> = {
+                                        company: <><IconBuilding size={14} stroke={1.8} /> {t('agent.settings.perm.companyWide', 'Company-wide')}</>,
+                                        user: <><IconUser size={14} stroke={1.8} /> {t('agent.settings.perm.onlyMe', 'Only Me')}</>,
                                     };
 
                                     const handleScopeChange = async (newScope: string) => {
@@ -6332,13 +7335,13 @@ function AgentDetailInner() {
                                         }
                                     };
 
-                                    const isOwner = permData?.is_owner ?? false;
+                                    const canManagePermissions = permData?.can_manage ?? canManage;
                                     const currentScope = permData?.scope_type || 'company';
                                     const currentAccessLevel = permData?.access_level || 'use';
 
                                     return (
                                         <div className="card" style={{ marginBottom: '12px' }}>
-                                            <h4 style={{ marginBottom: '12px' }}>🔒 {t('agent.settings.perm.title', 'Access Permissions')}</h4>
+                                            <h4 style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}><IconLock size={16} stroke={1.8} /> {t('agent.settings.perm.title', 'Access Permissions')}</h4>
                                             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
                                                 {t('agent.settings.perm.description', 'Control who can see and interact with this agent. Only the creator or admin can change this.')}
                                             </p>
@@ -6354,14 +7357,14 @@ function AgentDetailInner() {
                                                             gap: '10px',
                                                             padding: '12px 14px',
                                                             borderRadius: '8px',
-                                                            cursor: isOwner ? 'pointer' : 'default',
+                                                            cursor: canManagePermissions ? 'pointer' : 'default',
                                                             border: currentScope === scope
                                                                 ? '1px solid var(--accent-primary)'
                                                                 : '1px solid var(--border-subtle)',
                                                             background: currentScope === scope
                                                                 ? 'rgba(99,102,241,0.06)'
                                                                 : 'transparent',
-                                                            opacity: isOwner ? 1 : 0.7,
+                                                            opacity: canManagePermissions ? 1 : 0.7,
                                                             transition: 'all 0.15s',
                                                         }}
                                                     >
@@ -6369,12 +7372,12 @@ function AgentDetailInner() {
                                                             type="radio"
                                                             name="perm_scope"
                                                             checked={currentScope === scope}
-                                                            disabled={!isOwner}
+                                                            disabled={!canManagePermissions}
                                                             onChange={() => handleScopeChange(scope)}
                                                             style={{ accentColor: 'var(--accent-primary)' }}
                                                         />
                                                         <div>
-                                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{scopeLabels[scope]}</div>
+                                                            <div style={{ fontWeight: 500, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '5px' }}>{scopeLabels[scope]}</div>
                                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                                                                 {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
                                                                 {scope === 'user' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
@@ -6385,14 +7388,14 @@ function AgentDetailInner() {
                                             </div>
 
                                             {/* Access Level for company scope */}
-                                            {currentScope === 'company' && isOwner && (
+                                            {currentScope === 'company' && canManagePermissions && (
                                                 <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
                                                     <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
                                                         {t('agent.settings.perm.defaultAccess', 'Default Access Level')}
                                                     </label>
                                                     <div style={{ display: 'flex', gap: '8px' }}>
-                                                        {[{ val: 'use', label: '👁️ ' + t('agent.settings.perm.useAccess', 'Use'), desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
-                                                        { val: 'manage', label: '⚙️ ' + t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') }].map(opt => (
+                                                        {[{ val: 'use', label: <><IconEye size={13} stroke={1.8} /> {t('agent.settings.perm.useAccess', 'Use')}</>, desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
+                                                        { val: 'manage', label: <><IconSettings size={13} stroke={1.8} /> {t('agent.settings.perm.manageAccess', 'Manage')}</>, desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') }].map(opt => (
                                                             <label key={opt.val}
                                                                 style={{
                                                                     flex: 1,
@@ -6412,7 +7415,7 @@ function AgentDetailInner() {
                                                                     <input type="radio" name="access_level" checked={currentAccessLevel === opt.val}
                                                                         onChange={() => handleAccessLevelChange(opt.val)}
                                                                         style={{ accentColor: 'var(--accent-primary)' }} />
-                                                                    <span style={{ fontWeight: 500, fontSize: '13px' }}>{opt.label}</span>
+                                                                    <span style={{ fontWeight: 500, fontSize: '13px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>{opt.label}</span>
                                                                 </div>
                                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', marginLeft: '20px' }}>{opt.desc}</div>
                                                             </label>
@@ -6428,7 +7431,7 @@ function AgentDetailInner() {
                                                 </div>
                                             )}
 
-                                            {!isOwner && (
+                                            {!canManagePermissions && (
                                                 <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
                                                     {t('agent.settings.perm.readOnly', 'Only the creator or admin can change permissions')}
                                                 </div>
@@ -6440,7 +7443,7 @@ function AgentDetailInner() {
                                 {/* Timezone */}
                                 <div className="card" style={{ marginBottom: '12px' }}>
                                     <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        {t('agent.settings.timezone.title', '🌐 Timezone')}
+                                        <IconWorld size={16} stroke={1.8} /> {t('agent.settings.timezone.title', 'Timezone')}
                                     </h4>
                                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
                                         {t('agent.settings.timezone.description', 'The timezone used for this agent\'s scheduling, active hours, and time awareness. Defaults to the company timezone if not set.')}
@@ -6700,25 +7703,27 @@ function AgentDetailInner() {
             {/* ── Expiry Editor Modal (admin only) ── */}
             {
                 showExpiryModal && (
-                    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    <div className="agent-expiry-modal-backdrop"
                         onClick={() => setShowExpiryModal(false)}>
-                        <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '12px', padding: '24px', width: '360px', maxWidth: '90vw' }}
+                        <div className="agent-expiry-modal"
                             onClick={e => e.stopPropagation()}>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>⏰ {t('agent.settings.expiry.title')}</h3>
-                                <button onClick={() => setShowExpiryModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '18px', lineHeight: 1 }}>×</button>
+                            <div className="agent-expiry-modal-header">
+                                <div>
+                                    <h3>{t('agent.settings.expiry.title')}</h3>
+                                    <div className="agent-expiry-current">
+                                        {(agent as any).is_expired
+                                            ? <span className="agent-expiry-status agent-expiry-status--expired">{t('agent.settings.expiry.expired')}</span>
+                                            : (agent as any).expires_at
+                                                ? <>{t('agent.settings.expiry.currentExpiry')} <strong>{new Date((agent as any).expires_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}</strong></>
+                                                : <span className="agent-expiry-status">{t('agent.settings.expiry.neverExpires')}</span>
+                                        }
+                                    </div>
+                                </div>
+                                <button className="agent-expiry-close" onClick={() => setShowExpiryModal(false)} aria-label={t('common.close', 'Close')}>×</button>
                             </div>
-                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
-                                {(agent as any).is_expired
-                                    ? <span style={{ color: 'var(--error)', fontWeight: 600 }}>⏰ {t('agent.settings.expiry.expired')}</span>
-                                    : (agent as any).expires_at
-                                        ? <>{t('agent.settings.expiry.currentExpiry')} <strong>{new Date((agent as any).expires_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}</strong></>
-                                        : <span style={{ color: 'var(--success)' }}>{t('agent.settings.expiry.neverExpires')}</span>
-                                }
-                            </div>
-                            <div style={{ marginBottom: '16px' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>{t('agent.settings.expiry.quickRenew')}</div>
-                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                            <div className="agent-expiry-section">
+                                <div className="agent-expiry-label">{t('agent.settings.expiry.quickRenew')}</div>
+                                <div className="agent-expiry-quick-actions">
                                     {([
                                         ['+ 24h', 24],
                                         [`+ ${t('agent.settings.expiry.days', { count: 7 })}`, 168],
@@ -6726,30 +7731,33 @@ function AgentDetailInner() {
                                         [`+ ${t('agent.settings.expiry.days', { count: 90 })}`, 2160],
                                     ] as [string, number][]).map(([label, h]) => (
                                         <button key={h} onClick={() => addHours(h)}
-                                            style={{ padding: '4px 10px', borderRadius: '6px', border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)', cursor: 'pointer', fontSize: '12px', color: 'var(--text-primary)' }}>
+                                            className={`agent-expiry-chip${expiryQuickHours === h ? ' agent-expiry-chip--selected' : ''}`}
+                                            aria-pressed={expiryQuickHours === h}>
                                             {label}
                                         </button>
                                     ))}
                                 </div>
                             </div>
-                            <div style={{ marginBottom: '20px' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.settings.expiry.customDeadline')}</div>
-                                <input type="datetime-local" value={expiryValue} onChange={e => setExpiryValue(e.target.value)}
-                                    style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px', boxSizing: 'border-box' }} />
+                            <div className="agent-expiry-section">
+                                <div className="agent-expiry-label">{t('agent.settings.expiry.customDeadline')}</div>
+                                <input type="datetime-local" value={expiryValue} onChange={e => {
+                                    setExpiryValue(e.target.value);
+                                    setExpiryQuickHours(null);
+                                }}
+                                    className="agent-expiry-input" />
                             </div>
-                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="agent-expiry-actions">
                                 <button onClick={() => saveExpiry(true)} disabled={expirySaving}
-                                    style={{ padding: '7px 12px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'none', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                    🔓 {t('agent.settings.expiry.neverExpires')}
+                                    className="agent-expiry-secondary-action">
+                                    {t('agent.settings.expiry.neverExpires')}
                                 </button>
-                                <div style={{ display: 'flex', gap: '8px' }}>
+                                <div className="agent-expiry-action-group">
                                     <button onClick={() => setShowExpiryModal(false)} disabled={expirySaving}
-                                        style={{ padding: '7px 14px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'none', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                        className="agent-expiry-secondary-action">
                                         {t('common.cancel')}
                                     </button>
                                     <button onClick={() => saveExpiry(false)} disabled={expirySaving || !expiryValue}
-                                        className="btn btn-primary"
-                                        style={{ opacity: !expiryValue ? 0.5 : 1 }}>
+                                        className="agent-expiry-primary-action">
                                         {expirySaving ? t('agent.settings.expiry.saving') : t('common.save')}
                                     </button>
                                 </div>

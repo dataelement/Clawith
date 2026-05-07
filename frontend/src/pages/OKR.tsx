@@ -15,8 +15,10 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import { IconAlertTriangle } from '@tabler/icons-react';
 import { fetchJson } from '../services/api';
 import { useAuthStore } from '../stores';
+import { useDialog } from '../components/Dialog/DialogProvider';
 
 // ─── Type Definitions ────────────────────────────────────────────────────────
 
@@ -222,6 +224,7 @@ function KRCard({
     onDelete?: (krId: string) => void;
     canEdit: boolean;
 }) {
+    const dialog = useDialog();
     const pct = progressPercent(kr);
     const [editing, setEditing] = useState(false);
     const [editValue, setEditValue] = useState(String(kr.current_value));
@@ -281,8 +284,12 @@ function KRCard({
                     )}
                     {canEdit && !editing && onDelete && (
                         <button
-                            onClick={() => {
-                                if (window.confirm(isChinese ? '确定要删除这个 Key Result 吗？此操作不可恢复。' : 'Are you sure you want to delete this Key Result?')) {
+                            onClick={async () => {
+                                const ok = await dialog.confirm(
+                                    isChinese ? '确定要删除这个 Key Result 吗？此操作不可恢复。' : 'Are you sure you want to delete this Key Result?',
+                                    { title: isChinese ? '删除 Key Result' : 'Delete Key Result', danger: true, confirmLabel: isChinese ? '删除' : 'Delete' },
+                                );
+                                if (ok) {
                                     onDelete(kr.id);
                                 }
                             }}
@@ -534,6 +541,7 @@ function ObjectiveCard({
     onInvalidate: () => void;
     onDelete?: (objId: string) => void;
 }) {
+    const dialog = useDialog();
     const [expanded, setExpanded] = useState(true);
     const [addingKR, setAddingKR] = useState(false);
     const pct = objectiveProgress(obj);
@@ -596,9 +604,13 @@ function ObjectiveCard({
                     <StatusBadge status={overallStatus} isChinese={isChinese} />
                     {canEdit && onDelete && (
                         <button
-                            onClick={e => {
+                            onClick={async e => {
                                 e.stopPropagation();
-                                if (window.confirm(isChinese ? '确定要删除这个目标及其所有相关的 Key Results 吗？（此操作实际上是将目标归档）' : 'Are you sure you want to delete this Objective and all its Key Results? (This will archive the objective)')) {
+                                const ok = await dialog.confirm(
+                                    isChinese ? '确定要删除这个目标及其所有相关的 Key Results 吗？（此操作实际上是将目标归档）' : 'Are you sure you want to delete this Objective and all its Key Results? (This will archive the objective)',
+                                    { title: isChinese ? '删除 / 归档目标' : 'Delete / Archive Objective', danger: true, confirmLabel: isChinese ? '删除 / 归档' : 'Delete / Archive' },
+                                );
+                                if (ok) {
                                     onDelete(obj.id);
                                 }
                             }}
@@ -1331,7 +1343,7 @@ function MembersWithoutOKRPanel({
 
     const { members_without_okr: members, company_okr_exists, okr_agent_id, last_outreach_error, channel_warnings } = data;
 
-    // Build a set of unreachable member names for ⚠️ icon display
+    // Build a set of unreachable member names for warning icon display
     const unreachableNames = new Set<string>();
     if (channel_warnings?.length) {
         for (const w of channel_warnings) {
@@ -1365,7 +1377,7 @@ function MembersWithoutOKRPanel({
                     color: '#92400e',
                     lineHeight: 1.6,
                 }}>
-                    <span style={{ flexShrink: 0, fontSize: '14px' }}>⚠️</span>
+                    <IconAlertTriangle size={14} stroke={1.8} style={{ flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                         {channel_warnings.map((w, i) => (
                             <div key={i} style={{ marginBottom: i < channel_warnings.length - 1 ? '4px' : 0 }}>
@@ -1440,7 +1452,7 @@ function MembersWithoutOKRPanel({
                             alignItems: 'flex-start',
                             gap: '6px',
                         }}>
-                            <span style={{ flexShrink: 0 }}>⚠️</span>
+                            <IconAlertTriangle size={14} stroke={1.8} style={{ flexShrink: 0 }} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                                 <div style={{ fontWeight: 600, marginBottom: '2px' }}>
                                     {isChinese ? 'OKR Agent 上次执行失败' : 'OKR Agent task failed'}
@@ -1537,7 +1549,7 @@ function MembersWithoutOKRPanel({
                             </div>
                             {unreachableNames.has(member.display_name) && (
                                 <span title={isChinese ? '渠道未配置，无法推送' : 'Channel not configured, cannot deliver'}
-                                    style={{ fontSize: '12px', cursor: 'help', flexShrink: 0 }}>⚠️</span>
+                                    style={{ cursor: 'help', flexShrink: 0, display: 'inline-flex' }}><IconAlertTriangle size={13} stroke={1.8} /></span>
                             )}
                             <span style={{
                                 fontSize: '10px', color: 'var(--text-tertiary)',
