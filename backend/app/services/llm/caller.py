@@ -358,6 +358,20 @@ async def _process_tool_call(
                 logger.info(f"[LLM] Injected screenshot vision for {tool_name}")
         except Exception as e:
             logger.warning(f"[LLM] Vision injection failed for {tool_name}: {e}")
+    else:
+        # Vision-incapable model — drain any pending [ImageID:...] sentinels and
+        # replace with a human-readable placeholder so the LLM doesn't try to
+        # interpret an opaque marker (and so the cache doesn't leak bytes).
+        try:
+            from app.services.vision_inject import (
+                _IMAGE_ID_RE, pop_temp_screenshot, sanitize_history_tool_result,
+            )
+            text = str(result)
+            for m in _IMAGE_ID_RE.finditer(text):
+                pop_temp_screenshot(m.group(1))
+            tool_content = sanitize_history_tool_result(text)
+        except Exception:
+            pass
 
     # Notify client about tool call result
     if on_tool_call:
@@ -417,6 +431,18 @@ async def call_llm(
     from app.services.agent_context import build_agent_context
     # Look up current user's display name so the agent knows who it's talking to
     static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_user_name)
+
+    # When the chat session belongs to a Project, prepend that context so the
+    # agent can reason about shared brief and files. MVP does NOT swap the
+    # agent's working directory; direct project-workspace I/O is P2.
+    if session_id:
+        try:
+            from app.services.project_workspace import build_project_context_block
+            project_block = await build_project_context_block(session_id)
+            if project_block:
+                static_prompt = project_block + "\n\n---\n\n" + static_prompt
+        except Exception as _e:
+            logger.warning(f"[project-context] failed to inject block for session={session_id}: {_e}")
 
     # Load tools dynamically from DB. `skip_tools=True` is set by the WS
     # handler on the onboarding greeting turn — the bootstrap response is a

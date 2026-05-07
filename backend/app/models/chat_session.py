@@ -53,5 +53,10 @@ class ChatSession(Base):
     # Tracks when the owning platform user last opened/read this session. Unread badges are derived
     # from non-user messages created after this timestamp.
     last_read_at_by_user: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Project binding: if set, this chat runs with the project's BRIEF and shared workspace.
+    # ON DELETE SET NULL so chat history survives even if the project is hard-deleted later.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

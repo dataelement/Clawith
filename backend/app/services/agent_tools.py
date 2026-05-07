@@ -25,7 +25,7 @@ from typing import Optional, Any
 import re
 
 from loguru import logger
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, and_
 
 from app.database import async_session
 from app.models.task import Task
@@ -53,6 +53,33 @@ from app.config import get_settings
 
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
+PROJECT_WORKSPACE_ROOT = Path(_settings.PROJECT_WORKSPACE_DIR)
+
+
+def _path_within_allowed_roots(resolved: Path, ws_resolved: Path) -> bool:
+    """A resolved filesystem path is acceptable for filesystem tools when it is
+    under one of:
+
+    - the agent's own workspace (`{AGENT_DATA_DIR}/{agent_id}/`) — the normal
+      case for paths that don't traverse a symlink.
+    - the central project workspace dir (`{PROJECT_WORKSPACE_DIR}/<pid>/`) —
+      this is what the agent's `.project/<pid>/` symlink resolves to. Session-
+      level membership is already enforced by `_check_project_path_access`
+      before this function is called, so allowing this root here is safe.
+
+    The previous strict `startswith(ws)` check rejected ALL symlink-followed
+    paths and effectively broke shared project-workspace access through tools.
+    """
+    s = str(resolved)
+    if s.startswith(str(ws_resolved)):
+        return True
+    try:
+        project_ws_root = PROJECT_WORKSPACE_ROOT.resolve()
+    except OSError:
+        return False
+    if s.startswith(str(project_ws_root)):
+        return True
+    return False
 
 # ─── Tool Config Cache ──────────────────────────────────────────
 # Cache tool configurations to avoid frequent DB queries
@@ -202,7 +229,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read file contents from the workspace. Can read soul.md for personality, memory/memory.md for memory, focus.md for current focus items, skills/ for skill files, and enterprise_info/ for shared company info. Use offset and limit for reading large files in chunks.",
+            "description": "Read file contents from the workspace. Handles text (md/txt/json/csv/code/etc.), and IMAGES (png/jpg/jpeg/gif/webp/bmp under 5MB) — for images, the file is fed directly to the model's vision channel so you can see the actual image content (no PIL/OCR analysis needed). For office docs (PDF/Word/Excel/PPT) use read_document instead. Use offset and limit to paginate large text files.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -265,24 +292,58 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "move_file",
-            "description": "Move or rename a file or folder within the workspace. Use this instead of execute_code for reorganizing workspace files, moving generated documents into subfolders, or renaming files. Cannot move protected files or shared enterprise_info/ files. If destination_path is an existing folder or ends with '/', the original filename is preserved inside that folder. By default this will not overwrite an existing destination.",
+            "description": "Move or relocate a file/directory within the workspace. Use to reorganize project files (e.g. group all post drafts under posts/). For renaming in place, prefer rename_file. dst_path is the FULL new path, NOT a destination directory — to move 'foo.md' into 'posts/', pass dst_path='posts/foo.md'. Cross-domain moves (between project workspace and your private workspace) are rejected — copy via read_file+write_file instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_path": {
+                    "src_path": {
                         "type": "string",
-                        "description": "Current file or folder path, e.g.: workspace/report.md or workspace/presentations/deck.pptx",
+                        "description": "Current path of the file/directory, e.g. 'workspace/draft.md' or '.project/<pid>/foo.md'",
                     },
-                    "destination_path": {
+                    "dst_path": {
                         "type": "string",
-                        "description": "Destination file/folder path, e.g.: workspace/archive/report.md or workspace/presentations/PPT/",
-                    },
-                    "overwrite": {
-                        "type": "boolean",
-                        "description": "Replace the destination if it already exists. Default false.",
+                        "description": "New full path. Parent directories are auto-created. Refuses overwrites — pick a different name or delete the destination first.",
                     },
                 },
-                "required": ["source_path", "destination_path"],
+                "required": ["src_path", "dst_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_file",
+            "description": "Rename a file or directory in place (same parent directory, new name). For moving across directories, use move_file. If new_name omits the file extension and the original has one, the original extension is preserved automatically (e.g. renaming 'report.pdf' to 'final' yields 'final.pdf').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path of the file/directory to rename",
+                    },
+                    "new_name": {
+                        "type": "string",
+                        "description": "New filename (just the name, no slashes). If you omit the extension, the original file's extension is kept automatically.",
+                    },
+                },
+                "required": ["path", "new_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_recent_changes",
+            "description": "List files in the current project workspace modified in the last N hours. Available only inside a project chat. Useful when re-entering a project to catch up on what teammates and other agents changed since you were last active.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hours": {
+                        "type": "integer",
+                        "description": "Lookback window in hours. Default 24, max 720 (30 days).",
+                        "default": 24,
+                    },
+                },
             },
         },
     },
@@ -394,7 +455,7 @@ AGENT_TOOLS = [
                     },
                     "focus_ref": {
                         "type": "string",
-                        "description": "Optional: identifier of the focus item in focus.md that this trigger relates to (use the checklist identifier, e.g. 'daily_news_check')",
+                        "description": "Optional. Two distinct usages: (1) Personal focus item identifier from focus.md (e.g. 'daily_news_check'). (2) **Project binding** — set focus_ref=\"project:<project_id>\" exactly to make this trigger appear in that project's Scheduled Tasks tab and fire WITHIN the project's chat context (BRIEF, files, tasks all available on wake). Without the 'project:' prefix the trigger only shows in your AgentDetail → Aware tab and fires in your default context. Inside a project chat, prefer the project: form when the trigger relates to project work.",
                     },
                 },
                 "required": ["name", "type", "config", "reason"],
@@ -1697,6 +1758,103 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ─── Project Task tools (only meaningful in a project chat) ───────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_project_tasks",
+            "description": (
+                "List tasks (deliverables) in the current project. "
+                "Only meaningful inside a project chat — returns an error otherwise. "
+                "Use this to see what's still todo, in progress, blocked, or completed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["todo", "doing", "done", "blocked", "all"],
+                        "description": "Filter by status. Default 'all'.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_project_task",
+            "description": (
+                "Create a new task (deliverable) in the current project. "
+                "Only works inside a project chat. Use this when the user asks you to add work items, "
+                "or when you've identified a sub-deliverable that should be tracked."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short title (e.g. '10 Instagram posters')."},
+                    "description": {"type": "string", "description": "Markdown description (optional)."},
+                    "status": {
+                        "type": "string",
+                        "enum": ["todo", "doing", "done", "blocked"],
+                        "description": "Initial status. Default 'todo'.",
+                    },
+                    "due_date": {"type": "string", "description": "ISO 8601 date or datetime (optional)."},
+                    "assign_to_self": {
+                        "type": "boolean",
+                        "description": "If true, assign this task to the current agent.",
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_project_task",
+            "description": (
+                "Update an existing project task. Use this to mark tasks done, change status, "
+                "edit description, or reassign. Only works inside a project chat."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The task UUID."},
+                    "status": {
+                        "type": "string",
+                        "enum": ["todo", "doing", "done", "blocked"],
+                    },
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "assign_to_self": {
+                        "type": "boolean",
+                        "description": "If true, claim this task for the current agent.",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "link_file_to_project_task",
+            "description": (
+                "Link a file in the project workspace to a task — typically the deliverable "
+                "you just produced. Looks up the file by filename in the current project. "
+                "Only works inside a project chat."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The task UUID."},
+                    "filename": {"type": "string", "description": "File name as seen in the project workspace, e.g. 'post-draft-1.md'."},
+                },
+                "required": ["task_id", "filename"],
+            },
+        },
+    },
 ]
 
 
@@ -2148,12 +2306,19 @@ _TOOL_AUTONOMY_MAP = {
     "write_file": "write_workspace_files",
     "move_file": "write_workspace_files",
     "delete_file": "delete_files",
+    "move_file": "write_workspace_files",
+    "rename_file": "write_workspace_files",
+    # list_recent_changes is read-only — not gated.
     "send_feishu_message": "send_feishu_message",
     "send_message_to_agent": "send_message_to_agent",  # A2A messaging — distinct from feishu
     "send_file_to_agent": "send_file_to_agent",          # A2A file transfer
     "web_search": "web_search",
     "execute_code": "execute_code",
     "execute_code_e2b": "execute_code",
+    # Project task mutations (Phase 3). list_project_tasks is read-only and not gated.
+    "create_project_task": "manage_project_tasks",
+    "update_project_task": "manage_project_tasks",
+    "link_file_to_project_task": "manage_project_tasks",
 }
 
 
@@ -2329,6 +2494,32 @@ async def execute_tool(
                 "browser/computer operations."
             )
 
+    # ── .project/ path access guard ────────────────────────────────────
+    # Agents accumulate per-project data under their own workspace's .project/
+    # path (project chat creates it, agent writes there). In a NON-project chat
+    # the agent must not browse / read those files — they belong to other
+    # collaboration contexts. In a project chat, it must only access its
+    # current project's pid, not any other.
+    # Map: tool name → tuple of argument keys that carry filesystem paths.
+    _PATH_AWARE_TOOLS_ARGS: dict[str, tuple[str, ...]] = {
+        "list_files": ("path",),
+        "read_file": ("path",),
+        "read_document": ("path",),
+        "write_file": ("path",),
+        "delete_file": ("path",),
+        "edit_file": ("path",),
+        "search_files": ("path",),
+        "move_file": ("src_path", "dst_path"),
+        "rename_file": ("path",),
+    }
+    _path_arg_keys = _PATH_AWARE_TOOLS_ARGS.get(tool_name)
+    if _path_arg_keys:
+        for _key in _path_arg_keys:
+            _err = await _check_project_path_access(arguments.get(_key, ""), session_id)
+            if _err:
+                return _err
+
+
     try:
         if tool_name == "list_files":
             result = _list_files(ws, arguments.get("path", ""), tenant_id=_agent_tenant_id)
@@ -2420,6 +2611,12 @@ async def execute_tool(
                     )
                     await _wdb.commit()
                 result = f"✅ Deleted {delete_result.path}" if delete_result.ok else f"❌ {delete_result.message}"
+        elif tool_name == "move_file":
+            result = await _move_file_impl(agent_id, session_id, arguments)
+        elif tool_name == "rename_file":
+            result = await _rename_file_impl(agent_id, session_id, arguments)
+        elif tool_name == "list_recent_changes":
+            result = await _list_recent_changes_impl(session_id, arguments)
         # --- Enhanced file management tools ---
         elif tool_name == "convert_csv_to_xlsx":
             result = await _convert_csv_to_xlsx(agent_id, ws, arguments)
@@ -2518,7 +2715,7 @@ async def execute_tool(
         elif tool_name == "cancel_trigger":
             result = await _handle_cancel_trigger(agent_id, arguments)
         elif tool_name == "list_triggers":
-            result = await _handle_list_triggers(agent_id)
+            result = await _handle_list_triggers(agent_id, session_id)
         elif tool_name == "send_feishu_message":
             result = await _send_feishu_message(agent_id, arguments)
         elif tool_name == "send_platform_message":
@@ -2723,6 +2920,15 @@ async def execute_tool(
             result = await _generate_monthly_okr_report(agent_id)
         elif tool_name == "upsert_member_daily_report":
             result = await _upsert_member_daily_report(agent_id, arguments)
+        # ── Project Tasks (Phase 3) ──
+        elif tool_name == "list_project_tasks":
+            result = await _list_project_tasks(agent_id, session_id, arguments)
+        elif tool_name == "create_project_task":
+            result = await _create_project_task(agent_id, user_id, session_id, arguments)
+        elif tool_name == "update_project_task":
+            result = await _update_project_task(agent_id, session_id, arguments)
+        elif tool_name == "link_file_to_project_task":
+            result = await _link_file_to_project_task(agent_id, session_id, arguments)
         else:
 
             # Try MCP tool execution
@@ -3948,7 +4154,7 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     else:
         target = (ws / rel_path) if rel_path else ws
         target = target.resolve()
-        if not str(target).startswith(str(ws.resolve())):
+        if not _path_within_allowed_roots(target, ws.resolve()):
             return "Access denied for this path"
 
     if not target.exists():
@@ -4008,7 +4214,45 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
         return str(exc)
 
     if not file_path.exists():
-        return f"File not found: {rel_path}"
+        # LLM-friendly fallback: when the LLM rewrites a path's whitespace
+        # (a common Claude habit on mixed Chinese/English filenames — "Claude锐评"
+        # gets rendered as "Claude 锐评"), look for a sibling whose name matches
+        # ignoring whitespace differences. Same dir only, exact size+content semantics.
+        import re
+        parent = file_path.parent
+        if parent.exists() and parent.is_dir():
+            target_norm = re.sub(r"\s+", "", file_path.name)
+            for sibling in parent.iterdir():
+                if not sibling.is_file():
+                    continue
+                if re.sub(r"\s+", "", sibling.name) == target_norm:
+                    file_path = sibling
+                    break
+        if not file_path.exists():
+            return f"File not found: {rel_path}"
+
+    # Image vision injection — piggy-back on the existing AgentBay screenshot
+    # pipeline (vision_inject.py). Cap at ~5MB to keep prompts sane; oversize
+    # images fall through to the normal binary placeholder.
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    _MAX_IMAGE_BYTES = 5 * 1024 * 1024
+    if file_path.suffix.lower() in _IMAGE_EXTS:
+        try:
+            size = file_path.stat().st_size
+            if size > _MAX_IMAGE_BYTES:
+                return (
+                    f"📷 {rel_path} ({size // 1024} KB image — too large to attach for vision; "
+                    f"download via the file URL if you need full resolution)"
+                )
+            raw = file_path.read_bytes()
+            from app.services.vision_inject import store_temp_screenshot
+            img_id = store_temp_screenshot(raw)
+            return (
+                f"📷 Image: {rel_path} ({size // 1024} KB, {file_path.suffix.lower()})\n"
+                f"[ImageID: {img_id}]"
+            )
+        except Exception as e:
+            return f"⚠️ Could not load image {rel_path} for vision: {e}"
 
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -4650,7 +4894,7 @@ def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = N
             return "Access denied for this path"
     else:
         file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
+        if not _path_within_allowed_roots(file_path, ws.resolve()):
             return "Access denied for this path"
 
     try:
@@ -4669,7 +4913,7 @@ def _delete_file(ws: Path, rel_path: str) -> str:
         return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
 
     file_path = (ws / rel_path).resolve()
-    if not str(file_path).startswith(str(ws.resolve())):
+    if not _path_within_allowed_roots(file_path, ws.resolve()):
         return "Access denied for this path"
     if not file_path.exists():
         return f"File not found: {rel_path}"
@@ -4715,7 +4959,7 @@ def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replac
             return "Access denied for this path"
     else:
         file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
+        if not _path_within_allowed_roots(file_path, ws.resolve()):
             return "Access denied for this path"
 
     if not file_path.exists():
@@ -4775,7 +5019,7 @@ def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "
         ws_for_relative = enterprise_root
     else:
         search_path = (ws / path).resolve() if path and path != "." else ws
-        if not str(search_path).startswith(str(ws.resolve())):
+        if not _path_within_allowed_roots(search_path, ws.resolve()):
             return "Access denied for this path"
         ws_for_relative = ws
 
@@ -4857,7 +5101,7 @@ def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None =
         ws_for_relative = enterprise_root
     else:
         search_path = (ws / path).resolve() if path and path != "." else ws
-        if not str(search_path).startswith(str(ws.resolve())):
+        if not _path_within_allowed_roots(search_path, ws.resolve()):
             return "Access denied for this path"
         ws_for_relative = ws
 
@@ -7467,11 +7711,50 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         return f"❌ Failed to cancel trigger: {e}"
 
 
-async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
-    """List all active triggers for the agent."""
+async def _handle_list_triggers(agent_id: uuid.UUID, session_id: str = "") -> str:
+    """List all active triggers for the agent.
+
+    When called from a project chat session, output is **split into two groups**
+    so the LLM (and the user reading its reply) cannot confuse a personal /
+    cross-project trigger with one belonging to the current project:
+
+      1. "Triggers in this project" — only triggers whose focus_ref matches
+         the current session's project_id.
+      2. "Other triggers" — personal focus items, cross-project triggers,
+         or triggers with no focus_ref. Listed for completeness so the agent
+         still has full visibility, but visually separated.
+
+    When called outside a project session (project_id is None), output is
+    a single flat table — same shape as before this change.
+
+    The Focus column resolves `project:<uuid>` markers to the project's
+    display name to make ownership obvious.
+    """
     from app.models.trigger import AgentTrigger
+    from app.models.project import Project
+    from app.models.chat_session import ChatSession
 
     try:
+        # Resolve current session's project_id (if any). Outside a project
+        # session this stays None and we fall back to the flat-table output.
+        current_pid: uuid.UUID | None = None
+        current_pname: str | None = None
+        if session_id:
+            try:
+                async with async_session() as db:
+                    sess = (await db.execute(
+                        select(ChatSession).where(ChatSession.id == uuid.UUID(session_id))
+                    )).scalar_one_or_none()
+                    if sess and sess.project_id:
+                        current_pid = sess.project_id
+                        proj = (await db.execute(
+                            select(Project).where(Project.id == sess.project_id)
+                        )).scalar_one_or_none()
+                        if proj:
+                            current_pname = proj.name
+            except (ValueError, Exception):
+                pass
+
         async with async_session() as db:
             result = await db.execute(
                 select(AgentTrigger).where(
@@ -7480,16 +7763,75 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
             )
             triggers = result.scalars().all()
 
+            project_pids: set[uuid.UUID] = set()
+            for t in triggers:
+                ref = (t.focus_ref or "")
+                if ref.startswith("project:"):
+                    try:
+                        project_pids.add(uuid.UUID(ref[len("project:"):]))
+                    except ValueError:
+                        pass
+            project_names: dict[uuid.UUID, str] = {}
+            if project_pids:
+                proj_rows = (await db.execute(
+                    select(Project.id, Project.name).where(Project.id.in_(project_pids))
+                )).all()
+                project_names = {pid: name for pid, name in proj_rows}
+
         if not triggers:
             return "No triggers found. Use set_trigger to create one."
 
-        lines = ["| Name | Type | Config | Reason | Status | Fires |", "|------|------|--------|--------|--------|-------|"]
-        for t in triggers:
+        def _focus_display(ref: str) -> str:
+            ref = (ref or "").strip()
+            if not ref:
+                return "—"
+            if ref.startswith("project:"):
+                try:
+                    pid = uuid.UUID(ref[len("project:"):])
+                    name = project_names.get(pid)
+                    return f"📁 {name}" if name else f"📁 (deleted project)"
+                except ValueError:
+                    return ref
+            return ref
+
+        def _row(t: AgentTrigger) -> str:
             status = "✅ active" if t.is_enabled else "⏸ disabled"
             config_str = str(t.config)[:50]
             reason_str = t.reason[:40] if t.reason else ""
-            lines.append(f"| {t.name} | {t.type} | {config_str} | {reason_str} | {status} | {t.fire_count} |")
+            return (
+                f"| {t.name} | {t.type} | {_focus_display(t.focus_ref or '')} "
+                f"| {config_str} | {reason_str} | {status} | {t.fire_count} |"
+            )
 
+        header = (
+            "| Name | Type | Focus | Config | Reason | Status | Fires |\n"
+            "|------|------|-------|--------|--------|--------|-------|"
+        )
+
+        # In a project session: split into "this project" and "other"
+        if current_pid is not None:
+            current_ref = f"project:{current_pid}"
+            in_project = [t for t in triggers if (t.focus_ref or "") == current_ref]
+            other = [t for t in triggers if (t.focus_ref or "") != current_ref]
+            sections: list[str] = []
+            sections.append(f"### Triggers in project '{current_pname or current_pid}' ({len(in_project)})")
+            if in_project:
+                sections.append(header)
+                sections.extend(_row(t) for t in in_project)
+            else:
+                sections.append("_(none)_  Use `set_trigger` with `focus_ref=\"project:" + str(current_pid) + "\"` to add one.")
+            sections.append("")
+            sections.append(f"### Other triggers ({len(other)})  — personal focus items, cross-project, or unbound")
+            if other:
+                sections.append(header)
+                sections.extend(_row(t) for t in other)
+            else:
+                sections.append("_(none)_")
+            return "\n".join(sections)
+
+        # Outside any project: flat table (legacy shape)
+        lines = [header]
+        lines.extend(_row(t) for t in triggers)
         return "\n".join(lines)
 
     except Exception as e:
@@ -7658,7 +8000,7 @@ async def _generate_image(agent_id: uuid.UUID, ws: Path, arguments: dict, provid
 
     # Ensure the target directory exists and path is within workspace
     full_save_path = (ws / save_path).resolve()
-    if not str(full_save_path).startswith(str(ws.resolve())):
+    if not _path_within_allowed_roots(full_save_path, ws.resolve()):
         return "❌ Access denied: save path is outside the workspace"
     full_save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -9984,7 +10326,7 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
 
     # Resolve and check file exists
     full_path = (ws / path).resolve()
-    if not str(full_path).startswith(str(ws.resolve())):
+    if not _path_within_allowed_roots(full_path, ws.resolve()):
         return "Path traversal not allowed"
     if not full_path.exists() or not full_path.is_file():
         return f"File not found: {path}"
@@ -12863,3 +13205,657 @@ async def _upsert_member_daily_report(agent_id: uuid.UUID | None, arguments: dic
     except Exception as e:
         logger.exception("[OKR] upsert_member_daily_report failed")
         return f"Failed to upsert member daily report: {str(e)[:200]}"
+# ─── Project Tasks (Phase 3) ─────────────────────────────────────────────
+#
+# Four tools that read/mutate per-project deliverables. Always exposed in
+# AGENT_TOOLS but they refuse to run outside a project chat by checking
+# session.project_id at runtime — pattern matches send_message_to_agent which
+# does its own relationship check inside the handler.
+
+_PROJECT_TASK_NOT_IN_PROJECT = (
+    "❌ This tool only works inside a project chat. The current session is not "
+    "bound to a project."
+)
+_PROJECT_TASK_NO_SESSION = (
+    "❌ Cannot resolve the current session. This tool only works inside a project chat."
+)
+
+
+async def _check_project_path_access(rel_path: str, session_id: str) -> str | None:
+    """Return an error string if the path crosses into a project workspace
+    (`.project/<pid>/...`) the current chat session is not entitled to read.
+
+    Two protections:
+    - In a NON-project chat (session.project_id is None), the agent has no
+      legitimate reason to browse `.project/...`. Block it. (Otherwise other
+      users of the same agent leak across sessions.)
+    - In a project chat, allow only paths that match the current session's
+      project_id. Block cross-project access.
+    """
+    if not rel_path:
+        return None
+    norm = str(rel_path).replace("\\", "/").strip()
+    if not norm:
+        return None
+    while norm.startswith("./"):
+        norm = norm[2:]
+    norm = norm.lstrip("/")
+
+    # Match `.project/...` at any nesting depth (e.g. `workspace/.project/{pid}/foo`
+    # in case ws is the agent root and the symlink lives inside `workspace/`).
+    parts_full = [p for p in norm.split("/") if p]
+    try:
+        idx = parts_full.index(".project")
+    except ValueError:
+        return None
+
+    target_pid: str | None = None
+    if idx + 1 < len(parts_full):
+        target_pid = parts_full[idx + 1]
+    parts = parts_full[idx:]  # keep for parity with old debug
+
+    if not session_id:
+        return "❌ Access denied: this path belongs to a project workspace; only project chats may access it."
+
+    try:
+        from app.models.chat_session import ChatSession
+        async with async_session() as db:
+            sess = (await db.execute(
+                select(ChatSession).where(ChatSession.id == uuid.UUID(session_id))
+            )).scalar_one_or_none()
+            if not sess or sess.project_id is None:
+                return "❌ Access denied: `.project/` paths only work inside a project chat."
+            if target_pid is not None and target_pid != str(sess.project_id):
+                return "❌ Access denied: that path belongs to another project. You can only see the workspace for the project this chat is bound to."
+    except Exception:
+        return "❌ Access denied: could not validate project access."
+    return None
+
+
+def _extract_project_from_resolved(resolved: Path) -> tuple[uuid.UUID | None, str]:
+    """If `resolved` is under `PROJECT_WORKSPACE_ROOT/<pid>/`, return (pid, project-relative
+    path string). Otherwise return (None, "").
+
+    Used by file-mutation tools to detect when a path crosses into the shared
+    project workspace via the agent's `.project/<pid>/` symlink — those need
+    DB-row sync (rename/move ProjectFile records) so task↔file links survive.
+    """
+    try:
+        prw = PROJECT_WORKSPACE_ROOT.resolve()
+    except OSError:
+        return (None, "")
+    try:
+        rel = resolved.relative_to(prw)
+    except ValueError:
+        return (None, "")
+    parts = rel.parts
+    if not parts:
+        return (None, "")
+    try:
+        pid = uuid.UUID(parts[0])
+    except ValueError:
+        return (None, "")
+    sub = "/".join(parts[1:]) if len(parts) > 1 else ""
+    return (pid, sub)
+
+
+async def _move_file_impl(
+    agent_id: uuid.UUID, session_id: str, arguments: dict,
+) -> str:
+    """Tool: move_file. Moves a file or directory.
+
+    For project-workspace paths (`.project/<pid>/...`) also keeps the
+    `project_files` DB rows in sync so task links and "uploaded by" metadata
+    follow the file. Refuses cross-domain moves (project ↔ agent-private)
+    because they'd silently break ownership and link semantics.
+    """
+    src = (arguments.get("src_path") or "").strip()
+    dst = (arguments.get("dst_path") or "").strip()
+    if not src or not dst:
+        return "❌ Both src_path and dst_path are required."
+    if src == dst:
+        return f"✅ No-op (src == dst): {src}"
+
+    ws = WORKSPACE_ROOT / str(agent_id)
+    src_full = (ws / src).resolve(strict=False)
+    dst_full = (ws / dst).resolve(strict=False)
+
+    if not _path_within_allowed_roots(src_full, ws.resolve()):
+        return f"❌ Access denied: {src}"
+    if not _path_within_allowed_roots(dst_full, ws.resolve()):
+        return f"❌ Access denied: {dst}"
+
+    if not src_full.exists():
+        return f"❌ Source not found: {src}"
+    if dst_full.exists():
+        return f"❌ Destination already exists: {dst}"
+
+    src_pid, src_rel = _extract_project_from_resolved(src_full)
+    dst_pid, dst_rel = _extract_project_from_resolved(dst_full)
+
+    if (src_pid is None) != (dst_pid is None):
+        return ("❌ Cannot move between project workspace and your private workspace. "
+                "Use read_file + write_file to copy across domains.")
+    if src_pid and dst_pid and src_pid != dst_pid:
+        return "❌ Cannot move between different projects."
+
+    if src_pid and (src_rel == "BRIEF.md" or dst_rel == "BRIEF.md"):
+        return "❌ BRIEF.md cannot be moved (use the brief endpoints to edit)."
+
+    if src_full.is_dir():
+        try:
+            if dst_full.is_relative_to(src_full):
+                return "❌ Cannot move a directory into its own descendant."
+        except (AttributeError, ValueError, OSError):
+            pass
+
+    try:
+        import shutil
+        import os as _os
+        dst_full.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src_full), str(dst_full))
+        # Touch dst so the rename/relocation registers as recent activity in
+        # list_recent_changes and the Files tab "modified" pill. shutil.move
+        # uses os.rename on same-FS which preserves mtime by default.
+        try:
+            _os.utime(dst_full, None)
+        except OSError:
+            pass
+    except Exception as e:
+        return f"❌ Move failed: {e}"
+
+    if src_pid:
+        try:
+            from app.models.project import ProjectFile as _PF
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(_PF).where(
+                        _PF.project_id == src_pid,
+                        _PF.physical_path == src_rel,
+                    )
+                )).scalar_one_or_none()
+                if row is not None:
+                    row.physical_path = dst_rel
+                    row.filename = dst_rel.split("/")[-1]
+                escaped = (
+                    src_rel.replace("\\", "\\\\")
+                           .replace("%", "\\%")
+                           .replace("_", "\\_")
+                )
+                rows_under = (await db.execute(
+                    select(_PF).where(
+                        _PF.project_id == src_pid,
+                        _PF.physical_path.like(escaped + "/%", escape="\\"),
+                    )
+                )).scalars().all()
+                for r in rows_under:
+                    rest = r.physical_path[len(src_rel) + 1:]
+                    r.physical_path = f"{dst_rel}/{rest}"
+                if row is not None or rows_under:
+                    await db.commit()
+        except Exception as e:
+            # FS move succeeded; DB sync is best-effort. The next list_files
+            # reconciler will eventually create rows for the new path.
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "[move_file] DB sync failed after FS move %s -> %s: %s",
+                src_rel, dst_rel, e,
+            )
+
+    return f"✅ Moved {src} → {dst}"
+
+
+async def _rename_file_impl(
+    agent_id: uuid.UUID, session_id: str, arguments: dict,
+) -> str:
+    """Tool: rename_file. Thin wrapper around move_file for in-place renames.
+
+    Extension preservation: if new_name has no extension and the original file does,
+    auto-append the original extension. This matches Mac Finder UX where renaming
+    a `report.pdf` to `final` produces `final.pdf`, not an extensionless file.
+    LLMs and humans frequently strip the extension by accident.
+    """
+    path = (arguments.get("path") or "").strip()
+    new_name = (arguments.get("new_name") or "").strip()
+    if not path or not new_name:
+        return "❌ Both path and new_name are required."
+    if "/" in new_name or "\\" in new_name or new_name in (".", ".."):
+        return f"❌ new_name must be a plain filename without slashes: {new_name!r}"
+    parts = path.rstrip("/").split("/")
+    if not parts:
+        return f"❌ Invalid path: {path}"
+
+    # Auto-preserve original extension when new_name omits it.
+    original_name = parts[-1]
+    if "." in original_name and not original_name.startswith("."):
+        original_ext = original_name.rsplit(".", 1)[1]
+        # new_name has no extension if there's no internal dot, or starts with `.`
+        new_has_ext = "." in new_name and not new_name.startswith(".")
+        if not new_has_ext and original_ext:
+            new_name = f"{new_name}.{original_ext}"
+
+    parts[-1] = new_name
+    new_path = "/".join(parts)
+    return await _move_file_impl(
+        agent_id, session_id, {"src_path": path, "dst_path": new_path},
+    )
+
+
+async def _list_recent_changes_impl(session_id: str, arguments: dict) -> str:
+    """Tool: list_recent_changes. Walks the current project's workspace and
+    reports files modified within the last N hours, newest first.
+
+    Uses filesystem mtime — no extra audit table needed. Picks up agent
+    writes, user uploads, and rename targets (rename bumps mtime of the new
+    path's parent dir, but the file's mtime is preserved by shutil.move).
+    """
+    try:
+        project_id, project_name = await _resolve_project_for_session(session_id)
+    except ValueError:
+        return "❌ list_recent_changes requires a chat session id."
+    if project_id is None:
+        return "❌ list_recent_changes is only available in project chats."
+
+    try:
+        hours = int(arguments.get("hours", 24))
+    except (TypeError, ValueError):
+        return "❌ hours must be an integer."
+    if hours < 1 or hours > 720:
+        return "❌ hours must be between 1 and 720 (30 days)."
+
+    import time
+    from datetime import datetime, timezone as _tz
+    cutoff_ts = time.time() - hours * 3600
+
+    root = PROJECT_WORKSPACE_ROOT / str(project_id)
+    if not root.exists():
+        return f"📂 Project '{project_name}' has no workspace yet."
+
+    changes: list[tuple[str, float, int]] = []
+    for entry in root.rglob("*"):
+        if entry.is_dir():
+            continue
+        try:
+            parts = entry.relative_to(root).parts
+        except ValueError:
+            continue
+        if any(p.startswith(".") for p in parts):
+            continue
+        try:
+            stat = entry.stat()
+        except OSError:
+            continue
+        if stat.st_mtime < cutoff_ts:
+            continue
+        rel = "/".join(parts)
+        changes.append((rel, stat.st_mtime, stat.st_size))
+
+    if not changes:
+        return f"📂 No file changes in project '{project_name}' in the last {hours}h."
+
+    changes.sort(key=lambda c: c[1], reverse=True)
+    lines = [f"📂 Recent changes in '{project_name}' (last {hours}h, {len(changes)} files):"]
+    for rel, mt, size in changes[:50]:
+        kb = max(1, size // 1024)
+        ts = datetime.fromtimestamp(mt, tz=_tz.utc).strftime("%Y-%m-%d %H:%M UTC")
+        lines.append(f"- `{rel}` ({kb} KB, {ts})")
+    if len(changes) > 50:
+        lines.append(f"… +{len(changes) - 50} more")
+    return "\n".join(lines)
+
+
+async def _resolve_project_for_session(session_id: str) -> tuple[uuid.UUID | None, str | None]:
+    """Return (project_id, project_name) for a session, or (None, None) if not in a project.
+
+    Returns the special tuple (None, None) when the session has no project_id;
+    raises ValueError if the session_id itself is missing/invalid.
+    """
+    if not session_id:
+        raise ValueError("missing session_id")
+    from app.models.chat_session import ChatSession
+    from app.models.project import Project as _Project
+    async with async_session() as db:
+        sess = (await db.execute(
+            select(ChatSession).where(ChatSession.id == uuid.UUID(session_id))
+        )).scalar_one_or_none()
+        if not sess or sess.project_id is None:
+            return (None, None)
+        proj = (await db.execute(
+            select(_Project).where(_Project.id == sess.project_id)
+        )).scalar_one_or_none()
+        return (sess.project_id, proj.name if proj else None)
+
+
+def _format_task_line(t: "ProjectTaskRow") -> str:
+    """Compact one-line task summary for tool output."""
+    bits = [f"[{t.status}]", t.title]
+    if t.assigned_agent_name:
+        bits.append(f"@{t.assigned_agent_name}")
+    if t.due_date:
+        bits.append(f"due {t.due_date.strftime('%Y-%m-%d')}")
+    return f"- {' '.join(bits)}"
+
+
+class ProjectTaskRow:
+    """Lightweight container for formatting (avoids pulling Pydantic schema deps)."""
+    __slots__ = ("id", "title", "status", "assigned_agent_name", "due_date")
+    def __init__(self, id, title, status, assigned_agent_name, due_date):
+        self.id = id
+        self.title = title
+        self.status = status
+        self.assigned_agent_name = assigned_agent_name
+        self.due_date = due_date
+
+
+async def _list_project_tasks(agent_id: uuid.UUID, session_id: str, arguments: dict) -> str:
+    """Tool: list_project_tasks.
+
+    Each line includes any project files linked to the task — without this,
+    the agent has the task id but no way to discover which files belong to
+    it (the UI shows linked files via TaskDetailModal but agents had no
+    equivalent). Up to 3 filenames are inlined; the count is always shown.
+    """
+    try:
+        project_id, project_name = await _resolve_project_for_session(session_id)
+    except ValueError:
+        return _PROJECT_TASK_NO_SESSION
+    if project_id is None:
+        return _PROJECT_TASK_NOT_IN_PROJECT
+
+    status_filter = (arguments.get("status") or "all").lower()
+    valid = {"todo", "doing", "done", "blocked", "all"}
+    if status_filter not in valid:
+        return f"❌ Invalid status '{status_filter}'. Valid: {sorted(valid)}"
+
+    from app.models.project_task import ProjectTask as _Task, ProjectTaskFile as _TF
+    from app.models.project import ProjectFile as _PF
+    from app.models.agent import Agent as _Agent
+    async with async_session() as db:
+        conds = [_Task.project_id == project_id]
+        if status_filter != "all":
+            conds.append(_Task.status == status_filter)
+        rows = (await db.execute(
+            select(_Task, _Agent.name)
+            .outerjoin(_Agent, _Agent.id == _Task.assigned_agent_id)
+            .where(and_(*conds))
+            .order_by(
+                (_Task.status == "done").asc(),
+                _Task.created_at.desc(),
+            )
+        )).all()
+
+        # Batch-fetch linked files for all tasks in this listing.
+        task_ids = [task.id for task, _ in rows]
+        files_by_task: dict[uuid.UUID, list[str]] = {}
+        if task_ids:
+            link_rows = (await db.execute(
+                select(_TF.project_task_id, _PF.filename, _PF.physical_path)
+                .join(_PF, _PF.id == _TF.project_file_id)
+                .where(_TF.project_task_id.in_(task_ids))
+                .order_by(_PF.filename)
+            )).all()
+            for tid, fname, ppath in link_rows:
+                # Prefer relative path when nested, plain filename when at root —
+                # agents can paste the path string directly into read_file.
+                display = ppath if (ppath and "/" in ppath) else fname
+                files_by_task.setdefault(tid, []).append(display)
+
+    if not rows:
+        scope = "" if status_filter == "all" else f" with status '{status_filter}'"
+        return f"📋 Project '{project_name}' has no tasks{scope} yet."
+
+    lines = [f"📋 Project '{project_name}' tasks ({len(rows)}):"]
+    for task, agent_name in rows:
+        row = ProjectTaskRow(task.id, task.title, task.status, agent_name, task.due_date)
+        files = files_by_task.get(task.id, [])
+        if files:
+            sample = ", ".join(f"`{n}`" for n in files[:3])
+            extra = f", +{len(files) - 3} more" if len(files) > 3 else ""
+            file_part = f", files: {len(files)} — {sample}{extra}"
+        else:
+            file_part = ", files: 0"
+        lines.append(f"{_format_task_line(row)}  (id: {task.id}{file_part})")
+    return "\n".join(lines)
+
+
+async def _create_project_task(
+    agent_id: uuid.UUID, user_id: uuid.UUID, session_id: str, arguments: dict,
+) -> str:
+    """Tool: create_project_task."""
+    try:
+        project_id, project_name = await _resolve_project_for_session(session_id)
+    except ValueError:
+        return _PROJECT_TASK_NO_SESSION
+    if project_id is None:
+        return _PROJECT_TASK_NOT_IN_PROJECT
+
+    title = (arguments.get("title") or "").strip()
+    if not title:
+        return "❌ Missing required argument 'title'."
+    description = arguments.get("description") or ""
+    status_v = (arguments.get("status") or "todo").lower()
+    if status_v not in {"todo", "doing", "done", "blocked"}:
+        return f"❌ Invalid status '{status_v}'."
+    assign_to_self = bool(arguments.get("assign_to_self", False))
+
+    due_date = None
+    raw_due = arguments.get("due_date")
+    if raw_due:
+        try:
+            from datetime import datetime as _dt
+            due_date = _dt.fromisoformat(raw_due.replace("Z", "+00:00"))
+        except Exception:
+            return f"❌ Invalid due_date '{raw_due}' — expected ISO 8601 (e.g. 2026-05-15 or 2026-05-15T10:00:00Z)."
+
+    from app.models.project_task import ProjectTask as _Task, ProjectTaskCreatedByType as _Cb
+    from app.models.project import ProjectAgent as _PA
+    from datetime import datetime as _dt2, timezone as _tz2
+    async with async_session() as db:
+        # If assigning to self, verify this agent is in the project
+        assigned_agent = None
+        if assign_to_self:
+            mem = (await db.execute(
+                select(_PA).where(_PA.project_id == project_id, _PA.agent_id == agent_id)
+            )).scalar_one_or_none()
+            if not mem:
+                return "❌ Cannot assign to self: this agent is not a member of the current project."
+            assigned_agent = agent_id
+
+        task = _Task(
+            project_id=project_id,
+            title=title,
+            description=description,
+            status=status_v,
+            assigned_agent_id=assigned_agent,
+            due_date=due_date,
+            created_by=user_id,
+            created_by_type=_Cb.AGENT.value,
+            completed_at=_dt2.now(_tz2.utc) if status_v == "done" else None,
+        )
+        db.add(task)
+        await db.commit()
+        await db.refresh(task)
+        new_id = str(task.id)
+
+    return f"✅ Created task '{title}' (id: {new_id}, status: {status_v})."
+
+
+async def _update_project_task(agent_id: uuid.UUID, session_id: str, arguments: dict) -> str:
+    """Tool: update_project_task."""
+    try:
+        project_id, _ = await _resolve_project_for_session(session_id)
+    except ValueError:
+        return _PROJECT_TASK_NO_SESSION
+    if project_id is None:
+        return _PROJECT_TASK_NOT_IN_PROJECT
+
+    raw_id = arguments.get("task_id")
+    if not raw_id:
+        return "❌ Missing required argument 'task_id'."
+    try:
+        tid = uuid.UUID(raw_id)
+    except Exception:
+        return f"❌ Invalid task_id '{raw_id}' — must be a UUID."
+
+    from app.models.project_task import ProjectTask as _Task
+    from app.models.project import ProjectAgent as _PA
+    from datetime import datetime as _dt3, timezone as _tz3
+    async with async_session() as db:
+        task = (await db.execute(
+            select(_Task).where(_Task.id == tid, _Task.project_id == project_id)
+        )).scalar_one_or_none()
+        if not task:
+            return f"❌ Task {tid} not found in this project."
+
+        changed: list[str] = []
+        if "title" in arguments and arguments["title"]:
+            task.title = arguments["title"]
+            changed.append(f"title='{task.title}'")
+        if "description" in arguments and arguments["description"] is not None:
+            task.description = arguments["description"]
+            changed.append("description")
+        if "status" in arguments and arguments["status"]:
+            new_status = arguments["status"].lower()
+            if new_status not in {"todo", "doing", "done", "blocked"}:
+                return f"❌ Invalid status '{new_status}'."
+            was_done = task.status == "done"
+            is_done = new_status == "done"
+            task.status = new_status
+            if is_done and not was_done:
+                task.completed_at = _dt3.now(_tz3.utc)
+            elif was_done and not is_done:
+                task.completed_at = None
+            changed.append(f"status={new_status}")
+        if arguments.get("assign_to_self"):
+            mem = (await db.execute(
+                select(_PA).where(_PA.project_id == project_id, _PA.agent_id == agent_id)
+            )).scalar_one_or_none()
+            if not mem:
+                return "❌ Cannot assign to self: this agent is not a member of the current project."
+            task.assigned_agent_id = agent_id
+            task.assigned_user_id = None
+            changed.append("assigned to self")
+
+        if not changed:
+            return "⚠️ No fields changed (provide title / description / status / assign_to_self)."
+        await db.commit()
+    return f"✅ Updated task {tid}: {', '.join(changed)}."
+
+
+async def _link_file_to_project_task(
+    agent_id: uuid.UUID, session_id: str, arguments: dict,
+) -> str:
+    """Tool: link_file_to_project_task.
+
+    Robust filename matching:
+    1. Strip `.project/<pid>/` prefix and leading `./` — agents often paste their
+       working-directory-relative path.
+    2. Try matching by `physical_path` (project-relative path, "/"-separated).
+    3. Try matching by bare `filename` (display name).
+    4. If file exists on disk but no DB row yet (agent just wrote it via write_file —
+       reconciler hasn't run because that only fires on list_project_files), create
+       the row inline so the link can succeed.
+    """
+    try:
+        project_id, _ = await _resolve_project_for_session(session_id)
+    except ValueError:
+        return _PROJECT_TASK_NO_SESSION
+    if project_id is None:
+        return _PROJECT_TASK_NOT_IN_PROJECT
+
+    raw_id = arguments.get("task_id")
+    raw_filename = (arguments.get("filename") or "").strip()
+    if not raw_id or not raw_filename:
+        return "❌ Missing required arguments 'task_id' and/or 'filename'."
+    try:
+        tid = uuid.UUID(raw_id)
+    except Exception:
+        return f"❌ Invalid task_id '{raw_id}'."
+
+    # Normalise filename: strip leading ./, /, and `.project/<uuid>/` prefix.
+    import re as _re
+    filename = raw_filename.lstrip("/")
+    if filename.startswith("./"):
+        filename = filename[2:]
+    _m = _re.match(r"^\.project/[0-9a-f-]{36}/(.+)$", filename, _re.IGNORECASE)
+    if _m:
+        filename = _m.group(1)
+
+    from app.models.project_task import (
+        ProjectTask as _Task,
+        ProjectTaskFile as _Link,
+        ProjectTaskCreatedByType as _Cb,
+    )
+    from app.models.project import ProjectFile as _PF, ProjectFileCreatedByType as _PFCb
+    async with async_session() as db:
+        task = (await db.execute(
+            select(_Task).where(_Task.id == tid, _Task.project_id == project_id)
+        )).scalar_one_or_none()
+        if not task:
+            return f"❌ Task {tid} not found in this project."
+
+        # 2. Match by full project-relative path
+        file = (await db.execute(
+            select(_PF).where(
+                _PF.project_id == project_id,
+                _PF.physical_path == filename,
+            )
+        )).scalar_one_or_none()
+
+        # 3. Match by bare filename (legacy + when agent passed just a name)
+        if not file:
+            bare = filename.split("/")[-1]
+            file = (await db.execute(
+                select(_PF).where(
+                    _PF.project_id == project_id,
+                    _PF.filename == bare,
+                )
+            )).scalar_one_or_none()
+
+        # 4. On-demand reconciliation: file may exist on disk but not yet in DB
+        #    (agent just wrote it via write_file; the API list reconciler hasn't run).
+        if not file:
+            try:
+                from app.services.project_workspace import project_workspace_service
+                disk_path = project_workspace_service._safe_path(project_id, filename)
+                if disk_path.exists() and disk_path.is_file():
+                    stat = disk_path.stat()
+                    file = _PF(
+                        project_id=project_id,
+                        filename=disk_path.name,
+                        physical_path=filename,
+                        size_bytes=stat.st_size,
+                        mime_type="",
+                        created_by_type=_PFCb.AGENT.value,
+                        created_by=uuid.UUID(int=0),
+                    )
+                    db.add(file)
+                    await db.flush()
+            except (ValueError, OSError):
+                pass
+
+        if not file:
+            return (
+                f"❌ File '{raw_filename}' not found in this project. "
+                f"After path normalisation: '{filename}'. "
+                f"Use list_files to see what's available."
+            )
+
+        existing = (await db.execute(
+            select(_Link).where(
+                _Link.project_task_id == task.id,
+                _Link.project_file_id == file.id,
+            )
+        )).scalar_one_or_none()
+        if existing:
+            return f"⚠️ '{filename}' is already linked to task {tid}."
+
+        link = _Link(
+            project_task_id=task.id,
+            project_file_id=file.id,
+            linked_by_type=_Cb.AGENT.value,
+            linked_by=agent_id,
+        )
+        db.add(link)
+        await db.commit()
+    return f"✅ Linked file '{filename}' to task {tid}."

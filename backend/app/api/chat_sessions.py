@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import cast, select, func, String
+from sqlalchemy import cast, select, func, or_, and_, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
@@ -15,6 +15,7 @@ from app.database import get_db
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.agent import Agent
+from app.models.project import Project, ProjectAgent, ProjectChatVisibility
 from app.models.user import User
 
 router = APIRouter(prefix="/api/agents", tags=["chat-sessions"])
@@ -47,6 +48,12 @@ class SessionOut(BaseModel):
     # Group chat session fields
     is_group: bool = False
     group_name: Optional[str] = None
+    # Project binding — present only when this session was created inside a project
+    project_id: Optional[str] = None
+    project_name: Optional[str] = None
+    # Whether the requesting user owns this session. Sidebar / chat input use this
+    # to decide whether to enable composing. Defaults to True (caller's own list).
+    owned_by_me: bool = True
 
     class Config:
         from_attributes = True
@@ -54,6 +61,8 @@ class SessionOut(BaseModel):
 
 class CreateSessionIn(BaseModel):
     title: Optional[str] = None
+    # Project binding — if set, the session inherits the project's BRIEF and workspace
+    project_id: Optional[uuid.UUID] = None
 
 
 class PatchSessionIn(BaseModel):
@@ -86,7 +95,11 @@ async def list_sessions(
                 (ChatSession.agent_id == agent_id)
                 | ((ChatSession.peer_agent_id == agent_id) & (ChatSession.source_channel == "agent"))
             )
-            .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
+            # Order by activity time, treating freshly created (no messages yet)
+            # sessions as having "activity = created_at" so they appear at the top
+            # right after creation rather than getting pushed below older convos
+            # with stale messages.
+            .order_by(func.coalesce(ChatSession.last_message_at, ChatSession.created_at).desc())
         )
         sessions = result.scalars().all()
         out = []
@@ -152,10 +165,20 @@ async def list_sessions(
             for row in agent_r.all():
                 agent_names[str(row[0])] = row[1] or "Agent"
 
+        project_ids_to_fetch = list({s.project_id for s in sessions if s.project_id})
+        project_names: dict[str, str] = {}
+        if project_ids_to_fetch:
+            pr = await db.execute(
+                select(Project.id, Project.name).where(Project.id.in_(project_ids_to_fetch))
+            )
+            for row in pr.all():
+                project_names[str(row[0])] = row[1]
+
         for session in sessions:
             count = message_counts.get(str(session.id), 0)
-            if count == 0:
-                continue  # hide empty sessions
+            # Same rationale as scope=mine: empty project sessions are legitimate.
+            if count == 0 and session.project_id is None:
+                continue
 
             display = None
             peer_agent_id = None
@@ -191,6 +214,9 @@ async def list_sessions(
                 participant_type="group" if session.is_group else participant_type,
                 is_group=session.is_group,
                 group_name=session.group_name,
+                project_id=str(session.project_id) if session.project_id else None,
+                project_name=project_names.get(str(session.project_id)) if session.project_id else None,
+                owned_by_me=str(session.user_id) == str(current_user.id),
             ))
         return out
 
@@ -201,9 +227,24 @@ async def list_sessions(
                 ChatSession.agent_id == agent_id,
                 ChatSession.user_id == current_user.id,
                 ChatSession.is_group == False,  # Group sessions are not "mine"
-                ChatSession.source_channel.notin_(["agent", "trigger"]),  # Exclude agent-to-agent and reflection sessions
+                # Exclude agent-to-agent and reflection sessions, BUT keep trigger
+                # sessions that are bound to a project — those are user-configured
+                # scheduled tasks running inside a project workspace and should
+                # remain reachable from the sidebar (otherwise users see them in
+                # ProjectDetail.Chats but cannot open them).
+                or_(
+                    ChatSession.source_channel.notin_(["agent", "trigger"]),
+                    and_(
+                        ChatSession.source_channel == "trigger",
+                        ChatSession.project_id.isnot(None),
+                    ),
+                ),
             )
-            .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
+            # Order by activity time, treating freshly created (no messages yet)
+            # sessions as having "activity = created_at" so they appear at the top
+            # right after creation rather than getting pushed below older convos
+            # with stale messages.
+            .order_by(func.coalesce(ChatSession.last_message_at, ChatSession.created_at).desc())
         )
         sessions = result.scalars().all()
         out = []
@@ -243,6 +284,15 @@ async def list_sessions(
             for row in unread_res.all():
                 unread_counts[str(row[0])] = int(row[1] or 0)
 
+        project_ids_to_fetch = list({s.project_id for s in sessions if s.project_id})
+        project_names: dict[str, str] = {}
+        if project_ids_to_fetch:
+            pr = await db.execute(
+                select(Project.id, Project.name).where(Project.id.in_(project_ids_to_fetch))
+            )
+            for row in pr.all():
+                project_names[str(row[0])] = row[1]
+
         for session in sessions:
             # Hide truly empty / orphan sessions. Onboarding sessions have zero
             # user messages (the agent greets first) but do have assistant
@@ -261,6 +311,9 @@ async def list_sessions(
                 message_count=count,
                 unread_count=unread_counts.get(str(session.id), 0),
                 is_primary=bool(session.is_primary),
+                project_id=str(session.project_id) if session.project_id else None,
+                project_name=project_names.get(str(session.project_id)) if session.project_id else None,
+                owned_by_me=True,  # scope=mine guarantees user_id == current_user.id
             ))
         return out
 
@@ -272,19 +325,58 @@ async def create_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new chat session for the current user."""
+    """Create a new chat session for the current user.
+
+    If `project_id` is given, the session is bound to that project and the
+    agent must already be in `project_agents`; the project must not be archived.
+    """
     await check_agent_access(db, current_user, agent_id)
+
+    project_id: uuid.UUID | None = None
+    project_obj = None
+    if body.project_id is not None:
+        # Lazy imports to avoid a circular dependency between chat_sessions
+        # and the project feature (api/projects imports chat_session models).
+        from app.models.project import Project, ProjectAgent, ProjectScopeType
+        project_obj = (await db.execute(select(Project).where(Project.id == body.project_id))).scalar_one_or_none()
+        if not project_obj:
+            raise HTTPException(status_code=404, detail="Project not found")
+        # Same-tenant fence
+        if current_user.role != "platform_admin":
+            if project_obj.scope_type != ProjectScopeType.TENANT.value or str(project_obj.scope_id) != str(current_user.tenant_id):
+                raise HTTPException(status_code=403, detail="No access to this project")
+        if project_obj.archived_at is not None:
+            raise HTTPException(status_code=409, detail="Project is archived")
+        # Agent must be assigned to the project
+        in_project = (await db.execute(
+            select(ProjectAgent).where(
+                ProjectAgent.project_id == body.project_id,
+                ProjectAgent.agent_id == agent_id,
+            )
+        )).scalar_one_or_none()
+        if not in_project:
+            raise HTTPException(status_code=403, detail="Agent is not assigned to this project")
+        project_id = body.project_id
 
     now = datetime.now(tz.utc)
     new_id = uuid.uuid4()
+    # Title: project sessions prefix with "{project_name}：" so the agent's
+    # session sidebar and cross-project activity views can tell at a glance
+    # which project a chat belongs to.
+    base_title = body.title or now.strftime("%m-%d %H:%M")
+    if project_obj is not None:
+        title = f"{project_obj.name}：{base_title}"
+    else:
+        title = body.title or f"Session {now.strftime('%m-%d %H:%M')}"
     session = ChatSession(
         id=new_id,
         agent_id=agent_id,
         user_id=current_user.id,
-        title=body.title or f"Session {now.strftime('%m-%d %H:%M')}",
+        title=title,
         source_channel="web",
         is_primary=False,
         created_at=now,
+        project_id=project_id,
     )
     db.add(session)
     await db.commit()
@@ -302,6 +394,7 @@ async def create_session(
         is_primary=False,
         participant_type="user",
         is_group=False,
+        project_id=str(session.project_id) if session.project_id else None,
     )
 
 
@@ -510,3 +603,94 @@ def _split_inline_tools(content: str) -> list[dict]:
         parts.append({"role": "assistant", "content": content})
 
     return parts
+
+
+# ─── Single session detail endpoint ──────────────────────────────────────
+#
+# A separate router because /api/agents/{agent_id}/sessions/... is awkward
+# when the caller knows only the session_id (e.g. deep-linking from a
+# Project chat list, or fetching metadata for the chat header pill).
+
+chat_session_router = APIRouter(prefix="/api/chat-sessions", tags=["chat-sessions"])
+
+
+async def _can_view_session(
+    session: ChatSession,
+    current_user: User,
+    db: AsyncSession,
+) -> bool:
+    """Whether current_user may read this session.
+
+    Enforces compass red line 1 (tenant isolation) plus project visibility:
+    - Agent must be in the same tenant as the user.
+    - User must be the session owner, an admin, or a same-tenant member of a
+      project where chat_visibility=shared (M5/H1 in the Project plan).
+    """
+    agent_row = (await db.execute(
+        select(Agent.tenant_id).where(Agent.id == session.agent_id)
+    )).first()
+    if not agent_row or agent_row[0] != current_user.tenant_id:
+        return False
+
+    if str(session.user_id) == str(current_user.id):
+        return True
+
+    if current_user.role in ("platform_admin", "org_admin", "agent_admin"):
+        return True
+
+    if session.project_id is not None:
+        project = (await db.execute(
+            select(Project).where(Project.id == session.project_id)
+        )).scalar_one_or_none()
+        if (
+            project
+            and project.chat_visibility == ProjectChatVisibility.SHARED.value
+            and project.scope_type == "tenant"
+            and str(project.scope_id) == str(current_user.tenant_id)
+        ):
+            return True
+
+    return False
+
+
+@chat_session_router.get("/{session_id}", response_model=SessionOut)
+async def get_chat_session(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return single session metadata for chat header / deep-link rendering."""
+    session = (await db.execute(
+        select(ChatSession).where(ChatSession.id == session_id)
+    )).scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not await _can_view_session(session, current_user, db):
+        raise HTTPException(status_code=403, detail="Not authorized to view this session")
+
+    project_name: Optional[str] = None
+    if session.project_id is not None:
+        project_name = (await db.execute(
+            select(Project.name).where(Project.id == session.project_id)
+        )).scalar_one_or_none()
+
+    msg_count = (await db.execute(
+        select(func.count(ChatMessage.id)).where(ChatMessage.conversation_id == str(session_id))
+    )).scalar() or 0
+
+    return SessionOut(
+        id=str(session.id),
+        agent_id=str(session.agent_id),
+        user_id=str(session.user_id),
+        source_channel=session.source_channel,
+        title=session.title,
+        created_at=session.created_at.isoformat(),
+        last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
+        message_count=int(msg_count),
+        is_group=session.is_group,
+        group_name=session.group_name,
+        project_id=str(session.project_id) if session.project_id else None,
+        project_name=project_name,
+        owned_by_me=str(session.user_id) == str(current_user.id),
+    )
