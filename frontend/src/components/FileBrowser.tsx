@@ -13,7 +13,7 @@ import Toast from './Toast';
 import { useDropZone } from '../hooks/useDropZone';
 import { useToast } from '../hooks/useToast';
 import {
-    IconFolder, IconCornerLeftUp, IconPencil, IconCheck, IconX,
+    IconCornerLeftUp, IconPencil, IconCheck, IconX,
     IconArrowsDownUp, IconSparkles, IconTrash, IconChevronDown,
 } from '@tabler/icons-react';
 import { isTextFile, isImage, isPdf, classifyFile, fileTypeIcon } from '../utils/fileTypes';
