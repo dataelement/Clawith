@@ -8,7 +8,14 @@ from pathlib import Path
 import aiofiles
 from fastapi import HTTPException, status
 
-from app.services.storage_runtime.base import StorageBackend, StorageEntry
+from app.services.storage_runtime.base import (
+    ConditionalWriteResult,
+    StorageBackend,
+    StorageEntry,
+    StorageVersion,
+    WriteCondition,
+    content_hash_bytes,
+)
 from app.services.storage_runtime.utils import normalize_storage_key
 
 
@@ -50,6 +57,7 @@ class LocalStorageBackend(StorageBackend):
                     is_dir=entry.is_dir(),
                     size=stat.st_size if entry.is_file() else 0,
                     modified_at=str(stat.st_mtime),
+                    version_id=_local_version_token(stat, None),
                 )
             )
         return entries
@@ -83,13 +91,65 @@ class LocalStorageBackend(StorageBackend):
     async def stat(self, key: str) -> StorageEntry:
         path = self._full_path(key)
         stat = path.stat()
+        file_hash = ""
+        version_id = _local_version_token(stat, None)
+        if path.is_file():
+            data = await self.read_bytes(key)
+            file_hash = content_hash_bytes(data)
+            version_id = _local_version_token(stat, file_hash)
         return StorageEntry(
             name=path.name,
             key=normalize_storage_key(key),
             is_dir=path.is_dir(),
             size=stat.st_size if path.is_file() else 0,
             modified_at=str(stat.st_mtime),
+            version_id=version_id,
+            etag=file_hash,
+            content_hash=file_hash,
         )
+
+    async def get_version(self, key: str) -> StorageVersion:
+        path = self._full_path(key)
+        if not path.exists():
+            return StorageVersion(key=normalize_storage_key(key), exists=False, is_dir=False)
+        stat = path.stat()
+        if path.is_dir():
+            return StorageVersion(
+                key=normalize_storage_key(key),
+                exists=True,
+                is_dir=True,
+                modified_at=str(stat.st_mtime),
+                version_id=_local_version_token(stat, None),
+            )
+        data = await self.read_bytes(key)
+        file_hash = content_hash_bytes(data)
+        return StorageVersion(
+            key=normalize_storage_key(key),
+            exists=True,
+            is_dir=False,
+            size=stat.st_size,
+            modified_at=str(stat.st_mtime),
+            etag=file_hash,
+            version_id=_local_version_token(stat, file_hash),
+            content_hash=file_hash,
+        )
+
+    async def write_bytes_if_match(
+        self,
+        key: str,
+        data: bytes,
+        *,
+        condition: WriteCondition | None = None,
+        content_type: str | None = None,
+    ) -> ConditionalWriteResult:
+        current = await self.get_version(key)
+        if condition:
+            if condition.require_absent and current.exists:
+                return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
+            if condition.version_token is not None and current.token != condition.version_token:
+                return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
+        await self.write_bytes(key, data, content_type=content_type)
+        return ConditionalWriteResult(ok=True, current_version=await self.get_version(key))
 
     async def local_path_for(self, key: str) -> Path | None:
         return self._full_path(key)
@@ -99,3 +159,8 @@ def _local_delete_tree(path: Path) -> None:
     import shutil
 
     shutil.rmtree(path)
+
+
+def _local_version_token(stat, file_hash: str | None) -> str:
+    hash_part = file_hash or ""
+    return f"{stat.st_mtime_ns}:{stat.st_size}:{hash_part}"

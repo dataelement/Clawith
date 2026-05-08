@@ -23,6 +23,7 @@ from app.models.workspace import WorkspaceFileRevision
 from app.services.workspace_collaboration import (
     acquire_edit_lock,
     content_hash,
+    delete_workspace_file,
     list_revisions,
     read_text_if_exists,
     record_revision,
@@ -35,6 +36,7 @@ from app.services.storage import (
     guess_content_type,
     normalize_storage_key,
 )
+from app.services.storage_runtime.base import StorageEntry
 from app.services.workspace_paths import WorkspacePathError, resolve_agent_visible_path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,18 +51,21 @@ class FileInfo(BaseModel):
     is_dir: bool
     size: int = 0
     modified_at: str = ""
+    version_token: str | None = None
     url: str | None = None
 
 
 class FileContent(BaseModel):
     path: str
     content: str
+    version_token: str | None = None
 
 
 class FileWrite(BaseModel):
     content: str
     autosave: bool = False
     session_id: str | None = None
+    expected_version_token: str | None = None
 
 
 class FileLockBody(BaseModel):
@@ -70,6 +75,7 @@ class FileLockBody(BaseModel):
 
 class RestoreRevisionBody(BaseModel):
     revision_id: uuid.UUID
+    expected_version_token: str | None = None
 
 
 def _agent_base_dir(agent_id: uuid.UUID) -> Path:
@@ -132,10 +138,16 @@ async def list_files(
     await check_agent_access(db, current_user, agent_id)
     storage = get_storage_backend()
     storage_key, is_enterprise = _visible_storage_key(agent_id, path, current_user.tenant_id)
-    if not await storage.exists(storage_key):
-        if not (is_enterprise and (path or "").strip().strip("/") == "enterprise_info"):
+    normalized_path = (path or "").strip().strip("/")
+    path_exists = await storage.exists(storage_key)
+    path_is_dir = await storage.is_dir(storage_key)
+    if not path_exists and not path_is_dir:
+        if not (
+            normalized_path == ""
+            or (is_enterprise and normalized_path == "enterprise_info")
+        ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
-    elif not await storage.is_dir(storage_key):
+    elif path_exists and not path_is_dir:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a directory")
 
     items = []
@@ -146,9 +158,10 @@ async def list_files(
             is_dir=True,
             size=0,
             modified_at="",
+            version_token=None,
             url=None,
         ))
-    entries = await storage.list_dir(storage_key) if await storage.exists(storage_key) else []
+    entries = await storage.list_dir(storage_key) if path_exists or path_is_dir else []
     for entry in entries:
         if is_enterprise:
             rel = str(Path(entry.key).relative_to(f"enterprise_info_{current_user.tenant_id}"))
@@ -161,6 +174,7 @@ async def list_files(
             is_dir=entry.is_dir,
             size=entry.size,
             modified_at=entry.modified_at,
+            version_token=_entry_version_token(entry),
             url=f"/api/agents/{agent_id}/files/download?path={rel_path}" if not entry.is_dir else None
         ))
     return items
@@ -179,13 +193,29 @@ async def read_file(
     key, _ = _visible_storage_key(agent_id, path, current_user.tenant_id)
     if not await storage.exists(key) or not await storage.is_file(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    version = await storage.get_version(key)
 
     try:
         content = await storage.read_text(key, encoding="utf-8", errors="replace")
-        return FileContent(path=path, content=content)
+        return FileContent(path=path, content=content, version_token=version.token)
     except UnicodeDecodeError:
         stat = await storage.stat(key)
-        return FileContent(path=path, content=f"[二进制文件: {Path(path).name}, {stat.size} bytes]")
+        return FileContent(
+            path=path,
+            content=f"[二进制文件: {Path(path).name}, {stat.size} bytes]",
+            version_token=version.token,
+        )
+
+
+def _entry_version_token(entry: StorageEntry) -> str | None:
+    token = entry.version_id or entry.etag or entry.content_hash
+    if token:
+        return token
+    if entry.is_dir:
+        return None
+    if entry.modified_at or entry.size:
+        return f"{entry.modified_at}:{entry.size}"
+    return None
 
 
 def _file_kind(path: str) -> str:
@@ -506,6 +536,7 @@ async def write_file(
         session_id=data.session_id,
         enforce_human_lock=False,
         merge_user_autosave=data.autosave,
+        expected_version_token=data.expected_version_token,
     )
     if not result.ok:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result.message)
@@ -597,28 +628,29 @@ async def restore_file_revision(
     if revision.after_content is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot restore an empty/deleted revision")
 
-    storage = get_storage_backend()
-    storage_key = _agent_storage_key(agent_id, revision.path)
-    before = await storage.read_text(storage_key, encoding="utf-8", errors="replace") if await storage.exists(storage_key) else None
-    await storage.write_text(storage_key, revision.after_content, encoding="utf-8")
-    restored = await record_revision(
+    restored = await write_workspace_file(
         db,
         agent_id=agent_id,
+        base_dir=_agent_base_dir(agent_id),
         path=revision.path,
-        operation="restore",
+        content=revision.after_content,
         actor_type="user",
         actor_id=current_user.id,
-        before_content=before,
-        after_content=revision.after_content,
+        operation="restore",
+        enforce_human_lock=False,
+        expected_version_token=data.expected_version_token,
     )
+    if not restored.ok:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=restored.message)
     await db.commit()
-    return {"status": "ok", "path": revision.path, "revision_id": str(restored.id) if restored else None}
+    return {"status": "ok", "path": revision.path, "revision_id": restored.revision_id}
 
 
 @router.delete("/content")
 async def delete_file(
     agent_id: uuid.UUID,
     path: str,
+    expected_version_token: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -629,14 +661,21 @@ async def delete_file(
         raise HTTPException(status_code=403, detail="Only admins can delete enterprise knowledge base files")
     if path.strip("/") == "enterprise_info":
         raise HTTPException(status_code=400, detail="Cannot delete enterprise_info root")
-    key, _ = _visible_storage_key(agent_id, path, current_user.tenant_id)
-    if not await storage.exists(key):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    if await storage.is_dir(key):
-        await storage.delete_tree(key)
-    else:
-        await storage.delete(key)
-
+    result = await delete_workspace_file(
+        db,
+        agent_id=agent_id,
+        base_dir=_agent_base_dir(agent_id),
+        path=path,
+        actor_type="user",
+        actor_id=current_user.id,
+        enforce_human_lock=False,
+        expected_version_token=expected_version_token,
+    )
+    if not result.ok:
+        if "not found" in result.message.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result.message)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result.message)
+    await db.commit()
     return {"status": "ok", "path": path}
 
 
@@ -889,9 +928,11 @@ async def delete_enterprise_file(
 
     storage = get_storage_backend()
     storage_key = _enterprise_storage_key(str(current_user.tenant_id), path)
-    if not await storage.exists(storage_key):
+    storage_exists = await storage.exists(storage_key)
+    storage_is_dir = await storage.is_dir(storage_key)
+    if not storage_exists and not storage_is_dir:
         raise HTTPException(status_code=404, detail="File not found")
-    if await storage.is_dir(storage_key):
+    if storage_is_dir:
         await storage.delete_tree(storage_key)
     else:
         await storage.delete(storage_key)

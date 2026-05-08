@@ -576,6 +576,7 @@ async def websocket_chat(
 
             # Track thinking content for storage (initialize before condition)
             thinking_content = []
+            queued_messages: list[dict] = []
 
             # Reload model config on every message so Settings changes take effect
             # immediately without requiring a page refresh / WebSocket reconnect.
@@ -852,7 +853,6 @@ async def websocket_chat(
 
                     # Listen for abort while LLM is running
                     aborted = False
-                    queued_messages: list[dict] = []
                     while not llm_task.done():
                         try:
                             msg = await _aio.wait_for(

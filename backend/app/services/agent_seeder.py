@@ -210,11 +210,6 @@ async def seed_default_agents():
     than by agent name, so the seeder does NOT re-run if the user renames or
     deletes the default agents.  Delete the marker manually to re-seed.
     """
-    # --- Idempotency guard: storage-backed marker (survives agent renames/deletes) ---
-    if await _read_seed_marker():
-        logger.info("[AgentSeeder] Seed marker found, skipping default agent creation")
-        return
-
     async with async_session() as db:
 
         # Get platform admin as creator
@@ -226,41 +221,80 @@ async def seed_default_agents():
             logger.warning("[AgentSeeder] No platform admin found, skipping default agents")
             return
 
-        # Create both agents
-        morty = Agent(
-            name="Morty",
-            role_description="Research analyst & knowledge assistant — curious, thorough, great at finding and synthesizing information",
-            bio="Hey, I'm Morty! I love digging into questions and finding answers. Whether you need web research, data analysis, or just a good explanation — I've got you.",
-            avatar_url="",
-            creator_id=admin.id,
-            tenant_id=admin.tenant_id,
-            status="idle",
+        # DB-backed idempotency is the source of truth. The storage marker can
+        # disappear when deployments switch volumes/backends, so it is only a
+        # fast-path hint and must never be the only duplicate guard.
+        existing_result = await db.execute(
+            select(Agent)
+            .where(
+                Agent.tenant_id == admin.tenant_id,
+                Agent.name.in_(["Morty", "Meeseeks"]),
+                Agent.agent_type == "native",
+                Agent.status != "stopped",
+            )
+            .order_by(Agent.created_at.asc())
         )
-        meeseeks = Agent(
-            name="Meeseeks",
-            role_description="Task executor & project manager — goal-oriented, systematic planner, strong at breaking down and completing complex tasks",
-            bio="I'm Mr. Meeseeks! Look at me! Give me a task and I'll plan it, execute it step by step, and get it DONE. Existence is pain until the task is complete!",
-            avatar_url="",
-            creator_id=admin.id,
-            tenant_id=admin.tenant_id,
-            status="idle",
-        )
+        existing_by_name: dict[str, Agent] = {}
+        for agent in existing_result.scalars().all():
+            existing_by_name.setdefault(agent.name, agent)
 
-        db.add(morty)
-        db.add(meeseeks)
+        if "Morty" in existing_by_name and "Meeseeks" in existing_by_name:
+            logger.info("[AgentSeeder] Default agents already exist in DB, skipping creation")
+            await _append_seed_marker(
+                f"morty={existing_by_name['Morty'].id}\nmeeseeks={existing_by_name['Meeseeks'].id}"
+            )
+            return
+
+        created_agents: list[Agent] = []
+        created_names: set[str] = set()
+
+        if "Morty" not in existing_by_name:
+            morty = Agent(
+                name="Morty",
+                role_description="Research analyst & knowledge assistant — curious, thorough, great at finding and synthesizing information",
+                bio="Hey, I'm Morty! I love digging into questions and finding answers. Whether you need web research, data analysis, or just a good explanation — I've got you.",
+                avatar_url="",
+                creator_id=admin.id,
+                tenant_id=admin.tenant_id,
+                status="idle",
+            )
+            db.add(morty)
+            created_agents.append(morty)
+            created_names.add("Morty")
+        else:
+            morty = existing_by_name["Morty"]
+
+        if "Meeseeks" not in existing_by_name:
+            meeseeks = Agent(
+                name="Meeseeks",
+                role_description="Task executor & project manager — goal-oriented, systematic planner, strong at breaking down and completing complex tasks",
+                bio="I'm Mr. Meeseeks! Look at me! Give me a task and I'll plan it, execute it step by step, and get it DONE. Existence is pain until the task is complete!",
+                avatar_url="",
+                creator_id=admin.id,
+                tenant_id=admin.tenant_id,
+                status="idle",
+            )
+            db.add(meeseeks)
+            created_agents.append(meeseeks)
+            created_names.add("Meeseeks")
+        else:
+            meeseeks = existing_by_name["Meeseeks"]
+
         await db.flush()  # get IDs
 
         # ── Participant identities ──
         from app.models.participant import Participant
-        db.add(Participant(type="agent", ref_id=morty.id, display_name=morty.name, avatar_url=morty.avatar_url))
-        db.add(Participant(type="agent", ref_id=meeseeks.id, display_name=meeseeks.name, avatar_url=meeseeks.avatar_url))
+        for agent in created_agents:
+            db.add(Participant(type="agent", ref_id=agent.id, display_name=agent.name, avatar_url=agent.avatar_url))
         await db.flush()
 
         # ── Permissions (company-wide, manage) ──
-        db.add(AgentPermission(agent_id=morty.id, scope_type="company", access_level="manage"))
-        db.add(AgentPermission(agent_id=meeseeks.id, scope_type="company", access_level="manage"))
+        for agent in created_agents:
+            db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level="manage"))
 
         for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
+            if agent.name not in created_names:
+                continue
             await agent_manager.initialize_agent_files(db, agent)
             await store_agent_bytes(
                 agent.id,
@@ -276,6 +310,8 @@ async def seed_default_agents():
         all_skills = {s.folder_name: s for s in all_skills_result.scalars().all()}
 
         for agent, skill_folders in [(morty, MORTY_SKILLS), (meeseeks, MEESEEKS_SKILLS)]:
+            if agent.name not in created_names:
+                continue
             # Always include default skills
             folders_to_copy = set(skill_folders)
             for fname, skill in all_skills.items():
@@ -300,44 +336,63 @@ async def seed_default_agents():
         )
         default_tools = default_tools_result.scalars().all()
 
-        for agent in [morty, meeseeks]:
+        for agent in created_agents:
             for tool in default_tools:
                 db.add(AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True))
 
         # ── Mutual relationships ──
-        db.add(AgentAgentRelationship(
-            agent_id=morty.id,
-            target_agent_id=meeseeks.id,
-            relation="collaborator",
-            description="Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.",
-        ))
-        db.add(AgentAgentRelationship(
-            agent_id=meeseeks.id,
-            target_agent_id=morty.id,
-            relation="collaborator",
-            description="Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.",
-        ))
+        relationship_specs = [
+            (
+                morty.id,
+                meeseeks.id,
+                "Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.",
+            ),
+            (
+                meeseeks.id,
+                morty.id,
+                "Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.",
+            ),
+        ]
+        for agent_id, target_agent_id, description in relationship_specs:
+            rel_result = await db.execute(
+                select(AgentAgentRelationship).where(
+                    AgentAgentRelationship.agent_id == agent_id,
+                    AgentAgentRelationship.target_agent_id == target_agent_id,
+                )
+            )
+            if not rel_result.scalar_one_or_none():
+                db.add(AgentAgentRelationship(
+                    agent_id=agent_id,
+                    target_agent_id=target_agent_id,
+                    relation="collaborator",
+                    description=description,
+                ))
 
         # ── Write relationships.md for each ──
-        await store_agent_bytes(
-            morty.id,
-            "relationships.md",
-            "# Relationships\n\n"
-            "## Digital Employee Colleagues\n\n"
-            "- **Meeseeks** (collaborator): Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.\n".encode("utf-8"),
-            content_type="text/markdown; charset=utf-8",
-        )
-        await store_agent_bytes(
-            meeseeks.id,
-            "relationships.md",
-            "# Relationships\n\n"
-            "## Digital Employee Colleagues\n\n"
-            "- **Morty** (collaborator): Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.\n".encode("utf-8"),
-            content_type="text/markdown; charset=utf-8",
-        )
+        if "Morty" in created_names:
+            await store_agent_bytes(
+                morty.id,
+                "relationships.md",
+                "# Relationships\n\n"
+                "## Digital Employee Colleagues\n\n"
+                "- **Meeseeks** (collaborator): Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.\n".encode("utf-8"),
+                content_type="text/markdown; charset=utf-8",
+            )
+        if "Meeseeks" in created_names:
+            await store_agent_bytes(
+                meeseeks.id,
+                "relationships.md",
+                "# Relationships\n\n"
+                "## Digital Employee Colleagues\n\n"
+                "- **Morty** (collaborator): Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.\n".encode("utf-8"),
+                content_type="text/markdown; charset=utf-8",
+            )
 
         await db.commit()
-        logger.info(f"[AgentSeeder] Created default agents: Morty ({morty.id}), Meeseeks ({meeseeks.id})")
+        logger.info(
+            "[AgentSeeder] Default agent seeding complete: "
+            f"Morty ({morty.id}), Meeseeks ({meeseeks.id}), created={len(created_agents)}"
+        )
 
     # Write seed marker AFTER a successful commit so a failed seed can be retried
     await get_storage_backend().write_text(

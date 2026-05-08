@@ -24,6 +24,12 @@ if [ "$(id -u)" = '0' ]; then
 fi
 # -------------------------------------------------------
 
+if [ -z "${INSTANCE_ID:-}" ]; then
+    SAFE_PROCESS_ROLE="${PROCESS_ROLE//,/-}"
+    export INSTANCE_ID="${SAFE_PROCESS_ROLE}-$(hostname)"
+fi
+echo "[entrypoint] INSTANCE_ID=${INSTANCE_ID}"
+
 if role_contains "bootstrap"; then
     echo "[entrypoint] Step 1: Running alembic migrations for PROCESS_ROLE=${PROCESS_ROLE}..."
     set +e

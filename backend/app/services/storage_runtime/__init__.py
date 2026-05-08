@@ -1,6 +1,12 @@
 """Storage runtime package."""
 
-from app.services.storage_runtime.base import StorageBackend, StorageEntry
+from app.services.storage_runtime.base import (
+    ConditionalWriteResult,
+    StorageBackend,
+    StorageEntry,
+    StorageVersion,
+    WriteCondition,
+)
 from app.services.storage_runtime.agent_files import (
     agent_storage_key,
     agent_upload_key,
@@ -25,6 +31,9 @@ from app.services.storage_runtime.s3 import S3StorageBackend
 __all__ = [
     "StorageBackend",
     "StorageEntry",
+    "StorageVersion",
+    "WriteCondition",
+    "ConditionalWriteResult",
     "FallbackStorageBackend",
     "LocalStorageBackend",
     "S3StorageBackend",

@@ -57,7 +57,7 @@ function autolinkBareUrls(html: string): string {
 function renderInline(text: string): string {
     const tokens: string[] = [];
     const stash = (html: string) => {
-        const key = `@@__MD_TOKEN_${tokens.length}__@@`;
+        const key = `@@CLAWITHMDTOKEN${tokens.length}@@`;
         tokens.push(html);
         return key;
     };
@@ -89,7 +89,7 @@ function renderInline(text: string): string {
 
     working = autolinkBareUrls(working);
     tokens.forEach((html, i) => {
-        working = working.replace(new RegExp(`@@__MD_TOKEN_${i}__@@`, 'g'), html);
+        working = working.replace(new RegExp(`@@CLAWITHMDTOKEN${i}@@`, 'g'), html);
     });
     return working;
 }

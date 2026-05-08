@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,38 @@ class StorageEntry:
     is_dir: bool
     size: int = 0
     modified_at: str = ""
+    etag: str = ""
+    version_id: str = ""
+    content_hash: str = ""
+
+
+@dataclass
+class StorageVersion:
+    key: str
+    exists: bool
+    is_dir: bool
+    size: int = 0
+    modified_at: str = ""
+    etag: str = ""
+    version_id: str = ""
+    content_hash: str = ""
+
+    @property
+    def token(self) -> str:
+        return self.version_id or self.etag or self.content_hash or f"{self.modified_at}:{self.size}"
+
+
+@dataclass
+class WriteCondition:
+    version_token: str | None = None
+    require_absent: bool = False
+
+
+@dataclass
+class ConditionalWriteResult:
+    ok: bool
+    conflict: bool = False
+    current_version: StorageVersion | None = None
 
 
 class StorageBackend:
@@ -50,8 +83,63 @@ class StorageBackend:
     async def stat(self, key: str) -> StorageEntry:
         raise NotImplementedError
 
+    async def get_version(self, key: str) -> StorageVersion:
+        try:
+            entry = await self.stat(key)
+        except FileNotFoundError:
+            return StorageVersion(key=key, exists=False, is_dir=False)
+        return StorageVersion(
+            key=entry.key,
+            exists=True,
+            is_dir=entry.is_dir,
+            size=entry.size,
+            modified_at=entry.modified_at,
+            etag=entry.etag,
+            version_id=entry.version_id,
+            content_hash=entry.content_hash,
+        )
+
+    async def write_bytes_if_match(
+        self,
+        key: str,
+        data: bytes,
+        *,
+        condition: WriteCondition | None = None,
+        content_type: str | None = None,
+    ) -> ConditionalWriteResult:
+        current = await self.get_version(key)
+        if condition:
+            if condition.require_absent and current.exists:
+                return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
+            if condition.version_token is not None and current.token != condition.version_token:
+                return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
+        await self.write_bytes(key, data, content_type=content_type)
+        return ConditionalWriteResult(ok=True, current_version=await self.get_version(key))
+
+    async def delete_if_match(
+        self,
+        key: str,
+        *,
+        condition: WriteCondition | None = None,
+    ) -> ConditionalWriteResult:
+        current = await self.get_version(key)
+        if condition:
+            if condition.require_absent:
+                if current.exists:
+                    return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
+                return ConditionalWriteResult(ok=True, current_version=current)
+            if condition.version_token is not None and current.token != condition.version_token:
+                return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
+        if current.exists:
+            await self.delete(key)
+        return ConditionalWriteResult(ok=True, current_version=await self.get_version(key))
+
     async def local_path_for(self, key: str) -> Path | None:
         return None
 
     async def presign_download_url(self, key: str, filename: str | None = None, inline: bool = False) -> str | None:
         return None
+
+
+def content_hash_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()

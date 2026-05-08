@@ -35,6 +35,8 @@ def get_storage_backend() -> StorageBackend:
             access_key_id=settings.S3_ACCESS_KEY_ID,
             secret_access_key=settings.S3_SECRET_ACCESS_KEY,
             presign_ttl_seconds=settings.S3_PRESIGN_TTL_SECONDS,
+            max_pool_connections=settings.S3_MAX_POOL_CONNECTIONS,
+            write_workers=settings.S3_WRITE_WORKERS,
         )
         if settings.STORAGE_LOCAL_FALLBACK_ENABLED:
             fallback = LocalStorageBackend(settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR)

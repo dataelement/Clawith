@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.services.storage_runtime.base import StorageBackend, StorageEntry
+from app.services.storage_runtime.base import (
+    ConditionalWriteResult,
+    StorageBackend,
+    StorageEntry,
+    StorageVersion,
+    WriteCondition,
+)
 
 
 class FallbackStorageBackend(StorageBackend):
@@ -62,6 +68,27 @@ class FallbackStorageBackend(StorageBackend):
             data = await self.fallback.read_bytes(key)
             await self.primary.write_bytes(key, data)
         return entry
+
+    async def get_version(self, key: str) -> StorageVersion:
+        primary_version = await self.primary.get_version(key)
+        if primary_version.exists:
+            return primary_version
+        fallback_version = await self.fallback.get_version(key)
+        if fallback_version.exists and not fallback_version.is_dir:
+            data = await self.fallback.read_bytes(key)
+            await self.primary.write_bytes(key, data)
+            return await self.primary.get_version(key)
+        return fallback_version
+
+    async def write_bytes_if_match(
+        self,
+        key: str,
+        data: bytes,
+        *,
+        condition: WriteCondition | None = None,
+        content_type: str | None = None,
+    ) -> ConditionalWriteResult:
+        return await self.primary.write_bytes_if_match(key, data, condition=condition, content_type=content_type)
 
     async def local_path_for(self, key: str) -> Path | None:
         if await self.primary.exists(key):

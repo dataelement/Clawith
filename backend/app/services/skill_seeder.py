@@ -930,11 +930,11 @@ async def push_default_skills_to_existing_agents():
     Called at startup after seed_skills() so existing agents automatically receive new default skills
     like MCP_INSTALLER without requiring manual re-creation.
     """
-    from pathlib import Path
     from app.models.agent import Agent
-    from app.models.skill import Skill, SkillFile
+    from app.models.skill import Skill
     from sqlalchemy.orm import selectinload
     from app.services.agent_manager import agent_manager
+    from app.services.storage import get_storage_backend
 
     async with async_session() as db:
         # Load all is_default skills with their files
@@ -951,25 +951,22 @@ async def push_default_skills_to_existing_agents():
 
         pushed = 0
         updated = 0
+        storage = get_storage_backend()
         for agent in agents:
-            agent_dir = agent_manager._agent_dir(agent.id)
-            skills_dir = agent_dir / "skills"
+            agent_prefix = agent_manager._agent_storage_prefix(agent.id)
             for skill in default_skills:
                 if not skill.files:
                     continue
-                skill_folder = skills_dir / skill.folder_name
-                skill_folder.mkdir(parents=True, exist_ok=True)
                 for sf in skill.files:
-                    fp = (skill_folder / sf.path).resolve()
-                    fp.parent.mkdir(parents=True, exist_ok=True)
-                    if fp.exists():
-                        existing_content = fp.read_text(encoding="utf-8")
+                    key = f"{agent_prefix}/skills/{skill.folder_name}/{sf.path}"
+                    if await storage.is_file(key):
+                        existing_content = await storage.read_text(key, encoding="utf-8", errors="replace")
                         if existing_content == sf.content:
                             continue  # already up-to-date
-                        fp.write_text(sf.content, encoding="utf-8")
+                        await storage.write_text(key, sf.content, encoding="utf-8")
                         updated += 1
                     else:
-                        fp.write_text(sf.content, encoding="utf-8")
+                        await storage.write_text(key, sf.content, encoding="utf-8")
                         pushed += 1
                         logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
 

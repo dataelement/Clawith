@@ -47,7 +47,7 @@ class AgentManager:
         storage = get_storage_backend()
         agent_prefix = self._agent_storage_prefix(agent_id)
         agent_dir.mkdir(parents=True, exist_ok=True)
-        if not await storage.exists(agent_prefix):
+        if not await storage.exists(agent_prefix) and not await storage.is_dir(agent_prefix):
             return agent_dir
         for entry in await storage.list_dir(agent_prefix):
             await self._materialize_entry(storage, entry.key, agent_dir)
@@ -72,21 +72,30 @@ class AgentManager:
         storage = get_storage_backend()
         agent_prefix = self._agent_storage_prefix(agent.id)
 
-        if await storage.exists(agent_prefix):
+        if await storage.exists(agent_prefix) or await storage.is_dir(agent_prefix):
             logger.warning(f"Agent dir already exists: {agent_dir}")
             return
 
         if template_dir.exists():
+            import asyncio
+            import time
+            t_start_files = time.perf_counter()
+            tasks = []
             for src in template_dir.rglob("*"):
                 if src.is_dir():
                     continue
                 rel = src.relative_to(template_dir).as_posix()
                 if rel == "tasks.json" or rel == "todo.json" or rel.startswith("enterprise_info/"):
                     continue
-                await storage.write_bytes(
-                    f"{agent_prefix}/{rel}",
-                    src.read_bytes(),
+                tasks.append(
+                    storage.write_bytes(
+                        f"{agent_prefix}/{rel}",
+                        src.read_bytes(),
+                    )
                 )
+            if tasks:
+                await asyncio.gather(*tasks)
+            logger.info(f"[AgentManager] Uploaded {len(tasks)} template files concurrently in {time.perf_counter() - t_start_files:.2f}s for agent {agent.id}")
         else:
             logger.info(f"Template dir not found ({template_dir}), creating minimal workspace")
             await storage.write_text(f"{agent_prefix}/tasks.json", "[]", encoding="utf-8")
