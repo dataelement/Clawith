@@ -19,6 +19,7 @@ from typing import Literal, Optional
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -1246,22 +1247,41 @@ async def list_project_chat_sessions(
 # there to set session.project_id so the run appears in the project Chats tab
 # and build_project_context_block injects the BRIEF automatically.
 
-_FREQUENCY_TO_CRON: dict[str, str] = {
-    "hourly": "0 * * * *",
-    "daily": "0 9 * * *",
-    "weekdays": "0 9 * * 1-5",
-    "weekly": "0 9 * * 1",
-}
-
 _FOCUS_PREFIX = "project:"
 
 
-def _cron_to_frequency(expr: str) -> ScheduledTaskFrequency:
-    for f, e in _FREQUENCY_TO_CRON.items():
-        if e == expr:
-            return f  # type: ignore[return-value]
-    # Unknown / custom cron — default to daily label (hedge against manual edits)
-    return "daily"
+def _build_cron(frequency: str, hour: int) -> str:
+    """Compose a cron expression from a frequency preset + hour-of-day (0-23).
+
+    `hour` is ignored for `hourly` (which fires every hour at minute 0)."""
+    if frequency == "hourly":
+        return "0 * * * *"
+    if frequency == "daily":
+        return f"0 {hour} * * *"
+    if frequency == "weekdays":
+        return f"0 {hour} * * 1-5"
+    if frequency == "weekly":
+        return f"0 {hour} * * 1"
+    raise ValueError(f"Unknown frequency: {frequency}")
+
+
+def _cron_to_frequency_and_hour(expr: str) -> tuple[ScheduledTaskFrequency, int]:
+    """Inverse of `_build_cron`. Falls back to ('daily', 9) on parse failure."""
+    parts = (expr or "").split()
+    if len(parts) != 5:
+        return ("daily", 9)
+    _, hour_token, _, _, dow = parts
+    if hour_token == "*":
+        return ("hourly", 9)
+    try:
+        hour = int(hour_token)
+    except ValueError:
+        return ("daily", 9)
+    if dow == "1-5":
+        return ("weekdays", hour)
+    if dow == "1":
+        return ("weekly", hour)
+    return ("daily", hour)
 
 
 def _focus_ref_for_project(project_id: uuid.UUID) -> str:
@@ -1279,6 +1299,37 @@ async def _load_scheduled_task_or_404(
     return trig
 
 
+async def _compute_next_fire_at(trig: AgentTrigger) -> datetime | None:
+    """Compute the next scheduled fire time in UTC, or None if disabled / unparseable.
+
+    Uses the agent's timezone (via `get_agent_timezone`) so the result agrees with
+    what the trigger_daemon will actually do at fire time."""
+    if not trig.is_enabled:
+        return None
+    expr = (trig.config or {}).get("expr", "")
+    if not expr:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        from croniter import croniter
+        from app.services.timezone_utils import get_agent_timezone
+
+        tz_name = await get_agent_timezone(trig.agent_id)
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("UTC")
+        base = trig.last_fired_at or trig.created_at
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=_tz.utc)
+        local_base = base.astimezone(tz)
+        cron = croniter(expr, local_base)
+        local_next = cron.get_next(datetime)
+        return local_next.astimezone(_tz.utc)
+    except Exception:
+        return None
+
+
 async def _serialize_scheduled_task(db: AsyncSession, trig: AgentTrigger, project_id: uuid.UUID) -> ProjectScheduledTaskOut:
     agent_row = (await db.execute(
         select(Agent.name, Agent.avatar_url).where(Agent.id == trig.agent_id)
@@ -1286,6 +1337,8 @@ async def _serialize_scheduled_task(db: AsyncSession, trig: AgentTrigger, projec
     agent_name = agent_row[0] if agent_row else "Unknown"
     agent_avatar_url = agent_row[1] if agent_row else None
     expr = (trig.config or {}).get("expr", "")
+    frequency, hour = _cron_to_frequency_and_hour(expr)
+    next_fire_at = await _compute_next_fire_at(trig)
     return ProjectScheduledTaskOut(
         id=trig.id,
         project_id=project_id,
@@ -1294,9 +1347,11 @@ async def _serialize_scheduled_task(db: AsyncSession, trig: AgentTrigger, projec
         agent_avatar_url=agent_avatar_url,
         name=trig.name,
         prompt=trig.reason or "",
-        frequency=_cron_to_frequency(expr),
+        frequency=frequency,
+        hour=hour,
         is_enabled=trig.is_enabled,
         last_fired_at=trig.last_fired_at,
+        next_fire_at=next_fire_at,
         fire_count=trig.fire_count,
         cron_expr=expr,
         created_at=trig.created_at,
@@ -1355,7 +1410,7 @@ async def create_scheduled_task(
         agent_id=body.agent_id,
         name=body.name,
         type="cron",
-        config={"expr": _FREQUENCY_TO_CRON[body.frequency]},
+        config={"expr": _build_cron(body.frequency, body.hour)},
         reason=body.prompt,
         focus_ref=_focus_ref_for_project(project_id),
         is_enabled=body.is_enabled,
@@ -1393,8 +1448,13 @@ async def update_scheduled_task(
         trig.name = body.name
     if body.prompt is not None:
         trig.reason = body.prompt
-    if body.frequency is not None:
-        trig.config = {"expr": _FREQUENCY_TO_CRON[body.frequency]}
+    if body.frequency is not None or body.hour is not None:
+        current_freq, current_hour = _cron_to_frequency_and_hour(
+            (trig.config or {}).get("expr", "")
+        )
+        new_freq = body.frequency if body.frequency is not None else current_freq
+        new_hour = body.hour if body.hour is not None else current_hour
+        trig.config = {"expr": _build_cron(new_freq, new_hour)}
     if body.is_enabled is not None:
         trig.is_enabled = body.is_enabled
     await db.commit()
@@ -1417,6 +1477,55 @@ async def delete_scheduled_task(
     await db.delete(trig)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+async def _run_scheduled_task_in_background(trigger_id: uuid.UUID) -> None:
+    """Re-fetch the trigger in a fresh DB session and fire it now.
+
+    Reuses the same code path as the cron daemon — `_invoke_agent_for_triggers`
+    creates the ChatSession (with project_id and source_channel='trigger') and
+    drives the LLM. We call `_mark_trigger_fired` afterwards so fire_count and
+    last_fired_at stay consistent with cron-fired runs."""
+    from app.services.trigger_daemon import (
+        _invoke_agent_for_triggers,
+        _mark_trigger_fired,
+    )
+    from app.database import async_session
+
+    async with async_session() as db:
+        trig = (await db.execute(
+            select(AgentTrigger).where(AgentTrigger.id == trigger_id)
+        )).scalar_one_or_none()
+        if not trig:
+            return
+        agent_id = trig.agent_id
+        # Detach so we can use the row across sessions
+        db.expunge(trig)
+    await _invoke_agent_for_triggers(agent_id, [trig])
+    await _mark_trigger_fired(trigger_id, datetime.now(_tz.utc))
+
+
+@router.post(
+    "/{project_id}/scheduled-tasks/{task_id}/run",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_scheduled_task_now(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fire a scheduled task immediately, out-of-band from the cron schedule.
+
+    Goes through the same code path as a cron-fired run — the LLM call is
+    queued as a background task so the HTTP request returns instantly; the
+    resulting ChatSession will surface in the project's Chats tab once the
+    LLM finishes."""
+    await _require_edit(db, project_id, current_user)
+    trig = await _load_scheduled_task_or_404(db, project_id, task_id)
+    background_tasks.add_task(_run_scheduled_task_in_background, trig.id)
+    return {"status": "queued"}
 
 
 # ── Project tasks (deliverables) ────────────────────────────────────────

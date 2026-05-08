@@ -7,7 +7,7 @@ import {
     IconPin, IconPlus, IconTrash, IconUsers, IconMessageCircle,
     IconSettings, IconLayoutDashboard, IconClock, IconClockPause,
     IconCircleDashed, IconCircleDot, IconCircleCheck, IconAlertTriangle,
-    IconLink,
+    IconLink, IconPencil, IconPlayerPlay,
 } from '@tabler/icons-react';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import Toast from '../components/Toast';
@@ -132,14 +132,37 @@ function useHashTab(defaultTab: TabId = 'overview'): [TabId, (t: TabId) => void]
 // ── Scheduled tasks (on Overview) ────────────────────────────────────────
 
 const FREQUENCY_OPTIONS: ProjectScheduledTaskFrequency[] = ['hourly', 'daily', 'weekdays', 'weekly'];
+const HOUR_OPTIONS: number[] = Array.from({ length: 24 }, (_, i) => i);
 
-function freqLabel(f: ProjectScheduledTaskFrequency, t: any): string {
-    return t(`projects.scheduled.freq.${f}`, {
-        hourly: 'Every hour',
-        daily: 'Every day · 09:00',
-        weekdays: 'Weekdays · 09:00',
-        weekly: 'Every Monday · 09:00',
-    }[f]);
+function pad2(n: number): string {
+    return String(n).padStart(2, '0');
+}
+
+function freqLabel(f: ProjectScheduledTaskFrequency, hour: number, t: any): string {
+    const time = `${pad2(hour)}:00`;
+    if (f === 'hourly') return t('projects.scheduled.freq.hourly', 'Every hour');
+    if (f === 'daily') return t('projects.scheduled.freq.dailyAt', 'Every day · {{time}}', { time });
+    if (f === 'weekdays') return t('projects.scheduled.freq.weekdaysAt', 'Weekdays · {{time}}', { time });
+    if (f === 'weekly') return t('projects.scheduled.freq.weeklyAt', 'Every Monday · {{time}}', { time });
+    return '';
+}
+
+function formatNextFire(iso: string | null | undefined, t: any): string {
+    if (!iso) return '';
+    try {
+        const dt = new Date(iso);
+        const now = new Date();
+        const diffMs = dt.getTime() - now.getTime();
+        const absMin = Math.round(Math.abs(diffMs) / 60000);
+        if (diffMs < 0) return t('projects.scheduled.nextDue', 'due now');
+        if (absMin < 60) return t('projects.scheduled.nextInMin', 'in {{n}}m', { n: absMin });
+        const absH = Math.round(absMin / 60);
+        if (absH < 24) return t('projects.scheduled.nextInHour', 'in {{n}}h', { n: absH });
+        const absD = Math.round(absH / 24);
+        return t('projects.scheduled.nextInDay', 'in {{n}}d', { n: absD });
+    } catch {
+        return '';
+    }
 }
 
 function ScheduledTaskCreateModal({
@@ -155,11 +178,12 @@ function ScheduledTaskCreateModal({
     const [name, setName] = useState('');
     const [prompt, setPrompt] = useState('');
     const [frequency, setFrequency] = useState<ProjectScheduledTaskFrequency>('daily');
+    const [hour, setHour] = useState<number>(9);
     const [error, setError] = useState('');
 
     const submit = useMutation({
         mutationFn: () => projectApi.createScheduledTask(project.id, {
-            agent_id: agentId, name: name.trim(), prompt: prompt.trim(), frequency,
+            agent_id: agentId, name: name.trim(), prompt: prompt.trim(), frequency, hour,
         }),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['project-scheduled', project.id] });
@@ -220,14 +244,27 @@ function ScheduledTaskCreateModal({
                 <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                     {t('projects.scheduled.freqLabel', 'Frequency')}
                 </label>
-                <select
-                    className="input" value={frequency}
-                    onChange={e => setFrequency(e.target.value as ProjectScheduledTaskFrequency)}
-                >
-                    {FREQUENCY_OPTIONS.map(f => (
-                        <option key={f} value={f}>{freqLabel(f, t)}</option>
-                    ))}
-                </select>
+                <div style={{ display: 'flex', gap: 8 }}>
+                    <select
+                        className="input" value={frequency} style={{ flex: 1 }}
+                        onChange={e => setFrequency(e.target.value as ProjectScheduledTaskFrequency)}
+                    >
+                        {FREQUENCY_OPTIONS.map(f => (
+                            <option key={f} value={f}>{freqLabel(f, hour, t)}</option>
+                        ))}
+                    </select>
+                    {frequency !== 'hourly' && (
+                        <select
+                            className="input" value={hour} style={{ width: 110 }}
+                            onChange={e => setHour(Number(e.target.value))}
+                            title={t('projects.scheduled.hourLabel', 'Hour of day')}
+                        >
+                            {HOUR_OPTIONS.map(h => (
+                                <option key={h} value={h}>{pad2(h)}:00</option>
+                            ))}
+                        </select>
+                    )}
+                </div>
 
                 {error && <div style={{ color: 'var(--error)', fontSize: 12 }}>{error}</div>}
 
@@ -245,6 +282,120 @@ function ScheduledTaskCreateModal({
 }
 
 
+function ScheduledTaskEditModal({
+    project, task, onClose,
+}: {
+    project: Project;
+    task: ProjectScheduledTask;
+    onClose: () => void;
+}) {
+    const { t } = useTranslation();
+    const queryClient = useQueryClient();
+    const [name, setName] = useState(task.name);
+    const [prompt, setPrompt] = useState(task.prompt);
+    const [frequency, setFrequency] = useState<ProjectScheduledTaskFrequency>(task.frequency);
+    const [hour, setHour] = useState<number>(task.hour);
+    const [error, setError] = useState('');
+
+    const submit = useMutation({
+        mutationFn: () => projectApi.updateScheduledTask(project.id, task.id, {
+            name: name.trim(), prompt: prompt.trim(), frequency, hour,
+        }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['project-scheduled', project.id] });
+            onClose();
+        },
+        onError: (e: any) => setError(e?.message || String(e)),
+    });
+
+    const canSubmit = name.trim() && prompt.trim() && !submit.isPending;
+
+    return (
+        <div
+            onClick={onClose}
+            style={{
+                position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+            }}
+        >
+            <form
+                onClick={e => e.stopPropagation()}
+                onSubmit={e => { e.preventDefault(); if (canSubmit) submit.mutate(); }}
+                className="card"
+                style={{ width: 520, maxWidth: '95vw', padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}
+            >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <IconClock size={16} stroke={1.5} />
+                    <h3 style={{ margin: 0, fontSize: 15 }}>
+                        {t('projects.scheduled.editTask', 'Edit scheduled task')}
+                    </h3>
+                </div>
+
+                <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {t('projects.scheduled.agent', 'Which agent runs this task')}
+                </label>
+                <div className="input" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)' }}>
+                    @{task.agent_name}
+                </div>
+
+                <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {t('projects.scheduled.nameLabel', 'Task name')}
+                </label>
+                <input
+                    className="input" value={name} maxLength={100}
+                    onChange={e => setName(e.target.value)}
+                />
+
+                <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {t('projects.scheduled.promptLabel', 'What should the agent do?')}
+                </label>
+                <textarea
+                    className="input" value={prompt} maxLength={4000}
+                    onChange={e => setPrompt(e.target.value)}
+                    style={{ minHeight: 100, resize: 'vertical' }}
+                />
+
+                <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {t('projects.scheduled.freqLabel', 'Frequency')}
+                </label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                    <select
+                        className="input" value={frequency} style={{ flex: 1 }}
+                        onChange={e => setFrequency(e.target.value as ProjectScheduledTaskFrequency)}
+                    >
+                        {FREQUENCY_OPTIONS.map(f => (
+                            <option key={f} value={f}>{freqLabel(f, hour, t)}</option>
+                        ))}
+                    </select>
+                    {frequency !== 'hourly' && (
+                        <select
+                            className="input" value={hour} style={{ width: 110 }}
+                            onChange={e => setHour(Number(e.target.value))}
+                            title={t('projects.scheduled.hourLabel', 'Hour of day')}
+                        >
+                            {HOUR_OPTIONS.map(h => (
+                                <option key={h} value={h}>{pad2(h)}:00</option>
+                            ))}
+                        </select>
+                    )}
+                </div>
+
+                {error && <div style={{ color: 'var(--error)', fontSize: 12 }}>{error}</div>}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+                    <button type="button" className="btn" onClick={onClose}>
+                        {t('common.cancel', 'Cancel')}
+                    </button>
+                    <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
+                        {submit.isPending ? t('common.saving', 'Saving...') : t('common.save', 'Save')}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+}
+
+
 function ScheduledTasksSection({
     project, agents,
 }: {
@@ -253,7 +404,9 @@ function ScheduledTasksSection({
 }) {
     const { t } = useTranslation();
     const queryClient = useQueryClient();
+    const { toast, showToast } = useToast();
     const [showCreate, setShowCreate] = useState(false);
+    const [editing, setEditing] = useState<ProjectScheduledTask | null>(null);
 
     const { data: tasks = [], isLoading } = useQuery({
         queryKey: ['project-scheduled', project.id],
@@ -269,6 +422,20 @@ function ScheduledTasksSection({
     const deleteTask = useMutation({
         mutationFn: (taskId: string) => projectApi.deleteScheduledTask(project.id, taskId),
         onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project-scheduled', project.id] }),
+    });
+
+    const runNow = useMutation({
+        mutationFn: (taskId: string) => projectApi.runScheduledTaskNow(project.id, taskId),
+        onSuccess: () => {
+            showToast(
+                t('projects.scheduled.runQueued', 'Started — result will appear in the Chats tab once the agent finishes.'),
+                'success',
+            );
+            queryClient.invalidateQueries({ queryKey: ['project-chats', project.id] });
+        },
+        onError: (e: any) => {
+            showToast(t('projects.scheduled.runFailed', 'Failed to run: {{error}}', { error: e?.message || String(e) }), 'error');
+        },
     });
 
     const isArchived = !!project.archived_at;
@@ -324,9 +491,17 @@ function ScheduledTasksSection({
                                     {task.name}
                                 </div>
                                 <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                                    <span>{freqLabel(task.frequency, t)}</span>
+                                    <span>{freqLabel(task.frequency, task.hour, t)}</span>
                                     <span>·</span>
                                     <span>@{task.agent_name}</span>
+                                    {task.is_enabled && task.next_fire_at && (
+                                        <>
+                                            <span>·</span>
+                                            <span title={new Date(task.next_fire_at).toLocaleString()}>
+                                                {t('projects.scheduled.nextLabel', 'next')} {formatNextFire(task.next_fire_at, t)}
+                                            </span>
+                                        </>
+                                    )}
                                     {task.fire_count > 0 && (
                                         <>
                                             <span>·</span>
@@ -343,6 +518,19 @@ function ScheduledTasksSection({
                             </div>
                             <button
                                 className="btn"
+                                onClick={() => runNow.mutate(task.id)}
+                                disabled={isArchived || !task.is_enabled || runNow.isPending}
+                                title={
+                                    !task.is_enabled
+                                        ? t('projects.scheduled.runDisabledPaused', 'Resume the task to run it')
+                                        : t('projects.scheduled.runNow', 'Run now')
+                                }
+                                style={{ padding: '4px 6px', background: 'none' }}
+                            >
+                                <IconPlayerPlay size={14} stroke={1.5} />
+                            </button>
+                            <button
+                                className="btn"
                                 onClick={() => toggleEnabled.mutate({ taskId: task.id, enabled: !task.is_enabled })}
                                 disabled={isArchived}
                                 title={task.is_enabled
@@ -353,6 +541,15 @@ function ScheduledTasksSection({
                                 {task.is_enabled
                                     ? <IconClockPause size={14} stroke={1.5} />
                                     : <IconClock size={14} stroke={1.5} />}
+                            </button>
+                            <button
+                                className="btn"
+                                onClick={() => setEditing(task)}
+                                disabled={isArchived}
+                                title={t('common.edit', 'Edit')}
+                                style={{ padding: '4px 6px', background: 'none' }}
+                            >
+                                <IconPencil size={13} stroke={1.5} />
                             </button>
                             <button
                                 className="btn"
@@ -379,6 +576,14 @@ function ScheduledTasksSection({
                     onClose={() => setShowCreate(false)}
                 />
             )}
+            {editing && (
+                <ScheduledTaskEditModal
+                    project={project}
+                    task={editing}
+                    onClose={() => setEditing(null)}
+                />
+            )}
+            <Toast toast={toast} />
         </div>
     );
 }

@@ -156,6 +156,7 @@ class ProjectScheduledTaskCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     prompt: str = Field(..., min_length=1, max_length=4000)
     frequency: ScheduledTaskFrequency
+    hour: int = Field(default=9, ge=0, le=23)
     is_enabled: bool = True
 
 
@@ -163,6 +164,7 @@ class ProjectScheduledTaskUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     prompt: str | None = Field(default=None, min_length=1, max_length=4000)
     frequency: ScheduledTaskFrequency | None = None
+    hour: int | None = Field(default=None, ge=0, le=23)
     is_enabled: bool | None = None
 
 
@@ -175,10 +177,12 @@ class ProjectScheduledTaskOut(BaseModel):
     name: str
     prompt: str
     frequency: ScheduledTaskFrequency
+    hour: int
     is_enabled: bool
     last_fired_at: datetime | None = None
+    next_fire_at: datetime | None = None
     fire_count: int
-    cron_expr: str  # derived from frequency; shown for transparency
+    cron_expr: str
     created_at: datetime
 
     model_config = {"from_attributes": True}

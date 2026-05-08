@@ -166,8 +166,10 @@ export interface ProjectScheduledTask {
     name: string;
     prompt: string;
     frequency: ProjectScheduledTaskFrequency;
+    hour: number;
     is_enabled: boolean;
     last_fired_at?: string | null;
+    next_fire_at?: string | null;
     fire_count: number;
     cron_expr: string;
     created_at: string;

@@ -714,17 +714,20 @@ export const projectApi = {
         name: string;
         prompt: string;
         frequency: ProjectScheduledTaskFrequency;
+        hour?: number;
         is_enabled?: boolean;
     }) => request<ProjectScheduledTask>(`/projects/${id}/scheduled-tasks`, {
         method: 'POST', body: JSON.stringify(body),
     }),
     updateScheduledTask: (id: string, taskId: string, body: Partial<{
-        name: string; prompt: string; frequency: ProjectScheduledTaskFrequency; is_enabled: boolean;
+        name: string; prompt: string; frequency: ProjectScheduledTaskFrequency; hour: number; is_enabled: boolean;
     }>) => request<ProjectScheduledTask>(`/projects/${id}/scheduled-tasks/${taskId}`, {
         method: 'PATCH', body: JSON.stringify(body),
     }),
     deleteScheduledTask: (id: string, taskId: string) =>
         request<void>(`/projects/${id}/scheduled-tasks/${taskId}`, { method: 'DELETE' }),
+    runScheduledTaskNow: (id: string, taskId: string) =>
+        request<{ status: string }>(`/projects/${id}/scheduled-tasks/${taskId}/run`, { method: 'POST' }),
 };
 
 export const agentProjectsApi = {
