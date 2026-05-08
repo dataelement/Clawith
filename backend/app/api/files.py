@@ -164,6 +164,12 @@ async def list_files(
         ))
     entries = await storage.list_dir(storage_key) if path_exists or path_is_dir else []
     for entry in entries:
+        if entry.name == '.gitkeep':
+            continue
+        if not path and entry.name.lower() in {"focus.md", "agenda.md"}:
+            continue
+        if not path and entry.name == "enterprise_info":
+            continue
         if is_enterprise:
             rel = str(Path(entry.key).relative_to(f"enterprise_info_{current_user.tenant_id}"))
             rel_path = f"enterprise_info/{rel}" if rel != "." else "enterprise_info"
