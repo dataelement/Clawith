@@ -523,6 +523,7 @@ Answering those four questions correctly is usually enough to place new code in 
 
 | Date | Summary |
 | --- | --- |
+| 2026-05-08 | Hardened MCP recovery behavior. Smithery auto-recovery now preserves the existing stored connection when a newly-created connection still requires OAuth authorization, preventing usable connections from being overwritten by unauthenticated replacements. MCP transport fallback errors now preserve both Streamable HTTP and SSE failure details instead of masking the original failure with a local exception-variable error. |
 | 2026-05-03 | Hardened tool visibility across tenant boundaries. Agent tool lists, tool assignment updates, and LLM runtime tool loading now expose builtin tools globally, admin tools only within the agent's tenant, and agent-installed tools only through explicit agent assignments. |
 | 2026-04-28 | Added the workspace switcher and company logo identity flow. Users can switch companies from the sidebar, create or join companies from a modal, and org/platform admins can upload a square company logo that is stored outside source-controlled files and served through the tenant API. |
 | 2026-04-27 | Tightened the OKR relationship sync flow so the tenant-wide "Sync Relationship Network" action excludes user-scoped private agents. Only company-visible digital employees are auto-linked into the OKR Agent's collaborator graph, matching the existing incremental OKR hook behavior for newly created agents. |

@@ -508,8 +508,11 @@ export default function Login() {
                                 padding: '32px',
                                 maxWidth: '400px',
                                 width: '90%',
+                                maxHeight: 'min(620px, calc(100vh - 64px))',
                                 border: '1px solid rgba(255, 255, 255, 0.12)',
                                 boxShadow: '0 0 0 1px rgba(255,255,255,0.04), 0 32px 80px rgba(0,0,0,0.7)',
+                                display: 'flex',
+                                flexDirection: 'column',
                             }}>
                                 <h3 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px', color: 'rgba(255,255,255,0.95)' }}>
                                     {t('auth.selectOrganization', '选择公司')}
@@ -517,7 +520,15 @@ export default function Login() {
                                 <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.42)', marginBottom: '20px', lineHeight: '1.5' }}>
                                     {t('auth.multiTenantPrompt', '该邮箱对应多个公司，请选择要登录的公司：')}
                                 </p>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                <div style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '8px',
+                                    maxHeight: '216px',
+                                    overflowY: 'auto',
+                                    paddingRight: '4px',
+                                    marginRight: '-4px',
+                                }}>
                                     {tenantSelection.map((tenant: any) => (
                                         <button
                                             key={tenant.tenant_id}
@@ -546,52 +557,53 @@ export default function Login() {
                                             {tenant.tenant_name} {tenant.tenant_slug && `(${tenant.tenant_slug})`}
                                         </button>
                                     ))}
-                                    {/* Create or Join Organization */}
-                                    <button
-                                        onClick={async () => {
-                                            // Log in with the first tenant to get a valid token, then redirect to company setup
-                                            try {
-                                                setLoading(true);
-                                                const firstTenant = tenantSelection[0];
-                                                const res = await authApi.login({
-                                                    login_identifier: form.login_identifier,
-                                                    password: form.password,
-                                                    tenant_id: firstTenant.tenant_id,
-                                                });
-                                                const tokenRes = res as TokenResponse;
-                                                setAuth(tokenRes.user, tokenRes.access_token);
-                                                setTenantSelection(null);
-                                                navigate('/setup-company?from=tenant-selection');
-                                            } catch (err: any) {
-                                                setError(err.message || 'Failed');
-                                                setTenantSelection(null);
-                                            } finally {
-                                                setLoading(false);
-                                            }
-                                        }}
-                                        style={{
-                                            padding: '12px 16px',
-                                            borderRadius: '10px',
-                                            border: '1px dashed rgba(255,255,255,0.15)',
-                                            background: 'transparent',
-                                            color: 'rgba(255,255,255,0.38)',
-                                            fontSize: '14px',
-                                            cursor: 'pointer',
-                                            textAlign: 'left',
-                                            transition: 'border-color 0.15s, color 0.15s',
-                                        }}
-                                        onMouseEnter={e => {
-                                            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.28)';
-                                            (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.6)';
-                                        }}
-                                        onMouseLeave={e => {
-                                            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.15)';
-                                            (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.38)';
-                                        }}
-                                    >
-                                        {t('auth.createOrJoinOrganization', 'Create or Join Organization')}
-                                    </button>
                                 </div>
+                                {/* Create or Join Organization */}
+                                <button
+                                    onClick={async () => {
+                                        // Log in with the first tenant to get a valid token, then redirect to company setup
+                                        try {
+                                            setLoading(true);
+                                            const firstTenant = tenantSelection[0];
+                                            const res = await authApi.login({
+                                                login_identifier: form.login_identifier,
+                                                password: form.password,
+                                                tenant_id: firstTenant.tenant_id,
+                                            });
+                                            const tokenRes = res as TokenResponse;
+                                            setAuth(tokenRes.user, tokenRes.access_token);
+                                            setTenantSelection(null);
+                                            navigate('/setup-company?from=tenant-selection');
+                                        } catch (err: any) {
+                                            setError(err.message || 'Failed');
+                                            setTenantSelection(null);
+                                        } finally {
+                                            setLoading(false);
+                                        }
+                                    }}
+                                    style={{
+                                        marginTop: '8px',
+                                        padding: '12px 16px',
+                                        borderRadius: '10px',
+                                        border: '1px dashed rgba(255,255,255,0.15)',
+                                        background: 'transparent',
+                                        color: 'rgba(255,255,255,0.38)',
+                                        fontSize: '14px',
+                                        cursor: 'pointer',
+                                        textAlign: 'left',
+                                        transition: 'border-color 0.15s, color 0.15s',
+                                    }}
+                                    onMouseEnter={e => {
+                                        (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.28)';
+                                        (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.6)';
+                                    }}
+                                    onMouseLeave={e => {
+                                        (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.15)';
+                                        (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.38)';
+                                    }}
+                                >
+                                    {t('auth.createOrJoinOrganization', 'Create or Join Organization')}
+                                </button>
                                 <button
                                     onClick={() => setTenantSelection(null)}
                                     style={{

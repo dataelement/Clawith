@@ -137,7 +137,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
     """
     try:
         from app.database import async_session
-        from app.models.agent import Agent, AgentPermission
+        from app.models.agent import Agent
         from app.models.llm import LLMModel
         from app.services.llm import get_model_api_key
 
@@ -173,17 +173,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             agent_name = agent.name
             agent_role = agent.role_description or ""
             agent_creator_id = agent.creator_id
-            private_q = await db.execute(
-                select(
-                    exists().where(
-                        and_(
-                            AgentPermission.agent_id == agent_id,
-                            AgentPermission.scope_type == "user",
-                        )
-                    )
-                )
-            )
-            agent_is_private = bool(private_q.scalar())
+            agent_is_private = (getattr(agent, "access_mode", None) or "company") != "company"
             model_provider = model.provider
             model_api_key = get_model_api_key(model)
             model_model = model.model

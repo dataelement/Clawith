@@ -6,6 +6,7 @@ from loguru import logger
 from sqlalchemy import select
 from app.database import async_session
 from app.models.tool import Tool, AgentTool
+from app.services.tool_config import decrypt_sensitive_fields, get_tenant_tool_config
 
 
 # ── Smithery Registry Search ────────────────────────────────────
@@ -24,21 +25,19 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
     handing the value to httpx — otherwise Smithery rejects with 401.
     Falls back to raw value when decrypt fails (e.g. legacy plaintext keys).
     """
-    from app.core.security import decrypt_data
-    from app.config import get_settings as _get_settings
-    secret_key = _get_settings().SECRET_KEY
-
     def _maybe_decrypt(raw: str) -> str:
         if not raw:
             return ""
-        try:
-            return decrypt_data(raw, secret_key)
-        except Exception:
-            # Already plaintext (legacy / seeded with plain key) — return as-is.
-            return raw
+        return decrypt_sensitive_fields({"value": raw}, {"fields": [{"key": "value", "type": "password"}]}).get("value", raw)
 
     try:
         async with async_session() as db:
+            agent_tenant_id = None
+            if agent_id:
+                from app.models.agent import Agent as AgentModel
+                tenant_r = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+                agent_tenant_id = tenant_r.scalar_one_or_none()
+
             # 1) Per-agent: check AgentTool configs for any MCP tool with a smithery_api_key
             if agent_id:
                 at_r = await db.execute(
@@ -47,11 +46,16 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
                 for at in at_r.scalars().all():
                     if at.config and at.config.get("smithery_api_key"):
                         return _maybe_decrypt(at.config["smithery_api_key"])
-            # 2) System-level fallback
+            # 2) Tenant/company fallback for builtin discovery tools
             for tool_name in ("discover_resources", "import_mcp_server"):
                 r = await db.execute(select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
-                if tool and tool.config and tool.config.get("smithery_api_key"):
+                if not tool:
+                    continue
+                tenant_config = await get_tenant_tool_config(db, agent_tenant_id, tool.name, tool.config_schema)
+                if tenant_config.get("smithery_api_key"):
+                    return tenant_config["smithery_api_key"]
+                if tool.config and tool.config.get("smithery_api_key") and not agent_tenant_id:
                     return _maybe_decrypt(tool.config["smithery_api_key"])
     except Exception:
         pass
@@ -90,23 +94,33 @@ async def _search_smithery_api(query: str, max_results: int, api_key: str) -> li
         return []
 
 
-async def _get_modelscope_api_token() -> str:
+async def _get_modelscope_api_token(agent_id: uuid.UUID | None = None) -> str:
     """Read ModelScope API token from discover_resources tool config."""
     try:
         async with async_session() as db:
+            agent_tenant_id = None
+            if agent_id:
+                from app.models.agent import Agent as AgentModel
+                tenant_r = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+                agent_tenant_id = tenant_r.scalar_one_or_none()
             for tool_name in ("discover_resources", "import_mcp_server"):
                 r = await db.execute(select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
-                if tool and tool.config and tool.config.get("modelscope_api_token"):
+                if not tool:
+                    continue
+                tenant_config = await get_tenant_tool_config(db, agent_tenant_id, tool.name, tool.config_schema)
+                if tenant_config.get("modelscope_api_token"):
+                    return tenant_config["modelscope_api_token"]
+                if tool.config and tool.config.get("modelscope_api_token") and not agent_tenant_id:
                     return tool.config["modelscope_api_token"]
     except Exception:
         pass
     return ""
 
 
-async def _search_modelscope_api(query: str, max_results: int) -> list[dict]:
+async def _search_modelscope_api(query: str, max_results: int, agent_id: uuid.UUID | None = None) -> list[dict]:
     """Search ModelScope MCP Hub via official OpenAPI (no WAF issues)."""
-    api_token = await _get_modelscope_api_token()
+    api_token = await _get_modelscope_api_token(agent_id)
     if not api_token:
         return []  # Silently skip if no token configured
 
@@ -152,14 +166,14 @@ async def _search_modelscope_api(query: str, max_results: int) -> list[dict]:
         return []
 
 
-async def search_registries(query: str, max_results: int = 5) -> str:
+async def search_registries(query: str, max_results: int = 5, agent_id: uuid.UUID | None = None) -> str:
     """Search both Smithery and ModelScope for MCP servers."""
-    api_key = await _get_smithery_api_key()
+    api_key = await _get_smithery_api_key(agent_id)
 
     # Search both registries in parallel
     import asyncio
     smithery_task = _search_smithery_api(query, max_results, api_key)
-    modelscope_task = _search_modelscope_api(query, max_results)
+    modelscope_task = _search_modelscope_api(query, max_results, agent_id)
     smithery_results, modelscope_results = await asyncio.gather(smithery_task, modelscope_task)
 
     # Merge: Smithery first, then ModelScope (deduplicate by name)
@@ -202,8 +216,8 @@ async def search_registries(query: str, max_results: int = 5) -> str:
 
 
 # Keep backward-compatible alias
-async def search_smithery(query: str, max_results: int = 5) -> str:
-    return await search_registries(query, max_results)
+async def search_smithery(query: str, max_results: int = 5, agent_id: uuid.UUID | None = None) -> str:
+    return await search_registries(query, max_results, agent_id=agent_id)
 
 
 # ── Import MCP Server ───────────────────────────────────────────
@@ -849,4 +863,3 @@ async def refresh_atlassian_rovo_api_key(api_key: str) -> None:
         )
         await db.commit()
     logger.info("[AtlassianRovo] API key refreshed for all Rovo tools")
-

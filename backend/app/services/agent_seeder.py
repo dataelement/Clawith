@@ -609,6 +609,15 @@ async def _seed_okr_triggers(db, agent_id: uuid.UUID) -> None:
     These supplement the 4-hour heartbeat with precise scheduled firing.
     is_system=True prevents users from deleting them.
     """
+    from app.services.focus_service import ensure_focus_item
+
+    system_focus_ref = await ensure_focus_item(
+        agent_id,
+        focus_ref="system:okr_reports",
+        description="OKR 自动汇总、日报收集与周期报告",
+        system=True,
+    )
+
     triggers_to_create = [
         {
             "name": "daily_okr_collection",
@@ -688,6 +697,7 @@ async def _seed_okr_triggers(db, agent_id: uuid.UUID) -> None:
             reason=t["reason"],
             cooldown_seconds=t["cooldown_seconds"],
             is_system=t["is_system"],
+            focus_ref=system_focus_ref,
             is_enabled=True,
         )
         db.add(trigger)
@@ -875,6 +885,9 @@ async def patch_existing_okr_agent() -> None:
 
             await _seed_okr_triggers(db, agent.id)
             changed = await _sync_okr_triggers_with_settings(db, agent.id, okr_settings) or changed
+            if agent.tenant_id:
+                from app.services.okr_agent_hook import sync_okr_agent_platform_members
+                changed = bool(await sync_okr_agent_platform_members(db, agent.tenant_id)) or changed
 
             if changed:
                 changed_any = True
@@ -1020,11 +1033,11 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
                     f"[AgentSeeder] OKR tool '{tool_name}' not found — run tool seeder first"
                 )
 
-        await db.commit()
-        logger.info(f"[AgentSeeder] Created OKR Agent for tenant {tenant_id} ({okr_agent.id})")
-
         # ── Create system cron triggers ──
         await _seed_okr_triggers(db, okr_agent.id)
         await _sync_okr_triggers_with_settings(db, okr_agent.id, okr_settings)
+        from app.services.okr_agent_hook import sync_okr_agent_platform_members
+        await sync_okr_agent_platform_members(db, tenant_id)
         await db.commit()
+        logger.info(f"[AgentSeeder] Created OKR Agent for tenant {tenant_id} ({okr_agent.id})")
         logger.info(f"[AgentSeeder] OKR triggers created for tenant {tenant_id}")

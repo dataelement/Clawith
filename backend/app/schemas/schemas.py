@@ -218,7 +218,7 @@ class AgentCreate(BaseModel):
     primary_model_id: uuid.UUID | None = None
     fallback_model_id: uuid.UUID | None = None
     # Permissions
-    permission_scope_type: str = "company"  # company | user
+    permission_scope_type: str = "company"  # company | user | custom
     permission_scope_ids: list[uuid.UUID] = []
     permission_access_level: str = "use"  # use | manage
     # Target tenant (admin-only override; otherwise ignored)
@@ -271,6 +271,8 @@ class AgentOut(BaseModel):
     expires_at: datetime | None = None
     is_expired: bool = False
     is_system: bool = False
+    access_mode: str = "company"
+    company_access_level: str = "use"
     llm_calls_today: int = 0
     max_llm_calls_per_day: int = 1000
     agent_type: str = "native"

@@ -534,6 +534,8 @@
         "companyWideDesc": "All users in the organization can use this agent",
         "onlyMe": "Only Me",
         "onlyMeDesc": "Only the creator can use this agent",
+        "custom": "Custom",
+        "customDesc": "Choose specific platform users in Settings",
         "defaultAccess": "Default Access Level",
         "useAccess": "Use",
         "useAccessDesc": "Task, Chat, Tools, Skills, Workspace",
@@ -1430,6 +1432,9 @@
     "dangerZone": "️ Danger Zone",
     "deleteCompanyDesc": "Permanently delete this company and all its data, including agents, models, tools, and skills. This action cannot be undone.",
     "deleteCompany": "Delete this company",
+    "deleteCompanyTitle": "Delete company",
+    "deleteCompanyConfirmButton": "Permanently delete",
+    "deleteCompanyFailed": "Failed to delete company",
     "emailTemplates": {
       "title": "Email Templates",
       "description": "Customize email content for each scenario. Use {{variable}} placeholders to insert dynamic data.",
@@ -1519,6 +1524,15 @@
       "description": "Describe your company's mission, products, and culture. This information will be included as context in every Agent conversation.",
       "hint": "This content will appear in every Agent's system prompt"
     }
+  },
+  "dialog": {
+    "confirmTitle": "Please confirm",
+    "errorTitle": "Something went wrong",
+    "successTitle": "Success",
+    "warningTitle": "Notice",
+    "infoTitle": "Notice",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details"
   },
   "common": {
     "save": "Save",

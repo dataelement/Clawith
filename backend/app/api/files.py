@@ -20,6 +20,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
 from app.models.workspace import WorkspaceFileRevision
+from app.services.focus_service import is_focus_file_path
 from app.services.workspace_collaboration import (
     acquire_edit_lock,
     content_hash,
@@ -513,6 +514,11 @@ async def write_file(
 ):
     """Write content to a file (create or overwrite)."""
     await check_agent_access(db, current_user, agent_id)
+    if is_focus_file_path(path):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Focus is stored in the system database. Use the Focus API.",
+        )
     if path.startswith("enterprise_info"):
         if current_user.role not in ("platform_admin", "org_admin"):
             raise HTTPException(status_code=403, detail="Only admins can edit enterprise knowledge base")
@@ -553,6 +559,8 @@ async def lock_file(
 ):
     """Acquire or refresh a short-lived human editing lock for a file."""
     await check_agent_access(db, current_user, agent_id)
+    if is_focus_file_path(data.path):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Focus is stored in the system database.")
     lock = await acquire_edit_lock(
         db,
         agent_id=agent_id,
@@ -587,6 +595,8 @@ async def get_file_revisions(
 ):
     """List version history for the currently opened Workspace file."""
     await check_agent_access(db, current_user, agent_id)
+    if is_focus_file_path(path):
+        return []
     if path.startswith("enterprise_info"):
         return []
     revisions = await list_revisions(db, agent_id=agent_id, path=path)
@@ -656,6 +666,11 @@ async def delete_file(
 ):
     """Delete a file."""
     await check_agent_access(db, current_user, agent_id)
+    if is_focus_file_path(path):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Focus is stored in the system database. Use the Focus API.",
+        )
     storage = get_storage_backend()
     if path.startswith("enterprise_info") and current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=403, detail="Only admins can delete enterprise knowledge base files")

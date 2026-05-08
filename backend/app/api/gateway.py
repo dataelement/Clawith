@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, async_session
+from app.core.permissions import evaluate_agent_relationship_status, evaluate_human_relationship_status
 from app.models.agent import Agent
 from app.models.gateway_message import GatewayMessage
 from app.models.user import User
@@ -152,7 +153,8 @@ async def poll_messages(
         .options(selectinload(AgentRelationship.member))
     )
     for r in h_result.scalars().all():
-        if r.member:
+        status_info = await evaluate_human_relationship_status(db, r, source_agent=agent)
+        if r.member and status_info["access_status"] == "active":
             channels = []
             if getattr(r.member, 'external_id', None) or getattr(r.member, 'open_id', None):
                 channels.append("feishu")
@@ -173,7 +175,8 @@ async def poll_messages(
         .options(selectinload(AgentAgentRelationship.target_agent))
     )
     for r in a_result.scalars().all():
-        if r.target_agent:
+        status_info = await evaluate_agent_relationship_status(db, r)
+        if r.target_agent and status_info["access_status"] == "active":
             rel_items.append(GatewayRelationshipItem(
                 name=r.target_agent.name,
                 type="agent",
@@ -486,11 +489,26 @@ async def send_message(
     content = body.content.strip()
     channel_hint = (body.channel or "").strip().lower()
 
-    # 1. Try to find target as another Agent
-    result = await db.execute(
-        select(Agent).where(Agent.name.ilike(f"%{target_name}%"))
+    # 1. Try to find target as another Agent, limited to active relationships.
+    from app.models.org import AgentAgentRelationship
+    from sqlalchemy.orm import selectinload
+
+    rel_result = await db.execute(
+        select(AgentAgentRelationship)
+        .where(AgentAgentRelationship.agent_id == agent.id)
+        .options(selectinload(AgentAgentRelationship.target_agent))
     )
-    target_agent = result.scalars().first()
+    target_agent = None
+    for rel in rel_result.scalars().all():
+        candidate = rel.target_agent
+        if not candidate:
+            continue
+        status_info = await evaluate_agent_relationship_status(db, rel)
+        if status_info["access_status"] != "active":
+            continue
+        if candidate.name.lower() == target_name.lower() or target_name.lower() in candidate.name.lower():
+            target_agent = candidate
+            break
 
     logger.info(f"[Gateway] send_message: target='{target_name}', found_agent={target_agent.name if target_agent else None}, agent_type={getattr(target_agent, 'agent_type', None) if target_agent else None}, channel_hint='{channel_hint}'")
 
@@ -551,13 +569,15 @@ async def send_message(
 
     target_member = None
     for r in rels:
-        if r.member and r.member.name == target_name:
+        status_info = await evaluate_human_relationship_status(db, r, source_agent=agent)
+        if r.member and status_info["access_status"] == "active" and r.member.name == target_name:
             target_member = r.member
             break
     # Fuzzy match if exact match fails
     if not target_member:
         for r in rels:
-            if r.member and target_name.lower() in r.member.name.lower():
+            status_info = await evaluate_human_relationship_status(db, r, source_agent=agent)
+            if r.member and status_info["access_status"] == "active" and target_name.lower() in r.member.name.lower():
                 target_member = r.member
                 break
 

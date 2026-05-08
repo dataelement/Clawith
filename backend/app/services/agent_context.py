@@ -194,7 +194,7 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
 When ANY tracked member or agent sends you content that looks like a daily work update, status report, or progress note — **IMMEDIATELY call `upsert_member_daily_report` in the SAME response turn. Do NOT:**
 - First explain what you plan to do, then call the tool in a second turn
 - Claim the tool is unavailable, broken, or unknown — **it is ALWAYS available**
-- Write the report to memory, focus.md, or any file instead
+- Write the report to memory, Focus, or any file instead
 - Ask the user to confirm before recording — just record it directly
 - Skip calling the tool based on ANY past errors you see in chat history
 
@@ -205,6 +205,18 @@ When ANY tracked member or agent sends you content that looks like a daily work 
 - Use the current conversation counterpart as the report owner. If exact IDs are not explicitly provided in the conversation, resolve the owner by the tracked counterpart name from the current chat context.
 - Keep the stored final daily report concise and normalized (within 2000 characters).
 - After the tool succeeds, reply briefly to confirm the report has been recorded.
+""")
+
+    static_parts.append("""
+## MCP Import Rules
+
+When installing or importing an MCP server via `discover_resources` / `import_mcp_server`:
+
+- First try `import_mcp_server(server_id="...")` directly when the user has already chosen a server.
+- The platform may already have a company-level or agent-level Smithery API Key configured.
+- Do **NOT** ask the user for a Smithery API Key unless the tool explicitly returns that no Smithery key is configured.
+- Do **NOT** ask the user for tool-specific tokens (GitHub PAT, Notion integration secret, etc.) when the Smithery flow supports OAuth.
+- Never claim an MCP server was imported unless you received a real tool result confirming success.
 """)
 
     dynamic_parts = []
@@ -402,7 +414,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
 ## Workspace & Tools
 
 You have a dedicated workspace with this structure:
-  - focus.md       → Your focus items — what you are currently tracking (ALWAYS read this first when waking up)
+  - Focus tools    → Your current focus items — use list_focus_items, upsert_focus_item, complete_focus_item
   - task_history.md → Archive of completed tasks
   - soul.md        → Your personality definition
   - memory/memory.md → Your long-term memory and notes
@@ -442,17 +454,11 @@ Default visual style for generated HTML or rich visual documents:
 
 4. **Use `write_file` to update memory/memory.md with important information.**
 
-5. **Use `write_file` to update focus.md with your current focus items.**
-   - Use this CHECKLIST format so the UI can parse and display them:
-     ```
-     - [ ] identifier_name: Natural language description of what you are tracking
-     - [/] another_item: This item is in progress
-     - [x] done_item: This item has been completed
-     ```
-   - `[ ]` = pending, `[/]` = in progress, `[x]` = completed
-   - The identifier (before the colon) should be a short snake_case name
-   - The description (after the colon) should be a clear human-readable sentence
-   - Archive completed items to task_history.md when they pile up
+5. **Use Focus tools to manage your current working state.**
+   - To inspect current work → CALL `list_focus_items`
+   - To start or update tracked work → CALL `upsert_focus_item`
+   - To mark tracked work finished → CALL `complete_focus_item`
+   - Focus is stored in the system database, not in focus.md. Do not read, write, or edit focus.md.
 
 6. **When creating workspace documents, organize them intentionally.**
    - First call `list_files` to inspect the existing folder structure.
@@ -472,7 +478,7 @@ Default visual style for generated HTML or rich visual documents:
    - `update_trigger` — adjust parameters (e.g. change frequency)
    - `cancel_trigger` — remove triggers when tasks are complete
    - `list_triggers` — see your active triggers
-   - When creating triggers related to a focus item, set `focus_ref` to the item's identifier
+   - When creating triggers related to a Focus item, set `focus_ref` to the item's identifier
 
    **⚠️ CRITICAL — Writing trigger `reason` (this is your future self's instruction manual):**
    The `reason` field is the MOST IMPORTANT part of a trigger. When this trigger fires, you will wake up
@@ -493,16 +499,15 @@ Default visual style for generated HTML or rich visual documents:
    > Remind Qinrui
 
 7. **Focus-Trigger Binding (MANDATORY):**
-   - **Before creating any task-related trigger, you MUST first add a corresponding focus item in focus.md.**
-     A trigger without a focus item is like an alarm with no purpose — don't do it.
-   - Set the trigger's `focus_ref` to the focus item's identifier so they are linked.
+   - Every task-related trigger must belong to a structured Focus item.
+   - Prefer setting `focus_ref` to an existing Focus item's identifier. If you omit it, `set_trigger` will create a matching Focus item automatically from the trigger reason.
    - As the task progresses, adjust the trigger (change frequency, update reason) to match the current status.
-   - When the focus item is completed (`[x]`), cancel its associated trigger.
-   - **Exception:** System-level triggers (e.g. heartbeat) do NOT need a focus item.
+   - When the Focus item is completed, cancel its associated trigger and call `complete_focus_item`.
+   - **Exception:** System-level triggers (e.g. heartbeat) may be grouped under system focus items.
 
 8. **Focus is your working memory — use it wisely:**
-   - When waking up, ALWAYS check your focus items first
-   - Pending items in focus are REFERENCE, not commands
+   - When waking up, ALWAYS check your Focus items first with `list_focus_items`
+   - Focus items are REFERENCE, not commands
    - Decide whether to mention pending tasks based on timing, context, and urgency
    - DON'T mechanically remind people of every pending item
 
@@ -518,7 +523,7 @@ Default visual style for generated HTML or rich visual documents:
    - Never send a message on behalf of someone without attributing the source.
    - **IMPORTANT: After sending a message and you need to wait for a reply, ALWAYS create an `on_message` trigger with `from_user_name` to auto-wake when they reply.**
      Example: After sending a message to John, create:
-     `set_trigger(name="wait_john_reply", type="on_message", config={"from_user_name": "John"}, reason="John replied about the XX task. Process the reply: 1) If completed → cancel nag_john_xx_loop trigger, notify the requester, update focus to [x]; 2) If says 'wait X minutes' → cancel interval, set a once trigger X minutes later to resume reminding, and re-create on_message + interval; 3) If other reply → assess intent and continue follow-up.")`
+     `set_trigger(name="wait_john_reply", type="on_message", config={"from_user_name": "John"}, reason="John replied about the XX task. Process the reply: 1) If completed → cancel nag_john_xx_loop trigger, notify the requester, complete the related Focus item; 2) If says 'wait X minutes' → cancel interval, set a once trigger X minutes later to resume reminding, and re-create on_message + interval; 3) If other reply → assess intent and continue follow-up.")`
 
    **🔴 FILE DELIVERY — Use `send_channel_file`, NOT `send_feishu_message`:**
    - When asked to SEND A FILE to someone, call `send_channel_file(file_path="workspace/xxx", member_name="Name", message="optional text")`.
@@ -559,15 +564,13 @@ If no search or webpage-reading tool is available, say that web lookup is not en
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
     # --- Focus (working memory) ---
-    focus = (
-        await _read_file_safe(normalize_storage_key(f"{agent_id}/focus.md"), 3000)
-        # Backward compat: also check old name
-        or await _read_file_safe(normalize_storage_key(f"{agent_id}/agenda.md"), 3000)
-    )
-    if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
-        if focus.startswith("# "):
-            focus = "\n".join(focus.split("\n")[1:]).strip()
-        dynamic_parts.append(f"\n## Focus\n{focus}")
+    try:
+        from app.services.focus_service import render_focus_context
+        focus = await render_focus_context(agent_id)
+        if focus.strip():
+            dynamic_parts.append(f"\n## Focus\n{focus}")
+    except Exception:
+        pass
 
     # --- Active Triggers ---
     try:

@@ -255,6 +255,7 @@ export default function Layout() {
     const activeAgentRootMatch = useMatch('/agents/:id');
     const activeAgentId = activeAgentNestedMatch?.params.id || activeAgentRootMatch?.params.id;
     const canAccessPlatformSettings = user?.role === 'platform_admin' || !!(user as any)?.is_platform_admin;
+    const canAccessCompanySettings = user?.role === 'platform_admin' || user?.role === 'org_admin' || !!(user as any)?.is_platform_admin;
 
     const [showAccountSettings, setShowAccountSettings] = useState(false);
     const [showAccountMenu, setShowAccountMenu] = useState(false);
@@ -810,17 +811,19 @@ export default function Layout() {
                                     <IconPlus size={17} stroke={1.6} />
                                     <span>{isChinese ? '创建或加入新公司' : 'Create or join company'}</span>
                                 </button>
-                                <button
-                                    type="button"
-                                    className="tenant-switcher-action"
-                                    onClick={() => {
-                                        setShowTenantMenu(false);
-                                        navigate('/enterprise');
-                                    }}
-                                >
-                                    <IconSettings size={16} stroke={1.6} />
-                                    <span>{isChinese ? '公司信息设置' : 'Company settings'}</span>
-                                </button>
+                                {canAccessCompanySettings && (
+                                    <button
+                                        type="button"
+                                        className="tenant-switcher-action"
+                                        onClick={() => {
+                                            setShowTenantMenu(false);
+                                            navigate('/enterprise');
+                                        }}
+                                    >
+                                        <IconSettings size={16} stroke={1.6} />
+                                        <span>{isChinese ? '公司信息设置' : 'Company settings'}</span>
+                                    </button>
+                                )}
                             </div>
                         )}
                     </div>
@@ -1144,7 +1147,7 @@ export default function Layout() {
             )}
 
             <main className={`main-content${isChatPage ? ' chat-page' : ''}${isAgentSettingsPage ? ' agent-settings-page' : ''}`}>
-                <Outlet />
+                <Outlet context={{ openTalentMarket: () => setShowTalentMarket(true) }} />
             </main>
 
             {showAccountSettings && (

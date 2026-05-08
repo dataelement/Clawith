@@ -445,6 +445,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                             {[
                                 { value: 'company', label: t('wizard.step4.companyWide'), desc: t('wizard.step4.companyWideDesc') },
                                 { value: 'user', label: t('wizard.step4.selfOnly'), desc: t('wizard.step4.selfOnlyDesc') },
+                                { value: 'custom', label: t('agent.settings.perm.custom', 'Custom'), desc: t('agent.settings.perm.customDesc', 'Start private, then choose platform users in Settings') },
                             ].map((scope) => (
                                 <label key={scope.value} style={{
                                     flex: 1, display: 'flex', alignItems: 'center', gap: '10px', padding: '12px',
@@ -543,7 +544,6 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                                 onChange={() => { setForm({ ...form, primary_model_id: m.id }); clearFieldError('primary_model_id'); }} />
                                             <div>
                                                 <div style={{ fontWeight: 500, fontSize: '13px' }}>{m.label}</div>
-                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{m.provider}/{m.model}</div>
                                             </div>
                                         </label>
                                     ))}
@@ -655,6 +655,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                             {[
                                 { value: 'company', label: t('wizard.step4.companyWide'), desc: t('wizard.step4.companyWideDesc') },
                                 { value: 'user', label: t('wizard.step4.selfOnly'), desc: t('wizard.step4.selfOnlyDesc') },
+                                { value: 'custom', label: t('agent.settings.perm.custom', 'Custom'), desc: t('agent.settings.perm.customDesc', 'Start private, then choose platform users in Settings') },
                             ].map((scope) => (
                                 <label key={scope.value} style={{
                                     display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',

@@ -21,6 +21,7 @@ class TriggerResponse(BaseModel):
     reason: str
     focus_ref: str | None = None
     is_enabled: bool
+    is_system: bool = False
     fire_count: int
     max_fires: int | None = None
     cooldown_seconds: int
@@ -58,6 +59,7 @@ async def list_agent_triggers(agent_id: uuid.UUID, user=Depends(get_current_user
             reason=t.reason or "",
             focus_ref=t.focus_ref,
             is_enabled=t.is_enabled,
+            is_system=t.is_system,
             fire_count=t.fire_count,
             max_fires=t.max_fires,
             cooldown_seconds=t.cooldown_seconds,

@@ -102,6 +102,13 @@ class Agent(Base):
     # and their system triggers are protected from user deletion.
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Access model:
+    # - company: all platform users in the tenant can access; all tenant agents can interact.
+    # - private: only the creator can use/manage; hidden from Plaza.
+    # - custom: explicit user access rows; agent-to-agent access is configured via Relationships.
+    access_mode: Mapped[str] = mapped_column(String(20), default="company", nullable=False)
+    company_access_level: Mapped[str] = mapped_column(String(20), default="use", nullable=False)
+
     # Daily LLM call limit
     llm_calls_today: Mapped[int] = mapped_column(Integer, default=0)
     max_llm_calls_per_day: Mapped[int] = mapped_column(Integer, default=1000)

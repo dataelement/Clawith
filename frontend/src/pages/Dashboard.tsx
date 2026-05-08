@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { agentApi, taskApi, activityApi, fetchJson, tenantApi } from '../services/api';
 import type { Agent, Task } from '../types';
+
+type LayoutOutletContext = {
+    openTalentMarket?: () => void;
+};
 
 /* ────── Inline SVG Icons (monochrome) ────── */
 
@@ -500,6 +504,8 @@ function ActivityFeed({ activities, agents }: { activities: any[]; agents: Agent
 export default function Dashboard() {
     const { t } = useTranslation();
     const navigate = useNavigate();
+    const outletContext = useOutletContext<LayoutOutletContext | null>();
+    const openTalentMarket = outletContext?.openTalentMarket;
     const currentTenant = localStorage.getItem('current_tenant_id') || '';
 
     const { data: agents = [], isLoading } = useQuery({
@@ -590,7 +596,16 @@ export default function Dashboard() {
                     <div style={{ color: 'var(--text-secondary)', marginBottom: '16px', fontSize: '14px' }}>
                         {t('dashboard.noAgents')}
                     </div>
-                    <button className="btn btn-primary" onClick={() => navigate('/agents/new')}>
+                    <button
+                        className="btn btn-primary"
+                        onClick={() => {
+                            if (openTalentMarket) {
+                                openTalentMarket();
+                                return;
+                            }
+                            navigate('/agents/new');
+                        }}
+                    >
                         {Icons.plus} {t('nav.newAgent')}
                     </button>
                 </div>

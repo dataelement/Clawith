@@ -3103,6 +3103,19 @@ export default function EnterpriseSettings() {
     const [toolStatusFilter, setToolStatusFilter] = useState<'all' | 'enabled' | 'disabled' | 'default' | 'configured'>('all');
     const [expandedToolCategories, setExpandedToolCategories] = useState<Set<string>>(() => new Set());
     const [expandedAgentInstalledGroups, setExpandedAgentInstalledGroups] = useState<Set<string>>(() => new Set());
+    const hasMeaningfulConfigValue = (value: any): boolean => {
+        if (value == null) return false;
+        if (typeof value === 'string') return value.trim().length > 0;
+        if (typeof value === 'number') return Number.isFinite(value);
+        if (typeof value === 'boolean') return value;
+        if (Array.isArray(value)) return value.some(hasMeaningfulConfigValue);
+        if (typeof value === 'object') return Object.values(value).some(hasMeaningfulConfigValue);
+        return false;
+    };
+    const hasMeaningfulConfig = (config?: Record<string, any> | null): boolean => {
+        if (!config) return false;
+        return Object.values(config).some(hasMeaningfulConfigValue);
+    };
     const loadAllTools = async () => {
         const tid = selectedTenantId;
         const data = await fetchJson<any[]>(`/tools${tid ? `?tenant_id=${tid}` : ''}`);
@@ -3204,7 +3217,12 @@ export default function EnterpriseSettings() {
     });
     const setDefaultModel = useMutation({
         mutationFn: (modelId: string) => fetchJson(`/enterprise/llm-models/${modelId}/set-default`, { method: 'POST' }),
-        onSuccess: () => { refetchTenantForDefault(); },
+        onSuccess: () => {
+            refetchTenantForDefault();
+            qc.invalidateQueries({ queryKey: ['tenant', 'me'] });
+            qc.invalidateQueries({ queryKey: ['agents'] });
+            qc.invalidateQueries({ queryKey: ['agent'] });
+        },
     });
     const deleteModel = useMutation({
         mutationFn: async ({ id, force = false }: { id: string; force?: boolean }) => {
@@ -3738,7 +3756,11 @@ export default function EnterpriseSettings() {
                                 onClick={async () => {
                                     const ok = await dialog.confirm(
                                         t('enterprise.deleteCompanyConfirm', 'Are you sure you want to delete this company and ALL its data? This cannot be undone.'),
-                                        { title: '删除公司', danger: true, confirmLabel: '永久删除' },
+                                        {
+                                            title: t('enterprise.deleteCompanyTitle', 'Delete company'),
+                                            danger: true,
+                                            confirmLabel: t('enterprise.deleteCompanyConfirmButton', 'Permanently delete'),
+                                        },
                                     );
                                     if (!ok) return;
                                     try {
@@ -3750,7 +3772,7 @@ export default function EnterpriseSettings() {
                                         window.dispatchEvent(new StorageEvent('storage', { key: 'current_tenant_id', newValue: fallbackId }));
                                         qc.invalidateQueries({ queryKey: ['tenants'] });
                                     } catch (e: any) {
-                                        await dialog.alert('删除失败', { type: 'error', details: String(e?.message || e) });
+                                        await dialog.alert(t('enterprise.deleteCompanyFailed', 'Failed to delete company'), { type: 'error', details: String(e?.message || e) });
                                     }
                                 }}
                                 style={{
@@ -4205,7 +4227,7 @@ export default function EnterpriseSettings() {
                                     if (toolStatusFilter === 'enabled') return !!tool.enabled;
                                     if (toolStatusFilter === 'disabled') return !tool.enabled;
                                     if (toolStatusFilter === 'default') return !!tool.is_default;
-                                    if (toolStatusFilter === 'configured') return !!(tool.config && Object.keys(tool.config).length > 0);
+                                    if (toolStatusFilter === 'configured') return hasMeaningfulConfig(tool.config);
                                     return true;
                                 };
                                 const filteredTools = allTools.filter(tool => matchesSearch(tool) && matchesStatus(tool));
@@ -4240,7 +4262,7 @@ export default function EnterpriseSettings() {
                                 const renderToolRow = (tool: any, category: string, idx: number, total: number) => {
                                     const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[category];
                                     const hasOwnConfig = tool.config_schema?.fields?.length > 0 && !hasCategoryConfig;
-                                    const isConfigured = tool.config && Object.keys(tool.config).length > 0;
+                                    const isConfigured = hasMeaningfulConfig(tool.config);
                                     return (
                                         <div key={tool.id} style={{
                                             display: 'grid',
@@ -4377,7 +4399,7 @@ export default function EnterpriseSettings() {
                                             const label = meta.label;
                                             const enabledCount = allCatTools.filter((tool: any) => tool.enabled).length;
                                             const defaultCount = allCatTools.filter((tool: any) => tool.is_default).length;
-                                            const configuredCount = allCatTools.filter((tool: any) => tool.config && Object.keys(tool.config).length > 0).length;
+                                            const configuredCount = allCatTools.filter((tool: any) => hasMeaningfulConfig(tool.config)).length;
                                             const allEnabled = allCatTools.length > 0 && enabledCount === allCatTools.length;
                                             const mixed = enabledCount > 0 && enabledCount < allCatTools.length;
                                             const expanded = expandedToolCategories.has(category) || !!toolSearch.trim();
@@ -4412,7 +4434,7 @@ export default function EnterpriseSettings() {
                                                                 <button onClick={() => {
                                                                     setConfigCategory(meta.configCategory);
                                                                     setEditingConfig({});
-                                                                    const firstToolWithConfig = (allCatTools as any[]).find((tl: any) => tl.category === meta.configCategory && tl.config && Object.keys(tl.config).length > 0);
+                                                                    const firstToolWithConfig = (allCatTools as any[]).find((tl: any) => tl.category === meta.configCategory && hasMeaningfulConfig(tl.config));
                                                                     if (firstToolWithConfig?.config) setEditingConfig({ ...firstToolWithConfig.config });
                                                                 }} style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }} title={`Configure ${label}`}>
                                                                     {t('enterprise.tools.configure', 'Configure')}
@@ -4592,7 +4614,7 @@ export default function EnterpriseSettings() {
                                                                 });
                                                             }
                                                         } else {
-                                                            await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
+                                                            await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig, tenant_id: selectedTenantId || undefined }) });
                                                         }
                                                         setEditingToolId(null);
                                                         loadAllTools();
@@ -4641,7 +4663,7 @@ export default function EnterpriseSettings() {
                                                     const primaryToolName = GLOBAL_CATEGORY_CONFIG_PRIMARY_TOOL[configCategory];
                                                     const representativeTool = catTools.find((tl: any) => tl.name === primaryToolName) || catTools[0];
                                                     if (representativeTool) {
-                                                        await fetchJson(`/tools/${representativeTool.id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig }) });
+                                                        await fetchJson(`/tools/${representativeTool.id}`, { method: 'PUT', body: JSON.stringify({ config: editingConfig, tenant_id: selectedTenantId || undefined }) });
                                                     }
                                                     setConfigCategory(null);
                                                     loadAllTools();

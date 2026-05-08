@@ -45,7 +45,10 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
     });
 
     const enabled = (models as Model[]).filter(m => m.enabled !== false);
-    const selected = enabled.find(m => m.id === value) || enabled[0] || null;
+    const selected = enabled.find(m => m.id === value)
+        || enabled.find(m => tenantDefaultId && m.id === tenantDefaultId)
+        || enabled[0]
+        || null;
 
     // Click-outside to close. Includes the popover so clicking inside doesn't
     // close (which is important since the popover is portaled — `ref` doesn't

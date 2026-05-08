@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { IconAlertTriangle, IconCheck, IconInfoCircle, IconX } from '@tabler/icons-react';
 
 type DialogType = 'info' | 'success' | 'warning' | 'error';
@@ -69,6 +70,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
 }
 
 function DialogModal({ state, onClose }: { state: NonNullable<ModalState>; onClose: (result?: boolean) => void }) {
+    const { t } = useTranslation();
     const btnRef = useRef<HTMLButtonElement>(null);
     const [showDetails, setShowDetails] = useState(false);
 
@@ -88,7 +90,15 @@ function DialogModal({ state, onClose }: { state: NonNullable<ModalState>; onClo
         : (state.options.type ?? 'info');
     const meta = TYPE_META[type];
     const title = state.options.title
-        ?? (isConfirm ? '请确认' : type === 'error' ? '出错了' : type === 'success' ? '成功' : type === 'warning' ? '提示' : '提示');
+        ?? (isConfirm
+            ? t('dialog.confirmTitle', 'Please confirm')
+            : type === 'error'
+                ? t('dialog.errorTitle', 'Something went wrong')
+                : type === 'success'
+                    ? t('dialog.successTitle', 'Success')
+                    : type === 'warning'
+                        ? t('dialog.warningTitle', 'Notice')
+                        : t('dialog.infoTitle', 'Notice'));
     const details = !isConfirm ? state.options.details : undefined;
 
     return (
@@ -142,7 +152,7 @@ function DialogModal({ state, onClose }: { state: NonNullable<ModalState>; onClo
                                 cursor: 'pointer', textDecoration: 'underline',
                             }}
                         >
-                            {showDetails ? '收起详细信息' : '查看详细信息'}
+                            {showDetails ? t('dialog.hideDetails', 'Hide details') : t('dialog.showDetails', 'Show details')}
                         </button>
                         {showDetails && (
                             <pre style={{
@@ -165,7 +175,7 @@ function DialogModal({ state, onClose }: { state: NonNullable<ModalState>; onClo
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
                     {isConfirm && (
                         <button className="btn btn-secondary" onClick={() => onClose(false)}>
-                            {state.options.cancelLabel ?? '取消'}
+                            {state.options.cancelLabel ?? t('common.cancel', 'Cancel')}
                         </button>
                     )}
                     <button
@@ -174,8 +184,8 @@ function DialogModal({ state, onClose }: { state: NonNullable<ModalState>; onClo
                         onClick={() => onClose(true)}
                     >
                         {isConfirm
-                            ? (state.options.confirmLabel ?? '确定')
-                            : (state.options.confirmLabel ?? '确定')}
+                            ? (state.options.confirmLabel ?? t('common.confirm', 'Confirm'))
+                            : (state.options.confirmLabel ?? t('common.confirm', 'Confirm'))}
                     </button>
                 </div>
             </div>

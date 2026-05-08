@@ -565,6 +565,8 @@
         "companyWideDesc": "组织中的所有用户都可以使用此数字员工",
         "onlyMe": "仅我可见",
         "onlyMeDesc": "只有创建者可以使用此数字员工",
+        "custom": "指定成员",
+        "customDesc": "在设置中指定可使用的平台用户",
         "defaultAccess": "默认访问级别",
         "useAccess": "使用",
         "useAccessDesc": "任务、聊天、工具、技能、工作区",
@@ -1023,6 +1025,9 @@
     "dangerZone": "危险区域",
     "deleteCompanyDesc": "永久删除此公司及其所有数据，包括数字员工、模型、工具和技能。此操作无法撤销。",
     "deleteCompany": "删除此公司",
+    "deleteCompanyTitle": "删除公司",
+    "deleteCompanyConfirmButton": "永久删除",
+    "deleteCompanyFailed": "删除失败",
     "timezone": {
       "title": "公司时区",
       "description": "所有数字员工的默认时区。数字员工可以单独覆盖。",
@@ -1608,6 +1613,15 @@
         "footerText": "由于上述限制，目前大多数用户无法轻松完成企业微信集成配置。我们正在积极探索替代方案——包括申请企微服务商（ISV）资质及寻找限制更少的接入方式——同时也希望企微能够降低对 SaaS 平台的接入门槛。待可行路径明确后，配置入口将重新开启。"
       }
     }
+  },
+  "dialog": {
+    "confirmTitle": "请确认",
+    "errorTitle": "出错了",
+    "successTitle": "成功",
+    "warningTitle": "提示",
+    "infoTitle": "提示",
+    "showDetails": "查看详细信息",
+    "hideDetails": "收起详细信息"
   },
   "common": {
     "create": "创建",

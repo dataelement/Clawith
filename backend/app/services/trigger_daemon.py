@@ -76,6 +76,329 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
 
 # ── Main Tick Loop ──────────────────────────────────────────────────
 
+            # Build trigger context. Keep this model-facing prompt in English so
+            # autonomous wakeups behave consistently across UI locales.
+            context_parts = []
+            trigger_names = []
+            for t in triggers:
+                part = f"Trigger: {t.name} ({t.type})\nReason: {t.reason}"
+                if t.name == "daily_okr_collection":
+                    part += (
+                        "\nExecution requirements: First call get_okr_settings to confirm whether daily report collection is enabled. "
+                        "If it is enabled, only contact members and digital employees in your relationship network to collect today's final daily reports, "
+                        "then organize them into a formal daily report no longer than 2000 characters. "
+                        "If it is disabled, state that no action is needed and stop."
+                    )
+                elif t.name in ("daily_okr_report", "weekly_okr_report", "monthly_okr_report"):
+                    part += (
+                        "\nExecution requirements: This company-level report is generated automatically by the system. "
+                        "If you are awakened, only add necessary clarification. Do not start another member collection round."
+                    )
+                elif t.name == "biweekly_okr_checkin":
+                    part += (
+                        "\nExecution requirements: First call get_okr_settings to confirm whether OKR is enabled. "
+                        "If enabled, check the current-cycle company and member OKRs, then proactively remind members who have not set OKRs or whose progress is lagging. "
+                        "If disabled, state that no action is needed and stop."
+                    )
+                elif t.name == "monthly_okr_report":
+                    part += (
+                        "\nExecution requirements: First call get_okr_settings to confirm whether OKR is enabled. "
+                        "If enabled, call generate_monthly_okr_report to generate the OKR monthly report for the month that just ended, "
+                        "then send it to admins or publish it to Plaza. If disabled, state that no action is needed and stop."
+                    )
+                if t.focus_ref:
+                    part += f"\nRelated Focus: {t.focus_ref}"
+                # Include matched message for on_message triggers
+                cfg = t.config or {}
+                if t.type == "on_message" and cfg.get("_matched_message"):
+                    part += f"\nMatched message from {cfg.get('_matched_from', '?')}:\n\"{cfg['_matched_message'][:500]}\""
+                if t.type == "on_message" and cfg.get("okr_member_id") and cfg.get("okr_report_date"):
+                    part += (
+                        "\nExecution requirements: This is a daily-report reply ingestion event."
+                        f"\n1. Organize the other party's reply into a final daily report no longer than 2000 characters."
+                        f"\n2. Immediately call upsert_member_daily_report(report_date=\"{cfg['okr_report_date']}\", "
+                        f"member_type=\"{cfg.get('okr_member_type', 'user')}\", "
+                        f"member_id=\"{cfg['okr_member_id']}\", content=\"<organized daily report>\")."
+                        "\n3. After the tool call succeeds, send a brief confirmation that you received and recorded it."
+                        "\n4. Do not only confirm without calling the tool, and do not store the raw long conversation verbatim as the daily report."
+                    )
+                # Include webhook payload
+                if t.type == "webhook" and cfg.get("_webhook_payload"):
+                    payload_str = cfg["_webhook_payload"]
+                    if len(payload_str) > 2000:
+                        payload_str = payload_str[:2000] + "... (truncated)"
+                    part += f"\nWebhook Payload:\n{payload_str}"
+                context_parts.append(part)
+                trigger_names.append(t.name)
+
+            trigger_context = (
+                "===== Wake Context =====\n"
+                f"Wake source: trigger ({'multiple triggers fired together' if len(triggers) > 1 else 'trigger fired'})\n\n"
+                + "\n---\n".join(context_parts)
+                + "\n========================"
+            )
+
+            # Create Reflection Session
+            title = f"🤖 Reflection: {', '.join(trigger_names)}"
+            # Find agent's participant
+            result = await db.execute(
+                select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
+            )
+            agent_participant = result.scalar_one_or_none()
+
+            session = ChatSession(
+                agent_id=agent_id,
+                user_id=agent.creator_id,
+                participant_id=agent_participant.id if agent_participant else None,
+                source_channel="trigger",
+                title=title[:200],
+            )
+            db.add(session)
+            await db.flush()
+            session_id = session.id
+
+            # Messages: trigger context only (call_llm builds system prompt internally)
+            messages = [
+                {"role": "user", "content": trigger_context},
+            ]
+
+            # Store trigger context as a message in the session
+            db.add(ChatMessage(
+                agent_id=agent_id,
+                conversation_id=str(session_id),
+                role="user",
+                content=trigger_context,
+                user_id=agent.creator_id,
+                participant_id=agent_participant.id if agent_participant else None,
+            ))
+            await db.commit()
+            # Cache participant ID for callbacks
+            agent_participant_id = agent_participant.id if agent_participant else None
+
+        # Call LLM (outside the DB session to avoid long transactions)
+        collected_content = []
+        delivered_platform_message_via_tool = False
+
+        async def on_chunk(text):
+            collected_content.append(text)
+
+        # Persist tool calls into Reflection Session for Reflections visibility
+        async def on_tool_call(data):
+            nonlocal delivered_platform_message_via_tool
+            try:
+                tool_name = data.get("name")
+                tool_status = data.get("status")
+                if tool_status == "done" and tool_name == "send_platform_message":
+                    result_text = str(data.get("result", ""))
+                    if result_text.startswith("✅"):
+                        delivered_platform_message_via_tool = True
+
+                async with async_session() as _tc_db:
+                    if data["status"] == "running":
+                        _tc_db.add(ChatMessage(
+                            agent_id=agent_id,
+                            conversation_id=str(session_id),
+                            role="tool_call",
+                            content=_json.dumps({"name": data["name"], "args": data["args"]}, ensure_ascii=False, default=str),
+                            user_id=agent.creator_id,
+                            participant_id=agent_participant_id,
+                        ))
+                    elif data["status"] == "done":
+                        result_str = str(data.get("result", ""))[:2000]
+                        _tc_db.add(ChatMessage(
+                            agent_id=agent_id,
+                            conversation_id=str(session_id),
+                            role="tool_call",
+                            content=_json.dumps({"name": data["name"], "result": result_str}, ensure_ascii=False, default=str),
+                            user_id=agent.creator_id,
+                            participant_id=agent_participant_id,
+                        ))
+                    await _tc_db.commit()
+            except Exception as e:
+                logger.warning(f"Failed to persist tool call for trigger session: {e}")
+
+        reply = await call_llm(
+            model=model,
+            messages=messages,
+            agent_name=agent.name,
+            role_description=agent.role_description or "",
+            agent_id=agent_id,
+            user_id=agent.creator_id,
+            session_id=str(session_id),
+            on_chunk=on_chunk,
+            on_tool_call=on_tool_call,
+            # A2A wake uses the agent's own max_tool_rounds setting (no override)
+        )
+
+        # Save assistant reply to Reflection session
+        async with async_session() as db:
+            result = await db.execute(
+                select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
+            )
+            agent_participant = result.scalar_one_or_none()
+
+            db.add(ChatMessage(
+                agent_id=agent_id,
+                conversation_id=str(session_id),
+                role="assistant",
+                content=reply or "".join(collected_content),
+                user_id=agent.creator_id,
+                participant_id=agent_participant.id if agent_participant else None,
+            ))
+
+            # NOTE: trigger state (last_fired_at, fire_count, auto-disable)
+            # is already updated in _tick() BEFORE this task was launched,
+            # to prevent race-condition duplicate fires.
+
+            await db.commit()
+
+        # Compute final reply text once
+        final_reply = reply or "".join(collected_content)
+
+        # ── Save reply to A2A session if this was an agent-to-agent wake ──
+        # This makes the target agent's reply visible in the A2A chat history
+        for t in triggers:
+            a2a_sid = (t.config or {}).get("_a2a_session_id")
+            if a2a_sid and final_reply:
+                try:
+                    async with async_session() as db:
+                        from app.models.participant import Participant as _P
+                        _p_r = await db.execute(select(_P).where(_P.type == "agent", _P.ref_id == agent_id))
+                        _p = _p_r.scalar_one_or_none()
+                        db.add(ChatMessage(
+                            agent_id=agent_id,
+                            conversation_id=a2a_sid,
+                            role="assistant",
+                            content=final_reply,
+                            user_id=agent.creator_id,
+                            participant_id=_p.id if _p else None,
+                        ))
+                        # Update session timestamp
+                        from app.models.chat_session import ChatSession as _CS
+                        _cs_r = await db.execute(select(_CS).where(_CS.id == uuid.UUID(a2a_sid)))
+                        _cs = _cs_r.scalar_one_or_none()
+                        if _cs:
+                            _cs.last_message_at = datetime.now(timezone.utc)
+                        await db.commit()
+                        logger.info(f"[A2A] Saved reply to A2A session {a2a_sid}")
+                except Exception as e:
+                    logger.warning(f"[A2A] Failed to save reply to A2A session {a2a_sid}: {e}")
+                break  # Only save once
+
+        # Route trigger results to a single deterministic destination. Pure reflection/system
+        # wakes stay inside the reflection session and should not spill into arbitrary user chats.
+        is_a2a_internal = all(t.name == "a2a_wake" for t in triggers)
+        delivery_target = None if is_a2a_internal else await _resolve_trigger_delivery_target(agent, triggers)
+
+        if final_reply and delivery_target and not delivered_platform_message_via_tool:
+            try:
+                from app.api.websocket import manager as ws_manager
+                agent_id_str = str(agent_id)
+
+                # Build notification message with trigger badge
+                trigger_reasons = []
+                for t in triggers:
+                    ns = (t.config or {}).get("_notification_summary", "").strip()
+                    if ns:
+                        trigger_reasons.append(ns)
+                    else:
+                        r = (t.reason or "").strip()
+                        if r and len(r) <= 80:
+                            trigger_reasons.append(r)
+                        elif r:
+                            trigger_reasons.append(r[:77] + "...")
+                summary = trigger_reasons[0] if trigger_reasons else "有新的事件需要处理"
+
+                _is_a2a_wait = any(t.name.startswith("a2a_wait_") for t in triggers)
+                if _is_a2a_wait:
+                    import re as _re
+                    cleaned = final_reply
+                    _internal_patterns = [
+                        r'\b(a2a_wait_\w+|a2a_wake)\b',
+                        r'\bwait_?\w+_?(task|reply|followup|meeting|sync|api_key)\w*\b',
+                        r'\bresolve_\w+\b',
+                        r'\bfocus[_ ]?item\b',
+                        r'\btask_delegate\b',
+                        r'\bfocus_ref\b',
+                        r'✅\s*(a2a\w+|wait\w+|触发器\w*|focus\w*).*(?:已取消|已为|保持|活跃|完成状态)[^\n]*',
+                        r'[\-•]\s*(?:触发器|trigger|focus|wait_\w+|a2a\w+).*[^\n]*',
+                        r'(?:触发器|trigger)\s+\S+\s*(?:已取消|保持活跃|已为完成状态|fired)',
+                        r'已静默清理触发器',
+                        r'已静默处理完毕',
+                        r'继续待命[。，]?\s*',
+                        r'，?\s*(?:继续)?待命。',
+                    ]
+                    for _pat in _internal_patterns:
+                        cleaned = _re.sub(_pat, '', cleaned, flags=_re.IGNORECASE)
+                    cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+                    cleaned = _re.sub(r'[。，]\s*$', '', cleaned).strip()
+                    if not cleaned:
+                        cleaned = final_reply
+                else:
+                    cleaned = final_reply
+
+                notification = f"⚡ {summary}\n\n{cleaned}"
+
+                target_session_id = delivery_target["session_id"]
+                owner_user_id = delivery_target.get("owner_user_id")
+
+                # Save to the resolved destination session for persistence.
+                async with async_session() as db:
+                    from app.models.chat_session import ChatSession
+                    from app.api.websocket import maybe_mark_session_read_for_active_viewer
+
+                    db.add(ChatMessage(
+                        agent_id=agent_id,
+                        conversation_id=target_session_id,
+                        role="assistant",
+                        content=notification,
+                        user_id=agent.creator_id,
+                    ))
+                    session_row = await db.get(ChatSession, uuid.UUID(target_session_id))
+                    if session_row:
+                        session_row.last_message_at = datetime.now(timezone.utc)
+                    if owner_user_id:
+                        await maybe_mark_session_read_for_active_viewer(
+                            db,
+                            agent_id=agent_id,
+                            session_id=target_session_id,
+                            user_id=uuid.UUID(owner_user_id),
+                        )
+                    await db.commit()
+
+                payload = {
+                    "type": "trigger_notification",
+                    "content": notification,
+                    "triggers": [t.name for t in triggers],
+                    "session_id": target_session_id,
+                }
+
+                # Notify only the user who owns the destination session. The frontend will append
+                # the message only when that exact session is open; otherwise it just refreshes
+                # unread/session state.
+                if owner_user_id:
+                    await ws_manager.send_to_user(agent_id_str, owner_user_id, payload)
+            except Exception as e:
+                logger.error(f"Failed to push trigger result to WebSocket: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Audit log
+        await write_audit_log("trigger_fired", {
+            "agent_name": agent.name,
+            "triggers": [{"name": t.name, "type": t.type} for t in triggers],
+        }, agent_id=agent_id)
+
+        logger.info(f"⚡ Triggers fired for {agent.name}: {[t.name for t in triggers]}")
+
+    except Exception as e:
+        logger.error(f"Failed to invoke agent {agent_id} for triggers: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+# ── Main Tick Loop ──────────────────────────────────────────────────
+
 async def _tick():
     """One daemon tick: evaluate all triggers, group by agent, invoke."""
     now = datetime.now(timezone.utc)

@@ -12,7 +12,7 @@ ritual rather than a single welcome line:
 ``agent_user_onboardings.phase`` is intentionally small:
 
   - no row: the greeting has not fired yet;
-  - greeted: the greeting fired, and the next real user reply should complete
+  - greeted: the greeting fired, and the next real user reply should continue
     configuration;
   - completed: normal chat forever after.
 
@@ -46,12 +46,12 @@ class OnboardingInjection:
       should update the junction row.
     - ``target_phase``: the phase to write when the first chunk streams.
       Greeting writes ``greeted`` so it never auto-greets again; the first
-      real reply writes ``completed`` after it starts the calibration answer.
-    - ``is_greeting_turn``: True on user_turns == 0, False otherwise. WS
-      handler uses this to skip the agent's tool list when greeting — the
-      bootstrap is a structured templated reply that doesn't call tools,
-      so suppressing the tool definitions saves ~3-5k tokens of prompt
-      and noticeably cuts time-to-first-token (TTFT).
+      real reply writes the next onboarding phase after it starts streaming.
+    - ``is_greeting_turn``: True only for the synthetic auto-greeting turn
+      (when user_turns == 0). The WS handler uses this to skip the agent's
+      tool list for the hidden welcome message only. Real user turns must keep
+      tool schemas available, otherwise models may emit fake XML/tool text
+      instead of native tool calls.
     """
 
     prompt: str
@@ -120,7 +120,7 @@ You MUST persist the onboarding result:
 responsibilities, and boundaries.
 3. Write `memory/user_profile.md` with how to address and collaborate with \
 {user_name}.
-4. Write or update `focus.md` with the first focus item or next concrete task.
+4. Use `upsert_focus_item` to record the first focus item or next concrete task.
 
 After writing, reply with a short confirmation:
 - who you now understand yourself to be;
@@ -172,7 +172,7 @@ with sensible defaults.
 You MUST persist the calibration:
 1. Write `memory/onboarding.md` with the confirmed role, user-specific \
 adjustments, communication preferences, boundaries, and first focus.
-2. Write or update `focus.md` with the first concrete task or a clear \
+2. Use `upsert_focus_item` to record the first concrete task or a clear \
 "ready to start" focus if no task was given.
 3. Only edit `soul.md` if the user explicitly changed your role, style, or \
 boundaries; in that case read it first and preserve the template's core role.
@@ -294,11 +294,11 @@ async def resolve_onboarding_prompt(
         else:
             prompt = _CUSTOM_STYLE_PROMPT.format(user_name=user_name)
             target_phase = PHASE_CUSTOM_STYLE
-        is_greeting_turn = True
+        is_greeting_turn = False
     elif existing_phase == PHASE_CUSTOM_STYLE:
         prompt = _CUSTOM_BOUNDARIES_PROMPT.format(user_name=user_name)
         target_phase = PHASE_CUSTOM_BOUNDARIES
-        is_greeting_turn = True
+        is_greeting_turn = False
     elif existing_phase == PHASE_CUSTOM_BOUNDARIES:
         prompt = _CUSTOM_CONFIG_PROMPT.format(user_name=user_name)
         target_phase = PHASE_COMPLETED

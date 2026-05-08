@@ -32,6 +32,13 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
 }
 
+function CompanyAdminRoute({ children }: { children: React.ReactNode }) {
+    const user = useAuthStore((s) => s.user);
+    const canAccessCompanySettings = user?.role === 'platform_admin' || user?.role === 'org_admin' || !!(user as any)?.is_platform_admin;
+    if (!canAccessCompanySettings) return <Navigate to="/" replace />;
+    return <>{children}</>;
+}
+
 /* ─── Notification Bar ─── */
 type NotificationBarConfig = { enabled: boolean; text: string };
 type NotificationBarUpdateEvent = CustomEvent<NotificationBarConfig>;
@@ -213,7 +220,7 @@ export default function App() {
                     <Route path="agents/:id/chat" element={<AgentDetail />} />
                     <Route path="agents/:id/settings" element={<AgentDetail />} />
                     <Route path="messages" element={<Messages />} />
-                    <Route path="enterprise" element={<EnterpriseSettings />} />
+                    <Route path="enterprise" element={<CompanyAdminRoute><EnterpriseSettings /></CompanyAdminRoute>} />
                     <Route path="okr" element={<OKR />} />
                     <Route path="invitations" element={<InvitationCodes />} />
                     <Route path="admin/platform-settings" element={<AdminCompanies />} />

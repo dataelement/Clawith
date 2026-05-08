@@ -304,8 +304,8 @@ export default function Chat() {
         enabled: !!id,
     });
 
-    // Tenant default model — used only as a "默认" tag in the dropdown, not as
-    // the initial selection. Initial selection is agent.primary_model_id.
+    // Tenant default model — used to render the "默认" tag and as a visual
+    // fallback when an agent has no explicit primary model.
     const { data: myTenant } = useQuery({
         queryKey: ['tenant', 'me'],
         queryFn: () => tenantApi.me(),
@@ -1056,11 +1056,7 @@ export default function Chat() {
                             <ModelSwitcher
                                 value={overrideModelId}
                                 onChange={handleModelChange}
-                                /* "默认" badge marks the agent's current saved
-                                   default (= primary_model_id), so it stays in
-                                   sync with whatever the picker / settings page
-                                   reports as the default. */
-                                tenantDefaultId={agent?.primary_model_id || null}
+                                tenantDefaultId={myTenant?.default_model_id || null}
                                 disabled={!connected}
                             />
                             <div style={{ flex: 1 }} />
