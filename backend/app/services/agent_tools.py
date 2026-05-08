@@ -2490,6 +2490,8 @@ async def _execute_workspace_mutation(
             return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
         if content is None:
             return "❌ Missing required argument 'content' for write_file"
+        if is_focus_file_path(path):
+            return "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
         if _is_enterprise_info_path(path):
             return "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
         async with async_session() as _wdb:
@@ -2519,6 +2521,8 @@ async def _execute_workspace_mutation(
             return "❌ Missing required argument 'source_path' for move_file"
         if not destination_path:
             return "❌ Missing required argument 'destination_path' for move_file"
+        if is_focus_file_path(source_path) or is_focus_file_path(destination_path):
+            return "❌ Focus is no longer stored in focus.md. Use Focus tools instead."
         if str(source_path).strip("/") in {"tasks.json", "soul.md"}:
             return f"❌ {source_path} cannot be moved (protected)"
         if _is_enterprise_info_path(source_path) or _is_enterprise_info_path(destination_path):
@@ -2541,6 +2545,8 @@ async def _execute_workspace_mutation(
 
     if tool_name == "delete_file":
         path = arguments.get("path", "")
+        if is_focus_file_path(path):
+            return "❌ Focus is no longer stored in focus.md. Use Focus tools instead."
         if _is_enterprise_info_path(path):
             return "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
         async with async_session() as _wdb:
@@ -2567,6 +2573,8 @@ async def _execute_workspace_mutation(
             return "❌ Missing required argument 'old_string' for edit_file"
         if new_string is None:
             return "❌ Missing required argument 'new_string' for edit_file"
+        if is_focus_file_path(path):
+            return "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
         if _is_enterprise_info_path(path):
             return "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
 

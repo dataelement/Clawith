@@ -196,6 +196,11 @@ async def read_file(
 ):
     """Read the content of a file."""
     await check_agent_access(db, current_user, agent_id)
+    if is_focus_file_path(path):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Focus is stored in the system database. Use the Focus API.",
+        )
     storage = get_storage_backend()
     key, _ = _visible_storage_key(agent_id, path, current_user.tenant_id)
     if not await storage.exists(key) or not await storage.is_file(key):
@@ -841,6 +846,8 @@ async def list_enterprise_kb_files(
 
     items = []
     for entry in await storage.list_dir(storage_key):
+        if entry.name == '.gitkeep':
+            continue
         rel = str(Path(entry.key).relative_to(f"enterprise_info_{current_user.tenant_id}"))
         items.append({
             "name": entry.name,
