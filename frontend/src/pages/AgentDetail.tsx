@@ -310,6 +310,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const [deletingToolId, setDeletingToolId] = useState<string | null>(null);
     const [configCategory, setConfigCategory] = useState<string | null>(null);
     const [focusedField, setFocusedField] = useState<string | null>(null);
+    const [showAdvancedToolConfig, setShowAdvancedToolConfig] = useState(false);
     const [expandedCategories, setExpandedCategories] = useState<Set<string>>(() => new Set());
     const [toolSearch, setToolSearch] = useState('');
     const [toolStatusFilter, setToolStatusFilter] = useState<'all' | 'enabled' | 'disabled' | 'configured'>('all');
@@ -378,8 +379,19 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
         return keys;
     };
 
+    const applyConfigDefaults = (fields: any[] = [], config: Record<string, any> = {}) => {
+        const next = { ...config };
+        for (const field of fields) {
+            if (field.default !== undefined && (next[field.key] === undefined || next[field.key] === null || next[field.key] === '')) {
+                next[field.key] = field.default;
+            }
+        }
+        return next;
+    };
+
     const openConfig = (tool: any) => {
         setConfigTool(tool);
+        setShowAdvancedToolConfig(false);
         // Build merged config: start with global defaults, overlay agent overrides.
         // For sensitive fields, only use agent_config values (global ones are masked
         // like "****xxxx" and should not pre-fill the input).
@@ -391,6 +403,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
             if (!sensitiveKeys.has(k)) merged[k] = v;
         }
         Object.assign(merged, agentCfg);
+        Object.assign(merged, applyConfigDefaults(tool.config_schema?.fields || [], merged));
         setConfigData(merged);
         setConfigJson(JSON.stringify(agentCfg, null, 2));
         setFocusedField(null);
@@ -398,6 +411,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
 
     const openCategoryConfig = async (category: string) => {
         setConfigCategory(category);
+        setShowAdvancedToolConfig(false);
         setConfigData({});
         setConfigGlobalData({});
         setConfigSaving(true);
@@ -932,6 +946,14 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                 const fields = configTool ? (configTool.config_schema?.fields || []) : (target.fields || []);
                 const title = configTool ? configTool.display_name : target.title;
                 const isCat = !!configCategory;
+                const visibleFields = fields.filter((field: any) => {
+                    if (!field.depends_on) return true;
+                    return Object.entries(field.depends_on).every(([depKey, depVals]: [string, any]) =>
+                        (depVals as string[]).includes(configData[depKey] ?? '')
+                    );
+                });
+                const primaryFields = visibleFields.filter((field: any) => !field.advanced);
+                const advancedFields = visibleFields.filter((field: any) => field.advanced);
                 return (
                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                         onClick={() => { setConfigTool(null); setConfigCategory(null); }}>
@@ -946,14 +968,7 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
 
                             {fields.length > 0 ? (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                    {fields
-                                        .filter((field: any) => {
-                                            // Handle depends_on: hide fields unless dependency is met
-                                            if (!field.depends_on) return true;
-                                            return Object.entries(field.depends_on).every(([depKey, depVals]: [string, any]) =>
-                                                (depVals as string[]).includes(configData[depKey] ?? '')
-                                            );
-                                        })
+                                    {primaryFields
                                         .map((field: any) => {
                                             // Get user role from store directly in the map function
                                             const userFromStore = useAuthStore.getState().user;
@@ -1050,6 +1065,15 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         </select>
                                                     ) : field.type === 'number' ? (
                                                         <input type="number" className="form-input" value={configData[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''} min={field.min} max={field.max} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value ? Number(e.target.value) : '' }))} />
+                                                    ) : field.type === 'textarea' ? (
+                                                        <textarea
+                                                            className="form-input"
+                                                            value={configData[field.key] ?? ''}
+                                                            placeholder={field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default')}
+                                                            rows={Math.max(3, Math.min(10, String(configData[field.key] ?? field.default ?? field.placeholder ?? '').split('\n').length))}
+                                                            style={{ minHeight: '88px', fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)', resize: 'vertical' }}
+                                                            onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}
+                                                        />
                                                     ) : (
                                                         <>
                                                         {(() => {
@@ -1085,6 +1109,72 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                 </div>
                                             );
                                         })}
+                                    {advancedFields.length > 0 && (
+                                        <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '10px', marginTop: '2px' }}>
+                                            <button
+                                                type="button"
+                                                className="btn btn-ghost"
+                                                onClick={() => setShowAdvancedToolConfig(v => !v)}
+                                                style={{ padding: 0, minWidth: 'auto', fontSize: '12px', color: 'var(--text-secondary)' }}
+                                            >
+                                                {showAdvancedToolConfig ? 'Hide advanced settings' : 'Advanced settings'}
+                                            </button>
+                                            {showAdvancedToolConfig && (
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
+                                                    {advancedFields.map((field: any) => {
+                                                        const userFromStore = useAuthStore.getState().user;
+                                                        const currentUserRole = userFromStore?.role;
+                                                        const isReadOnly = field.read_only_for_roles?.includes(currentUserRole);
+                                                        return (
+                                                            <div key={field.key}>
+                                                                <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>
+                                                                    {field.label}
+                                                                    {isReadOnly && <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '4px' }}>(Admin only)</span>}
+                                                                </label>
+                                                                {field.type === 'checkbox' ? (
+                                                                    <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: isReadOnly ? 'not-allowed' : 'pointer' }}>
+                                                                        <input
+                                                                            type="checkbox"
+                                                                            checked={configData[field.key] ?? field.default ?? false}
+                                                                            disabled={isReadOnly}
+                                                                            onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.checked }))}
+                                                                            style={{ opacity: 0, width: 0, height: 0 }}
+                                                                        />
+                                                                        <span style={{ position: 'absolute', inset: 0, background: (configData[field.key] ?? field.default) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s', opacity: isReadOnly ? 0.6 : 1 }}>
+                                                                            <span style={{ position: 'absolute', left: (configData[field.key] ?? field.default) ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                                                        </span>
+                                                                    </label>
+                                                                ) : field.type === 'select' ? (
+                                                                    <select className="form-input" value={configData[field.key] ?? field.default ?? ''} disabled={isReadOnly}
+                                                                        onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}>
+                                                                        {(field.options || []).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                                                    </select>
+                                                                ) : field.type === 'number' ? (
+                                                                    <input type="number" className="form-input" value={configData[field.key] ?? field.default ?? ''} disabled={isReadOnly} placeholder={field.placeholder || ''} min={field.min} max={field.max} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value ? Number(e.target.value) : '' }))} />
+                                                                ) : field.type === 'textarea' ? (
+                                                                    <textarea
+                                                                        className="form-input"
+                                                                        value={configData[field.key] ?? field.default ?? ''}
+                                                                        disabled={isReadOnly}
+                                                                        placeholder={field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default')}
+                                                                        rows={Math.max(3, Math.min(10, String(configData[field.key] ?? field.default ?? field.placeholder ?? '').split('\n').length))}
+                                                                        style={{ minHeight: '88px', fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)', resize: 'vertical' }}
+                                                                        onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}
+                                                                    />
+                                                                ) : (
+                                                                    <input type={field.type === 'password' ? 'password' : 'text'} autoComplete={field.type === 'password' ? 'new-password' : undefined} className="form-input"
+                                                                        value={configData[field.key] ?? field.default ?? ''}
+                                                                        disabled={isReadOnly}
+                                                                        placeholder={field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default')}
+                                                                        onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                     {/* Email tool: test connection button + help text */}
                                     {configTool?.category === 'email' && (
                                         <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -5423,65 +5513,65 @@ function AgentDetailInner() {
         <>
             <div className={`agent-detail-page ${activeTab === 'chat' ? 'agent-detail-page--chat' : 'agent-detail-page--settings'}`}>
                 {/* Header */}
-                <div className="page-header agent-detail-header">
-                    {activeTab === 'chat' ? <div
-                        className="agent-detail-identity agent-detail-identity--compact"
-                        onMouseEnter={clearCardCloseTimer}
-                        onMouseLeave={scheduleCardClose}
-                    >
-                        <div className="agent-detail-identity-trigger">
-                        <div className="agent-detail-avatar">{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</div>
-                        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-                            {canManage && editingName ? (
-                                <input
-                                    className="page-title"
-                                    autoFocus
-                                    value={nameInput}
-                                    onChange={e => setNameInput(e.target.value)}
-                                    onBlur={async () => {
-                                        setEditingName(false);
-                                        if (nameInput.trim() && nameInput !== agent.name) {
-                                            await agentApi.update(id!, { name: nameInput.trim() } as any);
-                                            queryClient.invalidateQueries({ queryKey: ['agent', id] });
-                                        } else {
-                                            setNameInput(agent.name);
-                                        }
-                                    }}
-                                    onKeyDown={async e => {
-                                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                                        if (e.key === 'Escape') { setEditingName(false); setNameInput(agent.name); }
-                                    }}
-                                    style={{
-                                        background: 'var(--bg-elevated)', border: '1px solid var(--accent-primary)',
-                                        borderRadius: '6px', color: 'var(--text-primary)',
-                                        padding: '4px 10px', minWidth: '320px', width: 'auto', outline: 'none',
-                                        marginBottom: '0', display: 'block',
-                                    }}
-                                />
-                            ) : (
-                                <h1 className="page-title"
-                                    title={canManage ? "Click to edit name" : undefined}
-                                    onClick={() => { if (canManage) { setNameInput(agent.name); setEditingName(true); } }}
-                                    style={{ cursor: canManage ? 'text' : 'default', borderBottom: canManage ? '1px dashed transparent' : 'none', display: 'inline-block', marginBottom: '0' }}
-                                    onMouseEnter={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)'; }}
-                                    onMouseLeave={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'transparent'; }}
-                                >
-                                    {agent.name}
-                                </h1>
-                            )}
-                        </div>
-                        <button
-                            className={`agent-info-chevron${infoCardOpen ? ' agent-info-chevron--open' : ''}`}
-                            onClick={e => { e.stopPropagation(); setInfoCardOpen(prev => !prev); }}
-                            aria-label="Toggle agent info"
+                {activeTab === 'chat' && (
+                    <div className="page-header agent-detail-header">
+                        <div
+                            className="agent-detail-identity agent-detail-identity--compact"
+                            onMouseEnter={clearCardCloseTimer}
+                            onMouseLeave={scheduleCardClose}
                         >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-                        </button>
+                            <div className="agent-detail-identity-trigger">
+                            <div className="agent-detail-avatar">{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</div>
+                            <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                                {canManage && editingName ? (
+                                    <input
+                                        className="page-title"
+                                        autoFocus
+                                        value={nameInput}
+                                        onChange={e => setNameInput(e.target.value)}
+                                        onBlur={async () => {
+                                            setEditingName(false);
+                                            if (nameInput.trim() && nameInput !== agent.name) {
+                                                await agentApi.update(id!, { name: nameInput.trim() } as any);
+                                                queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                            } else {
+                                                setNameInput(agent.name);
+                                            }
+                                        }}
+                                        onKeyDown={async e => {
+                                            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                            if (e.key === 'Escape') { setEditingName(false); setNameInput(agent.name); }
+                                        }}
+                                        style={{
+                                            background: 'var(--bg-elevated)', border: '1px solid var(--accent-primary)',
+                                            borderRadius: '6px', color: 'var(--text-primary)',
+                                            padding: '4px 10px', minWidth: '320px', width: 'auto', outline: 'none',
+                                            marginBottom: '0', display: 'block',
+                                        }}
+                                    />
+                                ) : (
+                                    <h1 className="page-title"
+                                        title={canManage ? "Click to edit name" : undefined}
+                                        onClick={() => { if (canManage) { setNameInput(agent.name); setEditingName(true); } }}
+                                        style={{ cursor: canManage ? 'text' : 'default', borderBottom: canManage ? '1px dashed transparent' : 'none', display: 'inline-block', marginBottom: '0' }}
+                                        onMouseEnter={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)'; }}
+                                        onMouseLeave={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'transparent'; }}
+                                    >
+                                        {agent.name}
+                                    </h1>
+                                )}
+                            </div>
+                            <button
+                                className={`agent-info-chevron${infoCardOpen ? ' agent-info-chevron--open' : ''}`}
+                                onClick={e => { e.stopPropagation(); setInfoCardOpen(prev => !prev); }}
+                                aria-label="Toggle agent info"
+                            >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                            </button>
+                            </div>
+                            {renderAgentInfoCard()}
                         </div>
-                        {renderAgentInfoCard()}
-                    </div> : <div />}
-                    <div className="agent-detail-actions">
-                        {activeTab === 'chat' && (
+                        <div className="agent-detail-actions">
                             <>
                                 <button
                                     className={`btn btn-ghost agent-top-action ${livePanelVisible && sidePanelTab === 'workspace' ? 'active' : ''}`}
@@ -5507,18 +5597,18 @@ function AgentDetailInner() {
                                     <span>{t('agent.tabs.settings')}</span>
                                 </button>
                             </>
-                        )}
-                        {activeTab === 'chat' && (agent as any)?.agent_type !== 'openclaw' && (
-                            <>
+                            {(agent as any)?.agent_type !== 'openclaw' && (
+                                <>
                                 {agent.status === 'stopped' ? (
                                     <button className="btn btn-secondary" onClick={async () => { await agentApi.start(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.start')}</button>
                                 ) : agent.status === 'running' ? (
                                     <button className="btn btn-secondary" onClick={async () => { await agentApi.stop(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.stop')}</button>
                                 ) : null}
-                            </>
-                        )}
+                                </>
+                            )}
+                        </div>
                     </div>
-                </div>
+                )}
 
                 {/* Tabs */}
                 {activeTab !== 'chat' && <div className="tabs">

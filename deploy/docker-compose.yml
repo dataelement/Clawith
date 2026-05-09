@@ -88,7 +88,7 @@ services:
       VITE_API_URL: http://localhost:8000
       API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
     volumes:
-      - ./frontend/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
     networks:
       - default
     depends_on:
@@ -101,4 +101,4 @@ volumes:
 
 networks:
   default:
-    name: clawith_network
+    name: clawith_yaojin_network

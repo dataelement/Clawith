@@ -79,6 +79,66 @@ class RestoreRevisionBody(BaseModel):
     expected_version_token: str | None = None
 
 
+TEXT_PREVIEW_EXTENSIONS = {
+    ".bat",
+    ".bash",
+    ".c",
+    ".cfg",
+    ".clj",
+    ".cpp",
+    ".cs",
+    ".css",
+    ".dart",
+    ".env",
+    ".go",
+    ".h",
+    ".hpp",
+    ".ini",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".less",
+    ".lua",
+    ".m",
+    ".mm",
+    ".php",
+    ".pl",
+    ".pm",
+    ".properties",
+    ".py",
+    ".r",
+    ".rb",
+    ".rs",
+    ".sass",
+    ".scala",
+    ".scss",
+    ".sh",
+    ".sql",
+    ".swift",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".zsh",
+}
+
+TEXT_PREVIEW_FILENAMES = {
+    ".dockerignore",
+    ".env",
+    ".env.example",
+    ".gitignore",
+    ".npmrc",
+    ".prettierrc",
+    "dockerfile",
+    "makefile",
+}
+
+
 def _agent_base_dir(agent_id: uuid.UUID) -> Path:
     local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
     return Path(local_root) / str(agent_id)
@@ -231,7 +291,9 @@ def _entry_version_token(entry: StorageEntry) -> str | None:
 
 
 def _file_kind(path: str) -> str:
-    ext = Path(path).suffix.lower()
+    file_path = Path(path)
+    ext = file_path.suffix.lower()
+    name = file_path.name.lower()
     if ext in {".md", ".markdown"}:
         return "markdown"
     if ext == ".csv":
@@ -246,7 +308,7 @@ def _file_kind(path: str) -> str:
         return "docx"
     if ext in {".pptx", ".ppt"}:
         return "pptx"
-    if ext in {".txt", ".log", ".json"}:
+    if ext in {".txt", ".log", ".json"} or ext in TEXT_PREVIEW_EXTENSIONS or name in TEXT_PREVIEW_FILENAMES:
         return "text"
     if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}:
         return "image"

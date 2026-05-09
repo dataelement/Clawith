@@ -278,6 +278,8 @@ export default function Layout() {
     const [tenantFormError, setTenantFormError] = useState('');
     const [allowSelfCreate, setAllowSelfCreate] = useState(true);
     const tenantSwitcherRef = useRef<HTMLDivElement>(null);
+    const tenantMenuPortalRef = useRef<HTMLDivElement>(null);
+    const [tenantMenuPos, setTenantMenuPos] = useState({ top: 0, left: 0, maxHeight: 520 });
 
     // Notification polling
     const { data: unreadCount = 0 } = useQuery({
@@ -554,6 +556,22 @@ export default function Layout() {
         setLangSubmenuPos({ top: r.top, left: r.right + 2 });
     }, []);
 
+    const updateTenantMenuPosition = useCallback(() => {
+        const el = tenantSwitcherRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const viewportPadding = 12;
+        const menuWidth = 304;
+        const preferredLeft = isSidebarCollapsed ? rect.right + 8 : rect.left;
+        const left = Math.min(
+            Math.max(viewportPadding, preferredLeft),
+            Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
+        );
+        const top = Math.max(viewportPadding, rect.bottom + 8);
+        const maxHeight = Math.max(220, window.innerHeight - top - viewportPadding);
+        setTenantMenuPos({ top, left, maxHeight });
+    }, [isSidebarCollapsed]);
+
     useLayoutEffect(() => {
         if (!showLanguageSubmenu) return;
         updateLangSubmenuPosition();
@@ -565,12 +583,24 @@ export default function Layout() {
         };
     }, [showLanguageSubmenu, updateLangSubmenuPosition]);
 
+    useLayoutEffect(() => {
+        if (!showTenantMenu) return;
+        updateTenantMenuPosition();
+        window.addEventListener('resize', updateTenantMenuPosition);
+        window.addEventListener('scroll', updateTenantMenuPosition, true);
+        return () => {
+            window.removeEventListener('resize', updateTenantMenuPosition);
+            window.removeEventListener('scroll', updateTenantMenuPosition, true);
+        };
+    }, [showTenantMenu, updateTenantMenuPosition]);
+
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
             const t = e.target as Node;
             if (accountMenuRef.current?.contains(t)) return;
             if (langSubmenuPortalRef.current?.contains(t)) return;
             if (tenantSwitcherRef.current?.contains(t)) return;
+            if (tenantMenuPortalRef.current?.contains(t)) return;
             setShowAccountMenu(false);
             setShowTenantMenu(false);
         };
@@ -603,6 +633,82 @@ export default function Layout() {
                 );
             })}
         </div>
+    );
+
+    const tenantMenuContent = showTenantMenu && typeof document !== 'undefined' && createPortal(
+        <div
+            ref={tenantMenuPortalRef}
+            className="tenant-switcher-popover"
+            role="menu"
+            style={{ top: tenantMenuPos.top, left: tenantMenuPos.left, maxHeight: tenantMenuPos.maxHeight }}
+        >
+            <div className="tenant-switcher-label">{isChinese ? '切换公司' : 'Switch company'}</div>
+            {(myTenants as any[]).length > 8 && (
+                <div className="tenant-switcher-search">
+                    <IconSearch size={14} stroke={1.7} />
+                    <input
+                        value={tenantSearch}
+                        onChange={e => setTenantSearch(e.target.value)}
+                        placeholder={isChinese ? '搜索公司' : 'Search companies'}
+                    />
+                    {tenantSearch && (
+                        <button type="button" onClick={() => setTenantSearch('')} aria-label={isChinese ? '清空搜索' : 'Clear search'}>
+                            <IconX size={14} stroke={1.7} />
+                        </button>
+                    )}
+                </div>
+            )}
+            <div className="tenant-switcher-list">
+                {filteredTenants.map((tenant: any) => (
+                    <button
+                        key={tenant.tenant_id}
+                        type="button"
+                        className={`tenant-switcher-item${tenant.tenant_id === currentTenant ? ' active' : ''}`}
+                        onClick={() => {
+                            if (tenant.tenant_id === currentTenant) {
+                                setShowTenantMenu(false);
+                                return;
+                            }
+                            handleSwitchTenant(tenant.tenant_id);
+                        }}
+                    >
+                        <span className="tenant-switcher-icon">
+                            <IconBuilding size={16} stroke={1.6} />
+                        </span>
+                        <span className="tenant-switcher-name">{tenant.tenant_name}</span>
+                        {tenant.tenant_id === currentTenant && <IconCheck size={16} stroke={2} />}
+                    </button>
+                ))}
+                {filteredTenants.length === 0 && (
+                    <div className="tenant-switcher-empty">{isChinese ? '没有匹配的公司' : 'No matching companies'}</div>
+                )}
+            </div>
+
+            <div className="tenant-switcher-divider" />
+
+            <button
+                type="button"
+                className="tenant-switcher-action"
+                onClick={openTenantSetupModal}
+            >
+                <IconPlus size={17} stroke={1.6} />
+                <span>{isChinese ? '创建或加入新公司' : 'Create or join company'}</span>
+            </button>
+            {canAccessCompanySettings && (
+                <button
+                    type="button"
+                    className="tenant-switcher-action"
+                    onClick={() => {
+                        setShowTenantMenu(false);
+                        navigate('/enterprise');
+                    }}
+                >
+                    <IconSettings size={16} stroke={1.6} />
+                    <span>{isChinese ? '公司信息设置' : 'Company settings'}</span>
+                </button>
+            )}
+        </div>,
+        document.body,
     );
 
     const q = sidebarSearch.trim().toLowerCase();
@@ -757,75 +863,6 @@ export default function Layout() {
                             {isSidebarCollapsed ? SidebarIcons.expand : SidebarIcons.collapse}
                         </button>
 
-                        {showTenantMenu && (
-                            <div className="tenant-switcher-popover">
-                                <div className="tenant-switcher-label">{isChinese ? '切换公司' : 'Switch company'}</div>
-                                {(myTenants as any[]).length > 8 && (
-                                    <div className="tenant-switcher-search">
-                                        <IconSearch size={14} stroke={1.7} />
-                                        <input
-                                            value={tenantSearch}
-                                            onChange={e => setTenantSearch(e.target.value)}
-                                            placeholder={isChinese ? '搜索公司' : 'Search companies'}
-                                        />
-                                        {tenantSearch && (
-                                            <button type="button" onClick={() => setTenantSearch('')} aria-label={isChinese ? '清空搜索' : 'Clear search'}>
-                                                <IconX size={14} stroke={1.7} />
-                                            </button>
-                                        )}
-                                    </div>
-                                )}
-                                <div className="tenant-switcher-list">
-                                    {filteredTenants.map((tenant: any) => (
-                                            <button
-                                                key={tenant.tenant_id}
-                                                type="button"
-                                                className={`tenant-switcher-item${tenant.tenant_id === currentTenant ? ' active' : ''}`}
-                                                onClick={() => {
-                                                    if (tenant.tenant_id === currentTenant) {
-                                                        setShowTenantMenu(false);
-                                                        return;
-                                                    }
-                                                    handleSwitchTenant(tenant.tenant_id);
-                                                }}
-                                            >
-                                                <span className="tenant-switcher-icon">
-                                                    <IconBuilding size={16} stroke={1.6} />
-                                                </span>
-                                                <span className="tenant-switcher-name">{tenant.tenant_name}</span>
-                                                {tenant.tenant_id === currentTenant && <IconCheck size={16} stroke={2} />}
-                                            </button>
-                                        ))}
-                                    {filteredTenants.length === 0 && (
-                                        <div className="tenant-switcher-empty">{isChinese ? '没有匹配的公司' : 'No matching companies'}</div>
-                                    )}
-                                </div>
-
-                                <div className="tenant-switcher-divider" />
-
-                                <button
-                                    type="button"
-                                    className="tenant-switcher-action"
-                                    onClick={openTenantSetupModal}
-                                >
-                                    <IconPlus size={17} stroke={1.6} />
-                                    <span>{isChinese ? '创建或加入新公司' : 'Create or join company'}</span>
-                                </button>
-                                {canAccessCompanySettings && (
-                                    <button
-                                        type="button"
-                                        className="tenant-switcher-action"
-                                        onClick={() => {
-                                            setShowTenantMenu(false);
-                                            navigate('/enterprise');
-                                        }}
-                                    >
-                                        <IconSettings size={16} stroke={1.6} />
-                                        <span>{isChinese ? '公司信息设置' : 'Company settings'}</span>
-                                    </button>
-                                )}
-                            </div>
-                        )}
                     </div>
 
 
@@ -985,6 +1022,7 @@ export default function Layout() {
                 </div>
             </nav>
             {agentDrawer}
+            {tenantMenuContent}
 
             {showTenantSetupModal && (
                 <div className="tenant-setup-modal-backdrop" onClick={() => setShowTenantSetupModal(false)}>

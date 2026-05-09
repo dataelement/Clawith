@@ -672,10 +672,11 @@ async def get_notification_bar_public(
     )
     setting = result.scalar_one_or_none()
     if not setting or not setting.value:
-        return {"enabled": False, "text": ""}
+        return {"enabled": False, "text": "", "updated_at": None}
     return {
         "enabled": setting.value.get("enabled", False),
         "text": setting.value.get("text", ""),
+        "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
     }
 
 
@@ -717,7 +718,12 @@ async def update_system_setting(
     if key == "platform" and data.value.get("public_base_url"):
         await _regenerate_all_sso_domains(db)
 
-    return {"key": setting.key, "value": setting.value}
+    await db.refresh(setting)
+    return {
+        "key": setting.key,
+        "value": setting.value,
+        "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
+    }
 
 
 # ─── SSO Derived State Helper ───────────────────────────

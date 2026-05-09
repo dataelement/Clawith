@@ -219,10 +219,15 @@ function PlatformTab() {
                 const err = await res.json().catch(() => ({ detail: res.statusText }));
                 throw new Error(err.detail || res.statusText);
             }
+            const payload = await res.json();
             setNbEnabled(nextEnabled);
             setNbText(nextText);
             window.dispatchEvent(new CustomEvent('notification-bar-updated', {
-                detail: { enabled: nextEnabled, text: nextText },
+                detail: {
+                    enabled: nextEnabled,
+                    text: nextText,
+                    updated_at: payload?.updated_at || null,
+                },
             }));
             setNbSaved(true);
             setTimeout(() => setNbSaved(false), 2000);

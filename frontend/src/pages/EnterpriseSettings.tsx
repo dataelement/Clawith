@@ -2989,6 +2989,7 @@ export default function EnterpriseSettings() {
     const [mcpServerSaving, setMcpServerSaving] = useState(false);
     const [editingToolId, setEditingToolId] = useState<string | null>(null);
     const [editingConfig, setEditingConfig] = useState<Record<string, any>>({});
+    const [showAdvancedToolConfig, setShowAdvancedToolConfig] = useState(false);
 
     const [configCategory, setConfigCategory] = useState<string | null>(null);
 
@@ -3004,6 +3005,16 @@ export default function EnterpriseSettings() {
     };
     const GLOBAL_CATEGORY_CONFIG_PRIMARY_TOOL: Record<string, string> = {
         agentbay: 'agentbay_browser_navigate',
+    };
+
+    const applyConfigDefaults = (fields: any[] = [], config: Record<string, any> = {}) => {
+        const next = { ...config };
+        for (const field of fields) {
+            if (field.default !== undefined && (next[field.key] === undefined || next[field.key] === null || next[field.key] === '')) {
+                next[field.key] = field.default;
+            }
+        }
+        return next;
     };
 
     // Labels for tool categories (mirrors AgentDetail getCategoryLabels)
@@ -4037,7 +4048,7 @@ export default function EnterpriseSettings() {
 
                         {toolsView === 'global' && <>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                                <h3>{t('enterprise.tools.title')}</h3>
+                                <div />
                                 <button className="btn btn-primary" onClick={() => setShowAddMCP(true)}>+ {t('enterprise.tools.addMcpServer')}</button>
                             </div>
 
@@ -4307,7 +4318,8 @@ export default function EnterpriseSettings() {
                                                         title={t('enterprise.tools.configureSettings', 'Configure settings')}
                                                         onClick={async () => {
                                                             setEditingToolId(tool.id);
-                                                            const cfg = { ...tool.config };
+                                                            setShowAdvancedToolConfig(false);
+                                                            let cfg = applyConfigDefaults(tool.config_schema?.fields || [], tool.config || {});
                                                             if (tool.name === 'jina_search' || tool.name === 'jina_read') {
                                                                 try {
                                                                     const token = localStorage.getItem('token');
@@ -4539,6 +4551,66 @@ export default function EnterpriseSettings() {
                             {editingToolId && (() => {
                                 const tool = allTools.find(t => t.id === editingToolId);
                                 if (!tool) return null;
+                                const visibleFields = (tool.config_schema.fields || []).filter((field: any) => {
+                                    if (field.depends_on) {
+                                        return Object.entries(field.depends_on).every(([k, vals]: [string, any]) =>
+                                            vals.includes(editingConfig[k])
+                                        );
+                                    }
+                                    return true;
+                                });
+                                const primaryFields = visibleFields.filter((field: any) => !field.advanced);
+                                const advancedFields = visibleFields.filter((field: any) => field.advanced);
+                                const renderField = (field: any) => (
+                                    <div key={field.key}>
+                                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>{field.label}</label>
+                                        {field.type === 'checkbox' ? (
+                                            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={editingConfig[field.key] ?? field.default ?? false}
+                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.checked }))}
+                                                    style={{ opacity: 0, width: 0, height: 0 }}
+                                                />
+                                                <span style={{
+                                                    position: 'absolute', inset: 0,
+                                                    background: (editingConfig[field.key] ?? field.default) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                                    borderRadius: '11px', transition: 'background 0.2s',
+                                                }}>
+                                                    <span style={{
+                                                        position: 'absolute', left: (editingConfig[field.key] ?? field.default) ? '20px' : '2px', top: '2px',
+                                                        width: '18px', height: '18px', background: '#fff',
+                                                        borderRadius: '50%', transition: 'left 0.2s',
+                                                    }} />
+                                                </span>
+                                            </label>
+                                        ) : field.type === 'select' ? (
+                                            <select className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))}>
+                                                {(field.options || []).map((opt: any) => (
+                                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                ))}
+                                            </select>
+                                        ) : field.type === 'number' ? (
+                                            <input type="number" className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} min={field.min} max={field.max}
+                                                onChange={e => setEditingConfig(p => ({ ...p, [field.key]: Number(e.target.value) }))} />
+                                        ) : field.type === 'textarea' ? (
+                                            <textarea
+                                                className="form-input"
+                                                value={editingConfig[field.key] ?? field.default ?? ''}
+                                                placeholder={field.placeholder || ''}
+                                                rows={Math.max(3, Math.min(10, String(editingConfig[field.key] ?? field.default ?? field.placeholder ?? '').split('\n').length))}
+                                                style={{ minHeight: '88px', fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)', resize: 'vertical' }}
+                                                onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))}
+                                            />
+                                        ) : field.type === 'password' ? (
+                                            <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''}
+                                                onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
+                                        ) : (
+                                            <input type="text" className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''}
+                                                onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
+                                        )}
+                                    </div>
+                                );
                                 return (
                                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                                         onClick={() => setEditingToolId(null)}>
@@ -4551,56 +4623,24 @@ export default function EnterpriseSettings() {
                                                 <button onClick={() => setEditingToolId(null)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
                                             </div>
                                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                                {(tool.config_schema.fields || []).map((field: any) => {
-                                                    // Check depends_on
-                                                    if (field.depends_on) {
-                                                        const visible = Object.entries(field.depends_on).every(([k, vals]: [string, any]) =>
-                                                            vals.includes(editingConfig[k])
-                                                        );
-                                                        if (!visible) return null;
-                                                    }
-                                                    return (
-                                                        <div key={field.key}>
-                                                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>{field.label}</label>
-                                                            {field.type === 'checkbox' ? (
-                                                                <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer' }}>
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        checked={editingConfig[field.key] ?? field.default ?? false}
-                                                                        onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.checked }))}
-                                                                        style={{ opacity: 0, width: 0, height: 0 }}
-                                                                    />
-                                                                    <span style={{
-                                                                        position: 'absolute', inset: 0,
-                                                                        background: (editingConfig[field.key] ?? field.default) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                                                                        borderRadius: '11px', transition: 'background 0.2s',
-                                                                    }}>
-                                                                        <span style={{
-                                                                            position: 'absolute', left: (editingConfig[field.key] ?? field.default) ? '20px' : '2px', top: '2px',
-                                                                            width: '18px', height: '18px', background: '#fff',
-                                                                            borderRadius: '50%', transition: 'left 0.2s',
-                                                                        }} />
-                                                                    </span>
-                                                                </label>
-                                                            ) : field.type === 'select' ? (
-                                                                <select className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))}>
-                                                                    {(field.options || []).map((opt: any) => (
-                                                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                                                    ))}
-                                                                </select>
-                                                            ) : field.type === 'number' ? (
-                                                                <input type="number" className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} min={field.min} max={field.max}
-                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: Number(e.target.value) }))} />
-                                                            ) : field.type === 'password' ? (
-                                                                <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''}
-                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
-                                                            ) : (
-                                                                <input type="text" className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''}
-                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
-                                                            )}
-                                                        </div>
-                                                    );
-                                                })}
+                                                {primaryFields.map(renderField)}
+                                                {advancedFields.length > 0 && (
+                                                    <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '10px', marginTop: '2px' }}>
+                                                        <button
+                                                            type="button"
+                                                            className="btn btn-ghost"
+                                                            onClick={() => setShowAdvancedToolConfig(v => !v)}
+                                                            style={{ padding: 0, minWidth: 'auto', fontSize: '12px', color: 'var(--text-secondary)' }}
+                                                        >
+                                                            {showAdvancedToolConfig ? 'Hide advanced settings' : 'Advanced settings'}
+                                                        </button>
+                                                        {showAdvancedToolConfig && (
+                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
+                                                                {advancedFields.map(renderField)}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
                                                 <div style={{ display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'flex-end', borderTop: '1px solid var(--border-subtle)', paddingTop: '16px' }}>
                                                     <button className="btn btn-secondary" onClick={() => setEditingToolId(null)}>{t('common.cancel')}</button>
                                                     <button className="btn btn-primary" onClick={async () => {

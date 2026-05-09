@@ -1171,6 +1171,99 @@ BUILTIN_TOOLS = [
         },
     },
     {
+        "name": "generate_image_custom",
+        "display_name": "Generate Image (Custom API)",
+        "description": "Generate an image through a custom OpenAI-compatible or gateway API. Configure the request body template and response image path for providers such as TokenRouter or OpenRouter.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "api_key": "",
+            "base_url": "",
+            "endpoint_path": "/chat/completions",
+            "model": "",
+            "request_body_template_json": "{\n  \"model\": \"{model}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"{prompt}\"\n    }\n  ],\n  \"modalities\": [\"image\", \"text\"],\n  \"stream\": false\n}",
+            "response_image_path": "choices.0.message.images.0.image_url.url",
+            "extra_headers_json": "",
+            "timeout_seconds": 120,
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "API key for your image generation gateway",
+                },
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "e.g. google/gemini-2.5-flash-image",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "e.g. https://api.tokenrouter.com/v1 or https://openrouter.ai/api/v1",
+                },
+                {
+                    "key": "endpoint_path",
+                    "label": "Endpoint Path",
+                    "type": "text",
+                    "default": "/chat/completions",
+                    "placeholder": "/chat/completions",
+                    "advanced": True,
+                },
+                {
+                    "key": "request_body_template_json",
+                    "label": "Request Body Template JSON",
+                    "type": "textarea",
+                    "default": "{\n  \"model\": \"{model}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"{prompt}\"\n    }\n  ],\n  \"modalities\": [\"image\", \"text\"],\n  \"stream\": false\n}",
+                    "placeholder": "{\n  \"model\": \"{model}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"{prompt}\"}],\n  \"modalities\": [\"image\", \"text\"],\n  \"stream\": false\n}",
+                    "advanced": True,
+                },
+                {
+                    "key": "response_image_path",
+                    "label": "Response Image Path",
+                    "type": "text",
+                    "default": "choices.0.message.images.0.image_url.url",
+                    "placeholder": "choices.0.message.images.0.image_url.url",
+                    "advanced": True,
+                },
+                {
+                    "key": "extra_headers_json",
+                    "label": "Extra Headers JSON",
+                    "type": "textarea",
+                    "default": "",
+                    "placeholder": "{\n  \"HTTP-Referer\": \"https://your-app.example\",\n  \"X-Title\": \"Clawith\"\n}",
+                    "advanced": True,
+                },
+                {
+                    "key": "timeout_seconds",
+                    "label": "Timeout Seconds",
+                    "type": "number",
+                    "default": 120,
+                    "min": 10,
+                    "max": 600,
+                    "advanced": True,
+                },
+            ]
+        },
+    },
+    {
         "name": "discover_resources",
         "display_name": "Resource Discovery",
         "description": "Search public MCP registries (Smithery + ModelScope) for tools and capabilities that can extend your abilities. Use this when you encounter a task you cannot handle with your current tools.",
@@ -2374,7 +2467,7 @@ BUILTIN_TOOLS = [
 AGENTBAY_TOOLS = [
     {
         "name": "agentbay_browser_navigate",
-        "display_name": "AgentBay: 浏览器访问",
+        "display_name": "AgentBay: Browser Navigate",
         "description": "[ENV: Browser] Navigate to a URL in the AgentBay HEADLESS BROWSER environment. IMPORTANT: This browser runs in an ISOLATED environment — it does NOT share filesystem, processes, or downloads with the Cloud Desktop (computer_* tools) or Code Sandbox (code_execute/command_exec). Files downloaded here are NOT accessible from other environments. Tip: after navigating, use browser_observe to identify interactive elements, then use browser_type/browser_click to interact.",
         "category": "agentbay",
         "icon": "🌐",
@@ -2413,7 +2506,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_browser_screenshot",
-        "display_name": "AgentBay: 浏览器截图",
+        "display_name": "AgentBay: Browser Screenshot",
         "description": "[ENV: Browser] Take a screenshot of the current page in the headless browser. This browser is ISOLATED from the Cloud Desktop and Code Sandbox. Use this after clicking, typing, or submitting a form to verify the result — it preserves the current page state. Never call browser_navigate just to take a screenshot.",
         "category": "agentbay",
         "icon": "📸",
@@ -2438,7 +2531,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_browser_click",
-        "display_name": "AgentBay: 浏览器点击",
+        "display_name": "AgentBay: Browser Click",
         "description": "[ENV: Browser] Click an element in the headless browser (ISOLATED from Desktop and Code Sandbox). selector can be a CSS selector (e.g. #btn) or natural language description (e.g. 'the Send button').",
         "category": "agentbay",
         "icon": "🖱️",
@@ -2455,7 +2548,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_browser_type",
-        "display_name": "AgentBay: 浏览器输入",
+        "display_name": "AgentBay: Browser Type",
         "description": "[ENV: Browser] Type text into an element in the headless browser (ISOLATED from Desktop and Code Sandbox). selector can be a CSS selector or natural language description (e.g. 'phone number input').",
         "category": "agentbay",
         "icon": "⌨️",
@@ -2473,7 +2566,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_code_execute",
-        "display_name": "AgentBay: 代码执行",
+        "display_name": "AgentBay: Code Execute",
         "description": "[ENV: Code Sandbox] Execute code (Python, Bash, Node.js) in the AgentBay Code Sandbox. IMPORTANT: This sandbox is an ISOLATED environment — it does NOT share filesystem, processes, or network with the Headless Browser (browser_* tools) or Cloud Desktop (computer_* tools). Files created here are NOT accessible from other environments.",
         "category": "agentbay",
         "icon": "💻",
@@ -2486,6 +2579,90 @@ AGENTBAY_TOOLS = [
                 "timeout": {"type": "integer", "description": "超时时间（秒）", "default": 30},
             },
             "required": ["language", "code"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_code_write_file",
+        "display_name": "AgentBay: Write Code Sandbox File",
+        "description": "[ENV: Code Sandbox] Write a text file inside the AgentBay Code Sandbox.",
+        "category": "agentbay",
+        "icon": "📝",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "remote_path": {
+                    "type": "string",
+                    "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
+                },
+                "content": {"type": "string", "description": "File content to write."},
+                "mode": {
+                    "type": "string",
+                    "enum": ["overwrite", "append"],
+                    "description": "Write mode. Default: overwrite.",
+                    "default": "overwrite",
+                },
+            },
+            "required": ["remote_path", "content"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_code_read_file",
+        "display_name": "AgentBay: Read Code Sandbox File",
+        "description": "[ENV: Code Sandbox] Read a text file from the AgentBay Code Sandbox.",
+        "category": "agentbay",
+        "icon": "📖",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "remote_path": {
+                    "type": "string",
+                    "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
+                },
+            },
+            "required": ["remote_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_code_edit_file",
+        "display_name": "AgentBay: Edit Code Sandbox File",
+        "description": "[ENV: Code Sandbox] Edit a text file inside the AgentBay Code Sandbox by replacing exact text.",
+        "category": "agentbay",
+        "icon": "✏️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "remote_path": {
+                    "type": "string",
+                    "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
+                },
+                "edits": {
+                    "type": "array",
+                    "description": "List of exact text replacements.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "oldText": {"type": "string", "description": "Exact text to replace."},
+                            "newText": {"type": "string", "description": "Replacement text."},
+                        },
+                        "required": ["oldText", "newText"],
+                    },
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview changes without applying them. Default: false.",
+                    "default": False,
+                },
+            },
+            "required": ["remote_path", "edits"],
         },
         "config": {},
         "config_schema": {},
@@ -3224,6 +3401,47 @@ async def seed_builtin_tools():
                 logger.info(
                     f"[ToolSeeder] Auto-assigned {browser_assigned_count} AgentBay browser helper tool(s) "
                     f"to {len(browser_enabled_agent_ids)} agent(s)"
+                )
+
+        # Code sandbox file helpers are non-default, but should be available
+        # wherever the user has already enabled AgentBay code execution tools.
+        code_anchor_names = [
+            "agentbay_code_execute",
+            "agentbay_command_exec",
+            "agentbay_file_transfer",
+        ]
+        code_helper_names = [
+            "agentbay_code_write_file",
+            "agentbay_code_read_file",
+            "agentbay_code_edit_file",
+        ]
+        code_anchor_tools_r = await db.execute(select(Tool.id).where(Tool.name.in_(code_anchor_names)))
+        code_anchor_tool_ids = [row[0] for row in code_anchor_tools_r.fetchall()]
+        code_helper_tools_r = await db.execute(select(Tool).where(Tool.name.in_(code_helper_names)))
+        code_helper_tools = code_helper_tools_r.scalars().all()
+        if code_anchor_tool_ids and code_helper_tools:
+            code_enabled_agent_r = await db.execute(
+                select(AgentTool.agent_id)
+                .where(AgentTool.tool_id.in_(code_anchor_tool_ids), AgentTool.enabled == True)  # noqa: E712
+                .distinct()
+            )
+            code_enabled_agent_ids = [row[0] for row in code_enabled_agent_r.fetchall()]
+            code_assigned_count = 0
+            for agent_id in code_enabled_agent_ids:
+                for helper_tool in code_helper_tools:
+                    existing_assignment = await db.execute(
+                        select(AgentTool).where(
+                            AgentTool.agent_id == agent_id,
+                            AgentTool.tool_id == helper_tool.id,
+                        )
+                    )
+                    if not existing_assignment.scalar_one_or_none():
+                        db.add(AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
+                        code_assigned_count += 1
+            if code_assigned_count:
+                logger.info(
+                    f"[ToolSeeder] Auto-assigned {code_assigned_count} AgentBay code file helper tool(s) "
+                    f"to {len(code_enabled_agent_ids)} agent(s)"
                 )
 
         OBSOLETE_TOOLS = ["bing_search", "manage_tasks"]

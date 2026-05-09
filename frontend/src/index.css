@@ -101,10 +101,6 @@
   --notification-bar-close-hover: rgba(0, 0, 0, 0.1);
 }
 
-body.has-notification-bar {
-  --notification-bar-height: 32px;
-}
-
 /* ─── Notification Bar ──────────────────────────────── */
 
 .notification-bar {
@@ -121,7 +117,7 @@ body.has-notification-bar {
   position: relative;
   z-index: 100;
   flex-shrink: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .notification-bar-inner {
@@ -174,6 +170,49 @@ body.has-notification-bar {
 .notification-bar-close:hover {
   opacity: 1;
   background: var(--notification-bar-close-hover);
+}
+
+.notification-bar-close-wrap {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+
+.notification-bar-dismiss-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 148px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  z-index: 120;
+}
+
+.notification-bar-dismiss-menu button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.3;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.notification-bar-dismiss-menu button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 [data-theme="light"] {
@@ -363,11 +402,15 @@ select:focus {
   /* Allow account language submenu to extend to the right; vertical scroll stays in .sidebar-scrollable */
   overflow-x: visible;
   overflow-y: hidden;
+  isolation: isolate;
 }
 
 .sidebar-top {
   padding-top: var(--space-2);
   flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  background: var(--bg-secondary);
 }
 
 .sidebar-scrollable {
@@ -375,6 +418,9 @@ select:focus {
   overflow-y: auto;
   overflow-x: hidden;
   min-height: 0;
+  position: relative;
+  z-index: 0;
+  background: var(--bg-secondary);
 }
 
 /* Custom scrollbar for sidebar */
@@ -5290,6 +5336,174 @@ select:focus {
 .workspace-op-main .markdown-content {
   max-width: 880px;
   margin: 0 auto;
+}
+
+.markdown-image-wrap {
+  position: relative;
+  display: inline-flex;
+  margin: 8px 0;
+  max-width: 100%;
+}
+
+.markdown-inline-image {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: 6px;
+  object-fit: contain;
+  cursor: zoom-in;
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-secondary) 45%, transparent);
+}
+
+.markdown-image-download-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid color-mix(in srgb, var(--border-default) 88%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elevated) 92%, rgba(0, 0, 0, 0.4));
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity var(--transition-fast), transform var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(8px);
+}
+
+.markdown-image-wrap:hover .markdown-image-download-btn,
+.markdown-image-wrap:focus-within .markdown-image-download-btn {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.markdown-image-download-btn:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-default);
+}
+
+.markdown-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10030;
+  background: rgba(10, 12, 18, 0.82);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  gap: 16px;
+}
+
+.markdown-image-lightbox__toolbar {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--border-default) 82%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elevated) 90%, rgba(0, 0, 0, 0.35));
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(12px);
+}
+
+.markdown-image-lightbox__btn {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.markdown-image-lightbox__btn:hover {
+  background: var(--bg-secondary);
+}
+
+.markdown-image-lightbox__stage {
+  max-width: min(92vw, 1400px);
+  max-height: calc(100vh - 140px);
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+
+.markdown-image-lightbox__image {
+  max-width: 100%;
+  max-height: calc(100vh - 180px);
+  object-fit: contain;
+  transform-origin: center center;
+  transition: transform var(--transition-fast);
+  box-shadow: var(--shadow-lg);
+  border-radius: 10px;
+  background: white;
+}
+
+.markdown-image-lightbox__footer {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  max-width: min(90vw, 820px);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elevated) 90%, rgba(0, 0, 0, 0.35));
+  color: var(--text-primary);
+  border: 1px solid color-mix(in srgb, var(--border-default) 82%, transparent);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+}
+
+.markdown-image-lightbox__alt {
+  max-width: min(72vw, 640px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 720px) {
+  .markdown-image-lightbox {
+    padding: 16px;
+  }
+
+  .markdown-image-lightbox__toolbar {
+    top: 14px;
+    right: 14px;
+    gap: 4px;
+    padding: 6px;
+  }
+
+  .markdown-image-lightbox__btn {
+    width: 30px;
+    height: 30px;
+  }
+
+  .markdown-image-lightbox__footer {
+    bottom: 14px;
+    padding: 7px 10px;
+  }
 }
 
 .workspace-op-empty {
