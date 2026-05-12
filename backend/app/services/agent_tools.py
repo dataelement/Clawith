@@ -205,7 +205,7 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
             _set_cached_tool_config(agent_id, tool_name, decrypted)
             return decrypted
 
-    logger.error(f"[ToolConfig] No DB config found for {tool_name}, agent_id={agent_id}")
+    logger.debug(f"[ToolConfig] No DB config found for {tool_name}, agent_id={agent_id}")
     return None
 
 # ContextVar set by each channel handler so send_channel_file knows where to send

@@ -424,8 +424,10 @@ async def call_llm(
     # tool available so every turn still has an explicit stop signal.
     if skip_tools:
         tools_for_llm = [FINISH_TOOL_DEFINITION]
+        logger.info("[LLM] skip_tools=True (onboarding greeting turn): sending only finish tool")
     else:
         tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
+        logger.info(f"[LLM] Loaded {len(tools_for_llm)} tools for agent_id={agent_id}")
     allowed_tool_names = _allowed_tool_names(tools_for_llm)
 
     # Convert messages to LLMMessage format

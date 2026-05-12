@@ -866,6 +866,12 @@ async def websocket_chat(
                         assistant_response = await llm_task
                         logger.info(f"[WS] LLM response: {assistant_response[:80]}")
 
+                    # Ensure onboarding phase is advanced even when streaming
+                    # callbacks weren't triggered (e.g. the greeting turn where
+                    # the model only calls `finish` and call_llm returns the
+                    # content directly without invoking on_chunk/on_tool_call).
+                    await maybe_mark_onboarding_progress()
+
                     # call_llm returns error strings instead of raising — detect and
                     # re-raise so the fallback model logic below can trigger correctly.
                     _LLM_ERROR_PREFIXES = ("[LLM Error]", "[LLM call error]", "[Error]")
