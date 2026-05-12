@@ -8215,6 +8215,19 @@ function AgentDetailInner() {
                                                             )}
                                                         </>
                                                     )}
+                                                    {!tokenSuffix && (
+                                                        <button
+                                                            className="btn btn-primary"
+                                                            onClick={copyTokenKey}
+                                                            disabled={tokenKeyRegening}
+                                                            style={{ padding: '4px 14px', fontSize: '12px' }}
+                                                        >
+                                                            <IconKey size={14} stroke={1.8} />
+                                                            {tokenKeyRegening
+                                                                ? '...'
+                                                                : (isChinese ? ' 生成 Key' : ' Generate Key')}
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </div>
                                         );
