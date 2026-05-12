@@ -922,74 +922,29 @@ class OpenAIResponsesClient(LLMClient):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Non-streaming completion with automatic retry on empty output.
-
-        Reasoning models (o3, o4-mini, etc.) may exhaust their token budget on
-        internal thinking, leaving zero tokens for visible output.  When this
-        happens the API returns an error like "model output must contain either
-        output text or tool calls, these cannot both be empty".  We catch that
-        specific case and retry once with a doubled ``max_output_tokens``.
-        """
+        """Non-streaming completion."""
         url = f"{self._normalize_base_url()}/responses"
+        payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
-        effective_max_tokens = max_tokens
-        max_retries_empty = 1  # retry at most once for empty-output errors
+        client = await self._get_client()
+        response = await client.post(url, json=payload, headers=self._get_headers())
 
-        for attempt in range(1 + max_retries_empty):
-            payload = self._build_payload(
-                messages, tools, temperature, effective_max_tokens,
-                stream=False, **kwargs,
+        if response.status_code >= 400:
+            error_text = response.text[:500]
+            raise LLMError(f"HTTP {response.status_code}: {error_text}")
+
+        data = response.json()
+        api_error = self._extract_api_error(data)
+        if api_error:
+            ctx = self._build_error_log_context(data)
+            logger.error(
+                "OpenAIResponses API error: %s | context=%s",
+                api_error,
+                ctx,
             )
+            raise LLMError(api_error)
 
-            client = await self._get_client()
-            response = await client.post(url, json=payload, headers=self._get_headers())
-
-            if response.status_code >= 400:
-                error_text = response.text[:500]
-                # Detect empty-output error and retry with more tokens
-                if (
-                    attempt < max_retries_empty
-                    and "cannot both be empty" in error_text.lower()
-                ):
-                    old_limit = effective_max_tokens or 0
-                    effective_max_tokens = max(old_limit * 2, 32768)
-                    logger.warning(
-                        "[LLM] Empty output from Responses API (attempt %d), "
-                        "retrying with max_output_tokens %d -> %d",
-                        attempt + 1, old_limit, effective_max_tokens,
-                    )
-                    continue
-                raise LLMError(f"HTTP {response.status_code}: {error_text}")
-
-            data = response.json()
-            api_error = self._extract_api_error(data)
-            if api_error:
-                # Also catch the empty-output error surfaced at the JSON level
-                if (
-                    attempt < max_retries_empty
-                    and "cannot both be empty" in api_error.lower()
-                ):
-                    old_limit = effective_max_tokens or 0
-                    effective_max_tokens = max(old_limit * 2, 32768)
-                    logger.warning(
-                        "[LLM] Empty output from Responses API (attempt %d), "
-                        "retrying with max_output_tokens %d -> %d",
-                        attempt + 1, old_limit, effective_max_tokens,
-                    )
-                    continue
-
-                ctx = self._build_error_log_context(data)
-                logger.error(
-                    "OpenAIResponses API error: %s | context=%s",
-                    api_error,
-                    ctx,
-                )
-                raise LLMError(api_error)
-
-            return self._parse_response_data(data)
-
-        # Should not reach here, but just in case
-        raise LLMError("Responses API returned empty output after retries")
+        return self._parse_response_data(data)
 
     async def stream(
         self,

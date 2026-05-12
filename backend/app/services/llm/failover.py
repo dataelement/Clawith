@@ -60,10 +60,7 @@ def classify_error(error: Exception) -> FailoverErrorType:
         return FailoverErrorType.RETRYABLE
 
     # Retryable: transient errors
-    if any(kw in error_msg for kw in [
-        "temporary", "transient", "unavailable", "overloaded", "busy",
-        "cannot both be empty",  # OpenAI Responses API: reasoning model exhausted token budget
-    ]):
+    if any(kw in error_msg for kw in ["temporary", "transient", "unavailable", "overloaded", "busy"]):
         return FailoverErrorType.RETRYABLE
 
     # LLMError with specific patterns
