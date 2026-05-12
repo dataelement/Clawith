@@ -72,6 +72,7 @@ const DEFAULT_TREE_WIDTH = 240;
 const DEFAULT_HISTORY_WIDTH = 320;
 const MIN_SIDE_WIDTH = 220;
 const MAX_SIDE_WIDTH = 520;
+const HTML_DRAFT_PREVIEW_LIMIT = 20000;
 
 function extOf(path: string): string {
     const idx = path.lastIndexOf('.');
@@ -257,6 +258,18 @@ function buildRevisionDiff(revision: any): string {
     return chunks.join('\n');
 }
 
+function HtmlDraftPreview({ content }: { content: string }) {
+    const shownContent = content.length > HTML_DRAFT_PREVIEW_LIMIT
+        ? `${content.slice(0, HTML_DRAFT_PREVIEW_LIMIT)}\n\n... truncated while drafting ...`
+        : content;
+
+    return (
+        <div className="workspace-op-html-draft">
+            <pre>{shownContent}</pre>
+        </div>
+    );
+}
+
 function HtmlPreviewFrame({
     content,
     title,
@@ -276,7 +289,12 @@ function HtmlPreviewFrame({
 
     const fitFixedWidthContent = () => {
         const frame = frameRef.current;
-        const doc = frame?.contentDocument;
+        let doc: Document | null | undefined;
+        try {
+            doc = frame?.contentDocument;
+        } catch {
+            return;
+        }
         const root = doc?.documentElement;
         const body = doc?.body;
         if (!frame || !doc || !root || !body) return;
@@ -304,7 +322,12 @@ function HtmlPreviewFrame({
 
     const bindFrameFitObservers = () => {
         const frame = frameRef.current;
-        const doc = frame?.contentDocument;
+        let doc: Document | null | undefined;
+        try {
+            doc = frame?.contentDocument;
+        } catch {
+            return;
+        }
         if (!frame || !doc?.documentElement || !doc.body) return;
 
         observersRef.current?.frame?.disconnect();
@@ -371,7 +394,7 @@ function HtmlPreviewFrame({
         <div className="workspace-op-html-fit" ref={containerRef}>
             <iframe
                 ref={frameRef}
-                sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock allow-top-navigation-by-user-activation"
+                sandbox="allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock"
                 src={src}
                 srcDoc={src ? undefined : renderContent}
                 title={title}
@@ -927,7 +950,7 @@ export default function WorkspaceOperationPanel({
                     <div className="workspace-op-live">
                         <div className="workspace-op-live-banner">{liveDraft.status === 'drafting' ? 'Drafting HTML...' : 'Writing HTML...'}</div>
                         {draftContent ? (
-                            <HtmlPreviewFrame content={draftContent} title={fileName(liveDraft.path || 'draft.html')} suspendAutoFit={isSideResizing} />
+                            <HtmlDraftPreview content={draftContent} />
                         ) : (
                             <div className="workspace-op-empty">Preparing file content...</div>
                         )}

@@ -4237,8 +4237,7 @@ function AgentDetailInner() {
     const pendingHistoryInitialScrollRef = useRef(false);
     const liveAutoFollowUntilRef = useRef(0);
     const userPinnedAwayFromBottomRef = useRef(false);
-    const liveScrollJobRef = useRef(0);
-    const liveScrollTimersRef = useRef<number[]>([]);
+    const liveScrollRafRef = useRef<number | null>(null);
     const chatTouchStartYRef = useRef<number | null>(null);
     const [showScrollBtn, setShowScrollBtn] = useState(false);
     const [chatScrollBtnBottom, setChatScrollBtnBottom] = useState(96);
@@ -4263,9 +4262,10 @@ function AgentDetailInner() {
     }, [activeTab]);
     const cancelLiveAutoFollow = useCallback(() => {
         liveAutoFollowUntilRef.current = 0;
-        liveScrollJobRef.current += 1;
-        liveScrollTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-        liveScrollTimersRef.current = [];
+        if (liveScrollRafRef.current != null) {
+            cancelAnimationFrame(liveScrollRafRef.current);
+            liveScrollRafRef.current = null;
+        }
     }, []);
     const pinChatAwayFromBottom = useCallback(() => {
         cancelLiveAutoFollow();
@@ -4275,24 +4275,16 @@ function AgentDetailInner() {
     }, [cancelLiveAutoFollow]);
     const scheduleLiveScrollToBottom = useCallback(() => {
         if (userPinnedAwayFromBottomRef.current) return;
-        cancelLiveAutoFollow();
-        const jobId = liveScrollJobRef.current;
         liveAutoFollowUntilRef.current = Date.now() + 1500;
-        let attempts = 0;
-        const scroll = () => {
-            if (jobId !== liveScrollJobRef.current) return;
+        if (liveScrollRafRef.current != null) return;
+        liveScrollRafRef.current = requestAnimationFrame(() => {
+            liveScrollRafRef.current = null;
             if (userPinnedAwayFromBottomRef.current) return;
             const el = chatContainerRef.current;
             if (el) el.scrollTop = el.scrollHeight;
             setShowScrollBtn(false);
-            if (attempts++ < 2) requestAnimationFrame(scroll);
-        };
-        requestAnimationFrame(scroll);
-        liveScrollTimersRef.current = [
-            window.setTimeout(scroll, 80),
-            window.setTimeout(scroll, 220),
-        ];
-    }, [cancelLiveAutoFollow]);
+        });
+    }, []);
     useEffect(() => {
         return () => cancelLiveAutoFollow();
     }, [cancelLiveAutoFollow]);

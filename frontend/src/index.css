@@ -6151,6 +6151,26 @@ select:focus {
   border-radius: 8px;
 }
 
+.workspace-op-html-draft {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.workspace-op-html-draft pre {
+  margin: 0;
+  padding: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .workspace-op-image-preview {
   display: flex;
   align-items: center;
