@@ -7462,7 +7462,7 @@ async def _execute_code_legacy(ws: Path, arguments: dict, allow_network: bool = 
             result_parts.append(f"⚠️ Stderr:\n{stderr_str}")
 
         if is_timeout:
-            result_parts.append(f"❌ Code execution timed out after {timeout}s")
+            result_parts.append(f"❌ Code execution timed out after {timeout}s. If you expect this code to take longer, try calling the tool again with a higher 'timeout' parameter (up to 3600s).")
             return "\n\n".join(result_parts)
 
         if proc.returncode != 0:

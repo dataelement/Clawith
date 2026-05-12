@@ -413,7 +413,7 @@ class SubprocessBackend(BaseSandboxBackend):
                     stderr=stderr_str,
                     exit_code=124,
                     duration_ms=duration_ms,
-                    error=f"Code execution timed out after {timeout}s"
+                    error=f"Code execution timed out after {timeout}s. If you expect this code to take longer, try calling the tool again with a higher 'timeout' parameter (up to 3600s)."
                 )
 
             return ExecutionResult(
