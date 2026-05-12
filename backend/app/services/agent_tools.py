@@ -7444,13 +7444,29 @@ async def _execute_code_legacy(ws: Path, arguments: dict, allow_network: bool = 
             env=safe_env,
         )
 
+        stdout_data = bytearray()
+        stderr_data = bytearray()
+
+        async def read_stream(stream, out):
+            while True:
+                chunk = await stream.read(4096)
+                if not chunk:
+                    break
+                out.extend(chunk)
+
+        task1 = asyncio.create_task(read_stream(proc.stdout, stdout_data))
+        task2 = asyncio.create_task(read_stream(proc.stderr, stderr_data))
+
+        is_timeout = False
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            is_timeout = False
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             proc.kill()
-            stdout, stderr = await proc.communicate()
             is_timeout = True
+
+        await asyncio.gather(task1, task2)
+        stdout = bytes(stdout_data)
+        stderr = bytes(stderr_data)
 
         stdout_str = stdout.decode("utf-8", errors="replace")[:10000] if stdout else ""
         stderr_str = stderr.decode("utf-8", errors="replace")[:5000] if stderr else ""
