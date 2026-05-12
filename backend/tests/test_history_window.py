@@ -159,6 +159,52 @@ def test_parallel_tool_pair_dropped_if_too_big():
     assert _roles(out) == ["user"]
 
 
+def test_incomplete_parallel_tool_block_dropped_even_with_budget():
+    """Assistant declares multiple tool calls; missing any result invalidates
+    the whole block."""
+    msgs = [
+        _u("u1"),
+        _a(None, tool_calls=[_tc("X"), _tc("Y")]),
+        _t("X"),
+        _u("u2"),
+    ]
+    out = truncate_by_message_count(msgs, 10)
+    assert _roles(out) == ["user", "user"]
+    assert all(m.get("role") != "tool" for m in out)
+    assert all(not m.get("tool_calls") for m in out)
+
+
+def test_delayed_tool_result_after_user_does_not_complete_block():
+    """A tool result must be in the contiguous tool-result run after its
+    assistant. Delayed results are invalid and dropped as orphans."""
+    msgs = [
+        _u("u1"),
+        _a(None, tool_calls=[_tc("X")]),
+        _u("intervening user"),
+        _t("X"),
+        _a("final"),
+    ]
+    out = truncate_by_message_count(msgs, 10)
+    assert _roles(out) == ["user", "user", "assistant"]
+    assert "tool" not in _roles(out)
+    assert all(not m.get("tool_calls") for m in out)
+
+
+def test_duplicate_tool_result_dropped_without_invalidating_complete_block():
+    msgs = [
+        _u("u1"),
+        _a(None, tool_calls=[_tc("X")]),
+        _t("X", "first"),
+        _t("X", "duplicate"),
+        _u("u2"),
+    ]
+    out = truncate_by_message_count(msgs, 10)
+    assert _roles(out) == ["user", "assistant", "tool", "user"]
+    tool_results = [m for m in out if m.get("role") == "tool"]
+    assert len(tool_results) == 1
+    assert tool_results[0]["content"] == "first"
+
+
 def test_multiple_pairs_some_drop():
     msgs = [
         _u("u1"),

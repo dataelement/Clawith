@@ -1,4 +1,4 @@
-"""Pair-aware conversation history truncation.
+"""Tool-block-safe conversation history truncation.
 
 Replaces naive ``conversation[-N:]`` slicing with a walker that keeps
 ``assistant.tool_calls`` and their matching ``role="tool"`` messages as an
@@ -11,11 +11,17 @@ Why: OpenAI Responses API and Chat Completions both reject input where a
 between an assistant message and its tool results. This is the failure mode
 reported in issue #446.
 
-Orphan detection is by ``tool_call_id`` matching, not by adjacency — a
-tool message inserted between a valid pair and other messages (from
-malformed persistence or upstream truncation) is dropped, not folded
-into an adjacent block. This makes the helper robust against orphans
-at any position, not just at the slice head.
+Tool results must be in the contiguous tool-result run immediately after
+their owning assistant. A tool message inserted elsewhere (from malformed
+persistence or upstream truncation) is dropped, not folded into an adjacent
+block. This makes the helper robust against orphans at any position, not just
+at the slice head.
+
+Incomplete assistant tool-call blocks are also dropped. If an assistant
+declares multiple tool calls, every declared ``tool_call_id`` must have a
+matching ``role="tool"`` result before the next non-tool message. This mirrors
+the API contract enforced by OpenAI-compatible providers and avoids sending
+synthetic/fake tool results into weaker models' context.
 
 Input is expected to be in OpenAI chat-completion format (post-reorganization
 from DB ``role="tool_call"`` rows).
@@ -26,38 +32,78 @@ from __future__ import annotations
 from typing import Any
 
 
-def _identify_orphans(messages: list[dict[str, Any]]) -> set[int]:
-    """Return indices of ``role="tool"`` messages whose ``tool_call_id`` has
-    no matching ``assistant.tool_calls`` earlier in the conversation.
+def _assistant_tool_call_ids(message: dict[str, Any]) -> list[str]:
+    """Return non-empty tool call ids declared by an assistant message."""
+    if message.get("role") != "assistant":
+        return []
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return []
 
-    OpenAI rejects the request the moment a ``function_call_output`` is
-    sent without its matching ``function_call``, regardless of whether
-    that tool message is at the head, middle, or end. So orphan detection
-    is by ID matching, not by position.
+    ids: list[str] = []
+    for tool_call in tool_calls:
+        if isinstance(tool_call, dict):
+            tool_call_id = tool_call.get("id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                ids.append(tool_call_id)
+    return ids
+
+
+def _safe_history_blocks(messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Build API-safe message blocks in original order.
+
+    A valid tool block is an assistant message with tool calls followed by
+    contiguous matching ``role="tool"`` results. A missing result invalidates
+    the whole block; orphan/duplicate tool results are consumed and dropped.
     """
-    orphans: set[int] = set()
-    for i, msg in enumerate(messages):
-        if msg.get("role") != "tool":
+    blocks: list[list[dict[str, Any]]] = []
+    i = 0
+    n = len(messages)
+
+    while i < n:
+        message = messages[i]
+        role = message.get("role")
+
+        if role == "tool":
+            # Orphan or delayed tool result. It is invalid without the owning
+            # assistant immediately before the tool-result run.
+            i += 1
             continue
-        tcid = msg.get("tool_call_id")
-        if not tcid:
-            orphans.add(i)
+
+        tool_call_ids = _assistant_tool_call_ids(message)
+        if not tool_call_ids:
+            blocks.append([message])
+            i += 1
             continue
-        # Search backward for an assistant whose tool_calls contains this id.
-        # Walks past intervening user / system / other-assistant messages.
-        found = False
-        j = i - 1
-        while j >= 0:
-            m = messages[j]
-            if m.get("role") == "assistant" and m.get("tool_calls"):
-                ids = {tc.get("id") for tc in m["tool_calls"]}
-                if tcid in ids:
-                    found = True
-                    break
-            j -= 1
-        if not found:
-            orphans.add(i)
-    return orphans
+
+        required = set(tool_call_ids)
+        seen: set[str] = set()
+        block = [message]
+        j = i + 1
+
+        while j < n and messages[j].get("role") == "tool":
+            tool_message = messages[j]
+            tool_call_id = tool_message.get("tool_call_id")
+            if (
+                isinstance(tool_call_id, str)
+                and tool_call_id in required
+                and tool_call_id not in seen
+            ):
+                seen.add(tool_call_id)
+                block.append(tool_message)
+            # Consume every contiguous tool message here. Non-matching or
+            # duplicate tool results are invalid for this block and are dropped
+            # instead of being allowed to become later orphan messages.
+            j += 1
+
+        if seen == required:
+            blocks.append(block)
+        # If incomplete, drop the assistant and any partial tool results. Old
+        # history truncation should discard broken blocks rather than inventing
+        # synthetic tool results.
+        i = j
+
+    return blocks
 
 
 def truncate_by_message_count(
@@ -68,13 +114,13 @@ def truncate_by_message_count(
 
     A "block" is either:
       - a single non-tool, non-tool-calling message (user / system / assistant text), or
-      - an ``assistant`` with ``tool_calls`` plus every matching ``role="tool"``
-        message (identified by ``tool_call_id``, not adjacency).
+      - an ``assistant`` with ``tool_calls`` plus every matching contiguous
+        ``role="tool"`` message.
 
     Blocks are atomic: included whole or not at all. Orphan ``role="tool"``
-    messages — those whose ``tool_call_id`` has no matching assistant — are
-    silently dropped regardless of budget. Sending them to OpenAI causes the
-    #446 error.
+    messages and incomplete assistant tool-call blocks are silently dropped
+    regardless of budget. Sending either shape to OpenAI causes the #446 class
+    of errors.
 
     Args:
         messages: Conversation list in OpenAI format. Empty list is fine.
@@ -88,79 +134,16 @@ def truncate_by_message_count(
     if max_messages <= 0 or not messages:
         return []
 
-    orphans = _identify_orphans(messages)
-    n = len(messages)
-    consumed: set[int] = set(orphans)  # orphans drop unconditionally
-    blocks: list[set[int]] = []  # tail-to-head order
-
-    for i in range(n - 1, -1, -1):
-        if i in consumed:
-            continue
-        msg = messages[i]
-        role = msg.get("role")
-
-        if role == "tool":
-            # Find this tool's owning assistant by matching tool_call_id
-            tcid = msg.get("tool_call_id")
-            asst_idx = -1
-            j = i - 1
-            while j >= 0:
-                m = messages[j]
-                if m.get("role") == "assistant" and m.get("tool_calls"):
-                    ids = {tc.get("id") for tc in m["tool_calls"]}
-                    if tcid in ids:
-                        asst_idx = j
-                        break
-                j -= 1
-            if asst_idx < 0:
-                # Defensive — orphan detection should have caught this
-                consumed.add(i)
-                continue
-            # Block = assistant + ALL of its matching tool messages (siblings)
-            asst_tc_ids = {tc.get("id") for tc in messages[asst_idx]["tool_calls"]}
-            block = {asst_idx}
-            for k in range(asst_idx + 1, n):
-                if k in consumed:
-                    continue
-                m = messages[k]
-                if (
-                    m.get("role") == "tool"
-                    and m.get("tool_call_id") in asst_tc_ids
-                ):
-                    block.add(k)
-            consumed |= block
-            blocks.append(block)
-        elif role == "assistant" and msg.get("tool_calls"):
-            # Encountered the assistant before any of its tools (e.g. tools
-            # were truncated upstream or are still in flight). Group with
-            # whatever matching tools follow it.
-            asst_tc_ids = {tc.get("id") for tc in msg["tool_calls"]}
-            block = {i}
-            for k in range(i + 1, n):
-                if k in consumed:
-                    continue
-                m = messages[k]
-                if (
-                    m.get("role") == "tool"
-                    and m.get("tool_call_id") in asst_tc_ids
-                ):
-                    block.add(k)
-            consumed |= block
-            blocks.append(block)
-        else:
-            consumed.add(i)
-            blocks.append({i})
-
-    # Walk blocks tail-to-head, taking until budget exhausted.
-    keep: set[int] = set()
+    blocks = _safe_history_blocks(messages)
+    selected: list[list[dict[str, Any]]] = []
     budget = max_messages
-    for block in blocks:
+    for block in reversed(blocks):
         size = len(block)
         if size <= budget:
-            keep |= block
+            selected.append(block)
             budget -= size
         else:
             # Block doesn't fit — stop. Do NOT partial-include (would split pair).
             break
 
-    return [messages[k] for k in sorted(keep)]
+    return [message for block in reversed(selected) for message in block]
