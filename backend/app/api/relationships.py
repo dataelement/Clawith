@@ -637,6 +637,7 @@ async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
                 continue
             label = AGENT_RELATION_LABELS.get(r.relation, r.relation)
             lines.append(f"### {a.name} — {a.role_description or '数字员工'}")
+            lines.append(f"- Agent ID：`{a.id}`")
             lines.append(f"- 关系：{label}")
             lines.append(f"- 可以用 send_message_to_agent 工具给 {a.name} 发消息协作")
             if r.description:
