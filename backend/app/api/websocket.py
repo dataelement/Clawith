@@ -19,7 +19,11 @@ from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.chat_session_service import ensure_primary_platform_session
-from app.services.history_window import truncate_by_message_count
+from app.services.history_window import (
+    token_budget_from_context_window,
+    truncate_by_message_count,
+    truncate_by_token_budget,
+)
 from app.services.llm import call_llm, call_llm_with_failover
 
 router = APIRouter(tags=["websocket"])
@@ -781,7 +785,17 @@ async def websocket_chat(
                         # Naive [-ctx_size:] slicing can leave orphan tool messages at the
                         # head when the cut lands mid-pair, which OpenAI rejects with
                         # "No tool call found for function call output" (issue #446).
-                        _truncated = truncate_by_message_count(conversation, ctx_size)
+                        _token_budget = token_budget_from_context_window(
+                            getattr(effective_llm_model, "context_window_tokens", None)
+                        )
+                        if _token_budget:
+                            _truncated = truncate_by_token_budget(
+                                conversation,
+                                ctx_size,
+                                _token_budget,
+                            )
+                        else:
+                            _truncated = truncate_by_message_count(conversation, ctx_size)
 
                         # Per-(user, agent) onboarding. With no row, prepend the
                         # greeting prompt and mark the pair as "greeted" once it

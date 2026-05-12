@@ -29,7 +29,13 @@ from DB ``role="tool_call"`` rows).
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from app.services.token_tracker import estimate_tokens_from_chars
+
+
+TOKEN_BUDGET_CONTEXT_RATIO = 0.8
 
 
 def _assistant_tool_call_ids(message: dict[str, Any]) -> list[str]:
@@ -106,6 +112,30 @@ def _safe_history_blocks(messages: list[dict[str, Any]]) -> list[list[dict[str, 
     return blocks
 
 
+def token_budget_from_context_window(
+    context_window_tokens: int | None,
+    ratio: float = TOKEN_BUDGET_CONTEXT_RATIO,
+) -> int | None:
+    """Return the fallback history token budget from an explicit model window."""
+    if not context_window_tokens or context_window_tokens <= 0:
+        return None
+    ratio = min(max(ratio, 0.0), 1.0)
+    return max(int(context_window_tokens * ratio), 1)
+
+
+def _estimate_message_tokens(message: dict[str, Any]) -> int:
+    """Roughly estimate one OpenAI-format message's token footprint."""
+    try:
+        serialized = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        serialized = str(message)
+    return estimate_tokens_from_chars(len(serialized))
+
+
+def _estimate_block_tokens(block: list[dict[str, Any]]) -> int:
+    return sum(_estimate_message_tokens(message) for message in block)
+
+
 def truncate_by_message_count(
     messages: list[dict[str, Any]],
     max_messages: int,
@@ -145,5 +175,49 @@ def truncate_by_message_count(
         else:
             # Block doesn't fit — stop. Do NOT partial-include (would split pair).
             break
+
+    return [message for block in reversed(selected) for message in block]
+
+
+def truncate_by_token_budget(
+    messages: list[dict[str, Any]],
+    max_messages: int,
+    max_tokens: int,
+    *,
+    keep_latest_block: bool = True,
+) -> list[dict[str, Any]]:
+    """Keep recent API-safe blocks within message and token budgets.
+
+    This is a provider-safe fallback, not summary compaction: old blocks are
+    dropped, never summarized, and tool-call blocks remain atomic. The latest
+    block is retained by default so the current user turn is not removed even
+    when it alone exceeds the local estimate.
+    """
+    if max_messages <= 0 or max_tokens <= 0 or not messages:
+        return []
+
+    blocks = _safe_history_blocks(messages)
+    selected: list[list[dict[str, Any]]] = []
+    message_budget = max_messages
+    token_budget = max_tokens
+
+    for block in reversed(blocks):
+        size = len(block)
+        tokens = _estimate_block_tokens(block)
+        is_latest = not selected
+
+        if size <= message_budget and tokens <= token_budget:
+            selected.append(block)
+            message_budget -= size
+            token_budget -= tokens
+            continue
+
+        if keep_latest_block and is_latest:
+            selected.append(block)
+            message_budget = max(message_budget - size, 0)
+            token_budget = max(token_budget - tokens, 0)
+            continue
+
+        break
 
     return [message for block in reversed(selected) for message in block]

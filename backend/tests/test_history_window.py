@@ -5,7 +5,11 @@ Validates that ``truncate_by_message_count`` preserves
 orphan tool messages that would trigger the OpenAI #446 failure mode.
 """
 
-from app.services.history_window import truncate_by_message_count
+from app.services.history_window import (
+    token_budget_from_context_window,
+    truncate_by_message_count,
+    truncate_by_token_budget,
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -32,6 +36,10 @@ def _t(call_id: str, content: str = "ok") -> dict:
 
 def _roles(msgs: list[dict]) -> list[str]:
     return [m.get("role", "?") for m in msgs]
+
+
+def _content(msgs: list[dict]) -> list[str | None]:
+    return [m.get("content") for m in msgs]
 
 
 # ── Edge cases ──────────────────────────────────────────────────────────
@@ -332,3 +340,74 @@ def test_realistic_long_conversation_truncation():
             assert tcid in seen_tool_call_ids, (
                 f"Orphan tool {tcid!r} in output without matching assistant.tool_calls"
             )
+
+
+# ── Token-budget fallback behavior ──────────────────────────────────────
+
+
+def test_token_budget_from_context_window_uses_eighty_percent():
+    assert token_budget_from_context_window(128_000) == 102_400
+    assert token_budget_from_context_window(200_000) == 160_000
+
+
+def test_token_budget_from_context_window_requires_explicit_positive_window():
+    assert token_budget_from_context_window(None) is None
+    assert token_budget_from_context_window(0) is None
+    assert token_budget_from_context_window(-1) is None
+
+
+def test_token_budget_truncation_drops_old_large_blocks():
+    msgs = [
+        _u("old-" + ("x" * 900)),
+        _a("middle"),
+        _u("latest"),
+    ]
+    out = truncate_by_token_budget(msgs, max_messages=10, max_tokens=80)
+    assert _content(out) == ["middle", "latest"]
+
+
+def test_token_budget_truncation_keeps_tool_block_atomic():
+    msgs = [
+        _u("old-" + ("x" * 900)),
+        _a(None, tool_calls=[_tc("X")]),
+        _t("X", "result"),
+        _u("latest"),
+    ]
+    out = truncate_by_token_budget(msgs, max_messages=10, max_tokens=120)
+    assert _roles(out) == ["assistant", "tool", "user"]
+    assert out[0]["tool_calls"][0]["id"] == "X"
+    assert out[1]["tool_call_id"] == "X"
+
+
+def test_token_budget_truncation_drops_whole_tool_block_if_it_does_not_fit():
+    msgs = [
+        _u("old"),
+        _a(None, tool_calls=[_tc("X")]),
+        _t("X", "result-" + ("x" * 900)),
+        _u("latest"),
+    ]
+    out = truncate_by_token_budget(msgs, max_messages=10, max_tokens=80)
+    assert _roles(out) == ["user"]
+    assert out[0]["content"] == "latest"
+
+
+def test_token_budget_truncation_keeps_latest_block_when_over_budget():
+    msgs = [
+        _u("old"),
+        _u("latest-" + ("x" * 900)),
+    ]
+    out = truncate_by_token_budget(msgs, max_messages=10, max_tokens=10)
+    assert _roles(out) == ["user"]
+    assert out[0]["content"].startswith("latest-")
+
+
+def test_token_budget_truncation_still_drops_invalid_blocks():
+    msgs = [
+        _u("old"),
+        _a(None, tool_calls=[_tc("X")]),
+        _u("latest"),
+        _t("X", "delayed orphan"),
+    ]
+    out = truncate_by_token_budget(msgs, max_messages=10, max_tokens=1000)
+    assert _roles(out) == ["user", "user"]
+    assert "tool" not in _roles(out)

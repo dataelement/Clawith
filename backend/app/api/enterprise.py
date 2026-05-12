@@ -177,6 +177,7 @@ async def add_llm_model(
         enabled=data.enabled,
         supports_vision=data.supports_vision,
         max_output_tokens=data.max_output_tokens,
+        context_window_tokens=data.context_window_tokens,
         request_timeout=data.request_timeout,
         tenant_id=uuid.UUID(tid) if tid else None,
     )
@@ -321,6 +322,8 @@ async def update_llm_model(
             model.supports_vision = data.supports_vision
         if hasattr(data, 'max_output_tokens') and data.max_output_tokens is not None:
             model.max_output_tokens = data.max_output_tokens
+        if 'context_window_tokens' in data.model_fields_set:
+            model.context_window_tokens = data.context_window_tokens
         if hasattr(data, 'request_timeout') and data.request_timeout is not None:
             model.request_timeout = data.request_timeout
 

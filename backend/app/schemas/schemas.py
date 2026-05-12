@@ -399,6 +399,7 @@ class LLMModelCreate(BaseModel):
     enabled: bool = True
     supports_vision: bool = False
     max_output_tokens: int | None = None
+    context_window_tokens: int | None = Field(None, ge=1)
     request_timeout: int | None = None
 
 class LLMModelUpdate(BaseModel):
@@ -412,6 +413,7 @@ class LLMModelUpdate(BaseModel):
     enabled: bool | None = None
     supports_vision: bool | None = None
     max_output_tokens: int | None = None
+    context_window_tokens: int | None = Field(None, ge=1)
     request_timeout: int | None = None
 
 
@@ -427,6 +429,7 @@ class LLMModelOut(BaseModel):
     enabled: bool
     supports_vision: bool = False
     max_output_tokens: int | None = None
+    context_window_tokens: int | None = None
     request_timeout: int | None = None
     created_at: datetime
 
