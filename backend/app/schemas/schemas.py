@@ -281,6 +281,7 @@ class AgentOut(BaseModel):
     unread_count: int = 0
     has_api_key: bool = False
     api_key_hash: str | None = None
+    token_key_suffix: str | None = None
     # True when the current viewer already has an onboarding row for this
     # agent. Computed per-request by the API layer from the junction table;
     # not an ORM attribute, so callers must set it explicitly. Defaults to
@@ -591,3 +592,16 @@ class GatewaySendMessageRequest(BaseModel):
     target: str  # Name of target person or agent
     content: str = Field(min_length=1)
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
+
+
+# ─── Agent API (Unified Agent Calling) ──────────────────
+
+class AgentApiChatRequest(BaseModel):
+    agent_id: uuid.UUID
+    prompt: str = Field(min_length=1, max_length=64000)
+
+
+class AgentApiChatResponse(BaseModel):
+    reply: str
+    usage: dict = {}
+

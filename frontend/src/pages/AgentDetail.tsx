@@ -51,6 +51,9 @@ import {
     IconWorld,
     IconBolt,
     IconAlertTriangle,
+    IconKey,
+    IconCopy,
+    IconRefresh,
 } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 
@@ -8107,6 +8110,114 @@ function AgentDetailInner() {
                                 <div style={{ marginBottom: '12px' }}>
                                     <AgentCredentials agentId={id!} />
                                 </div>
+
+                                {/* API Token Key — for Agent API calling */}
+                                {(() => {
+                                    const isChinese = i18n.language?.startsWith('zh');
+                                    const tokenSuffix = (agent as any)?.token_key_suffix;
+                                    const [tokenKeyCopied, setTokenKeyCopied] = useState(false);
+                                    const [tokenKeyRegenConfirm, setTokenKeyRegenConfirm] = useState(false);
+                                    const [tokenKeyRegening, setTokenKeyRegening] = useState(false);
+
+                                    const copyTokenKey = async () => {
+                                        try {
+                                            const res = await fetchAuth<{ token_key: string }>(`/v1/agent/token-key/${id}`);
+                                            if (res.token_key) {
+                                                await navigator.clipboard.writeText(res.token_key);
+                                                setTokenKeyCopied(true);
+                                                setTimeout(() => setTokenKeyCopied(false), 2000);
+                                            }
+                                        } catch (e: any) {
+                                            alert(e?.message || 'Failed to get token key');
+                                        }
+                                    };
+
+                                    const regenTokenKey = async () => {
+                                        setTokenKeyRegening(true);
+                                        try {
+                                            const res = await fetchAuth<{ token_key: string; token_key_suffix: string }>(
+                                                `/v1/agent/regenerate-token-key/${id}`,
+                                                { method: 'POST' },
+                                            );
+                                            if (res.token_key) {
+                                                await navigator.clipboard.writeText(res.token_key);
+                                                queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                                setTokenKeyCopied(true);
+                                                setTimeout(() => setTokenKeyCopied(false), 3000);
+                                            }
+                                        } catch (e: any) {
+                                            alert(e?.message || 'Failed to regenerate');
+                                        } finally {
+                                            setTokenKeyRegening(false);
+                                            setTokenKeyRegenConfirm(false);
+                                        }
+                                    };
+
+                                    return (
+                                        <div className="card" style={{ marginBottom: '12px' }}>
+                                            <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <IconKey size={16} stroke={1.8} />
+                                                {isChinese ? 'API Token Key' : 'API Token Key'}
+                                            </h4>
+                                            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                                                {isChinese
+                                                    ? '用于通过平台统一 API 调用其他 Agent。Agent 可以在代码中使用此 Key 进行跨 Agent 协作。'
+                                                    : 'Used for calling other agents via the platform unified API. The agent can use this key in code for cross-agent collaboration.'}
+                                            </p>
+                                            <div style={{
+                                                display: 'flex', alignItems: 'center', gap: '10px',
+                                                padding: '10px 14px', background: 'var(--bg-elevated)', borderRadius: '8px',
+                                                border: '1px solid var(--border-subtle)',
+                                            }}>
+                                                <code style={{
+                                                    flex: 1, fontSize: '13px', fontFamily: 'monospace',
+                                                    color: tokenSuffix ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                                                    letterSpacing: '0.5px',
+                                                }}>
+                                                    {tokenSuffix
+                                                        ? `clw_••••••••••••••••••••••••••••${tokenSuffix}`
+                                                        : (isChinese ? '未生成' : 'Not generated')}
+                                                </code>
+                                                {tokenSuffix && (
+                                                    <>
+                                                        <button
+                                                            className="btn btn-ghost"
+                                                            onClick={copyTokenKey}
+                                                            style={{ padding: '4px 10px', fontSize: '12px' }}
+                                                            title={isChinese ? '复制完整 Key' : 'Copy full key'}
+                                                        >
+                                                            <IconCopy size={14} stroke={1.8} />
+                                                            {tokenKeyCopied
+                                                                ? (isChinese ? ' 已复制' : ' Copied')
+                                                                : (isChinese ? ' 复制' : ' Copy')}
+                                                        </button>
+                                                        {!tokenKeyRegenConfirm ? (
+                                                            <button
+                                                                className="btn btn-ghost"
+                                                                onClick={() => setTokenKeyRegenConfirm(true)}
+                                                                style={{ padding: '4px 10px', fontSize: '12px', color: 'var(--warning)' }}
+                                                                title={isChinese ? '重新生成（旧 Key 将失效）' : 'Regenerate (old key will be invalidated)'}
+                                                            >
+                                                                <IconRefresh size={14} stroke={1.8} />
+                                                            </button>
+                                                        ) : (
+                                                            <button
+                                                                className="btn btn-danger"
+                                                                onClick={regenTokenKey}
+                                                                disabled={tokenKeyRegening}
+                                                                style={{ padding: '4px 10px', fontSize: '12px' }}
+                                                            >
+                                                                {tokenKeyRegening
+                                                                    ? '...'
+                                                                    : (isChinese ? '确认重新生成' : 'Confirm Regenerate')}
+                                                            </button>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
 
                                 {/* Welcome Message */}
                                 {(() => {

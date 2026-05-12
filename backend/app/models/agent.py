@@ -42,6 +42,10 @@ class Agent(Base):
     # Last time OpenClaw polled the gateway (online status indicator)
     openclaw_last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Per-agent API token key for unified Agent API calling
+    token_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    token_key_suffix: Mapped[str | None] = mapped_column(String(4))
+
     # Runtime
     status: Mapped[str] = mapped_column(
         Enum("creating", "running", "idle", "stopped", "error", name="agent_status_enum", create_constraint=False),

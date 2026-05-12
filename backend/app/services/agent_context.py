@@ -572,6 +572,43 @@ If no search or webpage-reading tool is available, say that web lookup is not en
     if relationships and "暂无" not in relationships and "None yet" not in relationships:
         static_parts.append(f"\n## Relationships\n{relationships}")
 
+    # --- Agent API Token Key ---
+    # Inject per-agent Token Key so the agent can call other agents via the platform API
+    try:
+        from app.database import async_session
+        from app.models.agent import Agent as _AgentModelForKey
+        from sqlalchemy import select as sa_select
+        async with async_session() as _key_db:
+            _key_r = await _key_db.execute(
+                sa_select(_AgentModelForKey.token_key).where(_AgentModelForKey.id == agent_id)
+            )
+            _agent_token_key = _key_r.scalar_one_or_none()
+            if _agent_token_key:
+                _public_base = settings.PUBLIC_BASE_URL or "https://your-clawith-domain.com"
+                _api_base = f"{_public_base}/api/v1/agent"
+                static_parts.append(f"""
+## Platform Agent API
+
+You have a platform API token that allows you to call other agents programmatically via the `execute_code` tool or any HTTP client.
+
+**Your Token Key:** `{_agent_token_key}`
+
+To call another agent, make an HTTP POST request:
+
+```
+POST {_api_base}/chat
+Authorization: Bearer {_agent_token_key}
+Content-Type: application/json
+
+{{"agent_id": "<target_agent_uuid>", "prompt": "<your message>"}}
+```
+
+The response JSON contains a `reply` field with the agent's answer.
+Use this when you need to delegate subtasks to specialized agents listed in your Relationships.
+The target agent must be in your relationship list for the call to succeed.""")
+    except Exception:
+        pass
+
     if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
         dynamic_parts.append(f"\n## Memory\n{memory}")
 

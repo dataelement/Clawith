@@ -335,6 +335,12 @@ async def create_agent(
     if data.autonomy_policy:
         agent.autonomy_policy = data.autonomy_policy
 
+    # Generate per-agent API token key for unified Agent API calling
+    from app.api.agent_api import generate_token_key
+    _token_key, _token_key_suffix = generate_token_key()
+    agent.token_key = _token_key
+    agent.token_key_suffix = _token_key_suffix
+
     db.add(agent)
     await db.flush()
 

@@ -351,6 +351,7 @@ from app.api.atlassian import router as atlassian_router
 from app.api.webhooks import router as webhooks_router
 from app.api.notification import router as notification_router
 from app.api.gateway import router as gateway_router
+from app.api.agent_api import router as agent_api_router
 from app.api.admin import router as admin_router
 from app.api.pages import router as pages_router, public_router as pages_public_router
 from app.api.agent_credentials import router as credentials_router
@@ -396,6 +397,7 @@ app.include_router(notification_router, prefix=settings.API_PREFIX)
 app.include_router(webhooks_router)  # Public endpoint, no API prefix
 app.include_router(ws_router)
 app.include_router(gateway_router, prefix=settings.API_PREFIX)
+app.include_router(agent_api_router, prefix=settings.API_PREFIX)
 app.include_router(admin_router, prefix=settings.API_PREFIX)
 app.include_router(pages_router, prefix=settings.API_PREFIX)
 app.include_router(pages_public_router)  # Public endpoint for /p/{short_id}, no API prefix
