@@ -801,7 +801,7 @@ export default function Chat() {
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         // Enter sends the message; Shift+Enter inserts a newline
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !streaming) {
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229 && !isWaiting && !streaming) {
             e.preventDefault();
             sendMessage();
         }

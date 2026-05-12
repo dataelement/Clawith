@@ -7482,7 +7482,7 @@ function AgentDetailInner() {
                                                     }}
                                                     onKeyDown={e => {
                                                         // Enter sends the message; Shift+Enter inserts a newline
-                                                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                                                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229 && !isWaiting && !isStreaming) {
                                                             e.preventDefault();
                                                             sendChatMsg();
                                                         }
