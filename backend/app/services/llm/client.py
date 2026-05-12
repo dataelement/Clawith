@@ -295,6 +295,8 @@ class OpenAICompatibleClient(LLMClient):
         """Build request payload."""
         messages_payload = self._messages_to_openai_payload(messages)
         logger.debug(f"[LLM-Debug] OpenAICompatibleClient payload messages for model {self.model}: {json.dumps(messages_payload, indent=2, ensure_ascii=False)}")
+        if tools:
+            logger.debug(f"[LLM-Debug] Tools payload ({len(tools)} tools): {json.dumps(tools, indent=2, ensure_ascii=False)}")
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages_payload,
@@ -798,9 +800,11 @@ class OpenAIResponsesClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
+        input_payload = self._messages_to_input(messages)
+        logger.debug(f"[LLM-Debug] OpenAIResponsesClient payload input for model {self.model}: {json.dumps(input_payload, indent=2, ensure_ascii=False)}")
         payload: dict[str, Any] = {
             "model": self.model,
-            "input": self._messages_to_input(messages),
+            "input": input_payload,
             "temperature": temperature,
             "stream": stream,
         }
@@ -810,6 +814,7 @@ class OpenAIResponsesClient(LLMClient):
 
         converted_tools = self._convert_tools(tools)
         if converted_tools:
+            logger.debug(f"[LLM-Debug] Tools payload ({len(converted_tools)} tools): {json.dumps(converted_tools, indent=2, ensure_ascii=False)}")
             payload["tools"] = converted_tools
             if self.supports_tool_choice:
                 payload["tool_choice"] = "auto"
@@ -1585,8 +1590,10 @@ class AnthropicClient(LLMClient):
                     })
             if anthropic_tools:
                 anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
+            logger.debug(f"[LLM-Debug] AnthropicClient tools payload ({len(anthropic_tools)} tools): {json.dumps(anthropic_tools, indent=2, ensure_ascii=False)}")
             payload["tools"] = anthropic_tools
 
+        logger.debug(f"[LLM-Debug] AnthropicClient payload messages for model {self.model}: {json.dumps(anthropic_messages, indent=2, ensure_ascii=False)}")
         payload.update(kwargs)
         return payload
 
