@@ -402,15 +402,18 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         except Exception as e:
             logger.warning(f"Failed to seed default agents: {e}")
 
-    # Send verification email
-    await _send_verification_email_task(user, background_tasks, settings, db)
+    # Send verification email only when the identity still needs it. If the
+    # platform has no system email configured, registration_service auto-verifies
+    # the identity so local/self-hosted installs are not blocked.
+    if not identity.email_verified:
+        await _send_verification_email_task(user, background_tasks, settings, db)
 
     return RegisterInitResponse(
         user_id=user.id,
         email=user.email,
         access_token=create_access_token(str(user.id), user.role),
         user=UserOut.model_validate(user),
-        message="Registration successful. Please verify your email.",
+        message="Registration successful. Please verify your email." if not identity.email_verified else "Registration successful.",
         needs_company_setup=user.tenant_id is None,
     )
 
@@ -452,23 +455,37 @@ async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSes
 
     if not identity.email_verified:
         from app.config import get_settings
-        # Find any user record (just for the task)
-        user_res = await db.execute(select(User).where(User.identity_id == identity.id).limit(1))
-        user = user_res.scalar_one_or_none()
-        
-        # Trigger email delivery in background
-        if user:
-            await _send_verification_email_task(user, background_tasks, get_settings(), db)
-        
-        # Consistent with identity-first flow: Return 403 Forbidden with verification intent
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "needs_verification": True,
-                "email": identity.email,
-                "message": "Please verify your email to continue."
-            }
-        )
+        from sqlalchemy import update
+        from app.services.system_email_service import resolve_email_config_async
+
+        email_config = await resolve_email_config_async(db)
+        if not email_config:
+            identity.email_verified = True
+            identity.is_active = True
+            await db.execute(
+                update(User)
+                .where(User.identity_id == identity.id)
+                .values(is_active=True)
+            )
+            await db.flush()
+        else:
+            # Find any user record (just for the task)
+            user_res = await db.execute(select(User).where(User.identity_id == identity.id).limit(1))
+            user = user_res.scalar_one_or_none()
+            
+            # Trigger email delivery in background
+            if user:
+                await _send_verification_email_task(user, background_tasks, get_settings(), db)
+            
+            # Consistent with identity-first flow: Return 403 Forbidden with verification intent
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "needs_verification": True,
+                    "email": identity.email,
+                    "message": "Please verify your email to continue."
+                }
+            )
 
     # 3. Find all User records (tenants)
     result = await db.execute(select(User).where(User.identity_id == identity.id).options(selectinload(User.identity)))
@@ -916,7 +933,7 @@ async def oauth_callback(
 
     try:
         # Exchange code for token
-        token_data = await auth_provider.exchange_code_for_token(data.code)
+        token_data = await auth_provider.exchange_code_for_token(data.code, data.redirect_uri)
         access_token = token_data.get("access_token")
         if not access_token:
             raise HTTPException(status_code=400, detail="Failed to get access token from provider")

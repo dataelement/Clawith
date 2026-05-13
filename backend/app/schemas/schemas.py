@@ -182,6 +182,7 @@ class OAuthAuthorizeResponse(BaseModel):
 class OAuthCallbackRequest(BaseModel):
     code: str
     state: str
+    redirect_uri: str | None = None
 
 
 class IdentityBindRequest(BaseModel):

@@ -16,6 +16,7 @@ import app.models.gateway_message  # noqa: F401
 import app.models.invitation_code  # noqa: F401
 import app.models.llm  # noqa: F401
 import app.models.notification  # noqa: F401
+import app.models.onboarding  # noqa: F401
 import app.models.org  # noqa: F401
 import app.models.participant  # noqa: F401
 import app.models.plaza  # noqa: F401

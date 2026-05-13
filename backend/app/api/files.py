@@ -188,6 +188,21 @@ def _visible_storage_key(agent_id: uuid.UUID, rel_path: str, tenant_id: uuid.UUI
     return _agent_storage_key(agent_id, normalized), False
 
 
+async def _require_agent_file_delete_access(
+    db: AsyncSession,
+    current_user: User,
+    agent_id: uuid.UUID,
+) -> None:
+    """Allow destructive workspace file operations only for managers/admins."""
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level == "manage" or current_user.role in ("platform_admin", "org_admin", "super_admin"):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only agent managers or admins can delete files",
+    )
+
+
 @router.get("/", response_model=list[FileInfo])
 async def list_files(
     agent_id: uuid.UUID,
@@ -738,7 +753,7 @@ async def delete_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a file."""
-    await check_agent_access(db, current_user, agent_id)
+    await _require_agent_file_delete_access(db, current_user, agent_id)
     if is_focus_file_path(path):
         raise HTTPException(
             status_code=status.HTTP_410_GONE,

@@ -8,6 +8,7 @@ import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import VerifyEmail from './pages/VerifyEmail';
 import CompanySetup from './pages/CompanySetup';
+import Onboarding from './pages/Onboarding';
 import Layout from './pages/Layout';
 import Dashboard from './pages/Dashboard';
 import Plaza from './pages/Plaza';
@@ -17,6 +18,7 @@ import Messages from './pages/Messages';
 import EnterpriseSettings from './pages/EnterpriseSettings';
 import InvitationCodes from './pages/InvitationCodes';
 import AdminCompanies from './pages/AdminCompanies';
+import OAuthCallback from './pages/OAuthCallback';
 import SSOEntry from './pages/SSOEntry';
 import OKR from './pages/OKR';
 
@@ -211,7 +213,7 @@ export default function App() {
 
     useEffect(() => {
         // Initialize theme on app mount (ensures login page gets correct theme)
-        const savedTheme = localStorage.getItem('theme') || 'dark';
+        const savedTheme = localStorage.getItem('theme') || 'light';
         document.documentElement.setAttribute('data-theme', savedTheme);
 
         // Cross-domain tenant switch: the backend appends ?token=<jwt> to the redirect URL
@@ -272,8 +274,10 @@ export default function App() {
                 <Route path="/forgot-password" element={<ForgotPassword />} />
                 <Route path="/reset-password" element={<ResetPassword />} />
                 <Route path="/verify-email" element={<VerifyEmail />} />
+                <Route path="/oauth/callback/:provider" element={<OAuthCallback />} />
                 <Route path="/sso/entry" element={<SSOEntry />} />
                 <Route path="/setup-company" element={<CompanySetup />} />
+                <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
                 <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
                     <Route index element={<Navigate to="/plaza" replace />} />
                     <Route path="dashboard" element={<Dashboard />} />

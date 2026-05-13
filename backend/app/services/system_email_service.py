@@ -51,7 +51,7 @@ class BroadcastEmailRecipient:
 
 
 
-async def resolve_email_config_async(db) -> SystemEmailConfig | None:
+async def resolve_email_config_async(db, *, include_disabled: bool = False) -> SystemEmailConfig | None:
     """Resolve email configuration by searching in order:
     1. Platform-level settings in DB ('system_email_platform')
     """
@@ -64,6 +64,8 @@ async def resolve_email_config_async(db) -> SystemEmailConfig | None:
         setting = result.scalar_one_or_none()
         if setting and setting.value:
             v = setting.value
+            if v.get("SYSTEM_EMAIL_ENABLED") is False and not include_disabled:
+                return None
             if v.get("SYSTEM_EMAIL_FROM_ADDRESS") and v.get("SYSTEM_SMTP_HOST"):
                 return SystemEmailConfig(
                     from_address=str(v.get("SYSTEM_EMAIL_FROM_ADDRESS", "")).strip(),
@@ -312,11 +314,21 @@ async def send_test_email(to: str, db=None) -> None:
         to: Recipient email address
         db: Optional database session for resolving config
     """
+    config = None
+    if not db:
+        from app.database import async_session
+        async with async_session() as session:
+            config = await resolve_email_config_async(session, include_disabled=True)
+    else:
+        config = await resolve_email_config_async(db, include_disabled=True)
+
+    if not config:
+        raise RuntimeError("System email SMTP settings are not configured.")
+
     subject = "Clawith Test Email"
     body = (
         "This is a test email from your Clawith platform.\n\n"
         "If you received this email, your SMTP configuration is working correctly.\n\n"
         "-- Clawith System"
     )
-    await send_system_email(to, subject, body, db=db)
-
+    await asyncio.to_thread(_send_email_with_config_sync, config, to, subject, body)

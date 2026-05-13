@@ -262,22 +262,32 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
                 </div>
 
                 <div style={{ padding: '16px 26px 20px', display: 'flex', justifyContent: 'flex-end', gap: '8px', borderTop: '1px solid var(--border-subtle)', marginTop: '12px' }}>
-                    <button
-                        className="btn btn-secondary"
-                        disabled={busy || hasNoModel}
+                    <span
                         title={disabledByNoModel}
-                        onClick={() => hire.mutate(false)}
+                        style={{ display: 'inline-flex', cursor: hasNoModel ? 'not-allowed' : undefined }}
                     >
-                        {busy && !hire.variables ? '...' : t('postHire.createOnly', isChinese ? '仅创建' : 'Just create')}
-                    </button>
-                    <button
-                        className="btn btn-primary"
-                        disabled={busy || hasNoModel}
+                        <button
+                            className="btn btn-secondary"
+                            disabled={busy || hasNoModel}
+                            style={{ pointerEvents: hasNoModel ? 'none' : undefined }}
+                            onClick={() => hire.mutate(false)}
+                        >
+                            {busy && !hire.variables ? '...' : t('postHire.createOnly', isChinese ? '仅创建' : 'Just create')}
+                        </button>
+                    </span>
+                    <span
                         title={disabledByNoModel}
-                        onClick={() => hire.mutate(true)}
+                        style={{ display: 'inline-flex', cursor: hasNoModel ? 'not-allowed' : undefined }}
                     >
-                        {busy ? (isChinese ? '创建中...' : 'Creating...') : t('postHire.chatNow', isChinese ? '立即对话' : 'Chat now')}
-                    </button>
+                        <button
+                            className="btn btn-primary"
+                            disabled={busy || hasNoModel}
+                            style={{ pointerEvents: hasNoModel ? 'none' : undefined }}
+                            onClick={() => hire.mutate(true)}
+                        >
+                            {busy ? (isChinese ? '创建中...' : 'Creating...') : t('postHire.chatNow', isChinese ? '立即对话' : 'Chat now')}
+                        </button>
+                    </span>
                 </div>
             </div>
         </div>
