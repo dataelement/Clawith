@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { agentApi, taskApi, activityApi, fetchJson } from '../services/api';
+import { agentApi, taskApi, activityApi, fetchJson, tenantApi } from '../services/api';
 import type { Agent, Task } from '../types';
+
+type LayoutOutletContext = {
+    openTalentMarket?: () => void;
+};
 
 /* ────── Inline SVG Icons (monochrome) ────── */
 
@@ -241,7 +245,7 @@ function OKRSummaryCard() {
 
 /* ────── Summary Stats Bar ────── */
 
-function StatsBar({ agents, allTasks }: { agents: Agent[]; allTasks: Task[] }) {
+function StatsBar({ agents, allTasks, tokenUsage }: { agents: Agent[]; allTasks: Task[]; tokenUsage?: any }) {
     const { t } = useTranslation();
     const totalAgents = agents.length;
     const activeAgents = agents.filter(a => a.status === 'running' || a.status === 'idle').length;
@@ -252,7 +256,9 @@ function StatsBar({ agents, allTasks }: { agents: Agent[]; allTasks: Task[] }) {
         const completed = new Date(t.completed_at);
         return completed.toDateString() === today.toDateString();
     }).length;
-    const totalTokensToday = agents.reduce((sum, a) => sum + (a.tokens_used_today || 0), 0);
+    const totalTokensToday = tokenUsage?.today?.total_tokens ?? agents.reduce((sum, a) => sum + (a.tokens_used_today || 0), 0);
+    const cacheReadToday = tokenUsage?.today?.cache_read_tokens ?? agents.reduce((sum, a) => sum + (a.cache_read_tokens_today || 0), 0);
+    const cacheHitRate = totalTokensToday > 0 ? Math.round((cacheReadToday / totalTokensToday) * 100) : 0;
     const recentlyActive = agents.filter(a => {
         if (!a.last_active_at) return false;
         return Date.now() - new Date(a.last_active_at).getTime() < 3600000;
@@ -261,7 +267,12 @@ function StatsBar({ agents, allTasks }: { agents: Agent[]; allTasks: Task[] }) {
     const stats = [
         { icon: Icons.users, label: t('dashboard.stats.agents'), value: totalAgents, sub: t('dashboard.stats.online', { count: activeAgents }) },
         { icon: Icons.tasks, label: t('dashboard.stats.activeTasks'), value: pendingTasks, sub: t('dashboard.stats.completedToday', { count: completedToday }) },
-        { icon: Icons.zap, label: t('dashboard.stats.todayTokens'), value: formatTokens(totalTokensToday), sub: t('dashboard.stats.allAgentsTotal') },
+        {
+            icon: Icons.zap,
+            label: t('dashboard.stats.todayTokens'),
+            value: formatTokens(totalTokensToday),
+            sub: `Cache ${formatTokens(cacheReadToday)} · ${cacheHitRate}%`,
+        },
         { icon: Icons.clock, label: t('dashboard.stats.recentlyActive'), value: recentlyActive, sub: t('dashboard.stats.lastHour') },
     ];
 
@@ -407,6 +418,11 @@ function AgentRow({ agent, tasks, recentActivity }: {
                     {formatTokens(usedTokens)}
                     {maxTokens > 0 && <span style={{ opacity: 0.6 }}> / {formatTokens(maxTokens)}</span>}
                 </div>
+                {!!agent.cache_read_tokens_today && (
+                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '3px' }}>
+                        Cache {formatTokens(agent.cache_read_tokens_today)} · {usedTokens > 0 ? Math.round((agent.cache_read_tokens_today / usedTokens) * 100) : 0}%
+                    </div>
+                )}
                 {maxTokens > 0 ? (
                     <div style={{
                         height: '3px', background: 'var(--bg-tertiary)',
@@ -488,11 +504,19 @@ function ActivityFeed({ activities, agents }: { activities: any[]; agents: Agent
 export default function Dashboard() {
     const { t } = useTranslation();
     const navigate = useNavigate();
+    const outletContext = useOutletContext<LayoutOutletContext | null>();
+    const openTalentMarket = outletContext?.openTalentMarket;
     const currentTenant = localStorage.getItem('current_tenant_id') || '';
 
     const { data: agents = [], isLoading } = useQuery({
         queryKey: ['agents', currentTenant],
         queryFn: () => agentApi.list(currentTenant || undefined),
+        refetchInterval: 15000,
+    });
+
+    const { data: tokenUsage } = useQuery({
+        queryKey: ['tenant-token-usage', currentTenant],
+        queryFn: () => tenantApi.tokenUsage(),
         refetchInterval: 15000,
     });
 
@@ -558,13 +582,6 @@ export default function Dashboard() {
                         {t('dashboard.totalAgents', { count: agents.length })}
                     </p>
                 </div>
-                <button
-                    className="btn btn-primary"
-                    onClick={() => navigate('/agents/new')}
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                    {Icons.plus} {t('nav.newAgent')}
-                </button>
             </div>
 
             {isLoading ? (
@@ -579,14 +596,23 @@ export default function Dashboard() {
                     <div style={{ color: 'var(--text-secondary)', marginBottom: '16px', fontSize: '14px' }}>
                         {t('dashboard.noAgents')}
                     </div>
-                    <button className="btn btn-primary" onClick={() => navigate('/agents/new')}>
+                    <button
+                        className="btn btn-primary"
+                        onClick={() => {
+                            if (openTalentMarket) {
+                                openTalentMarket();
+                                return;
+                            }
+                            navigate('/agents/new');
+                        }}
+                    >
                         {Icons.plus} {t('nav.newAgent')}
                     </button>
                 </div>
             ) : (
                 <>
                     {/* Stats Bar */}
-                    <StatsBar agents={agents} allTasks={allTasks} />
+                    <StatsBar agents={agents} allTasks={allTasks} tokenUsage={tokenUsage} />
 
                     {/* OKR Summary (P3) — only shown when OKR is enabled */}
                     <OKRSummaryCard />

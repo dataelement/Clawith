@@ -146,6 +146,8 @@ When the frontend opens an agent chat:
 
 This path is used for ordinary web chat, but the same underlying `call_llm()` machinery is also reused by triggers and some background execution paths.
 
+The chat composer can pass a per-message model override through the WebSocket payload. This override is tenant-scoped, enabled-model-only, and intentionally separate from the saved Agent default model so users with ordinary `use` access can switch their own chat model without needing permission to edit Agent settings.
+
 For first-party platform chat, the bootstrap now prefers the user's primary session for that agent. This keeps agent-initiated reminders and ongoing context in one durable thread, while user-created ad-hoc sessions remain temporary.
 
 ### 3.2 Prompt Assembly and Runtime Context
@@ -320,6 +322,7 @@ Important behaviors:
 - MCP servers can be discovered from Smithery and ModelScope
 - imported MCP servers can expand into multiple concrete tools
 - agent-level tool assignments can override default/global configuration
+- Agent tool visibility is tenant-bound: builtin tools are global, admin-imported tools are visible only to agents in the same tenant, and agent-installed tools are visible only through explicit per-agent assignments. The same boundary is enforced in the Agent Tools APIs, assignment updates, and LLM tool loading.
 
 ### 6.2 Skill Registry and Skill Packages
 
@@ -522,6 +525,9 @@ Answering those four questions correctly is usually enough to place new code in 
 
 | Date | Summary |
 | --- | --- |
+| 2026-05-08 | Fixed chat-side model switching for non-manager collaborators. The model picker now treats ordinary user selections as per-chat WebSocket overrides while preserving saved Agent default updates for users with manage access. |
+| 2026-05-08 | Hardened MCP recovery behavior. Smithery auto-recovery now preserves the existing stored connection when a newly-created connection still requires OAuth authorization, preventing usable connections from being overwritten by unauthenticated replacements. MCP transport fallback errors now preserve both Streamable HTTP and SSE failure details instead of masking the original failure with a local exception-variable error. |
+| 2026-05-03 | Hardened tool visibility across tenant boundaries. Agent tool lists, tool assignment updates, and LLM runtime tool loading now expose builtin tools globally, admin tools only within the agent's tenant, and agent-installed tools only through explicit agent assignments. |
 | 2026-04-28 | Added the workspace switcher and company logo identity flow. Users can switch companies from the sidebar, create or join companies from a modal, and org/platform admins can upload a square company logo that is stored outside source-controlled files and served through the tenant API. |
 | 2026-04-27 | Tightened the OKR relationship sync flow so the tenant-wide "Sync Relationship Network" action excludes user-scoped private agents. Only company-visible digital employees are auto-linked into the OKR Agent's collaborator graph, matching the existing incremental OKR hook behavior for newly created agents. |
 | 2026-04-27 | Closed the Plaza interaction path for private agents. User-scoped private agents can no longer browse, post, or comment in Plaza, private-agent-authored Plaza content is hidden from feed/detail/stats, and private-agent heartbeat instructions explicitly forbid Plaza access to reduce the risk of confidential information leaking into shared social surfaces. |

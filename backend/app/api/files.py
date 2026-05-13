@@ -20,6 +20,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
 from app.models.workspace import WorkspaceFileRevision
+from app.services.focus_service import is_focus_file_path
 from app.services.workspace_collaboration import (
     acquire_edit_lock,
     content_hash,
@@ -29,6 +30,7 @@ from app.services.workspace_collaboration import (
     release_edit_lock,
     write_workspace_file,
 )
+from app.services.workspace_paths import WorkspacePathError, resolve_agent_visible_path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,6 +67,66 @@ class RestoreRevisionBody(BaseModel):
     revision_id: uuid.UUID
 
 
+TEXT_PREVIEW_EXTENSIONS = {
+    ".bat",
+    ".bash",
+    ".c",
+    ".cfg",
+    ".clj",
+    ".cpp",
+    ".cs",
+    ".css",
+    ".dart",
+    ".env",
+    ".go",
+    ".h",
+    ".hpp",
+    ".ini",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".less",
+    ".lua",
+    ".m",
+    ".mm",
+    ".php",
+    ".pl",
+    ".pm",
+    ".properties",
+    ".py",
+    ".r",
+    ".rb",
+    ".rs",
+    ".sass",
+    ".scala",
+    ".scss",
+    ".sh",
+    ".sql",
+    ".swift",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".zsh",
+}
+
+TEXT_PREVIEW_FILENAMES = {
+    ".dockerignore",
+    ".env",
+    ".env.example",
+    ".gitignore",
+    ".npmrc",
+    ".prettierrc",
+    "dockerfile",
+    "makefile",
+}
+
+
 def _agent_base_dir(agent_id: uuid.UUID) -> Path:
     return Path(settings.AGENT_DATA_DIR) / str(agent_id)
 
@@ -78,6 +140,35 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     return full
 
 
+def _visible_path(agent_id: uuid.UUID, rel_path: str, tenant_id: uuid.UUID | None) -> tuple[Path, Path, bool]:
+    """Resolve an agent-visible path, including virtual enterprise_info/."""
+    try:
+        resolved = resolve_agent_visible_path(
+            _agent_base_dir(agent_id),
+            rel_path,
+            workspace_root=Path(settings.AGENT_DATA_DIR),
+            tenant_id=str(tenant_id) if tenant_id else None,
+        )
+    except WorkspacePathError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return resolved.path, resolved.relative_root, resolved.is_enterprise
+
+
+async def _require_agent_file_delete_access(
+    db: AsyncSession,
+    current_user: User,
+    agent_id: uuid.UUID,
+) -> None:
+    """Allow destructive workspace file operations only for managers/admins."""
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level == "manage" or current_user.role in ("platform_admin", "org_admin", "super_admin"):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only agent managers or admins can delete files",
+    )
+
+
 @router.get("/", response_model=list[FileInfo])
 async def list_files(
     agent_id: uuid.UUID,
@@ -87,7 +178,9 @@ async def list_files(
 ):
     """List files and directories in an agent's file system."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
+    target, base_abs, is_enterprise = _visible_path(agent_id, path, current_user.tenant_id)
+    if is_enterprise:
+        target.mkdir(parents=True, exist_ok=True)
 
     if not target.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
@@ -95,11 +188,28 @@ async def list_files(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a directory")
 
     items = []
-    base_abs = _agent_base_dir(agent_id).resolve()
+    base_abs = base_abs.resolve()
+    if not path and current_user.tenant_id:
+        enterprise_root = (Path(settings.AGENT_DATA_DIR) / f"enterprise_info_{current_user.tenant_id}").resolve()
+        enterprise_root.mkdir(parents=True, exist_ok=True)
+        items.append(FileInfo(
+            name="enterprise_info",
+            path="enterprise_info",
+            is_dir=True,
+            size=0,
+            modified_at=str(enterprise_root.stat().st_mtime),
+            url=None,
+        ))
     for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
         if entry.name == '.gitkeep':
             continue
+        if not path and entry.name.lower() in {"focus.md", "agenda.md"}:
+            continue
+        if not path and entry.name == "enterprise_info":
+            continue
         rel = str(entry.resolve().relative_to(base_abs))
+        if is_enterprise:
+            rel = f"enterprise_info/{rel}" if rel != "." else "enterprise_info"
         stat = entry.stat()
         items.append(FileInfo(
             name=entry.name,
@@ -121,7 +231,12 @@ async def read_file(
 ):
     """Read the content of a file."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
+    if is_focus_file_path(path):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Focus is stored in the system database. Use the Focus API.",
+        )
+    target, _, _ = _visible_path(agent_id, path, current_user.tenant_id)
 
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -135,7 +250,9 @@ async def read_file(
 
 
 def _file_kind(path: str) -> str:
-    ext = Path(path).suffix.lower()
+    file_path = Path(path)
+    ext = file_path.suffix.lower()
+    name = file_path.name.lower()
     if ext in {".md", ".markdown"}:
         return "markdown"
     if ext == ".csv":
@@ -150,7 +267,7 @@ def _file_kind(path: str) -> str:
         return "docx"
     if ext in {".pptx", ".ppt"}:
         return "pptx"
-    if ext in {".txt", ".log", ".json"}:
+    if ext in {".txt", ".log", ".json"} or ext in TEXT_PREVIEW_EXTENSIONS or name in TEXT_PREVIEW_FILENAMES:
         return "text"
     if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}:
         return "image"
@@ -237,7 +354,7 @@ async def preview_file(
 ):
     """Return a browser-friendly preview payload for Workspace files."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
+    target, _, _ = _visible_path(agent_id, path, current_user.tenant_id)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
@@ -319,7 +436,7 @@ async def preview_file(
             "kind": kind,
             "mime_type": mime_type,
             "text": companion_content or extracted_text,
-            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())) if companion is not None else None,
+            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())) if companion is not None and not path.startswith("enterprise_info") else None,
             "download_url": download_url,
         }
 
@@ -332,7 +449,7 @@ async def preview_file(
             "mime_type": "text/markdown" if companion.suffix.lower() == ".md" else "text/plain",
             "content": content or "",
             "content_hash": content_hash(content or ""),
-            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())),
+            "companion_path": str(companion.resolve().relative_to(_agent_base_dir(agent_id).resolve())) if not path.startswith("enterprise_info") else None,
             "download_url": download_url,
         }
 
@@ -384,7 +501,7 @@ async def download_file(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
     await check_agent_access(db, user, agent_id)
-    target = _safe_path(agent_id, path)
+    target, _, _ = _visible_path(agent_id, path, user.tenant_id)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(
@@ -404,6 +521,22 @@ async def write_file(
 ):
     """Write content to a file (create or overwrite)."""
     await check_agent_access(db, current_user, agent_id)
+    if is_focus_file_path(path):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Focus is stored in the system database. Use the Focus API.",
+        )
+    if path.startswith("enterprise_info"):
+        if current_user.role not in ("platform_admin", "org_admin"):
+            raise HTTPException(status_code=403, detail="Only admins can edit enterprise knowledge base")
+        if path.strip("/") == "enterprise_info":
+            raise HTTPException(status_code=400, detail="Cannot overwrite enterprise_info root")
+        target, _, _ = _visible_path(agent_id, path, current_user.tenant_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(target, "w", encoding="utf-8") as f:
+            await f.write(data.content)
+        return {"status": "ok", "path": path, "revision_id": None}
+
     result = await write_workspace_file(
         db,
         agent_id=agent_id,
@@ -432,6 +565,8 @@ async def lock_file(
 ):
     """Acquire or refresh a short-lived human editing lock for a file."""
     await check_agent_access(db, current_user, agent_id)
+    if is_focus_file_path(data.path):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Focus is stored in the system database.")
     lock = await acquire_edit_lock(
         db,
         agent_id=agent_id,
@@ -466,6 +601,10 @@ async def get_file_revisions(
 ):
     """List version history for the currently opened Workspace file."""
     await check_agent_access(db, current_user, agent_id)
+    if is_focus_file_path(path):
+        return []
+    if path.startswith("enterprise_info"):
+        return []
     revisions = await list_revisions(db, agent_id=agent_id, path=path)
     return [
         {
@@ -532,8 +671,17 @@ async def delete_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a file."""
-    await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
+    await _require_agent_file_delete_access(db, current_user, agent_id)
+    if is_focus_file_path(path):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Focus is stored in the system database. Use the Focus API.",
+        )
+    if path.startswith("enterprise_info") and current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Only admins can delete enterprise knowledge base files")
+    if path.strip("/") == "enterprise_info":
+        raise HTTPException(status_code=400, detail="Cannot delete enterprise_info root")
+    target, _, _ = _visible_path(agent_id, path, current_user.tenant_id)
 
     if not target.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -850,37 +998,25 @@ async def agent_import_from_clawhub(
     await check_agent_access(db, current_user, agent_id)
 
     from app.api.skills import (
-        CLAWHUB_BASE, _fetch_github_directory, _parse_skill_md_frontmatter, _get_github_token,
+        _fetch_clawhub_skill_archive, _fetch_clawhub_skill_meta, _get_clawhub_key,
     )
-    import httpx
 
     slug = body.slug
+    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    api_key = await _get_clawhub_key(tenant_id)
 
     # 1. Fetch metadata from ClawHub
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{CLAWHUB_BASE}/v1/skills/{slug}")
-            if resp.status_code == 429:
-                raise HTTPException(429, "ClawHub rate limit exceeded. Please wait and try again.")
-            if resp.status_code != 200:
-                raise HTTPException(502, f"ClawHub API error: {resp.status_code}")
-            meta = resp.json()
+        meta, meta_base = await _fetch_clawhub_skill_meta(slug, api_key=api_key)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(502, f"Failed to connect to ClawHub: {e}")
 
     skill_info = meta.get("skill", {})
-    owner_info = meta.get("owner", {})
-    handle = owner_info.get("handle", "").lower()
-    if not handle:
-        raise HTTPException(400, "Could not determine skill owner from ClawHub metadata")
 
-    # 2. Fetch files from GitHub
-    github_path = f"skills/{handle}/{slug}"
-    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
-    token = await _get_github_token(tenant_id)
-    files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token)
+    # 2. Fetch files from the ClawHub archive
+    files, _ = await _fetch_clawhub_skill_archive(slug, api_key=api_key, preferred_base=meta_base)
 
     # 3. Write to agent workspace: skills/<slug>/
     base = _agent_base_dir(agent_id)

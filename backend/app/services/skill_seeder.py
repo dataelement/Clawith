@@ -557,7 +557,7 @@ Plan would be:
         "icon": "🔌",
         "folder_name": "mcp-installer",
         "is_default": True,
-        "files": [],  # populated at runtime from agent_template/skills/MCP_INSTALLER.md
+        "files": [],  # populated at runtime from agent_template/skills/mcp-installer/SKILL.md
     },
     # ─── Market Data (trading agents) ──────────────
     {
@@ -868,11 +868,11 @@ async def seed_skills():
             if crw_file.exists():
                 s["files"] = [{"path": "SKILL.md", "content": crw_file.read_text(encoding="utf-8")}]
         elif s["folder_name"] == "mcp-installer" and not s["files"]:
-            mcp_file = _template_skills_dir / "MCP_INSTALLER.md"
+            mcp_file = _template_skills_dir / "mcp-installer" / "SKILL.md"
             if mcp_file.exists():
                 s["files"] = [{"path": "SKILL.md", "content": mcp_file.read_text(encoding="utf-8")}]
             else:
-                logger.warning("[SkillSeeder] MCP_INSTALLER.md not found in agent_template/skills/")
+                logger.warning("[SkillSeeder] mcp-installer/SKILL.md not found in agent_template/skills/")
 
     async with async_session() as db:
         for skill_data in BUILTIN_SKILLS:
@@ -928,7 +928,7 @@ async def push_default_skills_to_existing_agents():
     """Deploy all is_default skills into the workspace of every existing agent that is missing them.
     
     Called at startup after seed_skills() so existing agents automatically receive new default skills
-    like MCP_INSTALLER without requiring manual re-creation.
+    like mcp-installer without requiring manual re-creation.
     """
     from pathlib import Path
     from app.models.agent import Agent
@@ -951,9 +951,17 @@ async def push_default_skills_to_existing_agents():
 
         pushed = 0
         updated = 0
+        removed_legacy = 0
         for agent in agents:
             agent_dir = agent_manager._agent_dir(agent.id)
             skills_dir = agent_dir / "skills"
+            legacy_mcp_file = skills_dir / "MCP_INSTALLER.md"
+            if legacy_mcp_file.exists():
+                try:
+                    legacy_mcp_file.unlink()
+                    removed_legacy += 1
+                except OSError as exc:
+                    logger.warning(f"[SkillSeeder] Failed to remove legacy MCP_INSTALLER.md for agent {agent.id}: {exc}")
             for skill in default_skills:
                 if not skill.files:
                     continue
@@ -973,7 +981,10 @@ async def push_default_skills_to_existing_agents():
                         pushed += 1
                         logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
 
-        if pushed or updated:
-            logger.info(f"[SkillSeeder] Pushed {pushed} new + {updated} updated skill files to existing agents")
+        if pushed or updated or removed_legacy:
+            logger.info(
+                f"[SkillSeeder] Pushed {pushed} new + {updated} updated skill files "
+                f"to existing agents; removed {removed_legacy} legacy MCP installer files"
+            )
         else:
             logger.info("[SkillSeeder] All existing agents already have up-to-date default skills")

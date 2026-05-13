@@ -1,3 +1,104 @@
+# v1.9.2 — Workspace Governance, Tool UX & Token Cache Accounting
+
+## What's New
+
+### Enterprise Info & Workspace Governance
+- **Shared `enterprise_info/` workspace area** now appears as tenant-level company context for agents and users.
+- **Agent-side enterprise info is read-only**: agents can list and read company context, but cannot create, edit, or delete shared enterprise files.
+- **Admin-managed enterprise knowledge base**: platform and org admins can update enterprise info while regular users and agents are protected from accidental modification.
+- **Legacy task files no longer appear in new agent workspaces**: new agents no longer receive `todo.json` / `tasks.json`; existing `tasks.json` files remain supported as legacy snapshots.
+- **Workspace file handling polish** improves preview/download behavior for shared enterprise files and preserves read-only boundaries.
+
+### Agent Management & Permissions
+- **Company admins can manage company-visible agents** even when those agents were created by regular users.
+- **Private user-only agents remain private** to their creator.
+- Agent permission APIs now return effective management capability, so the UI can distinguish creator ownership from admin management rights.
+- Start, stop, and permission update actions now use effective manager permission instead of creator-only checks.
+
+### Tool Management Experience
+- **Agent and company tool lists now share a cleaner grouped UI** with category headers, search, status filters, counts, and bulk toggles.
+- Tool categories are easier to scan and can be expanded only when needed, reducing very long tool-list pages.
+- Per-tool emoji icons were removed from the main list in favor of calmer category icons and compact labels.
+- **`Update Objective` is now a global default tool**, so newly created employees have the OKR objective update capability enabled by default.
+- Tool loading now avoids exposing disabled or agent-only tools to the LLM fallback path.
+
+### Chat & Agent UX
+- **New and existing chat sessions focus the composer automatically**, so users can type immediately after opening a session.
+- **Existing sessions open at the latest message** more reliably.
+- **Expanded tool chains now keep following the bottom only while appropriate**: if the user scrolls up intentionally, new tool updates no longer force the viewport back down.
+- Duplicate assistant avatars after a tool-chain block were removed for a cleaner transcript.
+- Tool-chain copy was refined from "Ran X agents" to clearer activity language.
+- Agent expiry quick-renew buttons now show selected state.
+- The dashboard's secondary "New Digital Employee" button was removed; creation remains available from the sidebar entry point.
+
+### Token Accounting & Cache Visibility
+- Token usage tracking now records input, output, estimated, cache-read, and cache-creation token counters.
+- Agent stats expose cache hit information for providers that return cache usage.
+- Qwen / Alibaba Bailian compatible calls now support provider-specific prompt cache control while preserving stable prompt prefixes.
+- Daily and monthly token reset logic now resets cache counters alongside total token counters.
+
+### Prompting, Webpage Generation & Tool Reliability
+- Default webpage/rich-document style guidance moved into the system prompt, reducing repeated tool-description text while keeping generated pages visually consistent.
+- Agent-facing reply guidelines now discourage emoji-heavy normal replies.
+- Web search instructions now refer to currently enabled tools instead of hardcoding unavailable tool names.
+- Tool-call execution now blocks disabled tool names and asks the model to retry malformed JSON tool arguments cleanly.
+- HTML-to-PDF and HTML-to-PPT conversion descriptions and parameters were expanded for higher-fidelity Chrome-based rendering.
+- Restart script now starts backend and frontend as detached daemons, avoiding local dev servers exiting after the restart command completes.
+
+## Upgrade Guide
+
+> **Database migration required.** Run `alembic upgrade heads` before restarting application services.
+
+This release adds or updates schema/data defaults for:
+- agent cache token counters
+- daily token usage input/output/cache/estimated counters
+- default agent TTL changing to permanent (`0`)
+- default daily LLM call limit changing to `1000`
+
+### Docker Deployment
+
+```bash
+git pull origin main
+
+# Run database migrations
+docker exec clawith-backend-1 alembic upgrade heads
+
+# Rebuild and restart services
+docker compose down && docker compose up -d --build
+```
+
+### Source Deployment
+
+```bash
+git pull origin main
+
+# Run database migrations
+cd backend && alembic upgrade heads
+cd ..
+
+# Rebuild frontend
+cd frontend && npm install && npm run build
+cd ..
+
+# Restart backend / frontend services
+```
+
+### Kubernetes / Helm
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+# Run migration job / command: alembic upgrade heads
+```
+
+### Notes
+- `enterprise_info/` is now shared tenant context. Review who has platform or org admin roles, because only admins should update those shared files.
+- New agents are permanent by default. If your deployment requires expiring agents, set tenant/user TTL defaults explicitly after migration.
+- Token cache counters depend on provider usage payloads. Providers that do not return cache fields will continue to show zero cache usage.
+- Existing legacy `tasks.json` files are preserved, but new agents will not get `todo.json` or `tasks.json` automatically.
+- If you run from source, use the updated `restart.sh` or your own process manager to keep frontend/backend processes detached.
+
+---
+
 # v1.9.1 — Talent Market, Per-User Onboarding & Template Automation
 
 ## What's New

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { IconAlertTriangle } from '@tabler/icons-react';
 import { useAuthStore } from '../stores';
 import { fetchJson } from '../services/api';
 
@@ -116,7 +117,7 @@ export default function SSOEntry() {
     if (error) {
         return (
             <div style={{ padding: '40px', textAlign: 'center' }}>
-                <h3 style={{ color: 'var(--error)' }}>⚠ Error</h3>
+                <h3 style={{ color: 'var(--error)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}><IconAlertTriangle size={18} stroke={1.8} /> Error</h3>
                 <p>{error}</p>
             </div>
         );

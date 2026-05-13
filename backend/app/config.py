@@ -46,6 +46,11 @@ def _default_agent_template_dir() -> str:
     return str(source_path)
 
 
+def _default_allow_unsafe_bwrap_fallback() -> bool:
+    """Allow local source runs to work without bubblewrap by default."""
+    return not _running_in_container()
+
+
 def _read_version() -> str:
     """Read version from local VERSION file, fallback to root."""
     for candidate in [Path(__file__).resolve().parent.parent / "VERSION",
@@ -115,6 +120,7 @@ class Settings(BaseSettings):
     SANDBOX_CPU_LIMIT: str = "0.5"
     SANDBOX_MEMORY_LIMIT: str = "256m"
     SANDBOX_ALLOW_NETWORK: bool = False
+    SANDBOX_ALLOW_UNSAFE_FALLBACK_WHEN_BWRAP_MISSING: bool = _default_allow_unsafe_bwrap_fallback()
     SANDBOX_DEFAULT_TIMEOUT: int = 30
     SANDBOX_MAX_TIMEOUT: int = 60
 
@@ -143,6 +149,7 @@ def get_sandbox_config() -> SandboxConfig:
         cpu_limit=settings.SANDBOX_CPU_LIMIT,
         memory_limit=settings.SANDBOX_MEMORY_LIMIT,
         allow_network=settings.SANDBOX_ALLOW_NETWORK,
+        allow_unsafe_fallback_when_bwrap_missing=settings.SANDBOX_ALLOW_UNSAFE_FALLBACK_WHEN_BWRAP_MISSING,
         default_timeout=settings.SANDBOX_DEFAULT_TIMEOUT,
         max_timeout=settings.SANDBOX_MAX_TIMEOUT,
     )

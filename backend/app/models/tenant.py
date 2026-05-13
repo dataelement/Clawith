@@ -31,8 +31,8 @@ class Tenant(Base):
     default_message_limit: Mapped[int] = mapped_column(Integer, default=50)
     default_message_period: Mapped[str] = mapped_column(String(20), default="permanent")
     default_max_agents: Mapped[int] = mapped_column(Integer, default=2)
-    default_agent_ttl_hours: Mapped[int] = mapped_column(Integer, default=48)
-    default_max_llm_calls_per_day: Mapped[int] = mapped_column(Integer, default=100)
+    default_agent_ttl_hours: Mapped[int] = mapped_column(Integer, default=0)
+    default_max_llm_calls_per_day: Mapped[int] = mapped_column(Integer, default=1000)
 
     # Heartbeat frequency floor (minutes) — agents cannot heartbeat faster than this
     min_heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=240)

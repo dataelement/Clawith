@@ -9,7 +9,6 @@ Validates the branching logic in _send_message_to_agent:
 import json
 import uuid
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -230,8 +229,15 @@ async def test_consult_calls_llm_synchronously():
     model.request_timeout = 60
 
     response = MagicMock()
-    response.content = "Here is the answer"
-    response.tool_calls = None
+    response.content = ""
+    response.tool_calls = [{
+        "id": "call_finish",
+        "type": "function",
+        "function": {
+            "name": "finish",
+            "arguments": json.dumps({"content": "Here is the answer"}),
+        },
+    }]
     response.usage = None
 
     mock_llm_client = AsyncMock()
@@ -380,7 +386,7 @@ async def test_no_relationship_returns_error():
 @pytest.mark.asyncio
 async def test_append_focus_item_creates_file(tmp_path):
     """_append_focus_item should create/append to focus.md."""
-    from app.services.agent_tools import _append_focus_item, WORKSPACE_ROOT
+    from app.services.agent_tools import _append_focus_item
 
     agent_id = uuid.uuid4()
     with patch("app.services.agent_tools.WORKSPACE_ROOT", tmp_path):
@@ -546,8 +552,15 @@ async def test_feature_flag_off_falls_back_to_consult():
     model.request_timeout = 60
 
     response = MagicMock()
-    response.content = "Got it"
-    response.tool_calls = None
+    response.content = ""
+    response.tool_calls = [{
+        "id": "call_finish",
+        "type": "function",
+        "function": {
+            "name": "finish",
+            "arguments": json.dumps({"content": "Got it"}),
+        },
+    }]
     response.usage = None
 
     mock_llm_client = AsyncMock()

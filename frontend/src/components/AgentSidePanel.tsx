@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
+import {
+    IconBrowser,
+    IconCode,
+    IconDatabase,
+    IconDeviceDesktop,
+    IconFileSymlink,
+    IconFolder,
+    IconInfoCircle,
+} from '@tabler/icons-react';
 import TakeControlPanel from './TakeControlPanel';
 import WorkspaceOperationPanel, { WorkspaceActivity, WorkspaceLiveDraft } from './WorkspaceOperationPanel';
 import type { LivePreviewState } from './AgentBayLivePanel';
@@ -10,6 +20,7 @@ interface Props {
     workspaceActivities: WorkspaceActivity[];
     workspaceLiveDraft?: WorkspaceLiveDraft | null;
     workspaceLocked?: boolean;
+    canManageEnterpriseInfo?: boolean;
     visible: boolean;
     onToggle: () => void;
     activeTab: SidePanelTab;
@@ -24,7 +35,7 @@ interface Props {
     onLiveUpdate?: (env: 'browser' | 'desktop', screenshotDataUri: string) => void;
 }
 
-export type SidePanelTab = 'workspace' | 'aware' | 'browser' | 'desktop' | 'code';
+export type SidePanelTab = 'workspace' | 'aware' | 'browser' | 'desktop' | 'code' | 'transfer';
 
 const MIN_WIDTH = 340;
 const MAX_WIDTH_VW = 0.68;
@@ -36,20 +47,13 @@ function calcInitialWidth(): number {
     return Math.max(MIN_WIDTH, Math.floor((window.innerWidth - 60) / 2));
 }
 
-const labels: Record<SidePanelTab, string> = {
-    workspace: '工作区',
-    aware: '自我意识',
-    browser: 'Browser',
-    desktop: 'Desktop',
-    code: 'Code',
-};
-
 export default function AgentSidePanel({
     liveState,
     workspaceActivePath,
     workspaceActivities,
     workspaceLiveDraft,
     workspaceLocked = false,
+    canManageEnterpriseInfo = false,
     visible,
     onToggle,
     activeTab,
@@ -63,6 +67,23 @@ export default function AgentSidePanel({
     sessionId,
     onLiveUpdate,
 }: Props) {
+    const { t } = useTranslation();
+    const labels: Record<SidePanelTab, string> = {
+        workspace: t('agent.workspace.title', 'Workspace'),
+        aware: t('agent.tabs.aware', 'Aware'),
+        browser: t('agent.sidePanel.browser', 'Browser'),
+        desktop: t('agent.sidePanel.desktop', 'Computer'),
+        code: t('agent.sidePanel.code', 'Code'),
+        transfer: t('agent.sidePanel.transfer', 'Transfer'),
+    };
+    const tabIcons: Record<SidePanelTab, ReactNode> = {
+        workspace: <IconFolder size={14} stroke={1.7} />,
+        aware: <IconInfoCircle size={14} stroke={1.7} />,
+        browser: <IconBrowser size={14} stroke={1.7} />,
+        desktop: <IconDeviceDesktop size={14} stroke={1.7} />,
+        code: <IconCode size={14} stroke={1.7} />,
+        transfer: <IconFileSymlink size={14} stroke={1.7} />,
+    };
     const [panelWidth, setPanelWidth] = useState(() => calcInitialWidth());
     const [showTakeControl, setShowTakeControl] = useState(false);
     const [workspaceActivityOpen, setWorkspaceActivityOpen] = useState(false);
@@ -82,6 +103,7 @@ export default function AgentSidePanel({
     if (liveState.browser) availableTabs.push('browser');
     if (liveState.desktop) availableTabs.push('desktop');
     if (liveState.code) availableTabs.push('code');
+    if (liveState.transfer) availableTabs.push('transfer');
 
     useEffect(() => {
         const onResize = () => {
@@ -136,7 +158,29 @@ export default function AgentSidePanel({
         <div className="live-panel agent-side-panel" style={{ width: `${panelWidth}px`, flexShrink: 0 }}>
             <div className="live-panel-resize-handle" onMouseDown={handleDragMouseDown} title="Drag to resize" />
             <div className="live-panel-header">
-                <span className="live-panel-title">{labels[activeTab]}</span>
+                {availableTabs.length > 1 ? (
+                    <div className="agent-side-panel-tabs" role="tablist" aria-label={t('agent.sidePanel.previewTabs', 'Preview areas')}>
+                        {availableTabs.map((tab) => {
+                            const hasLiveData = tab === 'browser' || tab === 'desktop' || tab === 'code' || tab === 'transfer';
+                            return (
+                                <button
+                                    key={tab}
+                                    type="button"
+                                    className={`agent-side-panel-tab ${activeTab === tab ? 'active' : ''}`}
+                                    onClick={() => onTabChange(tab)}
+                                    role="tab"
+                                    aria-selected={activeTab === tab}
+                                >
+                                    {tabIcons[tab]}
+                                    <span>{labels[tab]}</span>
+                                    {hasLiveData && <span className="agent-side-panel-tab-dot" />}
+                                </button>
+                            );
+                        })}
+                    </div>
+                ) : (
+                    <span className="live-panel-title">{labels[activeTab]}</span>
+                )}
                 {agentId && sessionId && (activeTab === 'browser' || activeTab === 'desktop') && (
                     <button className="live-panel-take-control" onClick={() => setShowTakeControl(true)} title="Take control">
                         <span>Control</span>
@@ -145,10 +189,12 @@ export default function AgentSidePanel({
                 <div className="live-panel-header-right">
                     {activeTab === 'workspace' && (
                         <>
+                            <div id="workspace-header-file-actions" className="live-panel-workspace-actions" />
                             <button
                                 className={`live-panel-icon-btn ${workspaceActivityOpen ? 'active' : ''}`}
                                 onClick={() => setWorkspaceActivityOpen(o => !o)}
-                                title="Version history"
+                                title={t('agent.workspace.versionHistory', 'Version history')}
+                                aria-label={t('agent.workspace.versionHistory', 'Version history')}
                             >
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
                             </button>
@@ -169,12 +215,14 @@ export default function AgentSidePanel({
                         activities={workspaceActivities}
                         liveDraft={workspaceLiveDraft}
                         locked={workspaceLocked}
+                        canManageEnterpriseInfo={canManageEnterpriseInfo}
                         onSelectPath={onWorkspaceSelectPath}
                         onToggleLock={onWorkspaceToggleLock}
                         onEditingChange={onWorkspaceEditingChange}
                         onPathDeleted={onWorkspacePathDeleted}
                         activityOpen={workspaceActivityOpen}
                         onActivityToggle={setWorkspaceActivityOpen}
+                        headerActionsTargetId="workspace-header-file-actions"
                     />
                 )}
                 {activeTab === 'aware' && awareContent}
@@ -194,6 +242,32 @@ export default function AgentSidePanel({
                     <div className="live-panel-code">
                         <pre>{liveState.code.output}</pre>
                         <div ref={codeEndRef} />
+                    </div>
+                )}
+                {activeTab === 'transfer' && liveState.transfer && (
+                    <div className="live-panel-transfer">
+                        <div className="live-panel-transfer-card">
+                            <div className="live-panel-transfer-title">
+                                <IconFileSymlink size={16} stroke={1.7} />
+                                <span>{liveState.transfer.status === 'running' ? t('agent.sidePanel.transferRunning', 'Transfer in progress') : t('agent.sidePanel.transferDone', 'Transfer complete')}</span>
+                            </div>
+                            <div className="live-panel-transfer-route">
+                                <div>
+                                    <span>{t('agent.sidePanel.from', 'From')}</span>
+                                    <strong>{liveState.transfer.fromType || '-'}</strong>
+                                    {liveState.transfer.fromPath && <code>{liveState.transfer.fromPath}</code>}
+                                </div>
+                                <IconDatabase size={14} stroke={1.7} />
+                                <div>
+                                    <span>{t('agent.sidePanel.to', 'To')}</span>
+                                    <strong>{liveState.transfer.toType || '-'}</strong>
+                                    {liveState.transfer.toPath && <code>{liveState.transfer.toPath}</code>}
+                                </div>
+                            </div>
+                            {liveState.transfer.result && (
+                                <pre className="live-panel-transfer-result">{liveState.transfer.result}</pre>
+                            )}
+                        </div>
                     </div>
                 )}
             </div>

@@ -1,4 +1,5 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { IconAlertTriangle } from '@tabler/icons-react';
 
 interface Props {
     children?: ReactNode;
@@ -32,7 +33,7 @@ class ErrorBoundary extends Component<Props, State> {
             return (
                 <div style={{ padding: '20px', color: 'var(--text-primary)', maxWidth: '600px', margin: '40px auto', background: 'var(--bg-card)', borderRadius: '8px', boxShadow: 'var(--shadow-md)' }}>
                     <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '0 0 16px 0', color: 'var(--error)' }}>
-                        <span style={{ fontSize: '24px' }}>⚠️</span> Oops, something went wrong.
+                        <IconAlertTriangle size={24} stroke={1.8} /> Oops, something went wrong.
                     </h2>
                     <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>
                         An unexpected error occurred. You can try refreshing the page or contact support if the problem persists.

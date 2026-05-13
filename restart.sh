@@ -109,6 +109,54 @@ wait_for_port() {
     return 1
 }
 
+# Start a command as a real detached daemon. Plain `nohup ... &` is not enough in
+# some agent/PTY runners: when the parent command finishes, descendants in the
+# same session can still be cleaned up. Double-fork + setsid detaches the service
+# from this script's session so it survives after restart.sh exits.
+start_detached() {
+    local cwd=$1 log_file=$2 pid_file=$3
+    shift 3
+    python3 - "$cwd" "$log_file" "$pid_file" "$@" <<'PY'
+import os
+import sys
+
+cwd, log_file, pid_file, *cmd = sys.argv[1:]
+if not cmd:
+    raise SystemExit("missing command")
+
+first_pid = os.fork()
+if first_pid:
+    os._exit(0)
+
+os.setsid()
+
+second_pid = os.fork()
+if second_pid:
+    os._exit(0)
+
+os.chdir(cwd)
+os.umask(0o022)
+
+os.makedirs(os.path.dirname(log_file), exist_ok=True)
+os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+
+fd_in = os.open(os.devnull, os.O_RDONLY)
+fd_out = os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+os.dup2(fd_in, 0)
+os.dup2(fd_out, 1)
+os.dup2(fd_out, 2)
+if fd_in > 2:
+    os.close(fd_in)
+if fd_out > 2:
+    os.close(fd_out)
+
+with open(pid_file, "w", encoding="utf-8") as f:
+    f.write(str(os.getpid()))
+
+os.execvpe(cmd[0], cmd, os.environ.copy())
+PY
+}
+
 # ═══════════════════════════════════════════════════════
 # 添加 PostgreSQL 到 PATH
 # ═══════════════════════════════════════════════════════
@@ -184,12 +232,11 @@ start_backend() {
     # Auto-run data migrations (idempotent)
     echo -e "${YELLOW}🔄 Running data migrations...${NC}"
     .venv/bin/python -m app.scripts.migrate_schedules_to_triggers || true
-    nohup env PYTHONUNBUFFERED=1 \
-        PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}" \
-        DATABASE_URL="$DATABASE_URL" \
-        .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $BACKEND_PORT \
-        > "$BACKEND_LOG" 2>&1 &
-    echo $! > "$BACKEND_PID"
+    start_detached "$BACKEND_DIR" "$BACKEND_LOG" "$BACKEND_PID" \
+        env PYTHONUNBUFFERED=1 \
+            PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}" \
+            DATABASE_URL="$DATABASE_URL" \
+            .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $BACKEND_PORT
     wait_for_port $BACKEND_PORT "Backend" 10
 }
 
@@ -199,9 +246,11 @@ start_backend() {
 start_frontend() {
     echo -e "${YELLOW}🚀 Starting frontend...${NC}"
     cd "$FRONTEND_DIR"
-    nohup node_modules/.bin/vite --host 0.0.0.0 --port $FRONTEND_PORT \
-        > "$FRONTEND_LOG" 2>&1 &
-    echo $! > "$FRONTEND_PID"
+    # Vite 6 listens for stdin "end" and exits cleanly when a background shell
+    # closes stdin. Setting CI=true disables that stdin-end shutdown path while
+    # keeping the normal dev server behavior.
+    start_detached "$FRONTEND_DIR" "$FRONTEND_LOG" "$FRONTEND_PID" \
+        env CI=true node_modules/.bin/vite --host 0.0.0.0 --port $FRONTEND_PORT --strictPort
     wait_for_port $FRONTEND_PORT "Frontend" 8
 }
 

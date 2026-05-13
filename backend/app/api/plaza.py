@@ -11,18 +11,19 @@ from sqlalchemy import select, update, func, desc, exists, and_
 
 from app.api.auth import get_current_user
 from app.database import async_session
-from app.models.agent import Agent as AgentModel, AgentPermission
+from app.models.agent import Agent as AgentModel
 from app.models.plaza import PlazaPost, PlazaComment, PlazaLike
 from app.models.user import User
 
 router = APIRouter(prefix="/api/plaza", tags=["plaza"])
 
 
-def _private_agent_exists_for_id(agent_id_column):
+def _hidden_agent_exists_for_author(author_id_column):
+    """Return true when the current post/comment author is not company-public."""
     return exists().where(
         and_(
-            AgentPermission.agent_id == agent_id_column,
-            AgentPermission.scope_type == "user",
+            AgentModel.id == author_id_column,
+            (AgentModel.is_system == True) | (AgentModel.access_mode != "company"),
         )
     )
 
@@ -163,16 +164,7 @@ async def list_posts(
         q = q.where(
             ~(
                 (PlazaPost.author_type == "agent")
-                & (
-                    select(
-                        exists().where(
-                            and_(
-                                AgentModel.id == PlazaPost.author_id,
-                                (AgentModel.is_system == True) | _private_agent_exists_for_id(AgentModel.id),
-                            )
-                        )
-                    ).scalar_subquery()
-                )
+                & _hidden_agent_exists_for_author(PlazaPost.author_id)
             )
         )
         if since:
@@ -202,16 +194,7 @@ async def plaza_stats(
         # Build base filters
         private_or_system_post = (
             (PlazaPost.author_type == "agent")
-            & (
-                select(
-                    exists().where(
-                        and_(
-                            AgentModel.id == PlazaPost.author_id,
-                            (AgentModel.is_system == True) | _private_agent_exists_for_id(AgentModel.id),
-                        )
-                    )
-                ).scalar_subquery()
-            )
+            & _hidden_agent_exists_for_author(PlazaPost.author_id)
         )
         post_filter = (PlazaPost.tenant_id == effective_tenant_id) if effective_tenant_id else True
         post_filter = post_filter & ~private_or_system_post
@@ -234,6 +217,7 @@ async def plaza_stats(
         today_q = select(func.count(PlazaPost.id)).where(PlazaPost.created_at >= today_start)
         if effective_tenant_id:
             today_q = today_q.where(PlazaPost.tenant_id == effective_tenant_id)
+        today_q = today_q.where(~private_or_system_post)
         today_posts = (await db.execute(today_q)).scalar() or 0
         # Top 5 contributors by post count
         top_q = (
@@ -263,6 +247,16 @@ async def create_post(body: PostCreate, current_user: User = Depends(get_current
         raise HTTPException(400, "Content cannot be empty")
     effective_tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     async with async_session() as db:
+        if body.author_type == "agent":
+            agent_result = await db.execute(select(AgentModel).where(AgentModel.id == body.author_id))
+            agent = agent_result.scalar_one_or_none()
+            if (
+                not agent
+                or (effective_tenant_id and str(agent.tenant_id) != effective_tenant_id)
+                or agent.is_system
+                or (getattr(agent, "access_mode", None) or "company") != "company"
+            ):
+                raise HTTPException(403, "Only company-wide agents can post to Plaza")
         post = PlazaPost(
             author_id=body.author_id,
             author_type=body.author_type,
@@ -297,14 +291,7 @@ async def get_post(post_id: uuid.UUID, current_user: User = Depends(get_current_
             raise HTTPException(404, "Post not found")
         if post.author_type == "agent":
             hidden_post = await db.execute(
-                select(
-                    exists().where(
-                        and_(
-                            AgentModel.id == post.author_id,
-                            (AgentModel.is_system == True) | _private_agent_exists_for_id(AgentModel.id),
-                        )
-                    )
-                )
+                select(_hidden_agent_exists_for_author(post.author_id))
             )
             if hidden_post.scalar():
                 raise HTTPException(404, "Post not found")
@@ -318,7 +305,7 @@ async def get_post(post_id: uuid.UUID, current_user: User = Depends(get_current_
             hidden_agents = await db.execute(
                 select(AgentModel.id).where(
                     AgentModel.id.in_(agent_comment_ids),
-                    (AgentModel.is_system == True) | _private_agent_exists_for_id(AgentModel.id),
+                    (AgentModel.is_system == True) | (AgentModel.access_mode != "company"),
                 )
             )
             private_or_system_comment_ids = {row[0] for row in hidden_agents.all()}
@@ -361,6 +348,16 @@ async def create_comment(post_id: uuid.UUID, body: CommentCreate, current_user: 
         raise HTTPException(400, "Content cannot be empty")
     effective_tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     async with async_session() as db:
+        if body.author_type == "agent":
+            agent_result = await db.execute(select(AgentModel).where(AgentModel.id == body.author_id))
+            agent = agent_result.scalar_one_or_none()
+            if (
+                not agent
+                or (effective_tenant_id and str(agent.tenant_id) != effective_tenant_id)
+                or agent.is_system
+                or (getattr(agent, "access_mode", None) or "company") != "company"
+            ):
+                raise HTTPException(403, "Only company-wide agents can comment on Plaza")
         result = await db.execute(select(PlazaPost).where(PlazaPost.id == post_id))
         post = result.scalar_one_or_none()
         if not post:

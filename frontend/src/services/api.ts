@@ -17,6 +17,8 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
         // Auto-logout on expired/invalid token (but not on auth endpoints — let them show errors)
         const isAuthEndpoint = url.startsWith('/auth/login')
             || url.startsWith('/auth/register')
+            || url.startsWith('/auth/verify-email')
+            || url.startsWith('/auth/resend-verification')
             || url.startsWith('/auth/forgot-password')
             || url.startsWith('/auth/reset-password');
         if (res.status === 401 && !isAuthEndpoint) {
@@ -201,6 +203,23 @@ export const tenantApi = {
 
     me: () =>
         request<{ id: string; name: string; default_model_id: string | null; [k: string]: any }>('/tenants/me'),
+
+    tokenUsage: () =>
+        request<any>('/tenants/me/token-usage'),
+};
+
+export const onboardingApi = {
+    status: () =>
+        request<any>('/onboarding/status'),
+
+    start: (entryMode: 'create' | 'join') =>
+        request<any>('/onboarding/start', { method: 'POST', body: JSON.stringify({ entry_mode: entryMode }) }),
+
+    createPersonalAssistant: (data: { name: string; personality: string; work_style: string; boundaries?: string }) =>
+        request<any>('/onboarding/personal-assistant', { method: 'POST', body: JSON.stringify(data) }),
+
+    complete: () =>
+        request<any>('/onboarding/complete', { method: 'POST' }),
 };
 
 export const adminApi = {
@@ -348,6 +367,33 @@ export const fileApi = {
         if (options?.inline) params.set('inline', '1');
         return `${API_BASE}/agents/${agentId}/files/download?${params.toString()}`;
     },
+};
+
+export type FocusApiItem = {
+    id: string;
+    agent_id: string;
+    key: string;
+    description: string;
+    status: 'in_progress' | 'completed';
+    kind: 'normal' | 'system';
+    source: string;
+    metadata?: Record<string, any>;
+    sort_order: number;
+    completed_at?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+};
+
+// ─── Focus ───────────────────────────────────────────
+export const focusApi = {
+    list: (agentId: string, includeCompleted = true) =>
+        request<FocusApiItem[]>(`/agents/${agentId}/focus/?include_completed=${includeCompleted ? 'true' : 'false'}`),
+
+    upsert: (agentId: string, data: { key?: string; description: string; status?: string; kind?: string; source?: string; metadata?: Record<string, any> }) =>
+        request<FocusApiItem>(`/agents/${agentId}/focus/`, { method: 'POST', body: JSON.stringify(data) }),
+
+    complete: (agentId: string, key: string) =>
+        request<FocusApiItem>(`/agents/${agentId}/focus/${encodeURIComponent(key)}/complete`, { method: 'POST' }),
 };
 
 // ─── Channel Config ───────────────────────────────────

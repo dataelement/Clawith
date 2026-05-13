@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
@@ -284,6 +284,9 @@ export default function Chat() {
     const [wsSessionId, setWsSessionId] = useState<string>('');
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messagesContainerRef = useRef<HTMLDivElement>(null);
+    const isNearBottomRef = useRef(true);
+    const userPinnedAwayFromBottomRef = useRef(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     // Ref to the chat textarea for direct DOM height manipulation
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -301,22 +304,19 @@ export default function Chat() {
         enabled: !!id,
     });
 
-    // Tenant default model — used only as a "默认" tag in the dropdown, not as
-    // the initial selection. Initial selection is agent.primary_model_id.
+    // Tenant default model — used to render the "默认" tag and as a visual
+    // fallback when an agent has no explicit primary model.
     const { data: myTenant } = useQuery({
         queryKey: ['tenant', 'me'],
         queryFn: () => tenantApi.me(),
         staleTime: 5 * 60 * 1000,
+        refetchOnMount: 'always',
     });
 
-    // Chat-side selected model. Source-of-truth is agent.primary_model_id;
-    // the picker mirrors it bidirectionally:
-    //   - User picks model in chat → handleModelChange PATCHes the agent.
-    //   - Agent's saved default changes elsewhere (settings page, tenant
-    //     default migration) → useEffect below pulls the new value in.
-    // Also re-syncs when wsSessionId changes so "new conversation" lands
-    // on the agent's current default rather than a stale prior pick.
-    const queryClient = useQueryClient();
+    // Chat-side selected model is a per-session override. It is sent with each
+    // message over WebSocket and should not require permission to edit the agent.
+    // Re-sync on session changes so new conversations start from the saved agent
+    // model rather than a stale prior override.
     const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
     useEffect(() => {
         if (agent?.primary_model_id && agent.primary_model_id !== overrideModelId) {
@@ -326,27 +326,25 @@ export default function Chat() {
     }, [agent?.primary_model_id, wsSessionId]);
 
     const handleModelChange = useCallback(async (newModelId: string | null) => {
-        // Optimistic UI: update local state immediately so the dropdown
-        // closes / reflects the choice without waiting on the server.
         setOverrideModelId(newModelId);
-        if (!id || !newModelId || newModelId === agent?.primary_model_id) return;
-        try {
-            await agentApi.update(id, { primary_model_id: newModelId });
-            queryClient.invalidateQueries({ queryKey: ['agent', id] });
-        } catch (e) {
-            // Roll back local state on failure so the picker shows reality.
-            setOverrideModelId(agent?.primary_model_id || null);
-        }
-    }, [id, agent?.primary_model_id, queryClient]);
+    }, []);
 
-    const { data: llmModels = [] } = useQuery({
+    const { data: llmModels = [], isLoading: llmModelsLoading } = useQuery({
         queryKey: ['llm-models'],
         queryFn: () => enterpriseApi.llmModels(),
-        enabled: !!agent?.primary_model_id,
+        enabled: !!agent,
+        refetchOnMount: 'always',
     });
 
-    const supportsVision = !!agent?.primary_model_id && llmModels.some(
-        (m: any) => m.id === agent.primary_model_id && m.supports_vision
+    const enabledLlmModels = (llmModels as any[]).filter((m: any) => m.enabled);
+    const effectiveChatModelId = overrideModelId
+        || agent?.primary_model_id
+        || myTenant?.default_model_id
+        || enabledLlmModels[0]?.id
+        || null;
+    const effectiveModelReady = !!effectiveChatModelId && enabledLlmModels.some((m: any) => m.id === effectiveChatModelId);
+    const supportsVision = !!effectiveChatModelId && llmModels.some(
+        (m: any) => m.id === effectiveChatModelId && m.supports_vision
     );
 
     const parseMessage = (msg: Message): Message => {
@@ -455,6 +453,7 @@ export default function Chat() {
         if (!connected || !wsRef.current) return;
         if (!agent || agent.onboarded_for_me !== false) return;
         if (!historyLoaded.current) return;
+        if (llmModelsLoading || !effectiveModelReady || !effectiveChatModelId) return;
         if (messages.length > 0) return;
         onboardingKickoffSent.current = true;
         setIsWaiting(true);
@@ -462,9 +461,9 @@ export default function Chat() {
         wsRef.current.send(JSON.stringify({
             content: '',
             kind: 'onboarding_trigger',
-            model_id: overrideModelId,
+            model_id: effectiveChatModelId,
         }));
-    }, [connected, agent, messages.length, overrideModelId]);
+    }, [connected, agent, messages.length, llmModelsLoading, effectiveModelReady, effectiveChatModelId]);
 
     useEffect(() => {
         if (!id || !token) return;
@@ -682,8 +681,31 @@ export default function Chat() {
         }
     }, [connected]);
 
+    const handleMessagesScroll = () => {
+        const el = messagesContainerRef.current;
+        if (!el) return;
+        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        isNearBottomRef.current = distFromBottom < 120;
+        userPinnedAwayFromBottomRef.current = distFromBottom > 220;
+    };
+
+    const handleMessagesWheelCapture = (event: React.WheelEvent<HTMLDivElement>) => {
+        const el = messagesContainerRef.current;
+        if (!el) return;
+        if (event.deltaY < 0 && el.scrollTop > 0) {
+            userPinnedAwayFromBottomRef.current = true;
+            isNearBottomRef.current = false;
+        }
+    };
+
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (userPinnedAwayFromBottomRef.current || !isNearBottomRef.current) return;
+        const el = messagesContainerRef.current;
+        if (!el) return;
+        requestAnimationFrame(() => {
+            if (userPinnedAwayFromBottomRef.current) return;
+            el.scrollTop = el.scrollHeight;
+        });
     }, [messages]);
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -730,6 +752,8 @@ export default function Chat() {
         pendingToolCalls.current = [];
         streamContent.current = '';
         thinkingContent.current = '';
+        userPinnedAwayFromBottomRef.current = false;
+        isNearBottomRef.current = true;
         setIsWaiting(true);
         setStreaming(true);
 
@@ -770,7 +794,7 @@ export default function Chat() {
             imageUrl: attachedFile?.imageUrl,
             timestamp: new Date().toISOString(),
         }]);
-        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '', model_id: overrideModelId }));
+        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '', model_id: effectiveChatModelId }));
         setInput('');
         setAttachedFile(null);
     };
@@ -851,13 +875,18 @@ export default function Chat() {
                 {/* Drop overlay */}
                 {isChatDragging && (
                     <div className="drop-zone-overlay">
-                        <div className="drop-zone-overlay__icon">📎</div>
+                        <div className="drop-zone-overlay__icon"><IconPaperclip size={28} stroke={1.8} /></div>
                         <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop file to attach')}</div>
                     </div>
                 )}
                 {/* Wrap chat area in a column so it coexists with the live panel in flex-row */}
                 <div className="chat-main">
-                <div className="chat-messages">
+                <div
+                    ref={messagesContainerRef}
+                    className="chat-messages"
+                    onScroll={handleMessagesScroll}
+                    onWheelCapture={handleMessagesWheelCapture}
+                >
                     {messages.length === 0 && (
                         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--text-tertiary)' }}>
                             <div style={{ marginBottom: '12px', display: 'flex', justifyContent: 'center' }}>{Icons.chat}</div>
@@ -891,8 +920,7 @@ export default function Chat() {
                                             <img src={msg.imageUrl} alt={msg.fileName} style={{ maxWidth: '240px', maxHeight: '180px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }} />
                                         </div>);
                                     }
-                                    const fi = fe === 'pdf' ? '\uD83D\uDCC4' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '\uD83D\uDCCA' : (fe === 'docx' || fe === 'doc') ? '\uD83D\uDCDD' : '\uD83D\uDCCE';
-                                    return (<div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}><span>{fi}</span><span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span></div>);
+                                    return (<div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}><IconPaperclip size={13} stroke={1.8} /><span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span></div>);
                                 })()}
                                 {msg.thinking && (
                                     <details className="thinking-panel">
@@ -922,7 +950,7 @@ export default function Chat() {
                                         <MarkdownRenderer content={msg.content} />
                                     )
                                 ) : (
-                                    <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                                    <MarkdownRenderer content={msg.content} />
                                 )}
                                 {msg.timestamp && (
                                     <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.7 }}>
@@ -1024,11 +1052,7 @@ export default function Chat() {
                             <ModelSwitcher
                                 value={overrideModelId}
                                 onChange={handleModelChange}
-                                /* "默认" badge marks the agent's current saved
-                                   default (= primary_model_id), so it stays in
-                                   sync with whatever the picker / settings page
-                                   reports as the default. */
-                                tenantDefaultId={agent?.primary_model_id || null}
+                                tenantDefaultId={myTenant?.default_model_id || null}
                                 disabled={!connected}
                             />
                             <div style={{ flex: 1 }} />

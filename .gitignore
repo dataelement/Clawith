@@ -4,6 +4,7 @@ node_modules/
 dist/
 *.zip
 .vite/
+*.log
 build/
 __pycache__/
 *.pyc

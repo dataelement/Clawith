@@ -1257,13 +1257,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                     {actionFeedback.text}
                 </div>
             )}
-            <div style={{
-                padding: '10px 14px', borderRadius: '8px', marginBottom: '16px',
-                background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)',
-                fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.6',
-            }}>
-                {t('agent.settings.channel.syncHint', 'Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders.')}
-            </div>
             {CHANNEL_REGISTRY.map(renderEditChannel)}
         </div>
     );

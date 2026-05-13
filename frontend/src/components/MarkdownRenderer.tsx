@@ -3,7 +3,15 @@
  * Renders: headings, bold, italic, inline code, code blocks,
  * unordered/ordered lists, blockquotes, horizontal rules, links, tables.
  */
-import React, { useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
+import {
+    IconDownload,
+    IconPlus,
+    IconMinus,
+    IconRefresh,
+    IconX,
+} from '@tabler/icons-react';
 
 function escapeHtml(str: string): string {
     return str
@@ -13,8 +21,87 @@ function escapeHtml(str: string): string {
         .replace(/"/g, '&quot;');
 }
 
+function escapeAttribute(str: string): string {
+    return escapeHtml(str).replace(/'/g, '&#39;');
+}
+
+function prepareUrl(url: string, kind: 'link' | 'image' = 'link'): string | null {
+    let finalUrl = url.trim().replace(/^<|>$/g, '');
+    const lower = finalUrl.toLowerCase();
+    const isAllowed =
+        lower.startsWith('http://') ||
+        lower.startsWith('https://') ||
+        lower.startsWith('mailto:') ||
+        finalUrl.startsWith('/') ||
+        (kind === 'image' && lower.startsWith('data:image/'));
+
+    if (!isAllowed) return null;
+
+    if (finalUrl.startsWith('/api/agents/')) {
+        const token = localStorage.getItem('token');
+        if (token && !finalUrl.includes('token=')) {
+            finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+        }
+    }
+    return finalUrl;
+}
+
+function renderLink(url: string, label: string): string {
+    const finalUrl = prepareUrl(url);
+    if (!finalUrl) return label;
+    return `<a href="${escapeAttribute(finalUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);text-decoration:underline;text-underline-offset:2px;word-break:break-all">${label}</a>`;
+}
+
+function autolinkBareUrls(html: string): string {
+    return html.replace(/https?:\/\/[^\s<>"']+/g, (rawUrl) => {
+        const trailingMatch = rawUrl.match(/[),.;:!?，。！？；：、）】》]+$/);
+        const trailing = trailingMatch?.[0] ?? '';
+        const url = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
+        if (!url) return rawUrl;
+        return renderLink(url, url) + trailing;
+    });
+}
+
+function triggerImageDownload(url: string, alt: string) {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = alt || 'image';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
 function renderInline(text: string): string {
-    return text
+    const tokens: string[] = [];
+    const stash = (html: string) => {
+        const key = `@@MDTOKEN${tokens.length}@@`;
+        tokens.push(html);
+        return key;
+    };
+
+    let working = text
+        // Inline code
+        .replace(/`([^`]+)`/g, (_match, code) => stash(`<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">${escapeHtml(code)}</code>`))
+        // Images
+        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+            const finalUrl = prepareUrl(url, 'image');
+            if (!finalUrl) return escapeHtml(match);
+            const safeUrl = escapeAttribute(finalUrl);
+            const safeAlt = escapeAttribute(alt);
+            return stash(
+                `<span class="markdown-image-wrap" data-markdown-image-wrap="1">` +
+                `<img src="${safeUrl}" alt="${safeAlt}" class="markdown-inline-image" data-markdown-image-src="${safeUrl}" data-markdown-image-alt="${safeAlt}" />` +
+                `<button type="button" class="markdown-image-download-btn" data-markdown-image-download="${safeUrl}" data-markdown-image-alt="${safeAlt}" aria-label="Download image" title="Download image">` +
+                `↓` +
+                `</button>` +
+                `</span>`
+            );
+        })
+        // Links
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, url) => stash(renderLink(url, escapeHtml(label))));
+
+    working = escapeHtml(working)
         // Bold + italic
         .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
         // Bold
@@ -23,34 +110,14 @@ function renderInline(text: string): string {
         // Italic
         .replace(/\*(.*?)\*/g, '<em>$1</em>')
         .replace(/_(.*?)_/g, '<em>$1</em>')
-        // Inline code
-        .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
-        // Images
-        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
-            }
-            return `<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${alt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`;
-        })
-        // Links
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-            // Avoid matching images that snuck through or weird nested stuff
-            if (match.startsWith('!')) return match;
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
-            }
-            return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">${text}</a>`;
-        })
         // Strikethrough
         .replace(/~~(.*?)~~/g, '<del>$1</del>');
+
+    working = autolinkBareUrls(working);
+    tokens.forEach((html, i) => {
+        working = working.replace(new RegExp(`@@MDTOKEN${i}@@`, 'g'), html);
+    });
+    return working;
 }
 
 function markdownToHtml(md: string): string {
@@ -197,12 +264,100 @@ interface MarkdownRendererProps {
 
 export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, style, className }: MarkdownRendererProps) {
     const html = useMemo(() => markdownToHtml(content), [content]);
+    const [lightbox, setLightbox] = useState<{ src: string; alt: string; scale: number } | null>(null);
+
+    const closeLightbox = useCallback(() => setLightbox(null), []);
+    const zoomIn = useCallback(() => setLightbox(prev => prev ? { ...prev, scale: Math.min(4, prev.scale + 0.25) } : prev), []);
+    const zoomOut = useCallback(() => setLightbox(prev => prev ? { ...prev, scale: Math.max(0.25, prev.scale - 0.25) } : prev), []);
+    const resetZoom = useCallback(() => setLightbox(prev => prev ? { ...prev, scale: 1 } : prev), []);
+
+    useEffect(() => {
+        if (!lightbox) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') closeLightbox();
+            if (event.key === '+') zoomIn();
+            if (event.key === '-') zoomOut();
+            if (event.key === '0') resetZoom();
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [closeLightbox, lightbox, resetZoom, zoomIn, zoomOut]);
+
+    const handleContainerClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+        const target = event.target as HTMLElement | null;
+        if (!target) return;
+
+        const downloadButton = target.closest<HTMLElement>('[data-markdown-image-download]');
+        if (downloadButton) {
+            event.preventDefault();
+            event.stopPropagation();
+            triggerImageDownload(
+                downloadButton.dataset.markdownImageDownload || '',
+                downloadButton.dataset.markdownImageAlt || 'image',
+            );
+            return;
+        }
+
+        const image = target.closest<HTMLImageElement>('[data-markdown-image-src]');
+        if (image) {
+            event.preventDefault();
+            event.stopPropagation();
+            setLightbox({
+                src: image.dataset.markdownImageSrc || image.src,
+                alt: image.dataset.markdownImageAlt || image.alt || 'image',
+                scale: 1,
+            });
+        }
+    }, []);
+
     return (
-        <div
-            className={className}
-            style={{ lineHeight: 1.6, fontSize: 'inherit', ...style, wordBreak: 'break-word' }}
-            dangerouslySetInnerHTML={{ __html: html }}
-        />
+        <>
+            <div
+                className={className}
+                style={{ lineHeight: 1.6, fontSize: 'inherit', ...style, wordBreak: 'break-word' }}
+                onClick={handleContainerClick}
+                dangerouslySetInnerHTML={{ __html: html }}
+            />
+            {lightbox && createPortal(
+                <div className="markdown-image-lightbox" onClick={closeLightbox}>
+                    <div className="markdown-image-lightbox__toolbar" onClick={(event) => event.stopPropagation()}>
+                        <button type="button" className="markdown-image-lightbox__btn" onClick={zoomOut} title="Zoom out">
+                            <IconMinus size={16} stroke={1.9} />
+                        </button>
+                        <button type="button" className="markdown-image-lightbox__btn" onClick={zoomIn} title="Zoom in">
+                            <IconPlus size={16} stroke={1.9} />
+                        </button>
+                        <button type="button" className="markdown-image-lightbox__btn" onClick={resetZoom} title="Reset zoom">
+                            <IconRefresh size={16} stroke={1.9} />
+                        </button>
+                        <button
+                            type="button"
+                            className="markdown-image-lightbox__btn"
+                            onClick={() => triggerImageDownload(lightbox.src, lightbox.alt)}
+                            title="Download image"
+                        >
+                            <IconDownload size={16} stroke={1.9} />
+                        </button>
+                        <button type="button" className="markdown-image-lightbox__btn" onClick={closeLightbox} title="Close preview">
+                            <IconX size={16} stroke={1.9} />
+                        </button>
+                    </div>
+                    <div className="markdown-image-lightbox__stage" onClick={(event) => event.stopPropagation()}>
+                        <img
+                            src={lightbox.src}
+                            alt={lightbox.alt}
+                            className="markdown-image-lightbox__image"
+                            style={{ transform: `scale(${lightbox.scale})` }}
+                        />
+                    </div>
+                    <div className="markdown-image-lightbox__footer" onClick={(event) => event.stopPropagation()}>
+                        <span>{Math.round(lightbox.scale * 100)}%</span>
+                        {lightbox.alt ? <span className="markdown-image-lightbox__alt">{lightbox.alt}</span> : null}
+                    </div>
+                </div>,
+                document.body,
+            )}
+        </>
     );
 });
 

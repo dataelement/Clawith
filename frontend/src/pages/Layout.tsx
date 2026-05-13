@@ -1,10 +1,10 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Outlet, NavLink, useNavigate, useMatch } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate, useMatch, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
-import { agentApi, tenantApi, authApi } from '../services/api';
+import { agentApi, tenantApi, authApi, onboardingApi } from '../services/api';
 import { useToast } from '../components/Toast/ToastProvider';
 
 import {
@@ -241,10 +241,185 @@ function VersionDisplay() {
     );
 }
 
+type CompanyTourStep = {
+    selector: string;
+    title: string;
+    body: string;
+    pad?: number;
+    radius?: number;
+};
+
+type TourRect = {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    radius: number;
+};
+
+type TourCardPlacement = 'right' | 'left' | 'below' | 'above';
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), Math.max(min, max));
+
+function CompanyTourOverlay({ assistantId, isChinese, onDone }: { assistantId: string; isChinese: boolean; onDone: () => void }) {
+    const [step, setStep] = useState(0);
+    const [spotRect, setSpotRect] = useState<TourRect | null>(null);
+    const [cardPos, setCardPos] = useState<{ left: number; top: number; placement: TourCardPlacement }>({ left: 24, top: 24, placement: 'right' });
+    const steps: CompanyTourStep[] = useMemo(() => [
+        {
+            selector: '[data-tour-target="company-switcher"]',
+            title: isChinese ? '公司切换' : 'Company switcher',
+            body: isChinese ? '左上角是当前公司。你加入或创建更多公司后，可以在这里切换。' : 'The top-left area is your current company. Switch here when you join or create more companies.',
+            pad: 8,
+            radius: 14,
+        },
+        {
+            selector: '[data-tour-target="main-nav"]',
+            title: isChinese ? '三个主要功能' : 'Three main rooms',
+            body: isChinese ? 'Plaza 是公司广场，Dashboard 看公司概况，OKR 用来设定和追踪目标。' : 'Plaza is the company square, Dashboard shows company activity, and OKR tracks goals.',
+            pad: 8,
+            radius: 14,
+        },
+        {
+            selector: '[data-tour-target="agent-list"]',
+            title: isChinese ? '员工列表' : 'Employee list',
+            body: isChinese ? '这里是公司员工和你可见的 agent。你的私人助理也会在这里。' : 'This is the employee and agent list you can access. Your private assistant appears here too.',
+            pad: 8,
+            radius: 14,
+        },
+        {
+            selector: '[data-tour-target="hire-agent"]',
+            title: isChinese ? '新增员工' : 'Hire new employees',
+            body: isChinese ? '点击加号可以从 Talent Market 增加新的 agent 员工。' : 'Use the plus button to add new agent employees from the Talent Market.',
+            pad: 7,
+            radius: 10,
+        },
+    ], [isChinese]);
+    const current = steps[step];
+    const progress = `${step + 1} / ${steps.length}`;
+    const updateTourPosition = useCallback(() => {
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        const viewportPad = 12;
+        const element = document.querySelector<HTMLElement>(current.selector);
+        const measuredRect = element?.getBoundingClientRect();
+        const fallbackWidth = Math.min(280, viewportWidth - viewportPad * 2);
+        const fallback = {
+            left: viewportPad,
+            top: Math.max(72, viewportHeight * 0.18),
+            width: fallbackWidth,
+            height: 52,
+        };
+        const sourceRect = measuredRect && measuredRect.width > 0 && measuredRect.height > 0 ? measuredRect : fallback;
+        const pad = current.pad ?? 8;
+        const nextSpot: TourRect = {
+            left: clamp(sourceRect.left - pad, viewportPad / 2, viewportWidth - viewportPad),
+            top: clamp(sourceRect.top - pad, viewportPad / 2, viewportHeight - viewportPad),
+            width: Math.min(sourceRect.width + pad * 2, viewportWidth - viewportPad),
+            height: Math.min(sourceRect.height + pad * 2, viewportHeight - viewportPad),
+            radius: current.radius ?? 14,
+        };
+        if (nextSpot.left + nextSpot.width > viewportWidth - viewportPad / 2) {
+            nextSpot.left = Math.max(viewportPad / 2, viewportWidth - viewportPad / 2 - nextSpot.width);
+        }
+        if (nextSpot.top + nextSpot.height > viewportHeight - viewportPad / 2) {
+            nextSpot.top = Math.max(viewportPad / 2, viewportHeight - viewportPad / 2 - nextSpot.height);
+        }
+
+        const cardWidth = Math.min(320, viewportWidth - viewportPad * 2);
+        const cardHeight = 220;
+        const gap = 20;
+        let placement: TourCardPlacement = 'right';
+        let cardLeft = nextSpot.left + nextSpot.width + gap;
+        let cardTop = nextSpot.top + Math.min(24, Math.max(0, nextSpot.height / 2 - 18));
+
+        if (cardLeft + cardWidth > viewportWidth - viewportPad) {
+            placement = 'left';
+            cardLeft = nextSpot.left - cardWidth - gap;
+        }
+        if (cardLeft < viewportPad) {
+            placement = 'below';
+            cardLeft = clamp(nextSpot.left, viewportPad, viewportWidth - cardWidth - viewportPad);
+            cardTop = nextSpot.top + nextSpot.height + gap;
+        }
+        if (cardTop + cardHeight > viewportHeight - 92) {
+            if (nextSpot.top - cardHeight - gap > viewportPad) {
+                placement = 'above';
+                cardTop = nextSpot.top - cardHeight - gap;
+                cardLeft = clamp(nextSpot.left, viewportPad, viewportWidth - cardWidth - viewportPad);
+            } else {
+                cardTop = clamp(cardTop, viewportPad, viewportHeight - cardHeight - 92);
+            }
+        }
+
+        setSpotRect(nextSpot);
+        setCardPos({
+            left: Math.round(clamp(cardLeft, viewportPad, viewportWidth - cardWidth - viewportPad)),
+            top: Math.round(clamp(cardTop, viewportPad, viewportHeight - cardHeight - viewportPad)),
+            placement,
+        });
+    }, [current]);
+
+    useLayoutEffect(() => {
+        updateTourPosition();
+        const raf = window.requestAnimationFrame(updateTourPosition);
+        window.addEventListener('resize', updateTourPosition);
+        window.addEventListener('scroll', updateTourPosition, true);
+        return () => {
+            window.cancelAnimationFrame(raf);
+            window.removeEventListener('resize', updateTourPosition);
+            window.removeEventListener('scroll', updateTourPosition, true);
+        };
+    }, [updateTourPosition]);
+
+    const next = () => {
+        if (step >= steps.length - 1) onDone();
+        else setStep(s => s + 1);
+    };
+    const previous = () => setStep(s => Math.max(0, s - 1));
+    return (
+        <div className="company-tour-overlay">
+            {spotRect && (
+                <div
+                    className="tour-spot"
+                    style={{
+                        left: spotRect.left,
+                        top: spotRect.top,
+                        width: spotRect.width,
+                        height: spotRect.height,
+                        borderRadius: spotRect.radius,
+                    }}
+                />
+            )}
+            <div
+                className={`company-tour-card company-tour-card--${cardPos.placement}`}
+                style={{ left: cardPos.left, top: cardPos.top }}
+            >
+                <div className="company-tour-step">{step + 1}</div>
+                <h3>{current.title}</h3>
+                <p>{current.body}</p>
+            </div>
+            <div className="company-tour-controls">
+                <button type="button" onClick={onDone}>{isChinese ? '跳过导览' : 'Skip tour'}</button>
+                <button type="button" onClick={previous} disabled={step === 0}>{isChinese ? '上一步' : 'Back'}</button>
+                <div className="company-tour-dots">
+                    {steps.map((_, i) => <span key={i} className={i === step ? 'active' : ''} />)}
+                </div>
+                <span>{progress}</span>
+                <button type="button" className="company-tour-next" onClick={next}>
+                    {step >= steps.length - 1 ? (isChinese ? '完成' : 'Finish') : (isChinese ? '下一个' : 'Next')} →
+                </button>
+            </div>
+            {assistantId && <div className="company-tour-hint">{isChinese ? '导览结束后，会进入你的私人助理对话页。' : 'After the tour, you will land in your private assistant chat.'}</div>}
+        </div>
+    );
+}
+
 export default function Layout() {
     const { t, i18n } = useTranslation();
     const toast = useToast();
     const navigate = useNavigate();
+    const location = useLocation();
     const { user, logout, setAuth } = useAuthStore();
     const queryClient = useQueryClient();
     const isChinese = i18n.language?.startsWith('zh');
@@ -254,6 +429,11 @@ export default function Layout() {
     const activeAgentNestedMatch = useMatch('/agents/:id/*');
     const activeAgentRootMatch = useMatch('/agents/:id');
     const activeAgentId = activeAgentNestedMatch?.params.id || activeAgentRootMatch?.params.id;
+    const canAccessPlatformSettings = user?.role === 'platform_admin' || !!(user as any)?.is_platform_admin;
+    const canAccessCompanySettings = user?.role === 'platform_admin' || user?.role === 'org_admin' || !!(user as any)?.is_platform_admin;
+    const routeParams = new URLSearchParams(location.search);
+    const showCompanyTour = routeParams.get('tour') === 'company';
+    const tourAssistantId = routeParams.get('assistantId') || '';
 
     const [showAccountSettings, setShowAccountSettings] = useState(false);
     const [showAccountMenu, setShowAccountMenu] = useState(false);
@@ -276,6 +456,8 @@ export default function Layout() {
     const [tenantFormError, setTenantFormError] = useState('');
     const [allowSelfCreate, setAllowSelfCreate] = useState(true);
     const tenantSwitcherRef = useRef<HTMLDivElement>(null);
+    const tenantMenuPortalRef = useRef<HTMLDivElement>(null);
+    const [tenantMenuPos, setTenantMenuPos] = useState({ top: 0, left: 0, maxHeight: 520 });
 
     // Notification polling
     const { data: unreadCount = 0 } = useQuery({
@@ -333,6 +515,10 @@ export default function Layout() {
         if (data.redirect_url) {
             localStorage.setItem('token', data.access_token);
             const targetUrl = new URL(data.redirect_url, window.location.origin);
+            if (targetUrl.hostname === window.location.hostname) {
+                targetUrl.protocol = window.location.protocol;
+                targetUrl.port = window.location.port;
+            }
             targetUrl.pathname = '/';
             targetUrl.hash = '';
             window.location.href = targetUrl.toString();
@@ -377,7 +563,7 @@ export default function Layout() {
             }
             setShowTenantMenu(false);
             setShowTenantSetupModal(false);
-            window.location.reload();
+            window.location.href = '/onboarding?mode=join';
         } catch (err: any) {
             setTenantFormError(err.message || 'Failed to join company');
         } finally {
@@ -403,7 +589,7 @@ export default function Layout() {
             }
             setShowTenantMenu(false);
             setShowTenantSetupModal(false);
-            window.location.reload();
+            window.location.href = '/onboarding?mode=create';
         } catch (err: any) {
             setTenantFormError(err.message || 'Failed to create company');
         } finally {
@@ -413,7 +599,7 @@ export default function Layout() {
 
     // Theme
     const [theme, setTheme] = useState<'dark' | 'light'>(() => {
-        return (localStorage.getItem('theme') as 'dark' | 'light') || 'dark';
+        return (localStorage.getItem('theme') as 'dark' | 'light') || 'light';
     });
 
     useEffect(() => {
@@ -429,6 +615,8 @@ export default function Layout() {
 
     // Sidebar agent search & pin
     const [sidebarSearch, setSidebarSearch] = useState('');
+    const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
+    const agentDrawerCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [pinnedAgents, setPinnedAgents] = useState<Set<string>>(() => {
         try {
             const stored = localStorage.getItem('pinned_agents');
@@ -476,6 +664,23 @@ export default function Layout() {
         refetchInterval: 30000,
     });
 
+    const openAgentDrawer = useCallback(() => {
+        if (!isSidebarCollapsed) return;
+        if (agentDrawerCloseTimerRef.current) {
+            clearTimeout(agentDrawerCloseTimerRef.current);
+            agentDrawerCloseTimerRef.current = null;
+        }
+        setAgentDrawerOpen(true);
+    }, [isSidebarCollapsed]);
+
+    const scheduleCloseAgentDrawer = useCallback(() => {
+        if (agentDrawerCloseTimerRef.current) clearTimeout(agentDrawerCloseTimerRef.current);
+        agentDrawerCloseTimerRef.current = setTimeout(() => {
+            setAgentDrawerOpen(false);
+            agentDrawerCloseTimerRef.current = null;
+        }, 160);
+    }, []);
+
     const handleLogout = () => {
         logout();
         navigate('/login');
@@ -515,7 +720,12 @@ export default function Layout() {
 
     useEffect(() => () => {
         if (langHoverCloseTimerRef.current) clearTimeout(langHoverCloseTimerRef.current);
+        if (agentDrawerCloseTimerRef.current) clearTimeout(agentDrawerCloseTimerRef.current);
     }, []);
+
+    useEffect(() => {
+        if (!isSidebarCollapsed) setAgentDrawerOpen(false);
+    }, [isSidebarCollapsed]);
 
     const updateLangSubmenuPosition = useCallback(() => {
         const el = accountDropdownRef.current;
@@ -523,6 +733,22 @@ export default function Layout() {
         const r = el.getBoundingClientRect();
         setLangSubmenuPos({ top: r.top, left: r.right + 2 });
     }, []);
+
+    const updateTenantMenuPosition = useCallback(() => {
+        const el = tenantSwitcherRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const viewportPadding = 12;
+        const menuWidth = 304;
+        const preferredLeft = isSidebarCollapsed ? rect.right + 8 : rect.left;
+        const left = Math.min(
+            Math.max(viewportPadding, preferredLeft),
+            Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
+        );
+        const top = Math.max(viewportPadding, rect.bottom + 8);
+        const maxHeight = Math.max(220, window.innerHeight - top - viewportPadding);
+        setTenantMenuPos({ top, left, maxHeight });
+    }, [isSidebarCollapsed]);
 
     useLayoutEffect(() => {
         if (!showLanguageSubmenu) return;
@@ -535,12 +761,24 @@ export default function Layout() {
         };
     }, [showLanguageSubmenu, updateLangSubmenuPosition]);
 
+    useLayoutEffect(() => {
+        if (!showTenantMenu) return;
+        updateTenantMenuPosition();
+        window.addEventListener('resize', updateTenantMenuPosition);
+        window.addEventListener('scroll', updateTenantMenuPosition, true);
+        return () => {
+            window.removeEventListener('resize', updateTenantMenuPosition);
+            window.removeEventListener('scroll', updateTenantMenuPosition, true);
+        };
+    }, [showTenantMenu, updateTenantMenuPosition]);
+
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
             const t = e.target as Node;
             if (accountMenuRef.current?.contains(t)) return;
             if (langSubmenuPortalRef.current?.contains(t)) return;
             if (tenantSwitcherRef.current?.contains(t)) return;
+            if (tenantMenuPortalRef.current?.contains(t)) return;
             setShowAccountMenu(false);
             setShowTenantMenu(false);
         };
@@ -575,11 +813,209 @@ export default function Layout() {
         </div>
     );
 
+    const tenantMenuContent = showTenantMenu && typeof document !== 'undefined' && createPortal(
+        <div
+            ref={tenantMenuPortalRef}
+            className="tenant-switcher-popover"
+            role="menu"
+            style={{ top: tenantMenuPos.top, left: tenantMenuPos.left, maxHeight: tenantMenuPos.maxHeight }}
+        >
+            <div className="tenant-switcher-label">{isChinese ? '切换公司' : 'Switch company'}</div>
+            {(myTenants as any[]).length > 8 && (
+                <div className="tenant-switcher-search">
+                    <IconSearch size={14} stroke={1.7} />
+                    <input
+                        value={tenantSearch}
+                        onChange={e => setTenantSearch(e.target.value)}
+                        placeholder={isChinese ? '搜索公司' : 'Search companies'}
+                    />
+                    {tenantSearch && (
+                        <button type="button" onClick={() => setTenantSearch('')} aria-label={isChinese ? '清空搜索' : 'Clear search'}>
+                            <IconX size={14} stroke={1.7} />
+                        </button>
+                    )}
+                </div>
+            )}
+            <div className="tenant-switcher-list">
+                {filteredTenants.map((tenant: any) => (
+                    <button
+                        key={tenant.tenant_id}
+                        type="button"
+                        className={`tenant-switcher-item${tenant.tenant_id === currentTenant ? ' active' : ''}`}
+                        onClick={() => {
+                            if (tenant.tenant_id === currentTenant) {
+                                setShowTenantMenu(false);
+                                return;
+                            }
+                            handleSwitchTenant(tenant.tenant_id);
+                        }}
+                    >
+                        <span className="tenant-switcher-icon">
+                            <IconBuilding size={16} stroke={1.6} />
+                        </span>
+                        <span className="tenant-switcher-name">{tenant.tenant_name}</span>
+                        {tenant.tenant_id === currentTenant && <IconCheck size={16} stroke={2} />}
+                    </button>
+                ))}
+                {filteredTenants.length === 0 && (
+                    <div className="tenant-switcher-empty">{isChinese ? '没有匹配的公司' : 'No matching companies'}</div>
+                )}
+            </div>
+
+            <div className="tenant-switcher-divider" />
+
+            <button
+                type="button"
+                className="tenant-switcher-action"
+                onClick={openTenantSetupModal}
+            >
+                <IconPlus size={17} stroke={1.6} />
+                <span>{isChinese ? '创建或加入新公司' : 'Create or join company'}</span>
+            </button>
+            {canAccessCompanySettings && (
+                <button
+                    type="button"
+                    className="tenant-switcher-action"
+                    onClick={() => {
+                        setShowTenantMenu(false);
+                        navigate('/enterprise');
+                    }}
+                >
+                    <IconSettings size={16} stroke={1.6} />
+                    <span>{isChinese ? '公司信息设置' : 'Company settings'}</span>
+                </button>
+            )}
+        </div>,
+        document.body,
+    );
+
+    const q = sidebarSearch.trim().toLowerCase();
+    const sortedAgents = [...agents].filter((a: any) => {
+        if (!q) return true;
+        return (a.name || '').toLowerCase().includes(q) || (a.role_description || '').toLowerCase().includes(q);
+    }).sort((a: any, b: any) => {
+        const ap = pinnedAgents.has(a.id) ? 1 : 0;
+        const bp = pinnedAgents.has(b.id) ? 1 : 0;
+        if (ap !== bp) return bp - ap;
+        const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return bTime - aTime;
+    });
+
+    const agentSearchBox = (force = false) => (force || agents.length >= 5) && (
+        <div className="sidebar-agent-search">
+            <IconSearch size={14} stroke={2} className="sidebar-agent-search-icon" />
+            <input
+                type="text"
+                value={sidebarSearch}
+                onChange={e => setSidebarSearch(e.target.value)}
+                placeholder={isChinese ? '搜索...' : 'Search...'}
+            />
+            {sidebarSearch && (
+                <button onClick={() => setSidebarSearch('')} aria-label={isChinese ? '清空搜索' : 'Clear search'}>
+                    <IconX size={14} stroke={2} />
+                </button>
+            )}
+        </div>
+    );
+
+    const renderAgent = (agent: any, options?: { drawer?: boolean }) => {
+        const badge = getAgentBadgeStatus(agent);
+        const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
+        const unreadCount = Number(agent.unread_count || 0);
+        const showPin = !isSidebarCollapsed || options?.drawer;
+        return (
+            <div key={agent.id} className={`sidebar-agent-item${agent.creator_id === user?.id ? ' owned' : ''}${options?.drawer ? ' drawer-agent' : ''}`}>
+                <NavLink
+                    to={`/agents/${agent.id}/chat`}
+                    className={({ isActive }) => `sidebar-item ${isActive || activeAgentId === agent.id ? 'active' : ''}`}
+                    title={agent.name}
+                    onClick={() => setAgentDrawerOpen(false)}
+                >
+                    <span className="sidebar-item-icon" style={{ position: 'relative' }}>
+                        <span className={`agent-avatar${agent.agent_type === 'openclaw' ? ' openclaw' : ''}`}>{avatarChar}</span>
+                        {agent.agent_type === 'openclaw' && (
+                            <span className="agent-avatar-link" style={{ display: 'flex' }}>
+                                <IconArrowUpRight size={10} stroke={2.5} />
+                            </span>
+                        )}
+                        {badge && <span className={`agent-avatar-badge ${badge}`} />}
+                        {unreadCount > 0 && (
+                            <span className="sidebar-agent-unread">
+                                {unreadCount > 99 ? '99+' : unreadCount}
+                            </span>
+                        )}
+                    </span>
+                    <span className="sidebar-item-text">{agent.name}</span>
+                </NavLink>
+                {showPin && (
+                    <button
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); togglePin(agent.id); }}
+                        className={`sidebar-pin-btn ${pinnedAgents.has(agent.id) ? 'pinned' : ''}`}
+                        title={pinnedAgents.has(agent.id) ? (isChinese ? '取消置顶' : 'Unpin') : (isChinese ? '置顶' : 'Pin to top')}
+                    >
+                        {pinnedAgents.has(agent.id) ? (
+                            <>
+                                <IconPin size={14} stroke={1.5} className="pin-default" />
+                                <IconPinnedOff size={14} stroke={1.5} className="pin-hover" />
+                            </>
+                        ) : (
+                            <IconPin size={14} stroke={1.5} className="pin-on" />
+                        )}
+                    </button>
+                )}
+            </div>
+        );
+    };
+
+    const agentListContent = (drawer = false) => (
+        <>
+            {sortedAgents.map(agent => renderAgent(agent, { drawer }))}
+            {agents.length === 0 && (
+                <div className="sidebar-section">
+                    <div className="sidebar-section-title">{t('nav.myAgents')}</div>
+                </div>
+            )}
+            {agents.length > 0 && sortedAgents.length === 0 && q && (
+                <div className="sidebar-agent-empty">
+                    {isChinese ? '无匹配结果' : 'No matches'}
+                </div>
+            )}
+        </>
+    );
+
+    const agentDrawer = isSidebarCollapsed && agentDrawerOpen && typeof document !== 'undefined' && createPortal(
+        <div
+            className="sidebar-agent-drawer"
+            onMouseEnter={openAgentDrawer}
+            onMouseLeave={scheduleCloseAgentDrawer}
+        >
+            <div className="sidebar-agent-drawer-header">
+                <span>{isChinese ? '智能体' : 'Agents'}</span>
+                <button
+                    type="button"
+                    onClick={() => {
+                        setShowTalentMarket(true);
+                        setAgentDrawerOpen(false);
+                    }}
+                    title={t('nav.hire', t('nav.newAgent'))}
+                >
+                    <IconPlus size={16} stroke={1.7} />
+                </button>
+            </div>
+            {agentSearchBox(true)}
+            <div className="sidebar-agent-drawer-list">
+                {agentListContent(true)}
+            </div>
+        </div>,
+        document.body,
+    );
+
     return (
         <div className={`app-layout ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
             <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
                 <div className="sidebar-top">
-                    <div className="sidebar-workspace-row" ref={tenantSwitcherRef}>
+                    <div className="sidebar-workspace-row" ref={tenantSwitcherRef} data-tour-target="company-switcher">
                         <button
                             type="button"
                             className={`workspace-switcher-trigger${showTenantMenu ? ' open' : ''}`}
@@ -605,78 +1041,11 @@ export default function Layout() {
                             {isSidebarCollapsed ? SidebarIcons.expand : SidebarIcons.collapse}
                         </button>
 
-                        {showTenantMenu && !isSidebarCollapsed && (
-                            <div className="tenant-switcher-popover">
-                                <div className="tenant-switcher-label">{isChinese ? '切换公司' : 'Switch company'}</div>
-                                {(myTenants as any[]).length > 8 && (
-                                    <div className="tenant-switcher-search">
-                                        <IconSearch size={14} stroke={1.7} />
-                                        <input
-                                            value={tenantSearch}
-                                            onChange={e => setTenantSearch(e.target.value)}
-                                            placeholder={isChinese ? '搜索公司' : 'Search companies'}
-                                        />
-                                        {tenantSearch && (
-                                            <button type="button" onClick={() => setTenantSearch('')} aria-label={isChinese ? '清空搜索' : 'Clear search'}>
-                                                <IconX size={14} stroke={1.7} />
-                                            </button>
-                                        )}
-                                    </div>
-                                )}
-                                <div className="tenant-switcher-list">
-                                    {filteredTenants.map((tenant: any) => (
-                                            <button
-                                                key={tenant.tenant_id}
-                                                type="button"
-                                                className={`tenant-switcher-item${tenant.tenant_id === currentTenant ? ' active' : ''}`}
-                                                onClick={() => {
-                                                    if (tenant.tenant_id === currentTenant) {
-                                                        setShowTenantMenu(false);
-                                                        return;
-                                                    }
-                                                    handleSwitchTenant(tenant.tenant_id);
-                                                }}
-                                            >
-                                                <span className="tenant-switcher-icon">
-                                                    <IconBuilding size={16} stroke={1.6} />
-                                                </span>
-                                                <span className="tenant-switcher-name">{tenant.tenant_name}</span>
-                                                {tenant.tenant_id === currentTenant && <IconCheck size={16} stroke={2} />}
-                                            </button>
-                                        ))}
-                                    {filteredTenants.length === 0 && (
-                                        <div className="tenant-switcher-empty">{isChinese ? '没有匹配的公司' : 'No matching companies'}</div>
-                                    )}
-                                </div>
-
-                                <div className="tenant-switcher-divider" />
-
-                                <button
-                                    type="button"
-                                    className="tenant-switcher-action"
-                                    onClick={openTenantSetupModal}
-                                >
-                                    <IconPlus size={17} stroke={1.6} />
-                                    <span>{isChinese ? '创建或加入新公司' : 'Create or join company'}</span>
-                                </button>
-                                <button
-                                    type="button"
-                                    className="tenant-switcher-action"
-                                    onClick={() => {
-                                        setShowTenantMenu(false);
-                                        navigate('/enterprise');
-                                    }}
-                                >
-                                    <IconSettings size={16} stroke={1.6} />
-                                    <span>{isChinese ? '公司信息设置' : 'Company settings'}</span>
-                                </button>
-                            </div>
-                        )}
                     </div>
 
 
 
-                    <div className="sidebar-section">
+                    <div className="sidebar-section" data-tour-target="main-nav">
                         <NavLink to="/plaza" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
                             <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
                                 <IconBuildingMonument size={14} stroke={1.5} />
@@ -703,149 +1072,30 @@ export default function Layout() {
                 
                 <div className="sidebar-divider" />
 
-                <div className="sidebar-scrollable">
-                    {/* Sidebar search */}
-                    {!isSidebarCollapsed && agents.length >= 5 && (
-                        <div style={{ padding: '4px 12px 4px', position: 'relative' }}>
-                            <div style={{ position: 'absolute', left: '20px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-tertiary)', display: 'flex' }}>
-                                <IconSearch size={14} stroke={2} />
-                            </div>
-                            <input
-                                type="text"
-                                value={sidebarSearch}
-                                onChange={e => setSidebarSearch(e.target.value)}
-                                placeholder={isChinese ? '搜索...' : 'Search...'}
-                                style={{
-                                    width: '100%', padding: '5px 24px 5px 28px', border: '1px solid var(--border-subtle)',
-                                    borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-                                    fontSize: '12px', outline: 'none', boxSizing: 'border-box',
-                                }}
-                                onFocus={e => e.target.style.borderColor = 'var(--primary)'}
-                                onBlur={e => e.target.style.borderColor = 'var(--border-subtle)'}
-                            />
-                            {sidebarSearch && (
-                                <button onClick={() => setSidebarSearch('')} style={{ position: 'absolute', right: '18px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex', padding: 0 }}>
-                                    <IconX size={14} stroke={2} />
-                                </button>
-                            )}
+                <div
+                    className="sidebar-scrollable"
+                    data-tour-target="agent-list"
+                    onMouseEnter={openAgentDrawer}
+                    onMouseLeave={scheduleCloseAgentDrawer}
+                >
+                    {!isSidebarCollapsed && (
+                        <div className="sidebar-agent-header">
+                            <span>{isChinese ? '智能体' : 'Agents'}</span>
+                            <button
+                                type="button"
+                                data-tour-target="hire-agent"
+                                onClick={() => setShowTalentMarket(true)}
+                                title={t('nav.hire', t('nav.newAgent'))}
+                            >
+                                <IconPlus size={15} stroke={1.7} />
+                            </button>
                         </div>
                     )}
-                    {/* Agent list */}
-                    {(() => {
-                        const q = sidebarSearch.trim().toLowerCase();
-                        const filterAgent = (a: any) => !q || (a.name || '').toLowerCase().includes(q) || (a.role_description || '').toLowerCase().includes(q);
-                        const sortedAgents = [...agents].filter(filterAgent).sort((a: any, b: any) => {
-                            const ap = pinnedAgents.has(a.id) ? 1 : 0;
-                            const bp = pinnedAgents.has(b.id) ? 1 : 0;
-                            if (ap !== bp) return bp - ap;
-                            // Sort by created_at descending (newest first)
-                            const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
-                            const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
-                            return bTime - aTime;
-                        });
-                        const renderAgent = (agent: any) => {
-                            const badge = getAgentBadgeStatus(agent);
-                            const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
-                            const unreadCount = Number(agent.unread_count || 0);
-                            return (
-                            <div key={agent.id} style={{ position: 'relative' }} className={`sidebar-agent-item${agent.creator_id === user?.id ? ' owned' : ''}`}>
-                                <NavLink
-                                    to={`/agents/${agent.id}/chat`}
-                                    className={({ isActive }) => `sidebar-item ${isActive || activeAgentId === agent.id ? 'active' : ''}`}
-                                    title={agent.name}
-                                >
-                                    <span className="sidebar-item-icon" style={{ position: 'relative' }}>
-                                        <span className={`agent-avatar${agent.agent_type === 'openclaw' ? ' openclaw' : ''}`}>{avatarChar}</span>
-                                        {agent.agent_type === 'openclaw' && (
-                                            <span className="agent-avatar-link" style={{ display: 'flex' }}>
-                                                <IconArrowUpRight size={10} stroke={2.5} />
-                                            </span>
-                                        )}
-                                        {badge && <span className={`agent-avatar-badge ${badge}`} />}
-                                        {unreadCount > 0 && (
-                                            <span style={{
-                                                position: 'absolute',
-                                                right: '-7px',
-                                                top: '-6px',
-                                                minWidth: unreadCount > 9 ? '18px' : '14px',
-                                                height: unreadCount > 9 ? '18px' : '14px',
-                                                padding: unreadCount > 9 ? '0 4px' : '0',
-                                                borderRadius: '999px',
-                                                background: 'var(--text-primary)',
-                                                color: 'var(--bg-primary)',
-                                                fontSize: '10px',
-                                                fontWeight: 600,
-                                                lineHeight: 1,
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                boxShadow: '0 0 0 2px var(--bg-primary)',
-                                            }}>
-                                                {unreadCount > 99 ? '99+' : unreadCount}
-                                            </span>
-                                        )}
-                                    </span>
-                                    <span className="sidebar-item-text">{agent.name}</span>
-                                </NavLink>
-                                {!isSidebarCollapsed && (
-                                    <button
-                                        onClick={e => { e.preventDefault(); e.stopPropagation(); togglePin(agent.id); }}
-                                        className={`sidebar-pin-btn ${pinnedAgents.has(agent.id) ? 'pinned' : ''}`}
-                                        title={pinnedAgents.has(agent.id) ? (isChinese ? '取消置顶' : 'Unpin') : (isChinese ? '置顶' : 'Pin to top')}
-                                    >
-                                        {pinnedAgents.has(agent.id) ? (
-                                            <>
-                                                <IconPin size={14} stroke={1.5} className="pin-default" />
-                                                <IconPinnedOff size={14} stroke={1.5} className="pin-hover" />
-                                            </>
-                                        ) : (
-                                            <IconPin size={14} stroke={1.5} className="pin-on" />
-                                        )}
-                                    </button>
-                                )}
-                            </div>
-                        );};
-                        return (
-                            <>
-                                {sortedAgents.map(renderAgent)}
-                                {agents.length === 0 && (
-                                    <div className="sidebar-section">
-                                        <div className="sidebar-section-title">{t('nav.myAgents')}</div>
-                                    </div>
-                                )}
-                                {agents.length > 0 && sortedAgents.length === 0 && q && (
-                                    <div style={{ padding: '12px 16px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-                                        {isChinese ? '无匹配结果' : 'No matches'}
-                                    </div>
-                                )}
-                            </>
-                        );
-                    })()}
+                    {!isSidebarCollapsed && agentSearchBox()}
+                    {agentListContent()}
                 </div>
 
                 <div className="sidebar-bottom">
-                    <div className="sidebar-section" style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px', marginBottom: 0 }}>
-                        {user && (
-                            <button
-                                onClick={() => setShowTalentMarket(true)}
-                                className="sidebar-item"
-                                title={t('nav.hire', t('nav.newAgent'))}
-                                style={{ background: 'transparent', border: 'none', width: '100%', textAlign: 'left', cursor: 'pointer' }}
-                            >
-                                <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.plus}</span>
-                                <span className="sidebar-item-text">{t('nav.hire', t('nav.newAgent'))}</span>
-                            </button>
-                        )}
-                        {user && user.role === 'platform_admin' && (
-                            <NavLink to="/admin/platform-settings" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.platformSettings', 'Platform Settings')}>
-                                <span className="sidebar-item-icon" style={{ display: 'flex' }}>
-                                    <IconSettings size={16} stroke={1.5} />
-                                </span>
-                                <span className="sidebar-item-text">{t('nav.platformSettings', 'Platform Settings')}</span>
-                            </NavLink>
-                        )}
-                    </div>
-
                     <div className="sidebar-footer">
                         <div className="sidebar-footer-controls" style={{
                             display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px',
@@ -903,6 +1153,12 @@ export default function Layout() {
                                         <IconUser size={15} stroke={1.5} />
                                         <span>{isChinese ? '账户设置' : 'Account Settings'}</span>
                                     </button>
+                                    {canAccessPlatformSettings && (
+                                        <button className="account-dropdown-item" onClick={() => { navigate('/admin/platform-settings'); setShowAccountMenu(false); }}>
+                                            <IconSettings size={15} stroke={1.5} />
+                                            <span>{t('nav.platformSettings', 'Platform Settings')}</span>
+                                        </button>
+                                    )}
                                     <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '4px 0' }} />
                                     <button className="account-dropdown-item account-dropdown-danger" onClick={() => { handleLogout(); setShowAccountMenu(false); }}>
                                         <IconLogout size={15} stroke={1.5} />
@@ -945,6 +1201,8 @@ export default function Layout() {
                     </div>
                 </div>
             </nav>
+            {agentDrawer}
+            {tenantMenuContent}
 
             {showTenantSetupModal && (
                 <div className="tenant-setup-modal-backdrop" onClick={() => setShowTenantSetupModal(false)}>
@@ -1107,7 +1365,7 @@ export default function Layout() {
             )}
 
             <main className={`main-content${isChatPage ? ' chat-page' : ''}${isAgentSettingsPage ? ' agent-settings-page' : ''}`}>
-                <Outlet />
+                <Outlet context={{ openTalentMarket: () => setShowTalentMarket(true) }} />
             </main>
 
             {showAccountSettings && (
@@ -1122,6 +1380,16 @@ export default function Layout() {
                 open={showTalentMarket}
                 onClose={() => setShowTalentMarket(false)}
             />
+            {showCompanyTour && (
+                <CompanyTourOverlay
+                    assistantId={tourAssistantId}
+                    isChinese={!!isChinese}
+                    onDone={async () => {
+                        try { await onboardingApi.complete(); } catch { }
+                        navigate(tourAssistantId ? `/agents/${tourAssistantId}/chat?onboarding=1` : '/plaza', { replace: true });
+                    }}
+                />
+            )}
         </div>
     );
 }

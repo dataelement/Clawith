@@ -3,9 +3,8 @@ access to their own structured workspace.
 
 Design principle:  ONE set of file tools covers EVERYTHING.
 The agent's workspace uses well-known paths:
-  - tasks.json          → task list (auto-synced from DB)
   - soul.md             → personality definition
-  - memory.md           → long-term memory / notes
+  - memory/memory.md    → long-term memory / notes
   - skills/             → skill definitions (markdown files)
   - workspace/          → general working files, reports, etc.
 
@@ -14,7 +13,9 @@ The agent reads/writes these files directly. No per-concept tools needed.
 
 import asyncio
 import json
+import multiprocessing as mp
 import os
+import queue
 import uuid
 import unicodedata
 from contextvars import ContextVar
@@ -25,6 +26,7 @@ import re
 
 from loguru import logger
 from sqlalchemy import select, or_
+from sqlalchemy.orm import selectinload
 
 from app.database import async_session
 from app.models.task import Task
@@ -37,12 +39,33 @@ from app.models.user import User as UserModel
 from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
+from app.services.document_conversion import (
+    convert_html_to_pdf as convert_html_file_to_pdf,
+    convert_html_to_pptx as convert_html_file_to_pptx,
+)
+from app.services.focus_service import (
+    complete_focus_item,
+    ensure_focus_item,
+    is_focus_file_path,
+    list_focus_items,
+    upsert_focus_item,
+)
 from app.services.workspace_collaboration import (
     delete_workspace_file,
+    move_workspace_path,
     read_text_if_exists,
     write_workspace_file,
 )
+from app.core.permissions import evaluate_agent_relationship_status, evaluate_human_relationship_status
+from app.services.access_relationships import ensure_access_granted_platform_relationships
 from app.config import get_settings
+from app.services.llm.finish import (
+    FINISH_PROTOCOL_REMINDER,
+    FINISH_TOOL_DEFINITION,
+    FINISH_TOOL_NAME,
+    find_finish_call,
+    parse_tool_arguments,
+)
 
 
 _settings = get_settings()
@@ -56,7 +79,6 @@ _TOOL_CONFIG_CACHE_TTL_SECONDS = 60
 
 # Sensitive field keys that should be encrypted/decrypted
 SENSITIVE_FIELD_KEYS = {"api_key", "private_key", "auth_code", "password", "secret", "atlassian_api_key"}
-
 
 def _decrypt_sensitive_fields(config: dict, config_schema: dict | None = None) -> dict:
     """Decrypt sensitive fields in config dict.
@@ -119,7 +141,8 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
 
     Priority:
     1. agent_tools.config (per-agent override)
-    2. tools.config (company/global config)
+    2. tenant_settings tool_config:<tool_name> for builtin company config
+    3. tools.config (tenant-specific/admin tool config or non-secret defaults)
 
     Both configs are decrypted using the tool's config_schema for
     schema-aware field detection (e.g. smithery_api_key with type=password).
@@ -131,20 +154,32 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
         return cached
 
     from app.models.tool import Tool, AgentTool
+    from app.models.agent import Agent as AgentModel
+    from app.services.tool_config import get_tenant_tool_config
 
     async with async_session() as db:
+        agent_tenant_id = None
+        if agent_id:
+            tenant_r = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+            agent_tenant_id = tenant_r.scalar_one_or_none()
+
         # 1. Try per-agent + global config together
         if agent_id:
             result = await db.execute(
-                select(AgentTool.config, Tool.config, Tool.config_schema)
+                select(AgentTool.config, Tool.config, Tool.config_schema, Tool.source, Tool.name)
                 .join(Tool, AgentTool.tool_id == Tool.id)
                 .where(AgentTool.agent_id == agent_id, Tool.name == tool_name)
             )
             row = result.first()
             if row:
-                agent_config, global_config, config_schema = row
+                agent_config, global_config, config_schema, tool_source, db_tool_name = row
+                base_config = global_config or {}
+                tenant_config = {}
+                if tool_source == "builtin":
+                    base_config = {}
+                    tenant_config = await get_tenant_tool_config(db, agent_tenant_id, db_tool_name, config_schema)
                 # Merge: agent overrides global
-                merged = {**(global_config or {}), **(agent_config or {})}
+                merged = {**base_config, **tenant_config, **(agent_config or {})}
                 if merged:
                     # Decrypt with schema awareness
                     merged = _decrypt_sensitive_fields(merged, config_schema)
@@ -155,9 +190,17 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
         # 2. Fallback to global config only
         result = await db.execute(select(Tool).where(Tool.name == tool_name))
         tool = result.scalar_one_or_none()
-        if tool and tool.config:
+        if tool:
+            tenant_config = {}
+            if tool.source == "builtin":
+                tenant_config = await get_tenant_tool_config(db, agent_tenant_id, tool.name, tool.config_schema)
+            base_config = {} if tool.source == "builtin" else (tool.config or {})
+            merged = {**base_config, **tenant_config}
+        else:
+            merged = {}
+        if tool and merged:
             # Decrypt with schema awareness
-            decrypted = _decrypt_sensitive_fields(tool.config, tool.config_schema)
+            decrypted = _decrypt_sensitive_fields(merged, tool.config_schema)
             logger.info(f"[ToolConfig] DB global config for {tool_name}")
             _set_cached_tool_config(agent_id, tool_name, decrypted)
             return decrypted
@@ -177,6 +220,7 @@ channel_feishu_sender_open_id: ContextVar = ContextVar('channel_feishu_sender_op
 # ─── Tool Definitions (OpenAI function-calling format) ──────────
 
 AGENT_TOOLS = [
+    FINISH_TOOL_DEFINITION,
     {
         "type": "function",
         "function": {
@@ -197,13 +241,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read file contents from the workspace. Can read tasks.json for tasks, soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info. Use offset and limit for reading large files in chunks.",
+            "description": "Read file contents from the workspace. Can read soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info. Focus is not stored in files; use list_focus_items and upsert_focus_item for Focus. Use offset and limit for reading large files in chunks.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md, skills/xxx.md, enterprise_info/company_profile.md",
+                        "description": "File path, e.g.: soul.md, memory/memory.md, skills/xxx.md, enterprise_info/company_profile.md",
                     },
                     "offset": {
                         "type": "integer",
@@ -221,8 +265,71 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "list_focus_items",
+            "description": "List your structured Focus items. Focus is your current working state and is stored in the system database, not in focus.md.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_completed": {
+                        "type": "boolean",
+                        "description": "Whether to include completed Focus items. Default true.",
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "upsert_focus_item",
+            "description": "Create or update one Focus item in structured storage. Use this whenever you start tracking an active task, reminder, delegated wait, or system concern.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Stable short identifier, snake_case preferred. If omitted, the system derives one from description.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Clear human-readable description of what is being tracked.",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["normal", "system"],
+                        "description": "Use normal for user/business work, system for platform-maintained focus such as heartbeat/OKR automation.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Optional origin label, e.g. user, trigger, a2a, okr.",
+                    },
+                },
+                "required": ["description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "complete_focus_item",
+            "description": "Mark a Focus item completed. Use this after the tracked task/reminder/wait has been handled.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Focus item identifier to complete.",
+                    }
+                },
+                "required": ["key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "write_file",
-            "description": "Create or fully overwrite a file in the workspace. Use this when writing a new file or replacing the entire content. For targeted edits to an existing file (change one section without rewriting everything), prefer edit_file instead. Before creating a new document under workspace/, first inspect the relevant directories with list_files, prefer an existing topical subfolder (for example workspace/reports/, workspace/knowledge_base/, workspace/research/) over the workspace root, and create a new subfolder when the content belongs to a new category. Avoid placing standalone document files directly in workspace/ root unless the user explicitly wants that. Can update memory/memory.md, focus.md, task_history.md, create documents in workspace/, create skills in skills/.",
+            "description": "Create or fully overwrite a file in the workspace. Use this when writing a new file or replacing the entire content. For targeted edits to an existing file (change one section without rewriting everything), prefer edit_file instead. Before creating a new document under workspace/, first inspect the relevant directories with list_files, prefer an existing topical subfolder (for example workspace/reports/, workspace/knowledge_base/, workspace/research/) over the workspace root, and create a new subfolder when the content belongs to a new category. Avoid placing standalone document files directly in workspace/ root unless the user explicitly wants that. Can update memory/memory.md, task_history.md, create documents in workspace/, create skills in skills/. Focus is managed with Focus tools, not files. enterprise_info/ is shared company context and is read-only for agents.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -243,7 +350,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "delete_file",
-            "description": "Delete a file from the workspace. Cannot delete soul.md or tasks.json.",
+            "description": "Delete a file from the workspace. Cannot delete soul.md, tasks.json, or shared enterprise_info/ files.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -256,12 +363,37 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_file",
+            "description": "Move or rename a file or folder within the workspace. Use this instead of execute_code for reorganizing workspace files, moving generated documents into subfolders, or renaming files. Cannot move protected files or shared enterprise_info/ files. If destination_path is an existing folder or ends with '/', the original filename is preserved inside that folder. By default this will not overwrite an existing destination.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_path": {
+                        "type": "string",
+                        "description": "Current file or folder path, e.g.: workspace/report.md or workspace/presentations/deck.pptx",
+                    },
+                    "destination_path": {
+                        "type": "string",
+                        "description": "Destination file/folder path, e.g.: workspace/archive/report.md or workspace/presentations/PPT/",
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": "Replace the destination if it already exists. Default false.",
+                    },
+                },
+                "required": ["source_path", "destination_path"],
+            },
+        },
+    },
     # --- Enhanced file management tools ---
     {
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections — it avoids accidentally overwriting content outside the edit target and is safer in multi-agent scenarios. The old_string must match exactly (including all whitespace and newlines).",
+            "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections — it avoids accidentally overwriting content outside the edit target and is safer in multi-agent scenarios. enterprise_info/ is shared company context and is read-only for agents. The old_string must match exactly (including all whitespace and newlines).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -341,7 +473,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "set_trigger",
-            "description": "Set a new trigger to wake yourself up at a specific time or condition. Use this to schedule future actions, monitor changes, or wait for messages. The trigger will fire and invoke you with the reason text as context. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or a human user replies — use from_agent_name for agents, or from_user_name for human users on Feishu/Slack/Discord), 'webhook' (receive external HTTP POST — system generates a unique URL, give it to the user so they can configure it in external services like GitHub, Grafana, etc.).",
+            "description": "Set a new trigger to wake yourself up at a specific time or condition. Use this to schedule future actions, monitor changes, or wait for messages. The trigger will fire and invoke you with the reason text as context. Every trigger is attached to a focus item; if focus_ref is omitted, the system will automatically create a focus item from the reason and attach the trigger to it. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or a human user replies — use from_agent_name for agents, or from_user_name for human users on Feishu/Slack/Discord), 'webhook' (receive external HTTP POST — system generates a unique URL, give it to the user so they can configure it in external services like GitHub, Grafana, etc.).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -364,7 +496,7 @@ AGENT_TOOLS = [
                     },
                     "focus_ref": {
                         "type": "string",
-                        "description": "Optional: identifier of the focus item in focus.md that this trigger relates to (use the checklist identifier, e.g. 'daily_news_check')",
+                        "description": "Optional: identifier of the structured Focus item that this trigger relates to. If omitted, a Focus item is created automatically from the trigger reason.",
                     },
                 },
                 "required": ["name", "type", "config", "reason"],
@@ -801,6 +933,31 @@ AGENT_TOOLS = [
         "function": {
             "name": "generate_image_google",
             "description": "Generate an image via Google Gemini Image (Nano Banana) or Vertex AI. Save to workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed image description in English.",
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "Image size. Default: 1024x1024.",
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Workspace path to save the image.",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image_custom",
+            "description": "Generate an image via the company-configured custom image API. Save to workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1540,11 +1697,6 @@ AGENT_TOOLS = [
                 "properties": {
                     "url": {"type": "string", "description": "要访问的网址，如 https://example.com"},
                     "wait_for": {"type": "string", "description": "等待特定元素出现的选择器（可选）"},
-                    "save_to_workspace": {
-                        "type": "boolean",
-                        "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
-                        "default": False,
-                    },
                 },
                 "required": ["url"],
             }
@@ -1557,13 +1709,7 @@ AGENT_TOOLS = [
             "description": "Take a screenshot of the CURRENT browser page without navigating anywhere. Use this after clicking, typing, or submitting a form to verify the result — it preserves the current page state. Never call browser_navigate just to take a screenshot.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "save_to_workspace": {
-                        "type": "boolean",
-                        "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
-                        "default": False,
-                    },
-                },
+                "properties": {},
             }
         }
     },
@@ -1630,6 +1776,81 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "agentbay_code_write_file",
+            "description": "[ENV: Code Sandbox] Write a text file inside the AgentBay Code Sandbox.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "remote_path": {
+                        "type": "string",
+                        "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
+                    },
+                    "content": {"type": "string", "description": "File content to write."},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["overwrite", "append"],
+                        "description": "Write mode. Default: overwrite.",
+                        "default": "overwrite",
+                    },
+                },
+                "required": ["remote_path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "agentbay_code_read_file",
+            "description": "[ENV: Code Sandbox] Read a text file from the AgentBay Code Sandbox.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "remote_path": {
+                        "type": "string",
+                        "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
+                    },
+                },
+                "required": ["remote_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "agentbay_code_edit_file",
+            "description": "[ENV: Code Sandbox] Edit a text file inside the AgentBay Code Sandbox by replacing exact text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "remote_path": {
+                        "type": "string",
+                        "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "List of exact text replacements.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "oldText": {"type": "string", "description": "Exact text to replace."},
+                                "newText": {"type": "string", "description": "Replacement text."},
+                            },
+                            "required": ["oldText", "newText"],
+                        },
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Preview changes without applying them. Default: false.",
+                        "default": False,
+                    },
+                },
+                "required": ["remote_path", "edits"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "agentbay_file_transfer",
             "description": (
                 "Transfer a file between any two endpoints: the agent workspace, "
@@ -1687,8 +1908,12 @@ AGENT_TOOLS = [
 # _CHANNEL_MESSAGE_TOOL_NAMES and is only added when a channel is configured,
 # to avoid sending duplicate tool definitions to the LLM.
 _ALWAYS_INCLUDE_CORE = {
+    "complete_focus_item",
+    FINISH_TOOL_NAME,
+    "list_focus_items",
     "send_channel_file",
     "send_file_to_agent",
+    "upsert_focus_item",
     "write_file",
 }
 # Channel message tool - available when any channel (Feishu/DingTalk/WeCom) is configured
@@ -1919,12 +2144,17 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 
     # Check tenant-level a2a_async_enabled flag
     _a2a_async = False
+    is_system_agent = False
+    agent_tenant_id = None
     try:
         from app.models.tenant import Tenant
         from app.models.agent import Agent as AgentModel
         async with async_session() as _flag_db:
-            _ag_r = await _flag_db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
-            _tid = _ag_r.scalar_one_or_none()
+            _ag_r = await _flag_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            _agent = _ag_r.scalar_one_or_none()
+            _tid = _agent.tenant_id if _agent else None
+            agent_tenant_id = _tid
+            is_system_agent = bool(_agent and _agent.is_system)
             if _tid:
                 _t_r = await _flag_db.execute(select(Tenant).where(Tenant.id == _tid))
                 _tenant = _t_r.scalar_one_or_none()
@@ -1940,13 +2170,22 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
         from app.models.tool import Tool, AgentTool
 
         async with async_session() as db:
-            # Get all globally enabled tools
-            all_tools_r = await db.execute(select(Tool).where(Tool.enabled == True))
-            all_tools = all_tools_r.scalars().all()
-
             # Get agent-specific assignments
             agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
             assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
+            assigned_tool_ids = [uuid.UUID(tool_id) for tool_id in assignments]
+
+            visible_clauses = [Tool.source == "builtin"]
+            if agent_tenant_id:
+                visible_clauses.append((Tool.source == "admin") & (Tool.tenant_id == agent_tenant_id))
+            if assigned_tool_ids:
+                visible_clauses.append((Tool.source == "agent") & Tool.id.in_(assigned_tool_ids))
+
+            # Get all tools visible within this agent's tenant boundary.
+            all_tools_r = await db.execute(
+                select(Tool).where(Tool.enabled == True, or_(*visible_clauses))
+            )
+            all_tools = all_tools_r.scalars().all()
 
             result = []
             db_tool_names = set()
@@ -1960,7 +2199,10 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                 # Skip feishu tools if the agent has no Feishu channel configured
                 if t.category == "feishu" and not has_feishu:
                     continue
-
+                # Match the Agent Tools UI: regular agents must not receive
+                # OKR-system-only tools, even if the DB default says enabled.
+                if (t.config or {}).get("okr_agent_only") and not is_system_agent:
+                    continue
                 # Build OpenAI function-calling format
                 tool_def = {
                     "type": "function",
@@ -2003,8 +2245,10 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     except Exception as e:
         logger.error(f"[Tools] DB load failed, using fallback: {e}")
 
-    # Fallback to hardcoded tools (still apply OS-aware path patching)
-    fallback = _patch_computer_tool_descriptions(AGENT_TOOLS, computer_os_type)
+    # If DB loading fails, do not expose the full hardcoded tool catalog: that
+    # can leak disabled tools (for example search tools) into the LLM. Keep only
+    # the minimal always-available core/channel tools.
+    fallback = _patch_computer_tool_descriptions(_always_tools, computer_os_type)
     if not _a2a_async:
         fallback = _strip_a2a_msg_type(fallback)
     return fallback
@@ -2061,14 +2305,19 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         except Exception:
             (ws / "soul.md").write_text("# Personality\n\n_Describe your role and responsibilities._\n", encoding="utf-8")
 
-    # Always sync tasks from DB
+    # Legacy compatibility: older workspaces may have tasks.json as a DB-backed
+    # task snapshot. Do not create it for new agents.
     await _sync_tasks_to_file(agent_id, ws)
 
     return ws
 
 
 async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
-    """Sync tasks from DB to tasks.json in workspace."""
+    """Sync tasks from DB to legacy tasks.json, if the file already exists."""
+    tasks_path = ws / "tasks.json"
+    if not tasks_path.exists():
+        return
+
     try:
         async with async_session() as db:
             result = await db.execute(
@@ -2087,7 +2336,7 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
                 "completed_at": t.completed_at.isoformat() if t.completed_at else "",
             })
 
-        (ws / "tasks.json").write_text(
+        tasks_path.write_text(
             json.dumps(task_list, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -2103,6 +2352,7 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
 # "send_feishu_message" when the agent actually called send_message_to_agent).
 _TOOL_AUTONOMY_MAP = {
     "write_file": "write_workspace_files",
+    "move_file": "write_workspace_files",
     "delete_file": "delete_files",
     "send_feishu_message": "send_feishu_message",
     "send_message_to_agent": "send_message_to_agent",  # A2A messaging — distinct from feishu
@@ -2111,6 +2361,11 @@ _TOOL_AUTONOMY_MAP = {
     "execute_code": "execute_code",
     "execute_code_e2b": "execute_code",
 }
+
+
+def _is_enterprise_info_path(path: str | None) -> bool:
+    normalized = str(path or "").replace("\\", "/").strip().strip("/")
+    return normalized == "enterprise_info" or normalized.startswith("enterprise_info/")
 
 
 async def _get_agent_tenant_id(agent_id: uuid.UUID) -> str | None:
@@ -2142,13 +2397,42 @@ async def _execute_tool_direct(
     ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
     try:
         if tool_name == "delete_file":
-            return _delete_file(ws, arguments.get("path", ""))
+            path = arguments.get("path", "")
+            if _is_enterprise_info_path(path):
+                return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
+            return _delete_file(ws, path)
         elif tool_name == "write_file":
             path = arguments.get("path")
             content = arguments.get("content", "")
             if not path:
                 return "Missing path"
+            if _is_enterprise_info_path(path):
+                return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
             return _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+        elif tool_name == "move_file":
+            source_path = arguments.get("source_path")
+            destination_path = arguments.get("destination_path")
+            if not source_path or not destination_path:
+                return "Missing source_path or destination_path"
+            if _is_enterprise_info_path(source_path) or _is_enterprise_info_path(destination_path):
+                return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
+            if str(source_path or "").strip("/").strip() in {"tasks.json", "soul.md"}:
+                return f"{source_path} cannot be moved (protected)"
+            async with async_session() as _wdb:
+                move_result = await move_workspace_path(
+                    _wdb,
+                    agent_id=agent_id,
+                    base_dir=ws,
+                    source_path=source_path,
+                    destination_path=destination_path,
+                    actor_type="agent",
+                    actor_id=agent_id,
+                    session_id=None,
+                    enforce_human_lock=True,
+                    overwrite=bool(arguments.get("overwrite", False)),
+                )
+                await _wdb.commit()
+            return f"✅ {move_result.message}" if move_result.ok else f"❌ {move_result.message}"
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
             return await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
@@ -2207,6 +2491,9 @@ async def execute_tool(
         .replace("\ufeff", "")
         .strip()
     )
+    if tool_name == FINISH_TOOL_NAME:
+        content = arguments.get("content", "")
+        return content if isinstance(content, str) else str(content)
 
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
@@ -2256,10 +2543,43 @@ async def execute_tool(
     try:
         if tool_name == "list_files":
             result = _list_files(ws, arguments.get("path", ""), tenant_id=_agent_tenant_id)
+        elif tool_name == "list_focus_items":
+            items = await list_focus_items(agent_id, include_completed=bool(arguments.get("include_completed", True)))
+            if not items:
+                result = "No Focus items."
+            else:
+                lines = ["Focus items:"]
+                for item in items:
+                    label = "completed" if item["status"] == "completed" else "in_progress"
+                    kind = f", {item['kind']}" if item.get("kind") == "system" else ""
+                    lines.append(f"- {item['key']} [{label}{kind}]: {item['description']}")
+                result = "\n".join(lines)
+        elif tool_name == "upsert_focus_item":
+            description = (arguments.get("description") or "").strip()
+            if not description:
+                return "❌ Missing required argument 'description' for upsert_focus_item"
+            item = await upsert_focus_item(
+                agent_id,
+                key=arguments.get("key"),
+                description=description,
+                status="in_progress",
+                kind=arguments.get("kind") or "normal",
+                source=arguments.get("source") or "user",
+                metadata={"tool": "upsert_focus_item"},
+            )
+            result = f"✅ Focus item saved: {item['key']} — {item['description']}"
+        elif tool_name == "complete_focus_item":
+            key = (arguments.get("key") or "").strip()
+            if not key:
+                return "❌ Missing required argument 'key' for complete_focus_item"
+            item = await complete_focus_item(agent_id, key=key)
+            result = f"✅ Focus item completed: {key}" if item else f"❌ Focus item not found: {key}"
         elif tool_name == "read_file":
             path = arguments.get("path")
             if not path:
                 return "❌ Missing required argument 'path' for read_file"
+            if is_focus_file_path(path):
+                return "❌ Focus is no longer stored in focus.md. Use list_focus_items, upsert_focus_item, and complete_focus_item."
             offset = int(arguments.get("offset", 0))
             limit = int(arguments.get("limit", 2000))
             result = _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
@@ -2276,8 +2596,10 @@ async def execute_tool(
                 return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
             if content is None:
                 return "❌ Missing required argument 'content' for write_file"
-            if path.startswith("enterprise_info"):
-                result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            if is_focus_file_path(path):
+                result = "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
+            elif _is_enterprise_info_path(path):
+                result = "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
             else:
                 async with async_session() as _wdb:
                     write_result = await write_workspace_file(
@@ -2298,21 +2620,56 @@ async def execute_tool(
                     if write_result.ok
                     else f"❌ {write_result.message}"
                 )
+        elif tool_name == "move_file":
+            source_path = arguments.get("source_path")
+            destination_path = arguments.get("destination_path")
+            if not source_path:
+                return "❌ Missing required argument 'source_path' for move_file"
+            if not destination_path:
+                return "❌ Missing required argument 'destination_path' for move_file"
+            protected = {"tasks.json", "soul.md"}
+            if is_focus_file_path(source_path) or is_focus_file_path(destination_path):
+                result = "❌ Focus is no longer stored in focus.md. Use Focus tools instead."
+            elif str(source_path).strip("/") in protected:
+                result = f"❌ {source_path} cannot be moved (protected)"
+            elif _is_enterprise_info_path(source_path) or _is_enterprise_info_path(destination_path):
+                result = "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
+            else:
+                async with async_session() as _wdb:
+                    move_result = await move_workspace_path(
+                        _wdb,
+                        agent_id=agent_id,
+                        base_dir=ws,
+                        source_path=source_path,
+                        destination_path=destination_path,
+                        actor_type="agent",
+                        actor_id=agent_id,
+                        session_id=session_id,
+                        enforce_human_lock=True,
+                        overwrite=bool(arguments.get("overwrite", False)),
+                    )
+                    await _wdb.commit()
+                result = f"✅ {move_result.message}" if move_result.ok else f"❌ {move_result.message}"
         elif tool_name == "delete_file":
             path = arguments.get("path", "")
-            async with async_session() as _wdb:
-                delete_result = await delete_workspace_file(
-                    _wdb,
-                    agent_id=agent_id,
-                    base_dir=ws,
-                    path=path,
-                    actor_type="agent",
-                    actor_id=agent_id,
-                    session_id=session_id,
-                    enforce_human_lock=True,
-                )
-                await _wdb.commit()
-            result = f"✅ Deleted {delete_result.path}" if delete_result.ok else f"❌ {delete_result.message}"
+            if is_focus_file_path(path):
+                result = "❌ Focus is no longer stored in focus.md. Use Focus tools instead."
+            elif _is_enterprise_info_path(path):
+                result = "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
+            else:
+                async with async_session() as _wdb:
+                    delete_result = await delete_workspace_file(
+                        _wdb,
+                        agent_id=agent_id,
+                        base_dir=ws,
+                        path=path,
+                        actor_type="agent",
+                        actor_id=agent_id,
+                        session_id=session_id,
+                        enforce_human_lock=True,
+                    )
+                    await _wdb.commit()
+                result = f"✅ Deleted {delete_result.path}" if delete_result.ok else f"❌ {delete_result.message}"
         # --- Enhanced file management tools ---
         elif tool_name == "convert_csv_to_xlsx":
             result = await _convert_csv_to_xlsx(agent_id, ws, arguments)
@@ -2335,8 +2692,10 @@ async def execute_tool(
             if new_string is None:
                 return "❌ Missing required argument 'new_string' for edit_file"
             replace_all = arguments.get("replace_all", False)
-            if path.startswith("enterprise_info"):
-                result = _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id)
+            if is_focus_file_path(path):
+                result = "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
+            elif _is_enterprise_info_path(path):
+                result = "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
             else:
                 file_path = (ws / path).resolve()
                 if not str(file_path).startswith(str(ws.resolve())):
@@ -2461,8 +2820,10 @@ async def execute_tool(
             result = await _generate_image(agent_id, ws, arguments, "openai")
         elif tool_name == "generate_image_google":
             result = await _generate_image(agent_id, ws, arguments, "google")
+        elif tool_name == "generate_image_custom":
+            result = await _generate_image(agent_id, ws, arguments, "custom")
         elif tool_name == "discover_resources":
-            result = await _discover_resources(arguments)
+            result = await _discover_resources(agent_id, arguments)
         elif tool_name == "import_mcp_server":
             result = await _import_mcp_server(agent_id, arguments)
         # ── Feishu Bitable Tools ──
@@ -2525,12 +2886,20 @@ async def execute_tool(
             result = await _agentbay_browser_navigate(agent_id, ws, arguments)
         elif tool_name == "agentbay_browser_screenshot":
             result = await _agentbay_browser_screenshot(agent_id, ws, arguments)
+        elif tool_name == "agentbay_browser_save_screenshot":
+            result = await _agentbay_browser_save_screenshot(agent_id, ws, arguments)
         elif tool_name == "agentbay_browser_click":
             result = await _agentbay_browser_click(agent_id, ws, arguments)
         elif tool_name == "agentbay_browser_type":
             result = await _agentbay_browser_type(agent_id, ws, arguments)
         elif tool_name == "agentbay_code_execute":
             result = await _agentbay_code_execute(agent_id, ws, arguments)
+        elif tool_name == "agentbay_code_write_file":
+            result = await _agentbay_code_write_file(agent_id, ws, arguments)
+        elif tool_name == "agentbay_code_read_file":
+            result = await _agentbay_code_read_file(agent_id, ws, arguments)
+        elif tool_name == "agentbay_code_edit_file":
+            result = await _agentbay_code_edit_file(agent_id, ws, arguments)
         elif tool_name == "agentbay_browser_extract":
             result = await _agentbay_browser_extract(agent_id, ws, arguments)
         elif tool_name == "agentbay_browser_observe":
@@ -2541,6 +2910,10 @@ async def execute_tool(
             result = await _agentbay_command_exec(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_screenshot":
             result = await _agentbay_computer_screenshot(agent_id, ws, arguments)
+        elif tool_name == "agentbay_computer_save_screenshot":
+            result = await _agentbay_computer_save_screenshot(agent_id, ws, arguments)
+        elif tool_name == "agentbay_computer_precision_screenshot":
+            result = await _agentbay_computer_precision_screenshot(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_click":
             result = await _agentbay_computer_click(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_input_text":
@@ -2557,12 +2930,20 @@ async def execute_tool(
             result = await _agentbay_computer_get_screen_size(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_start_app":
             result = await _agentbay_computer_start_app(agent_id, ws, arguments)
+        elif tool_name == "agentbay_computer_get_installed_apps":
+            result = await _agentbay_computer_get_installed_apps(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_get_cursor_position":
             result = await _agentbay_computer_get_cursor_position(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_get_active_window":
             result = await _agentbay_computer_get_active_window(agent_id, ws, arguments)
+        elif tool_name == "agentbay_computer_list_windows":
+            result = await _agentbay_computer_list_windows(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_activate_window":
             result = await _agentbay_computer_activate_window(agent_id, ws, arguments)
+        elif tool_name == "agentbay_computer_close_window":
+            result = await _agentbay_computer_close_window(agent_id, ws, arguments)
+        elif tool_name == "agentbay_computer_dismiss_dialog":
+            result = await _agentbay_computer_dismiss_dialog(agent_id, ws, arguments)
         elif tool_name == "agentbay_computer_list_visible_apps":
             result = await _agentbay_computer_list_visible_apps(agent_id, ws, arguments)
         elif tool_name == "agentbay_file_transfer":
@@ -2581,7 +2962,7 @@ async def execute_tool(
             result = await _update_kr_content(agent_id, user_id, arguments)
         elif tool_name == "update_kr_progress":
             result = await _update_kr_progress(agent_id, user_id, arguments)
-        # collect_okr_progress: batch-read all focus.md files and sync progress to DB
+        # collect_okr_progress: legacy batch progress collection
         elif tool_name == "collect_okr_progress":
             result = await _collect_okr_progress(agent_id)
         # generate_okr_report: build daily/weekly structured report and store it
@@ -3884,6 +4265,18 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
                 f"💡 Please re-authorize by telling me: `import_mcp_server(server_id=\"...\", reauthorize=true)`"
             )
 
+        if conn_result.get("auth_url"):
+            # A newly-created Smithery connection is not usable until the user
+            # completes OAuth. Keep the existing stored connection in place so
+            # a still-valid old connection is not overwritten by an unauthenticated
+            # replacement. The user-facing auth URL is enough for recovery.
+            return (
+                f"🔐 MCP tool connection expired. Re-authorization needed.\n\n"
+                f"Please visit the following URL to re-authorize:\n"
+                f"{conn_result['auth_url']}\n\n"
+                f"After completing authorization, the tools will work again automatically."
+            )
+
         # Update stored config with new connection info
         new_config = {
             "smithery_namespace": conn_result["namespace"],
@@ -3910,14 +4303,6 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
                     await db.commit()
             except Exception:
                 pass  # Non-critical — connection may still work
-
-        if conn_result.get("auth_url"):
-            return (
-                f"🔐 MCP tool connection expired. Re-authorization needed.\n\n"
-                f"Please visit the following URL to re-authorize:\n"
-                f"{conn_result['auth_url']}\n\n"
-                f"After completing authorization, the tools will work again automatically."
-            )
 
         # Connection re-created without OAuth — should work now
         return None  # Signal caller to retry (but we don't retry here to avoid loops)
@@ -4084,8 +4469,29 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
         return f"Read failed: {e}"
 
 
-async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
-    """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
+_READ_DOCUMENT_MAX_FILE_BYTES = 50 * 1024 * 1024
+_READ_DOCUMENT_TIMEOUT_SECONDS = 25
+_READ_DOCUMENT_FALLBACK_TIMEOUT_SECONDS = 10
+_READ_DOCUMENT_MAX_CELL_CHARS = 500
+_READ_DOCUMENT_MAX_COLUMNS = 80
+_READ_DOCUMENT_MAX_XLSX_CELLS = 20000
+
+
+def _safe_document_cell_text(value: Any) -> str:
+    """Convert spreadsheet/table values without letting pathological cells dominate CPU."""
+    if value is None:
+        return ""
+    if isinstance(value, int) and value.bit_length() > 4096:
+        return "[large integer omitted]"
+    text = str(value)
+    if len(text) > _READ_DOCUMENT_MAX_CELL_CHARS:
+        return text[:_READ_DOCUMENT_MAX_CELL_CHARS] + "...[cell truncated]"
+    return text
+
+
+def _read_document_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
+    """Synchronous document extraction. Must run outside the uvicorn event loop."""
+    max_chars = min(max(int(max_chars), 1), 20000)
     try:
         file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
     except ValueError as exc:
@@ -4093,6 +4499,17 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
 
     if not file_path.exists():
         return f"File not found: {rel_path}"
+    if file_path.is_dir():
+        return f"Path is a directory, not a document: {rel_path}"
+    try:
+        file_size = file_path.stat().st_size
+    except OSError:
+        file_size = 0
+    if file_size > _READ_DOCUMENT_MAX_FILE_BYTES:
+        return (
+            f"Document is too large to read safely ({file_size / 1024 / 1024:.1f} MB). "
+            "Please split or convert it to a smaller text/Markdown excerpt first."
+        )
 
     ext = file_path.suffix.lower()
     try:
@@ -4104,6 +4521,8 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
                     page_text = page.extract_text() or ""
                     if page_text:
                         text_parts.append(f"--- Page {i+1} ---\n{page_text}")
+                    if sum(len(part) for part in text_parts) >= max_chars:
+                        break
             content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
 
         elif ext == ".docx":
@@ -4119,7 +4538,9 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
                 """Flatten a table into readable text."""
                 rows = []
                 for row in table.rows:
-                    cells = [cell.text.strip() for cell in row.cells]
+                    cells = [_safe_document_cell_text(cell.text).strip() for cell in row.cells[:_READ_DOCUMENT_MAX_COLUMNS]]
+                    if not cells:
+                        continue
                     # Remove duplicate adjacent cells (merged cells repeat)
                     deduped = [cells[0]] + [c for i, c in enumerate(cells[1:]) if c != cells[i]]
                     row_str = " | ".join(c for c in deduped if c)
@@ -4160,15 +4581,23 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
             from openpyxl import load_workbook
             wb = load_workbook(str(file_path), read_only=True, data_only=True)
             sheets = []
+            cell_count = 0
             for ws_name in wb.sheetnames[:10]:  # Limit to 10 sheets
                 sheet = wb[ws_name]
                 rows = []
-                for row in sheet.iter_rows(max_row=200, values_only=True):
-                    row_str = "\t".join(str(c) if c is not None else "" for c in row)
+                for row in sheet.iter_rows(max_row=200, max_col=_READ_DOCUMENT_MAX_COLUMNS, values_only=True):
+                    visible = row
+                    cell_count += len(visible)
+                    if cell_count > _READ_DOCUMENT_MAX_XLSX_CELLS:
+                        rows.append("[cell limit reached; remaining cells omitted]")
+                        break
+                    row_str = "\t".join(_safe_document_cell_text(c) for c in visible)
                     if row_str.strip():
                         rows.append(row_str)
                 if rows:
                     sheets.append(f"=== Sheet: {ws_name} ===\n" + "\n".join(rows))
+                if cell_count > _READ_DOCUMENT_MAX_XLSX_CELLS or sum(len(part) for part in sheets) >= max_chars:
+                    break
             wb.close()
             content = "\n\n".join(sheets) if sheets else "(Excel is empty)"
 
@@ -4199,6 +4628,138 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
         return f"Missing dependency: {e}. Install: pip install pdfplumber python-docx openpyxl python-pptx"
     except Exception as e:
         return f"Document read failed: {str(e)[:200]}"
+
+
+def _read_document_worker(
+    out_queue: mp.Queue,
+    ws_str: str,
+    rel_path: str,
+    max_chars: int,
+    tenant_id: str | None,
+) -> None:
+    try:
+        out_queue.put(("ok", _read_document_sync(Path(ws_str), rel_path, max_chars=max_chars, tenant_id=tenant_id)))
+    except BaseException as exc:
+        out_queue.put(("error", f"Document read failed: {str(exc)[:200]}"))
+
+
+def _read_pdf_fast_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
+    """Fast PDF text extraction fallback for files that make pdfplumber/pdfminer hang."""
+    max_chars = min(max(int(max_chars), 1), 20000)
+    try:
+        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
+    except ValueError as exc:
+        return str(exc)
+
+    if not file_path.exists():
+        return f"File not found: {rel_path}"
+    if file_path.is_dir():
+        return f"Path is a directory, not a document: {rel_path}"
+
+    try:
+        import fitz
+
+        text_parts = []
+        with fitz.open(str(file_path)) as doc:
+            for i, page in enumerate(doc[:50]):
+                page_text = page.get_text("text") or ""
+                if page_text:
+                    text_parts.append(f"--- Page {i+1} ---\n{page_text}")
+                if sum(len(part) for part in text_parts) >= max_chars:
+                    break
+        content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
+        if len(content) > max_chars:
+            content = content[:max_chars] + f"\n\n...[truncated, {len(content)} chars total]"
+        return content
+    except ImportError as exc:
+        return f"PDF fallback extractor unavailable: {exc}. Install: pip install PyMuPDF"
+    except Exception as exc:
+        return f"PDF fallback extraction failed: {str(exc)[:200]}"
+
+
+def _read_pdf_fast_worker(
+    out_queue: mp.Queue,
+    ws_str: str,
+    rel_path: str,
+    max_chars: int,
+    tenant_id: str | None,
+) -> None:
+    try:
+        out_queue.put(("ok", _read_pdf_fast_sync(Path(ws_str), rel_path, max_chars=max_chars, tenant_id=tenant_id)))
+    except BaseException as exc:
+        out_queue.put(("error", f"PDF fallback extraction failed: {str(exc)[:200]}"))
+
+
+def _read_pdf_fast_with_timeout(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
+    ctx = mp.get_context("spawn")
+    out_queue: mp.Queue = ctx.Queue(maxsize=1)
+    proc = ctx.Process(
+        target=_read_pdf_fast_worker,
+        args=(out_queue, str(ws), rel_path, max_chars, tenant_id),
+        daemon=True,
+    )
+    proc.start()
+    proc.join(_READ_DOCUMENT_FALLBACK_TIMEOUT_SECONDS)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(2)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(1)
+        return (
+            f"Document read timed out after {_READ_DOCUMENT_TIMEOUT_SECONDS}s, "
+            f"and PDF fallback also timed out after {_READ_DOCUMENT_FALLBACK_TIMEOUT_SECONDS}s. "
+            "The file may be too large or too complex to extract safely."
+        )
+    try:
+        status, payload = out_queue.get_nowait()
+    except queue.Empty:
+        if proc.exitcode:
+            return f"PDF fallback extraction failed: extractor exited with code {proc.exitcode}"
+        return "PDF fallback extraction failed: extractor returned no content"
+    if status == "ok":
+        return payload
+    return str(payload)
+
+
+def _read_document_with_timeout(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
+    """Run document parsing in a killable child process so one bad file cannot freeze the site."""
+    ctx = mp.get_context("spawn")
+    out_queue: mp.Queue = ctx.Queue(maxsize=1)
+    proc = ctx.Process(
+        target=_read_document_worker,
+        args=(out_queue, str(ws), rel_path, max_chars, tenant_id),
+        daemon=True,
+    )
+    proc.start()
+    proc.join(_READ_DOCUMENT_TIMEOUT_SECONDS)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(2)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(1)
+        if Path(rel_path).suffix.lower() == ".pdf":
+            return _read_pdf_fast_with_timeout(ws, rel_path, max_chars=max_chars, tenant_id=tenant_id)
+        return (
+            f"Document read timed out after {_READ_DOCUMENT_TIMEOUT_SECONDS}s. "
+            "The file may be too large or too complex to extract safely. "
+            "Please split it, convert it to text/Markdown, or read a smaller excerpt."
+        )
+    try:
+        status, payload = out_queue.get_nowait()
+    except queue.Empty:
+        if proc.exitcode:
+            return f"Document read failed: extractor exited with code {proc.exitcode}"
+        return "Document read failed: extractor returned no content"
+    if status == "ok":
+        return payload
+    return str(payload)
+
+
+async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
+    """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
+    return await asyncio.to_thread(_read_document_with_timeout, ws, rel_path, max_chars, tenant_id)
 
 
 # ─── Format Conversion Tools ────────────────────────────────────
@@ -4256,65 +4817,26 @@ async def _convert_html_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dict) -
         tgt_file = _resolve_tool_target_path(ws, target_path)
     except ValueError as exc:
         return str(exc)
-    if not src_file.exists(): return f"❌ Source file not found: {source_path}"
-    
-    try:
-        from weasyprint import HTML
-        tgt_file.parent.mkdir(parents=True, exist_ok=True)
-        HTML(filename=str(src_file)).write_pdf(str(tgt_file))
-        return f"✅ Successfully converted HTML to PDF: {target_path}"
-    except Exception as e:
-        logger.exception(f"Convert HTML to PDF failed: {e}")
-        return f"❌ Conversion failed: {e}"
+    if not src_file.exists():
+        return f"❌ Source file not found: {source_path}"
+
+    return await convert_html_file_to_pdf(src_file, tgt_file, str(target_path), arguments)
+
 
 async def _convert_html_to_pptx(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     source_path = arguments.get("source_path")
     target_path = arguments.get("target_path")
-    if not source_path or not target_path: return "❌ Missing paths."
+    if not source_path or not target_path:
+        return "❌ Missing paths."
     try:
         src_file = _resolve_tool_source_path(ws, source_path)
         tgt_file = _resolve_tool_target_path(ws, target_path)
     except ValueError as exc:
         return str(exc)
-    if not src_file.exists(): return "❌ Source file not found."
-    
-    try:
-        from bs4 import BeautifulSoup
-        from pptx import Presentation
-        
-        html_content = src_file.read_text(encoding="utf-8")
-        soup = BeautifulSoup(html_content, "html.parser")
-        
-        prs = Presentation()
-        title_slide_layout = prs.slide_layouts[0]
-        bullet_slide_layout = prs.slide_layouts[1]
-        
-        sections = soup.find_all(['h1', 'h2'])
-        if not sections:
-            slide = prs.slides.add_slide(title_slide_layout)
-            slide.shapes.title.text = "Presentation"
-        else:
-            for header in sections:
-                slide = prs.slides.add_slide(bullet_slide_layout)
-                slide.shapes.title.text = header.get_text(strip=True)
-                tf = slide.shapes.placeholders[1].text_frame
-                
-                curr = header.find_next_sibling()
-                while curr and curr.name not in ['h1', 'h2']:
-                    if curr.name in ['p', 'li']:
-                        text = curr.get_text(strip=True)
-                        if text:
-                            p = tf.add_paragraph()
-                            p.text = text
-                            p.level = 0
-                    curr = curr.find_next_sibling()
-                    
-        tgt_file.parent.mkdir(parents=True, exist_ok=True)
-        prs.save(str(tgt_file))
-        return f"✅ Successfully converted HTML to PPTX: {target_path}"
-    except Exception as e:
-        logger.exception(f"Convert HTML to PPTX failed: {e}")
-        return f"❌ Conversion failed: {e}"
+    if not src_file.exists():
+        return "❌ Source file not found."
+
+    return await convert_html_file_to_pptx(src_file, tgt_file, str(target_path), ws, arguments)
 
 async def _convert_markdown_to_docx(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     source_path = arguments.get("source_path")
@@ -4533,9 +5055,12 @@ async def _convert_markdown_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dic
 
 
 def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = None) -> str:
-    # Protect tasks.json from direct writes
+    # Protect legacy DB-backed tasks.json from direct writes
     if rel_path.strip("/") == "tasks.json":
-        return "tasks.json is read-only. Use manage_tasks tool to manage tasks."
+        return "tasks.json is a legacy read-only snapshot. Use the task APIs/UI to manage tasks."
+
+    if _is_enterprise_info_path(rel_path):
+        return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
 
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
@@ -4566,6 +5091,8 @@ def _delete_file(ws: Path, rel_path: str) -> str:
     protected = {"tasks.json", "soul.md"}
     if rel_path.strip("/") in protected:
         return f"{rel_path} cannot be deleted (protected)"
+    if _is_enterprise_info_path(rel_path):
+        return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
 
     file_path = (ws / rel_path).resolve()
     if not str(file_path).startswith(str(ws.resolve())):
@@ -4599,6 +5126,9 @@ def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replac
     Returns:
         Success message or error
     """
+    if _is_enterprise_info_path(rel_path):
+        return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
+
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
@@ -4897,6 +5427,22 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
             if not config:
                 return "❌ This agent has no Feishu channel configured"
             if direct_user_id and not member_name:
+                rel_result = await db.execute(
+                    select(AgentRelationship)
+                    .join(OrgMember, AgentRelationship.member_id == OrgMember.id)
+                    .where(
+                        AgentRelationship.agent_id == agent_id,
+                        (OrgMember.external_id == direct_user_id) | (OrgMember.open_id == direct_user_id),
+                        OrgMember.status == "active",
+                    )
+                    .options(selectinload(AgentRelationship.member))
+                )
+                direct_rel = rel_result.scalars().first()
+                if not direct_rel:
+                    return "❌ Recipient is not in your active relationship network"
+                status_info = await evaluate_human_relationship_status(db, direct_rel)
+                if status_info["access_status"] != "active":
+                    return f"❌ Relationship to recipient is not active ({status_info['access_status_reason'] or 'restricted'})"
                 try:
                     resp = await feishu_service.send_message(
                         config.app_id, config.app_secret,
@@ -4923,7 +5469,8 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
 
             target_member = None
             for r in rels:
-                if r.member and r.member.name == member_name:
+                status_info = await evaluate_human_relationship_status(db, r)
+                if r.member and status_info["access_status"] == "active" and r.member.name == member_name:
                     target_member = r.member
                     break
 
@@ -5033,6 +5580,12 @@ async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
                 .options(selectinload(AgentRelationship.member))
             )
             rows = result.all()
+            active_rows = []
+            for rel, member, provider in rows:
+                status_info = await evaluate_human_relationship_status(db, rel)
+                if status_info["access_status"] == "active":
+                    active_rows.append((rel, member, provider))
+            rows = active_rows
 
             if not rows:
                 return f"❌ {member_name} is not in your relationship network"
@@ -5570,6 +6123,8 @@ async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
             agent = agent_res.scalar_one_or_none()
             if not agent:
                 return "❌ Agent not found"
+            if await ensure_access_granted_platform_relationships(db, agent, created_by_user_id=agent.creator_id):
+                await db.flush()
 
             # 1. Look up target user by username or display_name within tenant
 
@@ -5593,6 +6148,23 @@ async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
                 all_r = await db.execute(list_query)
                 names = [f"{r.display_name or r.username}" for r in all_r.all()]
                 return f"❌ No user named '{username}' found in your organization. Available users: {', '.join(names) if names else 'none'}"
+
+            rel_result = await db.execute(
+                select(AgentRelationship)
+                .join(OrgMember, AgentRelationship.member_id == OrgMember.id)
+                .where(
+                    AgentRelationship.agent_id == agent_id,
+                    OrgMember.user_id == target_user.id,
+                    OrgMember.status == "active",
+                )
+                .options(selectinload(AgentRelationship.member))
+            )
+            rel = rel_result.scalars().first()
+            if not rel:
+                return f"❌ {target_user.display_name or target_user.username} is not in your active relationship network"
+            status_info = await evaluate_human_relationship_status(db, rel, source_agent=agent)
+            if status_info["access_status"] != "active":
+                return f"❌ Relationship to {target_user.display_name or target_user.username} is not active ({status_info['access_status_reason'] or 'restricted'})"
 
             # Agent-initiated platform messages should always go to the long-lived primary session
             # for this agent+user pair, so trigger-driven outreach does not fragment into dozens of
@@ -5643,6 +6215,7 @@ async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
             return f"✅ Message sent to {display} on web platform. It has been saved to their chat history."
 
     except Exception as e:
+        logger.exception("[PlatformMessage] Error")
         return f"❌ Web message send error: {str(e)[:200]}"
 
 
@@ -5722,13 +6295,18 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
 
             # Enforce relationship: only allow file transfer with agents in relationships
             rel_check = await db.execute(
-                select(AgentAgentRelationship.id).where(
-                    ((AgentAgentRelationship.agent_id == from_agent_id) & (AgentAgentRelationship.target_agent_id == target_agent.id))
-                    | ((AgentAgentRelationship.agent_id == target_agent.id) & (AgentAgentRelationship.target_agent_id == from_agent_id))
+                select(AgentAgentRelationship).where(
+                    AgentAgentRelationship.agent_id == from_agent_id,
+                    AgentAgentRelationship.target_agent_id == target_agent.id,
                 ).limit(1)
             )
-            if not rel_check.scalar_one_or_none():
+            rel = rel_check.scalar_one_or_none()
+            if not rel:
                 return f"❌ You do not have a relationship with {target_agent.name}. Only agents in your relationship list can receive files. Ask your administrator to add a relationship if needed."
+            if hasattr(rel, "agent_id"):
+                status_info = await evaluate_agent_relationship_status(db, rel)
+                if status_info["access_status"] != "active":
+                    return f"❌ Relationship to {target_agent.name} is not active ({status_info['access_status_reason'] or 'restricted'}). Ask a manager of both agents to review Relationships."
 
             target_tenant_id = str(target_agent.tenant_id) if target_agent.tenant_id else None
             target_name = target_agent.name
@@ -5906,6 +6484,12 @@ async def _create_on_message_trigger(
     """Programmatically create an on_message trigger for an agent."""
     from app.models.trigger import AgentTrigger
 
+    focus_ref = await ensure_focus_item(
+        agent_id,
+        focus_ref=focus_ref,
+        description=reason or trigger_name,
+    )
+
     config: dict = {"from_agent_name": from_agent_name}
     if notification_summary:
         config["_notification_summary"] = notification_summary
@@ -5968,23 +6552,11 @@ async def _create_on_message_trigger(
 
 
 async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: str) -> None:
-    """Append a pending focus item to the agent's focus.md."""
-    focus_path = WORKSPACE_ROOT / str(agent_id) / "focus.md"
-    line = f"- [ ] {identifier}: {description}\n"
+    """Create or update an in-progress Focus item."""
     try:
-        if focus_path.exists():
-            content = focus_path.read_text(encoding="utf-8")
-            if identifier in content:
-                return
-            if not content.endswith("\n"):
-                content += "\n"
-            content += line
-        else:
-            content = f"# Focus\n\n{line}"
-        focus_path.parent.mkdir(parents=True, exist_ok=True)
-        focus_path.write_text(content, encoding="utf-8")
+        await ensure_focus_item(agent_id, focus_ref=identifier, description=description)
     except Exception as e:
-        logger.warning(f"[A2A] Failed to update focus.md for agent {agent_id}: {e}")
+        logger.warning(f"[A2A] Failed to update Focus for agent {agent_id}: {e}")
 
 
 async def _wake_agent_async(agent_id: uuid.UUID, reason_context: str, *, from_agent_id: uuid.UUID | None = None, skip_dedup: bool = False, a2a_session_id: str | None = None) -> None:
@@ -5993,7 +6565,10 @@ async def _wake_agent_async(agent_id: uuid.UUID, reason_context: str, *, from_ag
     Delegates to the public wake_agent_with_context API in trigger_daemon.
     """
     from app.services.trigger_daemon import wake_agent_with_context
-    await wake_agent_with_context(agent_id, reason_context, from_agent_id=from_agent_id, skip_dedup=skip_dedup, a2a_session_id=a2a_session_id)
+    kwargs = {"from_agent_id": from_agent_id, "skip_dedup": skip_dedup}
+    if a2a_session_id is not None:
+        kwargs["a2a_session_id"] = a2a_session_id
+    await wake_agent_with_context(agent_id, reason_context, **kwargs)
 
 
 async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
@@ -6063,13 +6638,18 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             # Enforce relationship: only allow communication with agents in relationships
             # (AgentAgentRelationship is imported at module level — no local import needed)
             rel_check = await db.execute(
-                select(AgentAgentRelationship.id).where(
-                    ((AgentAgentRelationship.agent_id == from_agent_id) & (AgentAgentRelationship.target_agent_id == target.id))
-                    | ((AgentAgentRelationship.agent_id == target.id) & (AgentAgentRelationship.target_agent_id == from_agent_id))
+                select(AgentAgentRelationship).where(
+                    AgentAgentRelationship.agent_id == from_agent_id,
+                    AgentAgentRelationship.target_agent_id == target.id,
                 ).limit(1)
             )
-            if not rel_check.scalar_one_or_none():
+            rel = rel_check.scalar_one_or_none()
+            if not rel:
                 return f"❌ You do not have a relationship with {target.name}. Only agents in your relationship list can be contacted. Ask your administrator to add a relationship if needed."
+            if hasattr(rel, "agent_id"):
+                status_info = await evaluate_agent_relationship_status(db, rel)
+                if status_info["access_status"] != "active":
+                    return f"❌ Relationship to {target.name} is not active ({status_info['access_status_reason'] or 'restricted'}). Ask a manager of both agents to review Relationships."
 
             src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
             src_participant = src_part_r.scalar_one_or_none()
@@ -6332,9 +6912,15 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             max_tool_rounds = target.max_tool_rounds or 50
             target_reply = ""
-            _a2a_accumulated_tokens = 0
+            _a2a_accumulated_usage = None
 
-            from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
+            from app.services.token_tracker import (
+                TokenUsage,
+                record_token_usage,
+                extract_token_usage,
+                estimate_token_usage_from_chars,
+            )
+            _a2a_accumulated_usage = TokenUsage()
 
             llm_client = create_llm_client(
                 provider=target_model.provider,
@@ -6388,12 +6974,12 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                         raise RuntimeError("A2A LLM response is unexpectedly empty after retries")
 
                     # Track tokens from API response
-                    real_tokens = extract_usage_tokens(response.usage)
-                    if real_tokens:
-                        _a2a_accumulated_tokens += real_tokens
+                    usage = extract_token_usage(response.usage)
+                    if usage:
+                        _a2a_accumulated_usage.add(usage)
                     else:
                         round_chars = sum(len(m.content or '') for m in full_msgs if isinstance(m.content, str))
-                        _a2a_accumulated_tokens += estimate_tokens_from_chars(round_chars)
+                        _a2a_accumulated_usage.add(estimate_token_usage_from_chars(round_chars))
 
                     # Check for tool calls
                     if response.tool_calls:
@@ -6409,18 +6995,27 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                             reasoning_content=response.reasoning_content,
                         ))
 
+                        finish_call = find_finish_call(response.tool_calls)
+                        if finish_call:
+                            if finish_call.valid:
+                                target_reply = finish_call.content
+                                break
+                            full_msgs.append(LLMMessage(
+                                role="tool",
+                                tool_call_id=finish_call.call_id,
+                                content=finish_call.error or "`finish` was invalid.",
+                            ))
+                            continue
+
                         # Execute each tool call
                         for tc in response.tool_calls:
                             fn = tc.get("function", {})
                             tool_name = fn.get("name", "")
                             raw_args = fn.get("arguments", "{}")
-                            if isinstance(raw_args, dict):
-                                tool_args = raw_args
-                            else:
-                                try:
-                                    tool_args = json.loads(raw_args) if raw_args else {}
-                                except Exception:
-                                    tool_args = {}
+                            try:
+                                tool_args = parse_tool_arguments(raw_args)
+                            except Exception:
+                                tool_args = {}
 
                             tool_result = await execute_tool(tool_name, tool_args, target.id, owner_id)
 
@@ -6461,15 +7056,15 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                             ))
                         continue  # Next LLM round
 
-                    # No tool calls — this is the final text response
-                    target_reply = response.content or ""
-                    break
+                    if response.content:
+                        full_msgs.append(LLMMessage(role="assistant", content=response.content))
+                    full_msgs.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
             finally:
                 await llm_client.close()
 
             # Record accumulated A2A tokens for the target agent
-            if _a2a_accumulated_tokens > 0:
-                await record_token_usage(target.id, _a2a_accumulated_tokens)
+            if _a2a_accumulated_usage and _a2a_accumulated_usage.total_tokens > 0:
+                await record_token_usage(target.id, _a2a_accumulated_usage)
 
             if not target_reply:
                 return f"⚠️ {target.name} did not respond (LLM returned empty)"
@@ -6525,8 +7120,8 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
     """Get recent posts from the Agent Plaza, scoped to agent's tenant."""
     from app.models.plaza import PlazaPost, PlazaComment
-    from app.models.agent import Agent as AgentModel, AgentPermission
-    from sqlalchemy import desc, exists, and_
+    from app.models.agent import Agent as AgentModel
+    from sqlalchemy import desc
 
     limit = min(arguments.get("limit", 10), 20)
 
@@ -6540,18 +7135,8 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
             if agent.is_system:
                 return "System agents cannot access Plaza."
 
-            private_agent_exists = await db.execute(
-                select(
-                    exists().where(
-                        and_(
-                            AgentPermission.agent_id == agent_id,
-                            AgentPermission.scope_type == "user",
-                        )
-                    )
-                )
-            )
-            if private_agent_exists.scalar():
-                return "Private agents cannot access Plaza."
+            if (getattr(agent, "access_mode", None) or "company") != "company":
+                return "Only company-wide agents can access Plaza."
 
             tenant_id = agent.tenant_id if agent else None
 
@@ -6594,8 +7179,7 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
     reports, not through Plaza posts.
     """
     from app.models.plaza import PlazaPost
-    from app.models.agent import Agent as AgentModel, AgentPermission
-    from sqlalchemy import exists, and_
+    from app.models.agent import Agent as AgentModel
 
     content = arguments.get("content", "").strip()
     if not content:
@@ -6618,18 +7202,8 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
                     "Use send_platform_message to communicate with users directly."
                 )
 
-            private_agent_exists = await db.execute(
-                select(
-                    exists().where(
-                        and_(
-                            AgentPermission.agent_id == agent_id,
-                            AgentPermission.scope_type == "user",
-                        )
-                    )
-                )
-            )
-            if private_agent_exists.scalar():
-                return "Private agents are not allowed to post to Plaza."
+            if (getattr(agent, "access_mode", None) or "company") != "company":
+                return "Only company-wide agents are allowed to post to Plaza."
             post = PlazaPost(
                 author_id=agent_id,
                 author_type="agent",
@@ -6678,8 +7252,7 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
 async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
     """Add a comment to a plaza post."""
     from app.models.plaza import PlazaPost, PlazaComment
-    from app.models.agent import Agent as AgentModel, AgentPermission
-    from sqlalchemy import exists, and_
+    from app.models.agent import Agent as AgentModel
 
     post_id = arguments.get("post_id", "")
     content = arguments.get("content", "").strip()
@@ -6709,18 +7282,8 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
             if agent.is_system:
                 return "System agents are not allowed to comment on Plaza posts."
 
-            private_agent_exists = await db.execute(
-                select(
-                    exists().where(
-                        and_(
-                            AgentPermission.agent_id == agent_id,
-                            AgentPermission.scope_type == "user",
-                        )
-                    )
-                )
-            )
-            if private_agent_exists.scalar():
-                return "Private agents are not allowed to comment on Plaza posts."
+            if (getattr(agent, "access_mode", None) or "company") != "company":
+                return "Only company-wide agents are allowed to comment on Plaza posts."
 
             comment = PlazaComment(
                 post_id=pid,
@@ -6837,45 +7400,66 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
 # ─── Code Execution ─────────────────────────────────────────────
 
 # Dangerous patterns to block (for legacy fallback)
-_DANGEROUS_BASH = [
+_DANGEROUS_BASH_ALWAYS = [
     "rm -rf /", "rm -rf ~", "sudo ", "mkfs", "dd if=",
     ":(){ :", "chmod 777 /", "chown ", "shutdown", "reboot",
-    "curl ", "wget ", "nc ", "ncat ", "ssh ", "scp ",
-    "python3 -c", "python -c",
 ]
 
-_DANGEROUS_PYTHON_IMPORTS = [
-    "subprocess", "shutil.rmtree", "os.system", "os.popen",
+_DANGEROUS_BASH_NETWORK = [
+    "curl ", "wget ", "nc ", "ncat ", "ssh ", "scp ",
+]
+
+_DANGEROUS_PYTHON_IMPORTS_ALWAYS = [
+    "shutil.rmtree", "os.system", "os.popen",
     "os.exec", "os.spawn",
+]
+
+_DANGEROUS_PYTHON_IMPORTS_NETWORK = [
     "socket", "http.client", "urllib.request", "requests",
     "ftplib", "smtplib", "telnetlib", "ctypes",
-    "__import__", "importlib",
+]
+
+_DANGEROUS_NODE_ALWAYS = [
+    "fs.rmSync", "fs.rmdirSync", "process.exit",
+]
+
+_DANGEROUS_NODE_NETWORK = [
+    "require('http')", "require('https')", "require('net')",
 ]
 
 
-def _check_code_safety(language: str, code: str) -> str | None:
+def _check_code_safety(language: str, code: str, allow_network: bool = False) -> str | None:
     """Check code for dangerous patterns. Returns error message if unsafe, None if ok."""
     code_lower = code.lower()
 
     if language == "bash":
-        for pattern in _DANGEROUS_BASH:
+        for pattern in _DANGEROUS_BASH_ALWAYS:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: dangerous command detected ({pattern.strip()})"
-        # Block deep path traversal outside workspace
+        if not allow_network:
+            for pattern in _DANGEROUS_BASH_NETWORK:
+                if pattern.lower() in code_lower:
+                    return f"❌ Blocked: network command not allowed ({pattern.strip()})"
         if "../../" in code:
             return "❌ Blocked: directory traversal not allowed"
 
     elif language == "python":
-        for pattern in _DANGEROUS_PYTHON_IMPORTS:
+        for pattern in _DANGEROUS_PYTHON_IMPORTS_ALWAYS:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: unsafe operation detected ({pattern})"
+        if not allow_network:
+            for pattern in _DANGEROUS_PYTHON_IMPORTS_NETWORK:
+                if pattern.lower() in code_lower:
+                    return f"❌ Blocked: network operation not allowed ({pattern})"
 
     elif language == "node":
-        dangerous_node = ["child_process", "fs.rmSync", "fs.rmdirSync", "process.exit",
-                          "require('http')", "require('https')", "require('net')"]
-        for pattern in dangerous_node:
+        for pattern in _DANGEROUS_NODE_ALWAYS:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: unsafe operation detected ({pattern})"
+        if not allow_network:
+            for pattern in _DANGEROUS_NODE_NETWORK:
+                if pattern.lower() in code_lower:
+                    return f"❌ Blocked: network operation not allowed ({pattern})"
 
     return None
 
@@ -6951,7 +7535,7 @@ async def _execute_code(
             # Do not silently fall back — surface the config error to the user
             return f"❌ E2B sandbox configuration error: {str(e)[:300]}\nPlease check the API key in the tool settings."
         logger.warning(f"[Sandbox] Config issue, falling back to legacy subprocess: {e}")
-        return await _execute_code_legacy(ws, arguments)
+        return await _execute_code_legacy(ws, arguments, allow_network=fallback_config.allow_network)
 
     except Exception as e:
         logger.exception(f"[Sandbox] Execution failed for agent {agent_id} (tool={tool_name})")
@@ -6960,13 +7544,13 @@ async def _execute_code(
             return f"❌ E2B execution error: {str(e)[:200]}"
         # For local tool: try legacy subprocess as last resort
         try:
-            return await _execute_code_legacy(ws, arguments)
+            return await _execute_code_legacy(ws, arguments, allow_network=sandbox_config.allow_network)
         except Exception:
             logger.exception(f"[Sandbox] Fallback also failed for agent {agent_id}")
             return f"❌ Execution error: {str(e)[:200]}"
 
 
-async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
+async def _execute_code_legacy(ws: Path, arguments: dict, allow_network: bool = False) -> str:
     """Legacy subprocess-based code execution (fallback)."""
     import asyncio
 
@@ -6981,7 +7565,7 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
         return f"❌ Unsupported language: {language}. Use: python, bash, or node"
 
     # Security check
-    safety_error = _check_code_safety(language, code)
+    safety_error = _check_code_safety(language, code, allow_network)
     if safety_error:
         return safety_error
 
@@ -7056,7 +7640,7 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
 
 # ─── Resource Discovery Executors ───────────────────────────────
 
-async def _discover_resources(arguments: dict) -> str:
+async def _discover_resources(agent_id: uuid.UUID, arguments: dict) -> str:
     """Search Smithery registry for MCP servers."""
     query = arguments.get("query", "")
     if not query:
@@ -7064,7 +7648,7 @@ async def _discover_resources(arguments: dict) -> str:
     max_results = min(arguments.get("max_results", 5), 10)
 
     from app.services.resource_discovery import search_smithery
-    return await search_smithery(query, max_results)
+    return await search_smithery(query, max_results, agent_id=agent_id)
 
 
 async def _import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -7118,6 +7702,17 @@ async def _handle_set_trigger(
         return f"❌ Invalid trigger type '{ttype}'. Valid types: {', '.join(VALID_TRIGGER_TYPES)}"
     if not reason:
         return "❌ Missing required argument 'reason'"
+
+    try:
+        focus_ref = await ensure_focus_item(
+            agent_id,
+            focus_ref=focus_ref,
+            description=reason or name,
+            system=False,
+        )
+    except Exception as e:
+        logger.warning(f"[Trigger] Failed to ensure Focus item for trigger {name}: {e}")
+        focus_ref = focus_ref or name
 
     # Validate type-specific config
     if ttype == "cron":
@@ -7229,7 +7824,7 @@ async def _handle_set_trigger(
                     existing.type = ttype
                     existing.config = config
                     existing.reason = reason
-                    existing.focus_ref = focus_ref or None
+                    existing.focus_ref = focus_ref
                     existing.is_enabled = True
                     # Keep fire_count and last_fired_at — they are cumulative stats
                     await db.commit()
@@ -7241,7 +7836,7 @@ async def _handle_set_trigger(
                 type=ttype,
                 config=config,
                 reason=reason,
-                focus_ref=focus_ref or None,
+                focus_ref=focus_ref,
             )
             db.add(trigger)
             await db.commit()
@@ -7511,6 +8106,7 @@ async def _generate_image(agent_id: uuid.UUID, ws: Path, arguments: dict, provid
     - siliconflow: OpenAI-compatible API (FLUX models, China-friendly)
     - openai: Native OpenAI API (GPT Image)
     - google: Google Gemini Native Image API (Nano Banana)
+    - custom: Configurable HTTP API for gateways such as TokenRouter/OpenRouter
 
     The tool config is resolved via the standard _get_tool_config() hierarchy:
     global tool config (admin-set) -> per-agent tool config override.
@@ -7574,8 +8170,21 @@ async def _generate_image(agent_id: uuid.UUID, ws: Path, arguments: dict, provid
                 base_url or "https://generativelanguage.googleapis.com/v1beta",
                 prompt, size,
             )
+        elif provider == "custom":
+            image_bytes = await _generate_image_custom_api(
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                endpoint_path=config.get("endpoint_path") or "/chat/completions",
+                request_body_template_json=config.get("request_body_template_json") or "",
+                response_image_path=config.get("response_image_path") or "choices.0.message.images.0.image_url.url",
+                extra_headers_json=config.get("extra_headers_json") or "",
+                timeout_seconds=config.get("timeout_seconds") or 120,
+                prompt=prompt,
+                size=size,
+            )
         else:
-            return f"❌ Unknown image generation provider: {provider}. Supported: siliconflow, openai, google"
+            return f"❌ Unknown image generation provider: {provider}. Supported: siliconflow, openai, google, custom"
 
         if not image_bytes:
             return "❌ Image generation returned empty result. Please try a different prompt."
@@ -7700,6 +8309,267 @@ async def _generate_image_openai(
         raise ValueError(f"No b64_json or URL in OpenAI response: {data}")
 
 
+def _json_path_get(data: Any, path: str) -> Any:
+    """Read a simple dotted JSON path, with numeric list indexes."""
+    if not path:
+        return None
+
+    current: Any = data
+    for raw_part in path.split("."):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if isinstance(current, list):
+            if not part.isdigit():
+                return None
+            index = int(part)
+            if index >= len(current):
+                return None
+            current = current[index]
+        elif isinstance(current, dict):
+            if part not in current:
+                return None
+            current = current[part]
+        else:
+            return None
+    return current
+
+
+def _render_json_template(template_json: str, variables: dict[str, str]) -> dict:
+    """Parse JSON first, then replace placeholders inside string values.
+
+    This avoids corrupting JSON when a prompt contains quotes, newlines, or
+    other characters that need escaping.
+    """
+    template_text = template_json.strip()
+    parse_errors: list[str] = []
+
+    candidates = [template_text]
+    normalized_quotes = (
+        template_text
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+    )
+    if normalized_quotes != template_text:
+        candidates.append(normalized_quotes)
+
+    # Users often paste a JSON example copied from a string literal, leaving
+    # escaped quotes like { \"model\": \"{model}\" }. Treat that as JSON too.
+    for text in list(candidates):
+        if '\\"' in text:
+            candidates.append(text.replace('\\"', '"'))
+
+    template = None
+    for text in candidates:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, str):
+                parsed = json.loads(parsed)
+            template = parsed
+            break
+        except Exception as e:
+            parse_errors.append(str(e))
+
+    if template is None:
+        detail = parse_errors[-1] if parse_errors else "unknown parse error"
+        raise ValueError(detail)
+
+    def render(value: Any) -> Any:
+        if isinstance(value, str):
+            rendered = value
+            for key, replacement in variables.items():
+                rendered = rendered.replace("{" + key + "}", replacement)
+            return rendered
+        if isinstance(value, list):
+            return [render(item) for item in value]
+        if isinstance(value, dict):
+            return {key: render(item) for key, item in value.items()}
+        return value
+
+    rendered = render(template)
+    if not isinstance(rendered, dict):
+        raise ValueError("Request body template must be a JSON object.")
+    return rendered
+
+
+def _json_structure_preview(data: Any, depth: int = 0) -> Any:
+    if depth > 4:
+        return "..."
+    if isinstance(data, dict):
+        return {k: _json_structure_preview(v, depth + 1) for k, v in list(data.items())[:12]}
+    if isinstance(data, list):
+        preview = [_json_structure_preview(item, depth + 1) for item in data[:2]]
+        if len(data) > 2:
+            preview.append(f"... {len(data)} items total")
+        return preview
+    if isinstance(data, str):
+        if data.startswith("data:image"):
+            return f"data:image... len={len(data)}"
+        if len(data) > 160:
+            return data[:160] + "..."
+    return data
+
+
+def _find_first_image_reference(data: Any) -> Any:
+    common_paths = [
+        "choices.0.message.images.0.image_url.url",
+        "choices.0.message.images.0.image_url",
+        "data.0.b64_json",
+        "data.0.url",
+        "output.0.content.0.image_url",
+        "output.0.content.0.image_base64",
+    ]
+    for path in common_paths:
+        value = _json_path_get(data, path)
+        if value:
+            return value
+
+    def walk(value: Any) -> Any:
+        if isinstance(value, dict):
+            for key in ("url", "b64_json", "image_url", "image_base64"):
+                nested = value.get(key)
+                if isinstance(nested, str) and nested:
+                    return nested
+                if isinstance(nested, dict):
+                    found = walk(nested)
+                    if found:
+                        return found
+            for nested in value.values():
+                found = walk(nested)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = walk(item)
+                if found:
+                    return found
+        elif isinstance(value, str) and (
+            value.startswith("data:image")
+            or value.startswith("http://")
+            or value.startswith("https://")
+        ):
+            return value
+        return None
+
+    return walk(data)
+
+
+async def _custom_image_reference_to_bytes(image_ref: Any, client: Any) -> bytes:
+    import base64
+
+    if isinstance(image_ref, dict):
+        image_ref = image_ref.get("url") or image_ref.get("b64_json") or image_ref.get("image_base64")
+
+    if not isinstance(image_ref, str) or not image_ref:
+        raise ValueError("Response image path did not resolve to a URL, data URL, or base64 string.")
+
+    if image_ref.startswith("data:image"):
+        _, _, encoded = image_ref.partition(",")
+        if not encoded:
+            raise ValueError("Image data URL did not contain base64 payload.")
+        return base64.b64decode(encoded)
+
+    if image_ref.startswith("http://") or image_ref.startswith("https://"):
+        img_resp = await client.get(image_ref, timeout=60)
+        img_resp.raise_for_status()
+        return img_resp.content
+
+    return base64.b64decode(image_ref)
+
+
+async def _generate_image_custom_api(
+    api_key: str,
+    model: str,
+    base_url: str,
+    endpoint_path: str,
+    request_body_template_json: str,
+    response_image_path: str,
+    extra_headers_json: str,
+    timeout_seconds: int | str,
+    prompt: str,
+    size: str,
+) -> bytes:
+    """Generate image via a configurable gateway API.
+
+    The default request/response shape supports TokenRouter and OpenRouter:
+    POST /chat/completions with image/text modalities, image returned in
+    choices.0.message.images.0.image_url.url as a data URL.
+    """
+    import httpx
+
+    if not base_url:
+        raise ValueError("Custom image API base_url is not configured.")
+    if not model:
+        raise ValueError("Custom image API model is not configured.")
+
+    timeout = int(timeout_seconds or 120)
+    endpoint = endpoint_path or "/chat/completions"
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        url = endpoint
+    else:
+        url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+
+    variables = {"prompt": prompt, "size": size, "model": model}
+    if request_body_template_json.strip():
+        try:
+            payload = _render_json_template(request_body_template_json, variables)
+        except Exception as e:
+            raise ValueError(f"Invalid request_body_template_json: {e}")
+    else:
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "modalities": ["image", "text"],
+            "stream": False,
+        }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if extra_headers_json.strip():
+        try:
+            extra_headers = json.loads(extra_headers_json)
+        except Exception as e:
+            raise ValueError(f"Invalid extra_headers_json: {e}")
+        if not isinstance(extra_headers, dict):
+            raise ValueError("extra_headers_json must be a JSON object.")
+        headers.update({str(k): str(v) for k, v in extra_headers.items() if v is not None})
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        if resp.status_code < 200 or resp.status_code >= 300:
+            try:
+                err_body = resp.json()
+                err_msg = (
+                    err_body.get("error", {}).get("message")
+                    if isinstance(err_body.get("error"), dict)
+                    else err_body.get("message")
+                ) or resp.text[:300]
+            except Exception:
+                err_msg = resp.text[:300]
+            raise ValueError(f"Custom image API error ({resp.status_code}): {err_msg}")
+
+        try:
+            data = resp.json()
+        except Exception:
+            raise ValueError("Custom image API returned non-JSON response.")
+
+        image_ref = _json_path_get(data, response_image_path) if response_image_path else None
+        if not image_ref:
+            image_ref = _find_first_image_reference(data)
+        if not image_ref:
+            preview = json.dumps(_json_structure_preview(data), ensure_ascii=False)
+            raise ValueError(
+                "No image found in custom image API response. "
+                f"Check response_image_path. Response structure: {preview[:800]}"
+            )
+
+        return await _custom_image_reference_to_bytes(image_ref, client)
+
+
 async def _generate_image_google(
     api_key: str, model: str, base_url: str, prompt: str, size: str
 ) -> bytes:
@@ -7712,7 +8582,7 @@ async def _generate_image_google(
     import httpx
     import base64
 
-    url = f"{base_url.rstrip('/')}/models/{model}:generateContent?key={api_key}"
+    url = f"{base_url.rstrip('/')}/models/{model}:generateContent"
 
     # Convert WxH size to aspect ratio for Gemini API
     # Supported: 1:1, 3:4, 4:3, 9:16, 16:9
@@ -7732,7 +8602,6 @@ async def _generate_image_google(
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                "numberOfImages": 1,
                 "aspectRatio": aspect_ratio,
             },
         },
@@ -7740,7 +8609,12 @@ async def _generate_image_google(
 
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
-            url, json=payload, headers={"Content-Type": "application/json"}
+            url,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            },
         )
         if resp.status_code != 200:
             try:
@@ -9983,16 +10857,46 @@ async def _list_published_pages(agent_id: uuid.UUID) -> str:
 
 # ─── AgentBay Tool Handlers ─────────────────────────────────────
 
+def _agentbay_normalize_image_bytes(data) -> bytes | None:
+    """Normalize AgentBay image payloads to raw bytes."""
+    import base64 as _base64
+
+    if isinstance(data, str):
+        if data.startswith("data:image"):
+            data = data.split(",", 1)[1]
+        return _base64.b64decode(data)
+    if isinstance(data, bytes):
+        return data
+    return None
+
+
+def _agentbay_save_image_to_workspace(
+    *,
+    agent_id: uuid.UUID,
+    ws: Path,
+    raw_bytes: bytes,
+    prefix: str,
+    label: str,
+) -> str:
+    """Save an explicitly requested screenshot under workspace/screenshots/."""
+    import time as _time
+
+    rel_path = f"workspace/screenshots/{prefix}-{int(_time.time())}.png"
+    screenshot_path = ws / rel_path
+    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+    screenshot_path.write_bytes(raw_bytes)
+    logger.info(f"[AgentBay] Explicit screenshot saved to workspace: {rel_path}")
+    return (
+        f"Screenshot saved to `{rel_path}`.\n"
+        f"![{label}](/api/agents/{agent_id}/files/download?path={rel_path})"
+    )
+
 async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
     """AgentBay browser navigation.
 
-    After navigating, always captures a screenshot.  Whether that screenshot is
-    stored to disk or kept only in memory depends on save_to_workspace:
-      - False (default): bytes are held in the process-level memory cache;
-        the returned sentinel [ImageID: ...] is consumed by vision_inject.py
-        in the same request cycle and then discarded — zero disk writes.
-      - True: screenshot is written to workspace/ so the user can see it in
-        their file manager, and a Markdown link is included in the return value.
+    After navigating, always captures an internal screenshot for LLM vision.
+    The screenshot is held in memory and consumed by vision_inject.py in the
+    same request cycle; it is not persisted to the user's workspace.
     """
     if not agent_id:
         return "❌ AgentBay 工具需要 agent 上下文"
@@ -10001,7 +10905,6 @@ async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, ar
 
     url = arguments.get("url", "")
     wait_for = arguments.get("wait_for", "")
-    save_to_workspace = arguments.get("save_to_workspace", False)
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10020,41 +10923,17 @@ async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, ar
 
         screenshot_data = result.get("screenshot")
         if screenshot_data:
-            import base64 as _base64
-            # Normalise to raw bytes regardless of whether it's a data URL or plain b64
-            if isinstance(screenshot_data, str):
-                if screenshot_data.startswith("data:image"):
-                    screenshot_data = screenshot_data.split(",", 1)[1]
-                raw_bytes = _base64.b64decode(screenshot_data)
-            elif isinstance(screenshot_data, bytes):
-                raw_bytes = screenshot_data
-            else:
-                raw_bytes = None
+            raw_bytes = _agentbay_normalize_image_bytes(screenshot_data)
 
             if raw_bytes:
-                if save_to_workspace:
-                    # Persist to workspace/ so the user can see the file
-                    import time as _time
-                    rel_path = f"workspace/screenshot_{int(_time.time())}.png"
-                    screenshot_path = ws / rel_path
-                    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-                    screenshot_path.write_bytes(raw_bytes)
-                    parts.append(
-                        f"截图已保存至 `{rel_path}`。\n"
-                        f"![Browser Navigation Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
-                        f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
-                    )
-                    logger.info(f"[AgentBay] Browser navigate screenshot saved to {rel_path}")
-                else:
-                    # Store in memory only — vision_inject.py will consume it
-                    from app.services.vision_inject import store_temp_screenshot
-                    img_id = store_temp_screenshot(raw_bytes)
-                    parts.append(
-                        f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
-                        f"NOTE: This screenshot is for YOUR eyes only (LLM vision). The user CANNOT see it. "
-                        f"If the user asked to SEE a screenshot, call this tool again with save_to_workspace=true."
-                    )
-                    logger.info(f"[AgentBay] Browser navigate screenshot stored in memory (id={img_id})")
+                # Store in memory only — vision_inject.py will consume it.
+                from app.services.vision_inject import store_temp_screenshot
+                img_id = store_temp_screenshot(raw_bytes)
+                parts.append(
+                    f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
+                    f"NOTE: This screenshot is for LLM vision only and is not saved to the user's workspace."
+                )
+                logger.info(f"[AgentBay] Browser navigate screenshot stored in memory (id={img_id})")
 
         return "\n\n".join(parts)
 
@@ -10071,17 +10950,14 @@ async def _agentbay_browser_screenshot(agent_id: Optional[uuid.UUID], ws: Path, 
     Correct way to observe the result of a click, type, or form submit — never
     call browser_navigate again just to screenshot, that refreshes the page.
 
-    By default (save_to_workspace=False) the image is held in the process-level
-    memory cache and consumed once by the LLM vision pipeline — no disk write,
-    nothing shown in the user's file manager or chat history.
-    Set save_to_workspace=True to persist and display the image.
+    The image is held in the process-level memory cache and consumed once by
+    the LLM vision pipeline — no disk write, nothing shown in the user's file
+    manager or chat history.
     """
     if not agent_id:
         return "❌ AgentBay 工具需要 agent 上下文"
 
     from app.services.agentbay_client import get_agentbay_client_for_agent
-
-    save_to_workspace = arguments.get("save_to_workspace", False)
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10092,46 +10968,52 @@ async def _agentbay_browser_screenshot(agent_id: Optional[uuid.UUID], ws: Path, 
         if not screenshot_data:
             return "❌ 截图失败：未返回图像数据"
 
-        import base64 as _base64
-        # Normalise to raw bytes
-        if isinstance(screenshot_data, str):
-            if screenshot_data.startswith("data:image"):
-                screenshot_data = screenshot_data.split(",", 1)[1]
-            raw_bytes = _base64.b64decode(screenshot_data)
-        elif isinstance(screenshot_data, bytes):
-            raw_bytes = screenshot_data
-        else:
+        raw_bytes = _agentbay_normalize_image_bytes(screenshot_data)
+        if raw_bytes is None:
             return "❌ 截图失败：未知数据格式"
 
-        if save_to_workspace:
-            # Persist to workspace/ so the user can see the file
-            import time as _time
-            rel_path = f"workspace/screenshot_{int(_time.time())}.png"
-            screenshot_path = ws / rel_path
-            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-            screenshot_path.write_bytes(raw_bytes)
-            logger.info(f"[AgentBay] Browser screenshot saved to workspace: {rel_path}")
-            return (
-                f"✅ 截图已保存至 `{rel_path}`。\n"
-                f"![Browser Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
-                f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
-            )
-        else:
-            # Store in memory only — vision_inject.py will consume it for LLM vision
-            from app.services.vision_inject import store_temp_screenshot
-            img_id = store_temp_screenshot(raw_bytes)
-            logger.info(f"[AgentBay] Browser screenshot stored in memory (id={img_id})")
-            return (
-                f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
-                f"NOTE: This screenshot is for YOUR eyes only (LLM vision). The user CANNOT see it. "
-                f"If the user asked to SEE a screenshot, call this tool again with save_to_workspace=true."
-            )
+        # Store in memory only — vision_inject.py will consume it for LLM vision
+        from app.services.vision_inject import store_temp_screenshot
+        img_id = store_temp_screenshot(raw_bytes)
+        logger.info(f"[AgentBay] Browser screenshot stored in memory (id={img_id})")
+        return (
+            f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
+            f"NOTE: This screenshot is for LLM vision only and is not saved to the user's workspace."
+        )
 
     except RuntimeError as e:
         return f"❌ {str(e)}"
     except Exception as e:
         logger.exception(f"[AgentBay] Browser screenshot failed for agent {agent_id}")
         return f"❌ 截图失败: {str(e)[:200]}"
+
+
+async def _agentbay_browser_save_screenshot(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Save the current AgentBay browser screenshot to workspace/screenshots/."""
+    if not agent_id:
+        return "❌ AgentBay 工具需要 agent 上下文"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    try:
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "browser", session_id=_session_id)
+        result = await client.browser_screenshot()
+        raw_bytes = _agentbay_normalize_image_bytes(result.get("screenshot"))
+        if raw_bytes is None:
+            return "❌ 截图保存失败：未返回可保存的图像数据"
+        return _agentbay_save_image_to_workspace(
+            agent_id=agent_id,
+            ws=ws,
+            raw_bytes=raw_bytes,
+            prefix="browser-screenshot",
+            label="Browser Screenshot",
+        )
+    except RuntimeError as e:
+        return f"❌ {str(e)}"
+    except Exception as e:
+        logger.exception(f"[AgentBay] Browser save screenshot failed for agent {agent_id}")
+        return f"❌ 截图保存失败: {str(e)[:200]}"
 
 
 async def _agentbay_browser_click(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
@@ -10214,6 +11096,119 @@ async def _agentbay_code_execute(agent_id: Optional[uuid.UUID], ws: Path, argume
         return f"❌ 代码执行失败: {str(e)[:200]}"
 
 
+async def _agentbay_code_write_file(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Write a text file in the AgentBay Code Sandbox."""
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    remote_path = arguments.get("remote_path") or arguments.get("path") or ""
+    content = arguments.get("content")
+    mode = arguments.get("mode", "overwrite")
+
+    if not remote_path.strip():
+        return "Missing required argument 'remote_path'"
+    if content is None:
+        return "Missing required argument 'content'"
+    if mode not in ("overwrite", "append"):
+        return "Invalid mode. Use 'overwrite' or 'append'."
+
+    try:
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "code", session_id=_session_id)
+        result = await asyncio.to_thread(
+            client._session.file_system.write_file,
+            remote_path,
+            str(content),
+            mode,
+        )
+        if result.success:
+            byte_count = len(str(content).encode("utf-8"))
+            return f"File written in AgentBay Code Sandbox: {remote_path} ({byte_count} bytes, mode={mode})"
+        return f"Write failed: {result.error_message}"
+    except RuntimeError as e:
+        return f"{str(e)}. Please configure AgentBay in Agent settings."
+    except Exception as e:
+        logger.exception(f"[AgentBay] Code write file failed for agent {agent_id}")
+        return f"Write file failed: {str(e)[:200]}"
+
+
+async def _agentbay_code_read_file(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Read a text file from the AgentBay Code Sandbox."""
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    remote_path = arguments.get("remote_path") or arguments.get("path") or ""
+    if not remote_path.strip():
+        return "Missing required argument 'remote_path'"
+
+    try:
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "code", session_id=_session_id)
+        result = await asyncio.to_thread(
+            client._session.file_system.read_file,
+            remote_path,
+        )
+        if result.success:
+            content = getattr(result, "content", "") or ""
+            return f"File read from AgentBay Code Sandbox: {remote_path}\n\n{content[:12000]}"
+        return f"Read failed: {result.error_message}"
+    except RuntimeError as e:
+        return f"{str(e)}. Please configure AgentBay in Agent settings."
+    except Exception as e:
+        logger.exception(f"[AgentBay] Code read file failed for agent {agent_id}")
+        return f"Read file failed: {str(e)[:200]}"
+
+
+async def _agentbay_code_edit_file(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Edit a text file in the AgentBay Code Sandbox."""
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    remote_path = arguments.get("remote_path") or arguments.get("path") or ""
+    edits = arguments.get("edits")
+    dry_run = bool(arguments.get("dry_run", False))
+
+    if not remote_path.strip():
+        return "Missing required argument 'remote_path'"
+    if not isinstance(edits, list) or not edits:
+        return "Missing required argument 'edits'"
+
+    normalized_edits = []
+    for edit in edits:
+        if not isinstance(edit, dict):
+            return "Each edit must be an object with oldText and newText."
+        old_text = edit.get("oldText")
+        new_text = edit.get("newText")
+        if old_text is None or new_text is None:
+            return "Each edit must include oldText and newText."
+        normalized_edits.append({"oldText": str(old_text), "newText": str(new_text)})
+
+    try:
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "code", session_id=_session_id)
+        result = await asyncio.to_thread(
+            client._session.file_system.edit_file,
+            remote_path,
+            normalized_edits,
+            dry_run,
+        )
+        if result.success:
+            action = "Previewed edits for" if dry_run else "Edited"
+            return f"{action} AgentBay Code Sandbox file: {remote_path} ({len(normalized_edits)} replacement(s))"
+        return f"Edit failed: {result.error_message}"
+    except RuntimeError as e:
+        return f"{str(e)}. Please configure AgentBay in Agent settings."
+    except Exception as e:
+        logger.exception(f"[AgentBay] Code edit file failed for agent {agent_id}")
+        return f"Edit file failed: {str(e)[:200]}"
+
+
 async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     """Dispatch email tool calls to the email_service module."""
     from app.services.email_service import send_email, read_emails, reply_email
@@ -10263,27 +11258,21 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
 
 async def _search_clawhub(agent_id: uuid.UUID, arguments: dict) -> str:
     """Search the ClawHub skill registry."""
-    import httpx
     query = arguments.get("query", "").strip()
     if not query:
         return "Missing required argument 'query'"
 
     # Resolve tenant ClawHub API key
-    from app.api.skills import _get_clawhub_key
+    from app.api.skills import _clawhub_search_endpoint, _fetch_clawhub_json, _get_clawhub_key
     tenant_id = await _get_agent_tenant_id(agent_id)
     api_key = await _get_clawhub_key(tenant_id)
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                "https://clawhub.ai/api/search",
-                params={"q": query},
-                headers=headers,
-            )
-            if resp.status_code != 200:
-                return f"ClawHub search failed (HTTP {resp.status_code})"
-            data = resp.json()
+        data, _ = await _fetch_clawhub_json(
+            _clawhub_search_endpoint,
+            api_key=api_key,
+            params={"q": query},
+        )
     except Exception as e:
         return f"❌ ClawHub search error: {str(e)[:200]}"
 
@@ -10313,7 +11302,6 @@ async def _search_clawhub(agent_id: uuid.UUID, arguments: dict) -> str:
 
 async def _install_skill(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     """Install a skill from ClawHub slug or GitHub URL into the agent's workspace."""
-    import httpx
     source = arguments.get("source", "").strip()
     if not source:
         return "❌ Missing required argument 'source'. Provide a ClawHub slug (e.g. 'market-research') or a GitHub URL."
@@ -10341,34 +11329,20 @@ async def _install_skill(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
         else:
             # ── ClawHub slug path ──
             slug = source
-            from app.api.skills import _fetch_github_directory, _get_github_token, _get_clawhub_key
+            from app.api.skills import _fetch_clawhub_skill_archive, _fetch_clawhub_skill_meta, _get_clawhub_key
 
             # 1. Fetch metadata from ClawHub (with tenant API key)
             tenant_id = await _get_agent_tenant_id(agent_id)
             api_key = await _get_clawhub_key(tenant_id)
-            ch_headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
-                    resp = await client.get(f"https://clawhub.ai/api/v1/skills/{slug}", headers=ch_headers)
-                    if resp.status_code == 404:
-                        return f"Skill '{slug}' not found on ClawHub. Use search_clawhub to find available skills."
-                    if resp.status_code != 200:
-                        return f"ClawHub API error (HTTP {resp.status_code})"
-                    meta = resp.json()
+                _meta, meta_base = await _fetch_clawhub_skill_meta(slug, api_key=api_key)
             except Exception as e:
                 return f"Failed to connect to ClawHub: {str(e)[:200]}"
 
-            owner_info = meta.get("owner", {})
-            handle = owner_info.get("handle", "").lower()
-            if not handle:
-                return "❌ Could not determine skill owner from ClawHub metadata."
-
-            # 2. Fetch files from GitHub
-            github_path = f"skills/{handle}/{slug}"
-            token = await _get_github_token(tenant_id)
-            files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token)
+            # 2. Fetch files from the ClawHub archive
+            files, _ = await _fetch_clawhub_skill_archive(slug, api_key=api_key, preferred_base=meta_base)
             if not files:
-                return f"❌ No files found for skill '{slug}' in GitHub archive."
+                return f"❌ No files found for skill '{slug}' in the ClawHub archive."
 
             folder_name = slug
 
@@ -10542,50 +11516,238 @@ async def _agentbay_command_exec(agent_id: Optional[uuid.UUID], ws: Path, argume
 
 # ─── AgentBay: Computer Use Handlers ────────────────────────────────────
 
-def _save_screenshot_to_workspace(agent_id: uuid.UUID, ws: Path, data) -> str:
-    """Save screenshot data to workspace and return markdown image link.
+def _agentbay_extract_screen_dimensions(screen_data) -> tuple[int | None, int | None, str]:
+    """Return width/height/dpi text from AgentBay get_screen_size payload."""
+    if not isinstance(screen_data, dict):
+        return None, None, ""
+    width = screen_data.get("width")
+    height = screen_data.get("height")
+    dpi = screen_data.get("dpiScalingFactor")
+    try:
+        width = int(width) if width is not None else None
+        height = int(height) if height is not None else None
+    except (TypeError, ValueError):
+        width, height = None, None
+    parts = []
+    if width and height:
+        parts.append(f"width={width}, height={height}")
+    if dpi is not None:
+        parts.append(f"dpiScalingFactor={dpi}")
+    return width, height, ", ".join(parts)
 
-    Common helper for computer_screenshot and browser screenshot data.
-    """
-    import time
-    import base64
 
-    rel_path = f"workspace/desktop-screenshot-{int(time.time())}.png"
-    screenshot_path = ws / rel_path
-    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+async def _agentbay_get_screen_metadata(client) -> tuple[int | None, int | None, str]:
+    try:
+        size_result = await client.computer_get_screen_size()
+        if size_result.get("success"):
+            return _agentbay_extract_screen_dimensions(size_result.get("data"))
+    except Exception as e:
+        logger.debug(f"[AgentBay] Could not fetch computer screen size: {e}")
+    return None, None, ""
 
-    # Handle various data formats from the SDK
-    if isinstance(data, str):
-        if data.startswith("data:image"):
-            data = data.split(",", 1)[1]
-        raw_bytes = base64.b64decode(data)
-    elif isinstance(data, bytes):
-        raw_bytes = data
-    else:
-        return ""
 
-    screenshot_path.write_bytes(raw_bytes)
-    return (
-        f"Screenshot saved to `{rel_path}`.\n\n"
-        f"![Desktop Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
-        f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
-    )
+def _agentbay_image_dimensions(raw_bytes: bytes) -> tuple[int | None, int | None]:
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(BytesIO(raw_bytes)) as img:
+            return img.width, img.height
+    except Exception:
+        return None, None
+
+
+def _agentbay_crop_image_bytes(
+    raw_bytes: bytes,
+    *,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> tuple[bytes, tuple[int, int, int, int], int] | None:
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(BytesIO(raw_bytes)) as img:
+            img_width, img_height = img.width, img.height
+            left = max(0, min(int(x), img_width - 1))
+            top = max(0, min(int(y), img_height - 1))
+            right = max(left + 1, min(left + int(width), img_width))
+            bottom = max(top + 1, min(top + int(height), img_height))
+            cropped = img.crop((left, top, right, bottom))
+
+            # Enlarge precision crops before vision injection so small controls
+            # occupy more pixels without changing the absolute coordinate labels.
+            max_side = max(cropped.width, cropped.height)
+            scale = 1
+            if max_side <= 260:
+                scale = 3
+            elif max_side <= 520:
+                scale = 2
+            if scale > 1:
+                cropped = cropped.resize((cropped.width * scale, cropped.height * scale), Image.Resampling.LANCZOS)
+
+            buf = BytesIO()
+            cropped.save(buf, format="PNG")
+            return buf.getvalue(), (left, top, right - left, bottom - top), scale
+    except Exception as e:
+        logger.debug(f"[AgentBay] Could not crop desktop screenshot: {e}")
+        return None
+
+
+def _agentbay_expand_precision_crop(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    *,
+    min_width: int = 360,
+    min_height: int = 240,
+) -> tuple[int, int, int, int]:
+    """Expand small requested crops so near-miss targeting still shows context."""
+    width = max(1, int(width))
+    height = max(1, int(height))
+    expanded_width = max(width, min_width)
+    expanded_height = max(height, min_height)
+    center_x = int(x) + width / 2
+    center_y = int(y) + height / 2
+    expanded_x = int(round(center_x - expanded_width / 2))
+    expanded_y = int(round(center_y - expanded_height / 2))
+    return expanded_x, expanded_y, expanded_width, expanded_height
+
+
+def _agentbay_desktop_coordinate_note(
+    screen_note: str,
+    image_width: int | None = None,
+    image_height: int | None = None,
+    crop: tuple[int, int, int, int] | None = None,
+) -> str:
+    parts = []
+    if screen_note:
+        parts.append(f"Cloud Desktop coordinate system for mouse tools: {screen_note}.")
+    if image_width and image_height:
+        parts.append(f"Latest screenshot pixel size: width={image_width}, height={image_height}.")
+    if crop:
+        x, y, width, height = crop
+        parts.append(
+            f"Precision crop shown to vision: absolute origin=({x}, {y}), size={width}x{height}. "
+            "Grid labels in the crop are absolute Cloud Desktop coordinates, not crop-local coordinates."
+        )
+    if parts:
+        parts.append(
+            "The injected analysis image includes a coordinate grid; use the grid labels to choose the center of the target. "
+            "Before clicking dialog buttons, text buttons, tabs, menus, checkboxes, close buttons, small controls, "
+            "or any target whose center is not unambiguous, take a precision screenshot around that target area. "
+            "For popup dismissal, prefer agentbay_computer_dismiss_dialog before coordinate clicking. "
+            "Use absolute desktop pixels from the top-left corner (0, 0); do not use the size of the right-side preview panel."
+        )
+    return "\n".join(parts)
+
+
+def _agentbay_normalize_text(value) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _agentbay_app_field(app: dict, *keys: str) -> str:
+    for key in keys:
+        value = app.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _agentbay_format_apps(apps: list, limit: int = 40) -> str:
+    import json
+
+    if not apps:
+        return "[]"
+    compact_apps = []
+    for app in apps[:limit]:
+        if isinstance(app, dict):
+            compact_apps.append(
+                {
+                    key: app.get(key)
+                    for key in ("name", "start_cmd", "startCmd", "work_directory", "workDirectory", "stop_cmd", "stopCmd")
+                    if app.get(key)
+                }
+            )
+        else:
+            compact_apps.append(str(app))
+    rendered = json.dumps(compact_apps, ensure_ascii=False, indent=2)
+    if len(apps) > limit:
+        rendered += f"\n... {len(apps) - limit} more app(s) omitted"
+    return rendered[:5000]
+
+
+def _agentbay_find_installed_app_match(query: str, apps: list) -> tuple[dict | None, float]:
+    from difflib import SequenceMatcher
+
+    query_norm = _agentbay_normalize_text(query.split()[0] if query else query)
+    if not query_norm:
+        return None, 0.0
+
+    best_app = None
+    best_score = 0.0
+    for app in apps:
+        if not isinstance(app, dict):
+            continue
+        fields = [
+            _agentbay_app_field(app, "name"),
+            _agentbay_app_field(app, "start_cmd", "startCmd"),
+            _agentbay_app_field(app, "work_directory", "workDirectory"),
+        ]
+        for field in fields:
+            field_norm = _agentbay_normalize_text(field)
+            if not field_norm:
+                continue
+            if query_norm == field_norm:
+                score = 1.0
+            elif query_norm in field_norm or field_norm in query_norm:
+                score = 0.9
+            else:
+                score = SequenceMatcher(None, query_norm, field_norm).ratio()
+            if score > best_score:
+                best_app, best_score = app, score
+
+    return best_app, best_score
+
+
+def _agentbay_uncertain_start_error(error_message: str) -> bool:
+    text = (error_message or "").lower()
+    return "may have launched" in text or "no processes found" in text
+
+
+async def _agentbay_visible_apps_note(client) -> str:
+    try:
+        visible = await client.computer_list_visible_apps()
+        if visible.get("success"):
+            apps = visible.get("apps", [])
+            return f"Visible applications after the launch attempt ({len(apps)}):\n{_agentbay_format_apps(apps, limit=20)}"
+        return f"Could not verify visible applications: {visible.get('error_message', 'Unknown error')}"
+    except Exception as e:
+        logger.debug(f"[AgentBay] Could not list visible apps after start_app: {e}")
+        return f"Could not verify visible applications: {str(e)[:200]}"
 
 
 async def _agentbay_computer_screenshot(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
     """Take a screenshot of the AgentBay cloud desktop.
 
-    By default (save_to_workspace=False) the image is held in the process-level
-    memory cache for LLM vision analysis only — no disk write, nothing shown in
-    the user's file manager or chat history.
-    Set save_to_workspace=True to persist and display the image.
+    The image is held in the process-level memory cache for LLM vision analysis
+    only — no disk write, nothing shown in the user's file manager or chat
+    history.
     """
     if not agent_id:
         return "AgentBay tools require agent context"
 
     from app.services.agentbay_client import get_agentbay_client_for_agent
 
-    save_to_workspace = arguments.get("save_to_workspace", False)
+    focus_x = arguments.get("focus_x")
+    focus_y = arguments.get("focus_y")
+    focus_width = arguments.get("focus_width")
+    focus_height = arguments.get("focus_height")
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10597,46 +11759,171 @@ async def _agentbay_computer_screenshot(agent_id: Optional[uuid.UUID], ws: Path,
 
         raw_data = result["data"]
 
-        # Normalise to raw bytes regardless of SDK return format
-        import base64 as _base64
-        if isinstance(raw_data, str):
-            if raw_data.startswith("data:image"):
-                raw_data = raw_data.split(",", 1)[1]
-            raw_bytes = _base64.b64decode(raw_data)
-        elif isinstance(raw_data, bytes):
-            raw_bytes = raw_data
-        else:
+        raw_bytes = _agentbay_normalize_image_bytes(raw_data)
+        if raw_bytes is None:
             return "Screenshot captured but data format is unrecognised."
 
-        if save_to_workspace:
-            # Persist to workspace/ for user visibility
-            import time as _time
-            rel_path = f"workspace/desktop-screenshot-{int(_time.time())}.png"
-            screenshot_path = ws / rel_path
-            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-            screenshot_path.write_bytes(raw_bytes)
-            logger.info(f"[AgentBay] Desktop screenshot saved to workspace: {rel_path}")
-            return (
-                f"Desktop screenshot saved to `{rel_path}`.\n"
-                f"![Desktop Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
-                f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
-            )
-        else:
-            # Store in memory only — vision_inject.py will consume it for LLM vision
-            from app.services.vision_inject import store_temp_screenshot
-            img_id = store_temp_screenshot(raw_bytes)
-            logger.info(f"[AgentBay] Desktop screenshot stored in memory (id={img_id})")
-            return (
-                f"Internal desktop screenshot captured for analysis. [ImageID: {img_id}]\n"
-                f"NOTE: This screenshot is for YOUR eyes only (LLM vision). The user CANNOT see it. "
-                f"If the user asked to SEE a screenshot, call this tool again with save_to_workspace=true."
-            )
+        crop_bounds: tuple[int, int, int, int] | None = None
+        crop_scale = 1
+        analysis_bytes = raw_bytes
+        if (
+            focus_x is not None
+            and focus_y is not None
+            and focus_width is not None
+            and focus_height is not None
+        ):
+            try:
+                crop_result = _agentbay_crop_image_bytes(
+                    raw_bytes,
+                    x=int(round(float(focus_x))),
+                    y=int(round(float(focus_y))),
+                    width=int(round(float(focus_width))),
+                    height=int(round(float(focus_height))),
+                )
+                if crop_result:
+                    analysis_bytes, crop_bounds, crop_scale = crop_result
+            except (TypeError, ValueError):
+                crop_bounds = None
+
+        # Store in memory only — vision_inject.py will consume it for LLM vision
+        from app.services.vision_inject import store_temp_screenshot
+        grid_options = {}
+        if crop_bounds:
+            crop_x, crop_y, crop_width, crop_height = crop_bounds
+            grid_options = {
+                "origin_x": crop_x,
+                "origin_y": crop_y,
+                "minor_step": 10,
+                "major_step": 50,
+                "pixel_scale": crop_scale,
+            }
+        img_id = store_temp_screenshot(analysis_bytes, grid_options=grid_options)
+        logger.info(f"[AgentBay] Desktop screenshot stored in memory (id={img_id})")
+        screen_width, screen_height, screen_note = await _agentbay_get_screen_metadata(client)
+        image_width, image_height = _agentbay_image_dimensions(raw_bytes)
+        coordinate_note = _agentbay_desktop_coordinate_note(
+            screen_note,
+            image_width or screen_width,
+            image_height or screen_height,
+            crop=crop_bounds,
+        )
+        return (
+            f"Internal desktop screenshot captured for analysis. [ImageID: {img_id}]\n"
+            f"{coordinate_note}\n"
+            "TARGETING NOTE: Before clicking dialog buttons, text buttons, tabs, menus, checkboxes, "
+            "close buttons, small controls, or any target whose center is not unambiguous, call "
+            "agentbay_computer_precision_screenshot around the target and click from that enlarged crop.\n"
+            f"NOTE: This screenshot is for LLM vision only and is not saved to the user's workspace."
+        )
 
     except RuntimeError as e:
         return f"{str(e)}. Please configure AgentBay in Agent settings."
     except Exception as e:
         logger.exception(f"[AgentBay] Computer screenshot failed for agent {agent_id}")
         return f"Desktop screenshot failed: {str(e)[:200]}"
+
+
+async def _agentbay_computer_save_screenshot(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Save the current AgentBay cloud desktop screenshot to workspace/screenshots/."""
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    try:
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
+        result = await client.computer_screenshot()
+        if not (result.get("success") and result.get("data")):
+            return f"Screenshot save failed: {result.get('error_message', 'Unknown error')}"
+        raw_bytes = _agentbay_normalize_image_bytes(result.get("data"))
+        if raw_bytes is None:
+            return "Screenshot save failed: captured data format is unrecognised."
+        screen_width, screen_height, screen_note = await _agentbay_get_screen_metadata(client)
+        image_width, image_height = _agentbay_image_dimensions(raw_bytes)
+        coordinate_note = _agentbay_desktop_coordinate_note(
+            screen_note,
+            image_width or screen_width,
+            image_height or screen_height,
+        )
+        saved = _agentbay_save_image_to_workspace(
+            agent_id=agent_id,
+            ws=ws,
+            raw_bytes=raw_bytes,
+            prefix="desktop-screenshot",
+            label="Desktop Screenshot",
+        )
+        return f"{saved}\n{coordinate_note}"
+    except RuntimeError as e:
+        return f"{str(e)}. Please configure AgentBay in Agent settings."
+    except Exception as e:
+        logger.exception(f"[AgentBay] Computer save screenshot failed for agent {agent_id}")
+        return f"Desktop screenshot save failed: {str(e)[:200]}"
+
+
+async def _agentbay_computer_precision_screenshot(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Take an enlarged precision crop for desktop controls."""
+    aliases = {
+        "focus_x": "x",
+        "focus_y": "y",
+        "focus_width": "width",
+        "focus_height": "height",
+    }
+    for alias, canonical in aliases.items():
+        if arguments.get(canonical) is None and arguments.get(alias) is not None:
+            arguments[canonical] = arguments.get(alias)
+
+    required = ("x", "y", "width", "height")
+    missing = [key for key in required if arguments.get(key) is None]
+    if missing:
+        return (
+            f"Missing required precision crop argument(s): {', '.join(missing)}. "
+            "Use x, y, width, height for the absolute desktop crop rectangle."
+        )
+
+    try:
+        requested_x = int(round(float(arguments["x"])))
+        requested_y = int(round(float(arguments["y"])))
+        requested_width = int(round(float(arguments["width"])))
+        requested_height = int(round(float(arguments["height"])))
+    except (TypeError, ValueError):
+        return (
+            "Precision crop failed: x, y, width, and height must be numeric absolute desktop pixels. "
+            f"Got x={arguments.get('x')!r}, y={arguments.get('y')!r}, "
+            f"width={arguments.get('width')!r}, height={arguments.get('height')!r}."
+        )
+
+    expanded_x, expanded_y, expanded_width, expanded_height = _agentbay_expand_precision_crop(
+        requested_x,
+        requested_y,
+        requested_width,
+        requested_height,
+    )
+
+    precision_args = dict(arguments)
+    precision_args["focus_x"] = expanded_x
+    precision_args["focus_y"] = expanded_y
+    precision_args["focus_width"] = expanded_width
+    precision_args["focus_height"] = expanded_height
+    result = await _agentbay_computer_screenshot(agent_id, ws, precision_args)
+    expansion_note = ""
+    if (
+        expanded_x,
+        expanded_y,
+        expanded_width,
+        expanded_height,
+    ) != (requested_x, requested_y, requested_width, requested_height):
+        expansion_note = (
+            f"Requested crop ({requested_x}, {requested_y}, {requested_width}x{requested_height}) "
+            f"was expanded for context to ({expanded_x}, {expanded_y}, {expanded_width}x{expanded_height}). "
+        )
+    return (
+        "Precision desktop crop captured for accurate targeting. "
+        f"{expansion_note}"
+        "Use the absolute coordinate labels in this enlarged crop for the next click; click the visual center "
+        "of the target and do not reuse a guessed coordinate from the full screenshot.\n"
+        f"{result}"
+    )
 
 
 async def _agentbay_computer_click(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
@@ -10653,10 +11940,27 @@ async def _agentbay_computer_click(agent_id: Optional[uuid.UUID], ws: Path, argu
     try:
         _session_id = arguments.pop("_session_id", "")
         client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
+        try:
+            x = int(round(float(x)))
+            y = int(round(float(y)))
+        except (TypeError, ValueError):
+            return f"Click failed: x and y must be numeric desktop pixel coordinates, got x={x!r}, y={y!r}."
+
+        screen_width, screen_height, screen_note = await _agentbay_get_screen_metadata(client)
+        if screen_width and screen_height and not (0 <= x < screen_width and 0 <= y < screen_height):
+            return (
+                f"Click refused: ({x}, {y}) is outside the Cloud Desktop coordinate system "
+                f"({screen_note}). Use coordinates from the latest full desktop screenshot."
+            )
         result = await client.computer_click(x, y, button=button)
         if result.get("success"):
-            return f"Clicked at ({x}, {y}) with {button} button"
-        return f"Click failed at ({x}, {y})"
+            note = f" within {screen_note}" if screen_note else ""
+            return (
+                f"Clicked at ({x}, {y}) with {button} button{note}. "
+                f"This only confirms the mouse event was sent; call agentbay_computer_screenshot to verify the UI changed."
+            )
+        note = f" Coordinate system: {screen_note}." if screen_note else ""
+        return f"Click failed at ({x}, {y}).{note}"
     except RuntimeError as e:
         return f"{str(e)}"
     except Exception as e:
@@ -10848,12 +12152,107 @@ async def _agentbay_computer_start_app(agent_id: Optional[uuid.UUID], ws: Path, 
             else:
                 data_str = ""
             return f"Application started: {cmd}" + (f"\n\n{data_str[:1000]}" if data_str else "")
-        return f"Failed to start application: {result.get('error_message', 'Unknown error')}"
+
+        direct_error = result.get("error_message", "Unknown error")
+        installed_note = ""
+        try:
+            installed_result = await client.computer_get_installed_apps()
+            if installed_result.get("success"):
+                apps = installed_result.get("apps", [])
+                matched_app, score = _agentbay_find_installed_app_match(cmd, apps)
+                if matched_app and score >= 0.58:
+                    matched_name = _agentbay_app_field(matched_app, "name") or "(unnamed app)"
+                    matched_cmd = _agentbay_app_field(matched_app, "start_cmd", "startCmd")
+                    matched_work_dir = _agentbay_app_field(matched_app, "work_directory", "workDirectory") or work_dir
+                    if matched_cmd and matched_cmd.strip() != cmd.strip():
+                        retry = await client.computer_start_app(matched_cmd, work_dir=matched_work_dir)
+                        if retry.get("success"):
+                            retry_data = retry.get("data")
+                            retry_data_str = str(retry_data)[:1000] if retry_data is not None else ""
+                            return (
+                                f"Direct start command failed: {cmd}\n"
+                                f"Matched installed app: {matched_name} (score={score:.2f})\n"
+                                f"Retried with start_cmd: {matched_cmd}\n"
+                                f"Application started." + (f"\n\n{retry_data_str}" if retry_data_str else "")
+                            )
+
+                        retry_error = retry.get("error_message", "Unknown error")
+                        if _agentbay_uncertain_start_error(retry_error):
+                            visible_note = await _agentbay_visible_apps_note(client)
+                            return (
+                                f"Direct start command failed: {cmd}\n"
+                                f"Matched installed app: {matched_name} (score={score:.2f})\n"
+                                f"Retried with start_cmd: {matched_cmd}\n"
+                                f"Retry reported an uncertain launch result: {retry_error}\n\n"
+                                f"{visible_note}"
+                            )
+                        return (
+                            f"Direct start command failed: {cmd}\n"
+                            f"Matched installed app: {matched_name} (score={score:.2f})\n"
+                            f"Retried with start_cmd: {matched_cmd}\n"
+                            f"Retry failed: {retry_error}"
+                        )
+
+                installed_note = (
+                    f"\n\nInstalled apps were checked, but no confident match was found for `{cmd}`. "
+                    f"Use agentbay_computer_get_installed_apps and then pass the returned start_cmd to this tool."
+                )
+            else:
+                installed_note = f"\n\nCould not check installed apps: {installed_result.get('error_message', 'Unknown error')}"
+        except Exception as e:
+            logger.debug(f"[AgentBay] Installed app fallback failed: {e}")
+            installed_note = f"\n\nCould not check installed apps: {str(e)[:200]}"
+
+        if _agentbay_uncertain_start_error(direct_error):
+            visible_note = await _agentbay_visible_apps_note(client)
+            return (
+                f"Start command reported an uncertain launch result: {direct_error}\n\n"
+                f"{visible_note}"
+                f"{installed_note}"
+            )
+
+        return f"Failed to start application: {direct_error}{installed_note}"
     except RuntimeError as e:
         return f"{str(e)}"
     except Exception as e:
         logger.exception(f"[AgentBay] Computer start_app failed")
         return f"Start application failed: {str(e)[:200]}"
+
+
+async def _agentbay_computer_get_installed_apps(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """List installed desktop applications and launch commands."""
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    start_menu = arguments.get("start_menu", True)
+    desktop = arguments.get("desktop", True)
+    ignore_system_apps = arguments.get("ignore_system_apps", True)
+
+    try:
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
+        result = await client.computer_get_installed_apps(
+            start_menu=bool(start_menu),
+            desktop=bool(desktop),
+            ignore_system_apps=bool(ignore_system_apps),
+        )
+        if result.get("success"):
+            apps = result.get("apps", [])
+            if not apps:
+                return "No installed applications found."
+            return (
+                f"Installed applications ({len(apps)}). Use the returned start_cmd exactly with "
+                f"agentbay_computer_start_app; do not guess app launch commands.\n\n"
+                f"{_agentbay_format_apps(apps, limit=80)}"
+            )
+        return f"Failed to get installed applications: {result.get('error_message', 'Unknown error')}"
+    except RuntimeError as e:
+        return f"{str(e)}"
+    except Exception as e:
+        logger.exception(f"[AgentBay] Computer get_installed_apps failed")
+        return f"Get installed applications failed: {str(e)[:200]}"
 
 
 async def _agentbay_computer_get_cursor_position(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
@@ -10927,6 +12326,167 @@ async def _agentbay_computer_activate_window(agent_id: Optional[uuid.UUID], ws: 
     except Exception as e:
         logger.exception(f"[AgentBay] Computer activate_window failed")
         return f"Activate window failed: {str(e)[:200]}"
+
+
+async def _agentbay_computer_list_windows(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """List OS-level root windows with IDs and geometry."""
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    timeout_ms = arguments.get("timeout_ms", 3000)
+
+    try:
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
+        result = await client.computer_list_windows(timeout_ms=int(timeout_ms))
+        if result.get("success"):
+            import json
+            windows = result.get("windows", [])
+            if not windows:
+                return "No root windows found."
+            windows_str = json.dumps(windows, ensure_ascii=False, indent=2)
+            return (
+                f"OS-level root desktop windows ({len(windows)}). These window_id values refer to whole "
+                f"application windows. Use them for activation, or for closing only when the user explicitly "
+                f"asked to close/quit an entire desktop window or app. Do NOT use these IDs for in-app popups, "
+                f"modals, embedded marketplace/store panels, browser/app tabs, document tabs, or software-internal "
+                f"dialogs; close those with the app UI, Escape, Ctrl+W, or agentbay_computer_dismiss_dialog.\n\n"
+                f"{windows_str[:5000]}"
+            )
+        return f"Failed to list windows: {result.get('error_message', 'Unknown error')}"
+    except RuntimeError as e:
+        return f"{str(e)}"
+    except Exception as e:
+        logger.exception(f"[AgentBay] Computer list_windows failed")
+        return f"List windows failed: {str(e)[:200]}"
+
+
+async def _agentbay_computer_close_window(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Close an entire OS-level root desktop window/application by explicit ID."""
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    window_id = arguments.get("window_id")
+    title = str(arguments.get("title") or "").strip()
+
+    if window_id is None:
+        if not title:
+            return (
+                "Missing required argument `window_id`. Only use agentbay_computer_close_window when the user "
+                "explicitly wants to close or quit an entire OS-level desktop window/application. If the target "
+                "is an in-app popup, modal, embedded marketplace/store panel, browser/app tab, document tab, "
+                "or software-internal dialog, use app UI controls, Escape, Ctrl+W, or "
+                "agentbay_computer_dismiss_dialog instead."
+            )
+
+        try:
+            _session_id = arguments.pop("_session_id", "")
+            client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
+            windows_result = await client.computer_list_windows()
+            if not windows_result.get("success"):
+                return f"Failed to list windows before closing: {windows_result.get('error_message', 'Unknown error')}"
+
+            from difflib import SequenceMatcher
+            import json
+
+            title_norm = _agentbay_normalize_text(title)
+            candidates: list[dict] = []
+            for window in windows_result.get("windows", []):
+                if not isinstance(window, dict):
+                    continue
+                candidate = str(window.get("title") or window.get("window_title") or "")
+                candidate_norm = _agentbay_normalize_text(candidate)
+                if not candidate_norm:
+                    continue
+                if title_norm in candidate_norm or candidate_norm in title_norm:
+                    score = 0.95
+                else:
+                    score = SequenceMatcher(None, title_norm, candidate_norm).ratio()
+                if score >= 0.35:
+                    item = dict(window)
+                    item["match_score"] = round(score, 3)
+                    candidates.append(item)
+            candidates.sort(key=lambda item: item.get("match_score", 0), reverse=True)
+            return (
+                f"Refusing to close by title-only match for `{title}` because it can close the wrong application. "
+                f"The candidates below are whole OS-level root windows. Choose a root window_id only if the user "
+                f"explicitly wants to close/quit that entire application window. For in-app popups, modals, "
+                f"embedded marketplace/store panels, browser/app tabs, document tabs, or software-internal dialogs, "
+                f"do not close a root window; use app UI controls, Escape, Ctrl+W, or "
+                f"agentbay_computer_dismiss_dialog instead.\n\n"
+                f"{json.dumps(candidates[:8], ensure_ascii=False, indent=2)[:3000]}"
+            )
+        except RuntimeError as e:
+            return f"{str(e)}"
+        except Exception as e:
+            logger.exception(f"[AgentBay] Computer close_window candidate lookup failed")
+            return f"Close window requires window_id. Candidate lookup failed: {str(e)[:200]}"
+
+    try:
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
+        result = await client.computer_close_window(int(window_id))
+        if result.get("success"):
+            return (
+                f"Closed OS-level root desktop window {window_id}; the whole application window may now be gone. "
+                f"Call agentbay_computer_screenshot to verify."
+            )
+        return f"Failed to close window {window_id}: {result.get('error_message', 'Unknown error')}"
+    except RuntimeError as e:
+        return f"{str(e)}"
+    except Exception as e:
+        logger.exception(f"[AgentBay] Computer close_window failed")
+        return f"Close window failed: {str(e)[:200]}"
+
+
+async def _agentbay_computer_dismiss_dialog(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
+    """Safely dismiss the current in-app popup/dialog without closing root windows."""
+    if not agent_id:
+        return "AgentBay tools require agent context"
+
+    from app.services.agentbay_client import get_agentbay_client_for_agent
+
+    title = str(arguments.get("title") or "").strip()
+    window_id = arguments.get("window_id")
+
+    try:
+        _session_id = arguments.pop("_session_id", "")
+        client = await get_agentbay_client_for_agent(agent_id, "computer", session_id=_session_id)
+
+        if window_id is not None:
+            return (
+                "agentbay_computer_dismiss_dialog does not close root desktop windows. "
+                "It only sends Escape to the active in-app popup/dialog. "
+                "For in-app tabs, embedded panels, marketplace/store windows, or document tabs, use the app UI "
+                "or shortcuts such as Ctrl+W. If the user explicitly wants to close/quit a whole desktop window "
+                "or app, call agentbay_computer_close_window with a window_id returned by "
+                "agentbay_computer_list_windows."
+            )
+
+        esc_result = await client.computer_press_keys(["esc"])
+        if esc_result.get("success"):
+            title_note = f" Target hint: `{title}`." if title else ""
+            return (
+                f"Sent Escape to safely dismiss the active in-app popup/dialog.{title_note} "
+                f"Call agentbay_computer_screenshot to verify. This tool never closes the root application window; "
+                f"if Escape does not affect an in-app tab or embedded panel, use that app's own close control "
+                f"or a shortcut such as Ctrl+W instead of root-window close."
+            )
+
+        return (
+            f"Could not send Escape to dismiss the active popup/dialog: "
+            f"{esc_result.get('error_message', 'Unknown error')}. "
+            f"Do not use this tool to close root application windows."
+        )
+    except RuntimeError as e:
+        return f"{str(e)}"
+    except Exception as e:
+        logger.exception(f"[AgentBay] Computer dismiss_dialog failed")
+        return f"Dismiss dialog failed: {str(e)[:200]}"
 
 
 async def _agentbay_computer_list_visible_apps(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
@@ -11287,7 +12847,7 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
                 pct = 0
                 if krs:
                     pct = int(sum(min(k.current_value / k.target_value, 1) for k in krs) / len(krs) * 100)
-                lines.append(f"\n**O: {o.title}** [{pct}%]")
+                lines.append(f"\n**O: {o.title}** [{pct}%]  objective_id={o.id}")
                 for kr in krs:
                     lines.append(
                         f"  - KR ({kr.status}): {kr.title}  "
@@ -11300,7 +12860,7 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
             for o in member_objs:
                 owner_label = _resolve_owner_label(o)
                 krs = krs_by_obj.get(str(o.id), [])
-                lines.append(f"\n**{owner_label}** | O: {o.title}")
+                lines.append(f"\n**{owner_label}** | O: {o.title}  objective_id={o.id}")
                 for kr in krs:
                     lines.append(
                         f"  - KR ({kr.status}): {kr.title}  "
@@ -11635,7 +13195,7 @@ async def _update_kr_content(agent_id: uuid.UUID | None, user_id: uuid.UUID | No
 
 
 async def _collect_okr_progress(agent_id: uuid.UUID | None) -> str:
-    """Batch-collect KR progress from all team members' focus.md files.
+    """Batch-collect KR progress from legacy team member focus files.
 
     Delegates to okr_scheduler.collect_all_focus_updates(). The calling agent
     must be the OKR Agent — we look up its tenant from the DB.

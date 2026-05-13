@@ -14,6 +14,8 @@ from app.services.auth_provider import (
     BaseAuthProvider,
     DingTalkAuthProvider,
     FeishuAuthProvider,
+    GitHubAuthProvider,
+    GoogleAuthProvider,
     GoogleWorkspaceAuthProvider,
     MicrosoftTeamsAuthProvider,
     WeComAuthProvider,
@@ -101,6 +103,9 @@ class AuthProviderRegistry:
         if tenant_id:
             # Only include tenant-specific ones
             query = query.where(IdentityProvider.tenant_id == tenant_id)
+        else:
+            # Public OAuth login should only expose global providers.
+            query = query.where(IdentityProvider.tenant_id.is_(None))
 
         result = await db.execute(query)
         return list(result.scalars().all())

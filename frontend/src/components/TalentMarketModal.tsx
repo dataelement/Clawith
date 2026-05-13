@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { IconPlus, IconSearch, IconWorld, IconX } from '@tabler/icons-react';
 import { agentApi } from '../services/api';
 import PostHireSettingsModal from './PostHireSettingsModal';
+import CustomAgentModal from './CustomAgentModal';
 import { translateTemplate } from '../i18n/templateTranslations';
 import customAgentBackground from '../assets/talent-market/custom-agent-botanical.png';
 
@@ -28,6 +28,7 @@ interface Props {
 // (personal assistant, project management, marketing, engineering, research, trading).
 // Matches `AgentTemplate.name` exactly.
 const FEATURED_TEMPLATE_NAMES = new Set<string>([
+    'Private Assistant',
     'Chief of Staff',
     'Project Manager',
     'Growth Hacker',
@@ -45,11 +46,11 @@ type TabId = 'popular' | 'software-development' | 'marketing' | 'office' | 'trad
 
 export default function TalentMarketModal({ open, onClose }: Props) {
     const { t, i18n } = useTranslation();
-    const navigate = useNavigate();
     const isChinese = i18n.language.startsWith('zh');
     // Chosen template → hands off to PostHireSettingsModal. The market modal
     // stays mounted behind so the user can cancel and pick someone else.
     const [pendingTemplate, setPendingTemplate] = useState<Template | null>(null);
+    const [customModalOpen, setCustomModalOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<TabId>('popular');
     const [searchQuery, setSearchQuery] = useState('');
 
@@ -70,11 +71,11 @@ export default function TalentMarketModal({ open, onClose }: Props) {
     useEffect(() => {
         if (!open) return;
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && !pendingTemplate) onClose();
+            if (e.key === 'Escape' && !pendingTemplate && !customModalOpen) onClose();
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [open, onClose, pendingTemplate]);
+    }, [open, onClose, pendingTemplate, customModalOpen]);
 
     if (!open) return null;
 
@@ -249,7 +250,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                     )}
                     {!isLoading && (
                         <CustomCard
-                            onClick={() => { onClose(); navigate('/agents/new'); }}
+                            onClick={() => setCustomModalOpen(true)}
                         />
                     )}
                     {!isLoading && visibleTemplates.length === 0 && (
@@ -284,6 +285,12 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                 open={!!pendingTemplate}
                 onClose={() => setPendingTemplate(null)}
                 onDone={() => { setPendingTemplate(null); onClose(); }}
+            />
+            <CustomAgentModal
+                open={customModalOpen}
+                initialMode="native"
+                onClose={() => setCustomModalOpen(false)}
+                onDone={() => { setCustomModalOpen(false); onClose(); }}
             />
         </div>
     );

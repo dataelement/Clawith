@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.security import get_current_user, require_role, get_authenticated_user
 from app.database import get_db
+from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.models.user import User
 
@@ -483,6 +484,46 @@ async def get_my_tenant(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     return TenantOut.model_validate(tenant)
+
+
+@router.get("/me/token-usage")
+async def get_my_tenant_token_usage(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return aggregate token and prompt-cache usage for the current company."""
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="User is not in a tenant")
+
+    row = (await db.execute(
+        select(
+            sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_today), 0).label("tokens_today"),
+            sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_month), 0).label("tokens_month"),
+            sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).label("tokens_total"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_today), 0).label("cache_today"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_month), 0).label("cache_month"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_total), 0).label("cache_total"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_creation_tokens_today), 0).label("cache_creation_today"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_creation_tokens_month), 0).label("cache_creation_month"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_creation_tokens_total), 0).label("cache_creation_total"),
+        ).where(Agent.tenant_id == current_user.tenant_id)
+    )).one()
+
+    def bucket(total: int, cache_read: int, cache_creation: int) -> dict:
+        total = int(total or 0)
+        cache_read = int(cache_read or 0)
+        return {
+            "total_tokens": total,
+            "cache_read_tokens": cache_read,
+            "cache_creation_tokens": int(cache_creation or 0),
+            "cache_hit_rate": round(cache_read / total, 4) if total > 0 else 0,
+        }
+
+    return {
+        "today": bucket(row.tokens_today, row.cache_today, row.cache_creation_today),
+        "month": bucket(row.tokens_month, row.cache_month, row.cache_creation_month),
+        "total": bucket(row.tokens_total, row.cache_total, row.cache_creation_total),
+    }
 
 
 @router.get("/{tenant_id}", response_model=TenantOut)

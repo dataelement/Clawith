@@ -4,118 +4,104 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import String, cast, select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.tool import Tool, AgentTool
 from app.models.user import User
+from app.services.tool_config import (
+    SENSITIVE_FIELD_KEYS,
+    delete_tenant_tool_config,
+    decrypt_sensitive_fields,
+    encrypt_sensitive_fields,
+    get_sensitive_keys,
+    get_tenant_tool_config,
+    get_tool_company_config,
+    mask_sensitive_fields,
+    meaningful_config,
+    set_tenant_tool_config,
+)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
 
-# Sensitive field keys that should be encrypted when stored.
-# This is used as a FALLBACK for tools that don't have config_schema.
-# When config_schema is available, fields with type='password' are used instead.
-SENSITIVE_FIELD_KEYS = {"api_key", "private_key", "auth_code", "password", "secret"}
+CATEGORY_CONFIG_PRIMARY_TOOL = {
+    "agentbay": "agentbay_browser_navigate",
+}
+
+
+async def _load_agent_for_tool_scope(db: AsyncSession, agent_id: uuid.UUID):
+    """Load the agent whose tenant boundary determines tool visibility."""
+    from app.models.agent import Agent as AgentModel
+
+    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent = agent_r.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+
+async def _load_agent_tool_assignments(db: AsyncSession, agent_id: uuid.UUID) -> dict[str, AgentTool]:
+    """Return explicit tool assignments for one agent keyed by tool ID string."""
+    agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
+    return {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
+
+
+def _agent_visible_tool_clause(agent_tenant_id: uuid.UUID | None, assignments: dict[str, AgentTool]):
+    """Build the DB filter for tools visible to an agent.
+
+    Visibility rules:
+    - builtin tools are global platform capabilities
+    - admin tools belong only to the agent's company
+    - agent-installed tools are visible only when explicitly assigned
+    """
+    clauses = [Tool.source == "builtin"]
+    if agent_tenant_id:
+        clauses.append((Tool.source == "admin") & (Tool.tenant_id == agent_tenant_id))
+
+    assigned_tool_ids = [uuid.UUID(tool_id) for tool_id in assignments]
+    if assigned_tool_ids:
+        clauses.append((Tool.source == "agent") & Tool.id.in_(assigned_tool_ids))
+
+    return or_(*clauses)
+
+
+def _tool_record_visible_to_agent(
+    tool: Tool,
+    agent_tenant_id: uuid.UUID | None,
+    assignments: dict[str, AgentTool],
+) -> bool:
+    """Pure visibility check mirroring _agent_visible_tool_clause."""
+    if tool.source == "builtin":
+        return True
+    if tool.source == "admin":
+        return bool(agent_tenant_id and tool.tenant_id == agent_tenant_id)
+    if tool.source == "agent":
+        return str(tool.id) in assignments
+    return False
+
+
+def _resolve_target_tenant_id(current_user: User, tenant_id: str | None = None) -> uuid.UUID | None:
+    if tenant_id:
+        try:
+            return uuid.UUID(tenant_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid tenant_id format")
+    return current_user.tenant_id
 
 
 def _get_sensitive_keys(config_schema: dict | None = None) -> set[str]:
-    """Determine which config keys are sensitive.
-
-    If config_schema is provided, extract keys whose field type is 'password'.
-    Always includes the hardcoded SENSITIVE_FIELD_KEYS as a fallback so that
-    tools without config_schema still get encrypted/decrypted correctly.
-    """
-    keys = set(SENSITIVE_FIELD_KEYS)
-    if config_schema:
-        for field in config_schema.get("fields", []):
-            if field.get("type") == "password":
-                keys.add(field.get("key", ""))
-    keys.discard("")  # remove empty string if any
-    return keys
+    return get_sensitive_keys(config_schema)
 
 
 def _encrypt_sensitive_fields(config: dict, config_schema: dict | None = None) -> dict:
-    """Encrypt sensitive fields in config dict.
-
-    Args:
-        config: Tool config dict
-        config_schema: Optional config_schema to extract password-type field keys
-
-    Returns:
-        Config dict with sensitive fields encrypted
-    """
-    from app.core.security import encrypt_data, decrypt_data
-    from app.config import get_settings
-
-    if not config:
-        return config
-
-    settings = get_settings()
-    result = dict(config)
-    sensitive_keys = _get_sensitive_keys(config_schema)
-
-    for key in sensitive_keys:
-        if key in result and result[key]:
-            value = result[key]
-            if isinstance(value, str) and value:
-                # Guard against double-encryption: if the value can be
-                # successfully decrypted, it is already encrypted — skip it.
-                # This happens when the frontend re-submits a config without
-                # the user changing the password field (the field value comes
-                # from a previous list_tools response which returns decrypted
-                # values… EXCEPT when list_tools runs against a tool whose
-                # config_schema is empty and therefore couldn't decrypt).
-                try:
-                    decrypt_data(value, settings.SECRET_KEY)
-                    # Decryption succeeded → value is already encrypted, keep as-is
-                    continue
-                except Exception:
-                    # Not encrypted yet → proceed to encrypt
-                    pass
-
-                try:
-                    result[key] = encrypt_data(value, settings.SECRET_KEY)
-                except Exception:
-                    # If encryption fails, keep the value as-is
-                    pass
-
-    return result
+    return encrypt_sensitive_fields(config, config_schema)
 
 
 def _decrypt_sensitive_fields(config: dict, config_schema: dict | None = None) -> dict:
-    """Decrypt sensitive fields in config dict.
-
-    Args:
-        config: Tool config dict
-        config_schema: Optional config_schema to extract password-type field keys
-
-    Returns:
-        Config dict with sensitive fields decrypted
-    """
-    from app.core.security import decrypt_data
-    from app.config import get_settings
-
-    if not config:
-        return config
-
-    settings = get_settings()
-    result = dict(config)
-    sensitive_keys = _get_sensitive_keys(config_schema)
-
-    for key in sensitive_keys:
-        if key in result and result[key]:
-            value = result[key]
-            if isinstance(value, str) and value:
-                try:
-                    result[key] = decrypt_data(value, settings.SECRET_KEY)
-                except Exception:
-                    # If decryption fails, assume it's plaintext
-                    pass
-
-    return result
+    return decrypt_sensitive_fields(config, config_schema)
 
 
 # ─── Schemas ────────────────────────────────────────────────
@@ -146,6 +132,7 @@ class ToolUpdate(BaseModel):
     parameters_schema: dict | None = None
     is_default: bool | None = None
     config: dict | None = None
+    tenant_id: str | None = None
 
 
 class AgentToolUpdate(BaseModel):
@@ -171,14 +158,16 @@ async def list_tools(
         .order_by(Tool.category, Tool.name)
     )
     # Scope by tenant: show builtin (tenant_id is NULL) + tenant-specific tools
-    tid = tenant_id or (str(current_user.tenant_id) if current_user.tenant_id else None)
-    if tid:
+    target_tenant_id = _resolve_target_tenant_id(current_user, tenant_id)
+    if target_tenant_id:
         from sqlalchemy import or_ as _or
-        query = query.where(_or(Tool.tenant_id == None, Tool.tenant_id == uuid.UUID(tid)))
+        query = query.where(_or(Tool.tenant_id == None, Tool.tenant_id == target_tenant_id))
     result = await db.execute(query)
     tools = result.scalars().all()
-    return [
-        {
+    response = []
+    for t in tools:
+        company_config = await get_tool_company_config(db, t, target_tenant_id)
+        response.append({
             "id": str(t.id),
             "name": t.name,
             "display_name": t.display_name,
@@ -192,13 +181,12 @@ async def list_tools(
             "mcp_tool_name": t.mcp_tool_name,
             "enabled": t.enabled,
             "is_default": t.is_default,
-            # Decrypt config for the admin UI so saved values are readable
-            "config": _decrypt_sensitive_fields(t.config or {}, t.config_schema),
+            "source": t.source,
+            "config": company_config,
             "config_schema": t.config_schema or {},
             "created_at": t.created_at.isoformat() if t.created_at else None,
-        }
-        for t in tools
-    ]
+        })
+    return response
 
 
 @router.post("")
@@ -215,14 +203,7 @@ async def create_tool(
     """
     # Resolve target tenant: explicit payload value takes priority so that
     # platform admins importing tools for another company work correctly.
-    target_tenant_id: uuid.UUID | None = None
-    if data.tenant_id:
-        try:
-            target_tenant_id = uuid.UUID(data.tenant_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid tenant_id format")
-    else:
-        target_tenant_id = current_user.tenant_id
+    target_tenant_id = _resolve_target_tenant_id(current_user, data.tenant_id)
 
     # Unique name check is scoped per tenant to avoid cross-tenant collisions.
     existing = await db.execute(
@@ -293,9 +274,16 @@ async def update_tool(
         raise HTTPException(status_code=404, detail="Tool not found")
 
     update_data = data.model_dump(exclude_unset=True)
-    # Encrypt sensitive fields in config
-    if "config" in update_data and update_data["config"]:
-        update_data["config"] = _encrypt_sensitive_fields(update_data["config"], tool.config_schema)
+    target_tenant_id = _resolve_target_tenant_id(current_user, update_data.pop("tenant_id", None))
+
+    if "config" in update_data:
+        config_value = meaningful_config(update_data.pop("config") or {})
+        if tool.source == "builtin":
+            if not target_tenant_id:
+                raise HTTPException(status_code=400, detail="tenant_id is required to configure builtin tools")
+            await set_tenant_tool_config(db, target_tenant_id, tool.name, config_value, tool.config_schema)
+        else:
+            update_data["config"] = _encrypt_sensitive_fields(config_value, tool.config_schema)
 
     for field, value in update_data.items():
         setattr(tool, field, value)
@@ -332,22 +320,23 @@ async def get_agent_tools(
 ):
     """Get tools for a specific agent with their enabled status."""
     from app.services.agent_tools import _agent_has_feishu
-    from app.models.agent import Agent as AgentModel
     has_feishu = await _agent_has_feishu(agent_id)
 
     # Determine if this is a system agent (e.g. OKR Agent).
     # System agents can see all tools; regular agents cannot see okr_agent_only tools.
-    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-    agent_obj = agent_r.scalar_one_or_none()
+    agent_obj = await _load_agent_for_tool_scope(db, agent_id)
     is_system_agent = bool(agent_obj and agent_obj.is_system)
 
-    # All available tools
-    all_tools_r = await db.execute(select(Tool).where(Tool.enabled == True).order_by(Tool.category, Tool.name))
-    all_tools = all_tools_r.scalars().all()
-
     # Agent-specific assignments
-    agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
-    assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
+    assignments = await _load_agent_tool_assignments(db, agent_id)
+
+    # All tools visible within this agent's tenant boundary
+    all_tools_r = await db.execute(
+        select(Tool)
+        .where(Tool.enabled == True, _agent_visible_tool_clause(agent_obj.tenant_id, assignments))
+        .order_by(Tool.category, Tool.name)
+    )
+    all_tools = all_tools_r.scalars().all()
 
     result = []
     for t in all_tools:
@@ -361,9 +350,7 @@ async def get_agent_tools(
             continue
         tid = str(t.id)
         at = assignments.get(tid)
-        # MCP tools installed by agents only show for that agent.
-        # MCP admin tools show for all agents (default disabled).
-        if t.source == "agent" and not at:
+        if not _tool_record_visible_to_agent(t, agent_obj.tenant_id, assignments):
             continue
         # If no explicit assignment, use is_default
         enabled = at.enabled if at else t.is_default
@@ -378,6 +365,8 @@ async def get_agent_tools(
             "enabled": enabled,
             "is_default": t.is_default,
             "mcp_server_name": t.mcp_server_name,
+            "mcp_server_url": t.mcp_server_url,
+            "source": t.source,
         })
     return result
 
@@ -390,8 +379,19 @@ async def update_agent_tools(
     db: AsyncSession = Depends(get_db),
 ):
     """Update tool assignments for an agent."""
+    agent_obj = await _load_agent_for_tool_scope(db, agent_id)
+    assignments = await _load_agent_tool_assignments(db, agent_id)
     for u in updates:
         tool_id = uuid.UUID(u.tool_id)
+        tool_r = await db.execute(
+            select(Tool).where(
+                Tool.id == tool_id,
+                _agent_visible_tool_clause(agent_obj.tenant_id, assignments),
+            )
+        )
+        if not tool_r.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Tool not found")
+
         # Upsert
         result = await db.execute(
             select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
@@ -512,17 +512,20 @@ async def list_agent_installed_tools(
     from app.models.agent import Agent
     query = (
         select(AgentTool, Tool, Agent)
-        .join(Tool, AgentTool.tool_id == Tool.id)
-        .outerjoin(Agent, AgentTool.installed_by_agent_id == Agent.id)
-        .where(AgentTool.source == "user_installed")
+        .join(Tool, cast(AgentTool.tool_id, String) == cast(Tool.id, String))
+        .outerjoin(Agent, cast(AgentTool.installed_by_agent_id, String) == cast(Agent.id, String))
+        .where(or_(AgentTool.source == "user_installed", Tool.source == "agent"))
         .order_by(AgentTool.created_at.desc())
     )
     # Scope by tenant: only show tools installed by agents in this tenant
     tid = tenant_id or (str(current_user.tenant_id) if current_user.tenant_id else None)
     if tid:
         from app.models.agent import Agent as Ag
-        tenant_agent_ids = select(Ag.id).where(Ag.tenant_id == tid)
-        query = query.where(AgentTool.agent_id.in_(tenant_agent_ids))
+        # Some local/prod databases still have agents.tenant_id as varchar from
+        # older migrations, while newer models bind tenant_id as UUID. Cast the
+        # column to text so this admin listing works across both schemas.
+        tenant_agent_ids = select(cast(Ag.id, String)).where(cast(Ag.tenant_id, String) == str(tid))
+        query = query.where(cast(AgentTool.agent_id, String).in_(tenant_agent_ids))
     result = await db.execute(query)
     rows = result.all()
     return [
@@ -532,10 +535,17 @@ async def list_agent_installed_tools(
             "tool_id": str(t.id),
             "tool_name": t.name,
             "tool_display_name": t.display_name,
+            "description": t.description,
+            "type": t.type,
+            "category": t.category,
+            "source": t.source,
             "mcp_server_name": t.mcp_server_name,
+            "mcp_server_url": t.mcp_server_url,
+            "mcp_tool_name": t.mcp_tool_name,
             "installed_by_agent_id": str(at.installed_by_agent_id) if at.installed_by_agent_id else None,
             "installed_by_agent_name": a.name if a else None,
             "enabled": at.enabled,
+            "configured": bool(at.config and len(at.config) > 0),
             "installed_at": at.created_at.isoformat() if at.created_at else None,
         }
         for at, t, a in rows
@@ -589,6 +599,7 @@ async def get_agent_tool_config(
     tool = tool_r.scalar_one_or_none()
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
+    agent = await _load_agent_for_tool_scope(db, agent_id)
     at_r = await db.execute(
         select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
     )
@@ -596,17 +607,11 @@ async def get_agent_tool_config(
 
     # Decrypt both configs using the tool's config_schema for field type awareness
     schema = tool.config_schema
-    raw_global = _decrypt_sensitive_fields(tool.config or {}, schema)
+    raw_global = await get_tool_company_config(db, tool, agent.tenant_id)
     raw_agent = _decrypt_sensitive_fields(at.config if at else {}, schema)
 
     # Mask sensitive fields in global config for display
-    masked_global = dict(raw_global)
-    sensitive_keys = _get_sensitive_keys(schema)
-    for key in sensitive_keys:
-        val = masked_global.get(key)
-        if val and isinstance(val, str) and len(val) > 0:
-            suffix = val[-4:] if len(val) > 4 else val
-            masked_global[key] = f"****{suffix}"
+    masked_global = mask_sensitive_fields(raw_global, schema)
 
     # Merged: agent overrides take precedence over global defaults.
     # Use raw (non-masked) global as the base so the agent inherits actual values
@@ -672,18 +677,19 @@ async def get_agent_tools_with_config(
     the agent-level UI can show the inherited key hint.
     """
     from app.services.agent_tools import _agent_has_feishu
-    from app.models.agent import Agent as AgentModel
     has_feishu = await _agent_has_feishu(agent_id)
 
     # Determine if this is a system agent (e.g. OKR Agent).
-    agent_r2 = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-    agent_obj2 = agent_r2.scalar_one_or_none()
+    agent_obj2 = await _load_agent_for_tool_scope(db, agent_id)
     is_system_agent2 = bool(agent_obj2 and agent_obj2.is_system)
 
-    all_tools_r = await db.execute(select(Tool).where(Tool.enabled == True).order_by(Tool.category, Tool.name))
+    assignments = await _load_agent_tool_assignments(db, agent_id)
+    all_tools_r = await db.execute(
+        select(Tool)
+        .where(Tool.enabled == True, _agent_visible_tool_clause(agent_obj2.tenant_id, assignments))
+        .order_by(Tool.category, Tool.name)
+    )
     all_tools = all_tools_r.scalars().all()
-    agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
-    assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
 
     # Pre-fetch system_settings keys that some tools use as an alternative
     # config storage (e.g. Jina stores its API key in system_settings.jina_api_key)
@@ -704,14 +710,13 @@ async def get_agent_tools_with_config(
             continue
         tid = str(t.id)
         at = assignments.get(tid)
-        # MCP tools installed by agents only show for that agent.
-        # MCP admin tools show for all agents (default disabled).
-        if t.source == "agent" and not at:
+        if not _tool_record_visible_to_agent(t, agent_obj2.tenant_id, assignments):
             continue
         enabled = at.enabled if at else t.is_default
 
-        # Decrypt configs for the frontend
-        raw_global = _decrypt_sensitive_fields(t.config or {}, t.config_schema)
+        # Decrypt tenant/company config for the frontend. Builtin tool configs
+        # are tenant-scoped via tenant_settings, not shared Tool.config.
+        raw_global = await get_tool_company_config(db, t, agent_obj2.tenant_id)
 
         # Fallback: resolve api_key from system_settings for tools that store
         # their key there (e.g. Jina). Only if Tool.config doesn't have it.
@@ -736,14 +741,7 @@ async def get_agent_tools_with_config(
 
         # Mask sensitive fields in global_config so users can see that a key
         # is configured at the company level without exposing the full value.
-        masked_global = dict(raw_global)
-        sensitive_keys = _get_sensitive_keys(t.config_schema)
-        for key in sensitive_keys:
-            val = masked_global.get(key)
-            if val and isinstance(val, str) and len(val) > 0:
-                # Show "****" + last 4 chars as a hint
-                suffix = val[-4:] if len(val) > 4 else val
-                masked_global[key] = f"****{suffix}"
+        masked_global = mask_sensitive_fields(raw_global, t.config_schema)
 
         result.append({
             "id": tid,
@@ -757,6 +755,7 @@ async def get_agent_tools_with_config(
             "enabled": enabled,
             "is_default": t.is_default,
             "mcp_server_name": t.mcp_server_name,
+            "mcp_server_url": t.mcp_server_url,
             "config_schema": t.config_schema or {},
             "global_config": masked_global,
             "agent_config": raw_agent,
@@ -820,33 +819,30 @@ async def get_category_config(
     from app.core.permissions import check_agent_access
     from app.models.channel_config import ChannelConfig
 
-    await check_agent_access(db, current_user, agent_id)
+    agent, _ = await check_agent_access(db, current_user, agent_id)
 
     # ── 1. Load company-level (global) config from Tool.config ──────────────
     # Find a tool in this category that actually has config data.
     # We cannot just LIMIT 1 because most tools may have empty config.
+    primary_tool_name = CATEGORY_CONFIG_PRIMARY_TOOL.get(category)
     all_cat_tools = await db.execute(
         select(Tool).where(
             Tool.category == category,
             Tool.enabled == True,
-        ).order_by(Tool.name)
+            _agent_visible_tool_clause(agent.tenant_id, await _load_agent_tool_assignments(db, agent_id)),
+        ).order_by((Tool.name != primary_tool_name) if primary_tool_name else Tool.name, Tool.name)
     )
     raw_global: dict = {}
     cat_schema: dict | None = None
     for ct in all_cat_tools.scalars():
-        if ct.config and ct.config != {}:
+        company_config = await get_tool_company_config(db, ct, agent.tenant_id)
+        if company_config:
             cat_schema = ct.config_schema
-            raw_global = _decrypt_sensitive_fields(ct.config, cat_schema)
+            raw_global = company_config
             break
 
     # Mask sensitive fields for UI display
-    masked_global = dict(raw_global)
-    sensitive_keys = _get_sensitive_keys(cat_schema)
-    for key in sensitive_keys:
-        val = masked_global.get(key)
-        if val and isinstance(val, str):
-            suffix = val[-4:] if len(val) > 4 else val
-            masked_global[key] = f"****{suffix}"
+    masked_global = mask_sensitive_fields(raw_global, cat_schema)
 
     # ── 2. Load agent-level config from ChannelConfig ───────────────────────
     result = await db.execute(

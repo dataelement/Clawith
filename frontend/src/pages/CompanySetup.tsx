@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { IconAlertTriangle, IconWorld } from '@tabler/icons-react';
 import { useAuthStore } from '../stores';
 import { tenantApi, authApi } from '../services/api';
 
@@ -18,7 +19,6 @@ export default function CompanySetup() {
     // Fallback: if user exists but is not active, they're in the registration flow
     // (the Navigate in ProtectedRoute may strip location.state).
     const fromRegister = (location.state as any)?.fromRegister || (user && !user.is_active);
-    const registerEmail = (location.state as any)?.email || user?.email;
 
     // Join company form
     const [inviteCode, setInviteCode] = useState('');
@@ -53,20 +53,36 @@ export default function CompanySetup() {
         } catch { return null; }
     };
 
+    const applyTenantSetupResult = async (result: any) => {
+        const nextTenantId = result?.tenant?.id ? String(result.tenant.id) : '';
+        if (result?.access_token) {
+            localStorage.setItem('token', result.access_token);
+            if (nextTenantId) {
+                localStorage.setItem('current_tenant_id', nextTenantId);
+                window.dispatchEvent(new StorageEvent('storage', { key: 'current_tenant_id', newValue: nextTenantId }));
+            }
+            const me = await authApi.me();
+            setAuth(me, result.access_token);
+            return me;
+        }
+        if (nextTenantId) {
+            localStorage.setItem('current_tenant_id', nextTenantId);
+            window.dispatchEvent(new StorageEvent('storage', { key: 'current_tenant_id', newValue: nextTenantId }));
+        }
+        return refreshUser();
+    };
+
     const handleJoin = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
         setLoading(true);
         try {
-            await tenantApi.join(inviteCode);
+            const result = await tenantApi.join(inviteCode);
+            await applyTenantSetupResult(result);
             if (fromRegister) {
-                // In registration flow: refresh user then go to verify email
-                await refreshUser();
-                navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
+                navigate('/onboarding?mode=join');
             } else {
-                // Normal flow: refresh user and go home
-                await refreshUser();
-                navigate('/');
+                navigate('/onboarding?mode=join');
             }
         } catch (err: any) {
             setError(err.message || 'Failed to join company');
@@ -80,15 +96,12 @@ export default function CompanySetup() {
         setError('');
         setLoading(true);
         try {
-            await tenantApi.selfCreate({ name: companyName });
+            const result = await tenantApi.selfCreate({ name: companyName });
+            await applyTenantSetupResult(result);
             if (fromRegister) {
-                // In registration flow: refresh user then go to verify email
-                await refreshUser();
-                navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
+                navigate('/onboarding?mode=create');
             } else {
-                // Normal flow: refresh user and go to Enterprise Settings
-                await refreshUser();
-                navigate('/enterprise');
+                navigate('/onboarding?mode=create');
             }
         } catch (err: any) {
             setError(err.message || 'Failed to create company');
@@ -106,105 +119,78 @@ export default function CompanySetup() {
         return null;
     }
 
-    // --- Debug: log guard state ---
-    console.log('[CompanySetup] guards:', { fromRegister, fromTenantSelection, tenant_id: user?.tenant_id });
-
     return (
         <div className="company-setup-page">
             {/* Language Switcher */}
             <div style={{
                 position: 'absolute', top: '16px', right: '16px',
                 cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)',
-                display: 'flex', alignItems: 'center', gap: '4px',
-                padding: '6px 12px', borderRadius: '8px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                width: 42, height: 38, padding: 0, borderRadius: '12px',
                 background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
                 zIndex: 101,
             }} onClick={toggleLang}>
-                🌐
+                <IconWorld size={18} stroke={1.8} />
             </div>
 
             <div className="company-setup-container">
-                <div className="company-setup-header">
-                    <img src="/logo-black.png" alt="" style={{ width: 32, height: 32 }} />
-                    <h1>{t('companySetup.title', 'Set Up Your Workspace')}</h1>
+                <div className="company-setup-header company-setup-header--ritual">
+                    <div className="onboarding-kicker">{i18n.language.startsWith('zh') ? '第 1 幕 · 给公司起名' : 'Act 1 · Name the company'}</div>
+                    <h1>{i18n.language.startsWith('zh') ? '你的公司叫什么？' : 'What is your company called?'}</h1>
                     <p className="company-setup-subtitle">
-                        {t('companySetup.subtitle', 'Join an existing company or create your own to get started.')}
+                        {i18n.language.startsWith('zh')
+                            ? '这个名字会出现在门牌、邀请函和所有对外文件上。不用现在完美，之后随时可以重命名。'
+                            : 'This name appears on the sign, invites, and shared work. It does not need to be perfect; you can rename it later.'}
                     </p>
                 </div>
 
                 {error && (
                     <div className="login-error" style={{ marginBottom: 16 }}>
-                        <span>⚠</span> {error}
+                        <span><IconAlertTriangle size={14} stroke={1.8} /></span> {error}
                     </div>
                 )}
 
-                <div className={`company-setup-panels ${!allowCreate ? 'single' : ''}`}>
-                    {/* ── Join Company Panel ── */}
-                    <form className="company-setup-panel" onSubmit={handleJoin}>
-                        <div className="company-setup-panel-header">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                                <polyline points="10 17 15 12 10 7" />
-                                <line x1="15" y1="12" x2="3" y2="12" />
-                            </svg>
-                            <h3>{t('companySetup.joinTitle', 'Join a Company')}</h3>
-                        </div>
-                        <p className="company-setup-panel-desc">
-                            {t('companySetup.joinDesc', 'Enter the invitation code provided by your company administrator.')}
-                        </p>
-                        <div className="login-field">
-                            <label>{t('companySetup.inviteCode', 'Invitation Code')}</label>
-                            <input
-                                value={inviteCode}
-                                onChange={(e) => setInviteCode(e.target.value)}
-                                required
-                                placeholder={t('companySetup.inviteCodePlaceholder', 'e.g. ABC12345')}
-                                style={{ textTransform: 'uppercase', letterSpacing: '2px', fontFamily: 'monospace' }}
-                            />
-                        </div>
-                        <button className="login-submit" type="submit" disabled={loading || !inviteCode}>
+                {allowCreate ? (
+                    <form className="company-name-form" onSubmit={handleCreate}>
+                        <input
+                            value={companyName}
+                            onChange={(e) => setCompanyName(e.target.value)}
+                            required
+                            autoFocus
+                            placeholder={i18n.language.startsWith('zh') ? '在这里写下名字' : 'Write the name here'}
+                        />
+                        <button className="onboarding-primary-btn" type="submit" disabled={loading || !companyName.trim()}>
+                            {loading ? <span className="login-spinner" /> : (i18n.language.startsWith('zh') ? '继续' : 'Continue')}
+                        </button>
+                    </form>
+                ) : (
+                    <form className="company-name-form" onSubmit={handleJoin}>
+                        <input
+                            value={inviteCode}
+                            onChange={(e) => setInviteCode(e.target.value)}
+                            required
+                            autoFocus
+                            placeholder={t('companySetup.inviteCodePlaceholder', 'e.g. ABC12345')}
+                            style={{ textTransform: 'uppercase', letterSpacing: '2px', fontFamily: 'monospace' }}
+                        />
+                        <button className="onboarding-primary-btn" type="submit" disabled={loading || !inviteCode.trim()}>
                             {loading ? <span className="login-spinner" /> : t('companySetup.joinBtn', 'Join Company')}
                         </button>
                     </form>
+                )}
 
-                    {/* ── Create Company Panel ── */}
-                    {allowCreate && (
-                        <>
-                            <div className="company-setup-divider">
-                                <span>{t('companySetup.or', 'OR')}</span>
-                            </div>
-                            <form className="company-setup-panel" onSubmit={handleCreate}>
-                                <div className="company-setup-panel-header">
-                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
-                                        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
-                                    </svg>
-                                    <h3>{t('companySetup.createTitle', 'Create a Company')}</h3>
-                                </div>
-                                <p className="company-setup-panel-desc">
-                                    {t('companySetup.createDesc', 'Start a new workspace. You can invite team members later.')}
-                                </p>
-                                <div className="login-field">
-                                    <label>{t('companySetup.companyName', 'Company Name')}</label>
-                                    <input
-                                        value={companyName}
-                                        onChange={(e) => setCompanyName(e.target.value)}
-                                        required
-                                        placeholder={t('companySetup.companyNamePlaceholder', 'e.g. Acme Inc.')}
-                                    />
-                                </div>
-                                <button className="login-submit" type="submit" disabled={loading || !companyName}>
-                                    {loading ? <span className="login-spinner" /> : t('companySetup.createBtn', 'Create Company')}
-                                </button>
-                            </form>
-                        </>
-                    )}
-                </div>
-
-                {!allowCreate && (
-                    <p className="company-setup-hint">
-                        {t('companySetup.contactAdmin', 'Contact your platform administrator for an invitation code.')}
-                    </p>
+                {allowCreate && (
+                    <form className="company-setup-join-inline" onSubmit={handleJoin}>
+                        <span>{i18n.language.startsWith('zh') ? '已经有邀请码？' : 'Already have an invitation code?'}</span>
+                        <input
+                            value={inviteCode}
+                            onChange={(e) => setInviteCode(e.target.value)}
+                            placeholder={i18n.language.startsWith('zh') ? '从侧门进入' : 'Enter through the side door'}
+                        />
+                        <button type="submit" disabled={loading || !inviteCode.trim()}>
+                            {i18n.language.startsWith('zh') ? '加入' : 'Join'}
+                        </button>
+                    </form>
                 )}
             </div>
         </div>

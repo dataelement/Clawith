@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { IconAlertTriangle, IconCheck, IconInfoCircle, IconX } from '@tabler/icons-react';
 
 type ToastType = 'info' | 'success' | 'warning' | 'error';
 
@@ -25,11 +26,11 @@ interface ToastContextValue {
 
 const ToastContext = createContext<ToastContextValue | null>(null);
 
-const TYPE_META: Record<ToastType, { color: string; icon: string }> = {
-    info: { color: 'var(--info)', icon: 'ℹ' },
-    success: { color: 'var(--success)', icon: '✓' },
-    warning: { color: 'var(--warning)', icon: '⚠' },
-    error: { color: 'var(--error)', icon: '✕' },
+const TYPE_META: Record<ToastType, { color: string; icon: ReactNode }> = {
+    info: { color: 'var(--info)', icon: <IconInfoCircle size={12} stroke={2} /> },
+    success: { color: 'var(--success)', icon: <IconCheck size={12} stroke={2.4} /> },
+    warning: { color: 'var(--warning)', icon: <IconAlertTriangle size={12} stroke={2} /> },
+    error: { color: 'var(--error)', icon: <IconX size={12} stroke={2.4} /> },
 };
 
 let idSeq = 0;

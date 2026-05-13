@@ -103,7 +103,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     };
 
     const isOwner = permData?.is_owner ?? false;
-    const currentScope = permData?.scope_type || 'company';
+    const currentScope = permData?.scope_type === 'user' ? 'private' : (permData?.scope_type || 'company');
     const currentAccessLevel = permData?.access_level || 'use';
 
     return (
@@ -237,7 +237,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
 
                 {/* Scope Selection */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-                    {(['company', 'user'] as const).map((scope) => (
+                    {(['company', 'private', 'custom'] as const).map((scope) => (
                         <label
                             key={scope}
                             style={{
@@ -266,11 +266,14 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                                 <div style={{ fontWeight: 500, fontSize: '13px' }}>
                                     {scope === 'company'
                                         ? t('agent.settings.perm.companyWide', 'Company-wide')
-                                        : t('agent.settings.perm.onlyMe', 'Only Me')}
+                                        : scope === 'private'
+                                            ? t('agent.settings.perm.onlyMe', 'Only Me')
+                                            : t('agent.settings.perm.custom', 'Custom')}
                                 </div>
                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                                     {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
-                                    {scope === 'user' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
+                                    {scope === 'private' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
+                                    {scope === 'custom' && t('agent.settings.perm.customDesc', 'Start private, then choose platform users in Settings')}
                                 </div>
                             </div>
                         </label>

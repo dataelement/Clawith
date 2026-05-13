@@ -4,6 +4,8 @@ This module provides a base class for all identity providers (Feishu, DingTalk, 
 and concrete implementations for each supported provider.
 """
 
+from urllib.parse import quote, urlencode
+
 import httpx
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -69,7 +71,7 @@ class BaseAuthProvider(ABC):
         pass
 
     @abstractmethod
-    async def exchange_code_for_token(self, code: str) -> dict:
+    async def exchange_code_for_token(self, code: str, redirect_uri: str | None = None) -> dict:
         """Exchange authorization code for access token.
 
         Args:
@@ -303,7 +305,7 @@ class FeishuAuthProvider(BaseAuthProvider):
             self._app_access_token = data.get("app_access_token", "")
             return self._app_access_token
 
-    async def exchange_code_for_token(self, code: str) -> dict:
+    async def exchange_code_for_token(self, code: str, redirect_uri: str | None = None) -> dict:
         app_token = await self.get_app_access_token()
 
         async with httpx.AsyncClient() as client:
@@ -378,7 +380,7 @@ class DingTalkAuthProvider(BaseAuthProvider):
             params = f"corpId={self.corp_id}&" + params
         return f"{base_url}?{params}"
 
-    async def exchange_code_for_token(self, code: str) -> dict:
+    async def exchange_code_for_token(self, code: str, redirect_uri: str | None = None) -> dict:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 self.DINGTALK_TOKEN_URL,
@@ -482,7 +484,7 @@ class WeComAuthProvider(BaseAuthProvider):
         )
         return f"{base_url}?{params}"
 
-    async def exchange_code_for_token(self, code: str) -> dict:
+    async def exchange_code_for_token(self, code: str, redirect_uri: str | None = None) -> dict:
         """Exchange OAuth code for a packed token string containing all user data.
 
         Three sequential API calls:
@@ -763,11 +765,151 @@ class MicrosoftTeamsAuthProvider(BaseAuthProvider):
     async def get_authorization_url(self, redirect_uri: str, state: str) -> str:
         raise NotImplementedError("Microsoft Teams OAuth not yet implemented")
 
-    async def exchange_code_for_token(self, code: str) -> dict:
+    async def exchange_code_for_token(self, code: str, redirect_uri: str | None = None) -> dict:
         raise NotImplementedError("Microsoft Teams OAuth not yet implemented")
 
     async def get_user_info(self, access_token: str) -> ExternalUserInfo:
         raise NotImplementedError("Microsoft Teams OAuth not yet implemented")
+
+
+class GoogleAuthProvider(BaseAuthProvider):
+    """Google OAuth provider implementation."""
+
+    provider_type = "google"
+
+    GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+    GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+    GOOGLE_USER_INFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+
+    def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None):
+        super().__init__(provider, config)
+        self.client_id = self.config.get("client_id") or self.config.get("app_id")
+        self.client_secret = self.config.get("client_secret") or self.config.get("app_secret")
+        self.scope = self.config.get("scope") or "openid profile email"
+
+    async def get_authorization_url(self, redirect_uri: str, state: str) -> str:
+        params = {
+            "client_id": self.client_id or "",
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": self.scope,
+            "access_type": "offline",
+            "prompt": "consent",
+        }
+        if state:
+            params["state"] = state
+        return f"{self.GOOGLE_AUTHORIZE_URL}?{urlencode(params)}"
+
+    async def exchange_code_for_token(self, code: str, redirect_uri: str | None = None) -> dict:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                self.GOOGLE_TOKEN_URL,
+                data={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "code": code,
+                    "redirect_uri": redirect_uri or "",
+                    "grant_type": "authorization_code",
+                },
+            )
+            data = resp.json()
+            if resp.status_code != 200:
+                logger.error(f"Google token exchange failed (HTTP {resp.status_code}): {data}")
+                return {}
+            return data
+
+    async def get_user_info(self, access_token: str) -> ExternalUserInfo:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                self.GOOGLE_USER_INFO_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            data = resp.json()
+            if resp.status_code != 200:
+                raise Exception(data.get("error_description") or data.get("error") or "Failed to fetch Google user info")
+
+            return ExternalUserInfo(
+                provider_type=self.provider_type,
+                provider_user_id=data.get("sub", ""),
+                name=data.get("name", ""),
+                email=data.get("email", ""),
+                avatar_url=data.get("picture", ""),
+                raw_data=data,
+            )
+
+
+class GitHubAuthProvider(BaseAuthProvider):
+    """GitHub OAuth provider implementation."""
+
+    provider_type = "github"
+
+    GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
+    GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
+    GITHUB_USER_INFO_URL = "https://api.github.com/user"
+    GITHUB_EMAILS_URL = "https://api.github.com/user/emails"
+
+    def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None):
+        super().__init__(provider, config)
+        self.client_id = self.config.get("client_id") or self.config.get("app_id")
+        self.client_secret = self.config.get("client_secret") or self.config.get("app_secret")
+        self.scope = self.config.get("scope") or "read:user user:email"
+
+    async def get_authorization_url(self, redirect_uri: str, state: str) -> str:
+        params = {
+            "client_id": self.client_id or "",
+            "redirect_uri": redirect_uri,
+            "scope": self.scope,
+        }
+        if state:
+            params["state"] = state
+        return f"{self.GITHUB_AUTHORIZE_URL}?{urlencode(params)}"
+
+    async def exchange_code_for_token(self, code: str, redirect_uri: str | None = None) -> dict:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                self.GITHUB_TOKEN_URL,
+                headers={"Accept": "application/json"},
+                data={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "code": code,
+                },
+            )
+            data = resp.json()
+            if resp.status_code != 200:
+                logger.error(f"GitHub token exchange failed (HTTP {resp.status_code}): {data}")
+                return {}
+            return data
+
+    async def get_user_info(self, access_token: str) -> ExternalUserInfo:
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/vnd.github+json",
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            user_resp = await client.get(self.GITHUB_USER_INFO_URL, headers=headers)
+            user_data = user_resp.json()
+            if user_resp.status_code != 200:
+                raise Exception(user_data.get("message") or "Failed to fetch GitHub user info")
+
+            email = user_data.get("email") or ""
+            if not email:
+                emails_resp = await client.get(self.GITHUB_EMAILS_URL, headers=headers)
+                emails_data = emails_resp.json()
+                if emails_resp.status_code == 200 and isinstance(emails_data, list):
+                    primary = next((item for item in emails_data if item.get("primary")), None)
+                    verified = next((item for item in emails_data if item.get("verified")), None)
+                    fallback = primary or verified or (emails_data[0] if emails_data else {})
+                    email = fallback.get("email", "")
+
+            return ExternalUserInfo(
+                provider_type=self.provider_type,
+                provider_user_id=str(user_data.get("id", "")),
+                name=user_data.get("name") or user_data.get("login") or "",
+                email=email,
+                avatar_url=user_data.get("avatar_url", ""),
+                raw_data=user_data,
+            )
 
 
 # Provider class mapping
@@ -777,4 +919,6 @@ PROVIDER_CLASSES = {
     "wecom": WeComAuthProvider,
     "google_workspace": GoogleWorkspaceAuthProvider,
     "microsoft_teams": MicrosoftTeamsAuthProvider,
+    "google": GoogleAuthProvider,
+    "github": GitHubAuthProvider,
 }

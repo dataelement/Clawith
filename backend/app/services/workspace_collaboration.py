@@ -7,6 +7,7 @@ rollback, and human edit locks remain consistent across REST APIs and tools.
 from __future__ import annotations
 
 import hashlib
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,37 @@ from app.models.workspace import WorkspaceEditLock, WorkspaceFileRevision
 
 USER_AUTOSAVE_MERGE_SECONDS = 60
 EDIT_LOCK_TTL_SECONDS = 90
+MAX_REVISION_TEXT_BYTES = 512 * 1024
+BINARY_REVISION_EXTENSIONS = {
+    ".7z",
+    ".avif",
+    ".bin",
+    ".bmp",
+    ".doc",
+    ".docx",
+    ".exe",
+    ".gif",
+    ".gz",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".odp",
+    ".ods",
+    ".odt",
+    ".pdf",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".rar",
+    ".tar",
+    ".webp",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
 
 
 @dataclass
@@ -61,11 +93,21 @@ def safe_agent_path(base: Path, path: str) -> Path:
 
 
 async def read_text_if_exists(path: Path) -> str | None:
-    """Read a UTF-8 text file if it exists; return None for missing files."""
+    """Read a UTF-8 text file if it exists; return None for missing/binary files."""
     if not path.exists() or not path.is_file():
         return None
-    async with aiofiles.open(path, "r", encoding="utf-8", errors="replace") as f:
-        return await f.read()
+    if path.suffix.lower() in BINARY_REVISION_EXTENSIONS:
+        return None
+    try:
+        if path.stat().st_size > MAX_REVISION_TEXT_BYTES:
+            return None
+    except OSError:
+        return None
+    async with aiofiles.open(path, "rb") as f:
+        data = await f.read()
+    if b"\x00" in data:
+        return None
+    return data.decode("utf-8", errors="replace")
 
 
 async def cleanup_expired_locks(db: AsyncSession) -> None:
@@ -163,9 +205,13 @@ async def record_revision(
 ) -> WorkspaceFileRevision | None:
     """Record a revision, optionally merging rapid user autosaves."""
     normalized = normalize_workspace_path(path)
+    # PostgreSQL text columns cannot store NUL bytes. Treat such content as
+    # non-text revision data so binary files can still be moved/deleted safely.
+    before_content = before_content.replace("\x00", "") if before_content is not None else None
+    after_content = after_content.replace("\x00", "") if after_content is not None else None
     before = before_content or ""
     after = after_content or ""
-    if before == after and operation != "delete":
+    if before == after and operation not in {"delete", "move_source", "move_destination"}:
         return None
 
     group_key = None
@@ -316,6 +362,107 @@ async def delete_workspace_file(
         True,
         normalized,
         f"Deleted {normalized}",
+        revision_id=str(revision.id) if revision else None,
+    )
+
+
+async def move_workspace_path(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    base_dir: Path,
+    source_path: str,
+    destination_path: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+    session_id: str | None = None,
+    enforce_human_lock: bool = True,
+    overwrite: bool = False,
+) -> WorkspaceWriteResult:
+    """Move or rename a workspace file/folder while respecting edit locks."""
+    source_normalized = normalize_workspace_path(source_path)
+    destination_normalized = normalize_workspace_path(destination_path)
+    if not source_normalized:
+        return WorkspaceWriteResult(False, source_normalized, "Missing source path")
+    if not destination_normalized:
+        return WorkspaceWriteResult(False, destination_normalized, "Missing destination path")
+    if source_normalized in {"tasks.json", "soul.md"}:
+        return WorkspaceWriteResult(False, source_normalized, f"{source_normalized} cannot be moved (protected)")
+
+    source = safe_agent_path(base_dir, source_normalized)
+    if not source.exists():
+        return WorkspaceWriteResult(False, source_normalized, f"File not found: {source_normalized}")
+
+    destination = safe_agent_path(base_dir, destination_normalized)
+    if destination_path.replace("\\", "/").strip().endswith("/") or destination.is_dir():
+        destination = (destination / source.name).resolve()
+        destination_normalized = normalize_workspace_path(str(destination.relative_to(base_dir.resolve())))
+        destination = safe_agent_path(base_dir, destination_normalized)
+
+    if source == destination:
+        return WorkspaceWriteResult(False, source_normalized, "Source and destination are the same")
+    if source.is_dir() and str(destination).startswith(str(source) + "/"):
+        return WorkspaceWriteResult(False, source_normalized, "Cannot move a folder into itself")
+
+    if enforce_human_lock and actor_type != "user":
+        for locked_path in (source_normalized, destination_normalized):
+            lock = await get_active_lock(db, agent_id=agent_id, path=locked_path)
+            if lock:
+                return WorkspaceWriteResult(
+                    False,
+                    locked_path,
+                    (
+                        f"Human is currently editing {locked_path}. Do not move it now. "
+                        "Ask the user to finish editing, or choose another path."
+                    ),
+                    locked_by_user_id=str(lock.user_id),
+                )
+
+    if destination.exists():
+        if not overwrite:
+            return WorkspaceWriteResult(
+                False,
+                destination_normalized,
+                f"Destination already exists: {destination_normalized}. Set overwrite=true to replace it.",
+            )
+        if destination.is_dir():
+            shutil.rmtree(destination)
+        else:
+            destination.unlink()
+
+    source_before = await read_text_if_exists(source)
+    destination_before = await read_text_if_exists(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(destination))
+    destination_after = await read_text_if_exists(destination)
+
+    source_revision = await record_revision(
+        db,
+        agent_id=agent_id,
+        path=source_normalized,
+        operation="move_source",
+        actor_type=actor_type,
+        actor_id=actor_id,
+        before_content=source_before,
+        after_content=None,
+        session_id=session_id,
+    )
+    destination_revision = await record_revision(
+        db,
+        agent_id=agent_id,
+        path=destination_normalized,
+        operation="move_destination",
+        actor_type=actor_type,
+        actor_id=actor_id,
+        before_content=destination_before,
+        after_content=destination_after,
+        session_id=session_id,
+    )
+    revision = destination_revision or source_revision
+    return WorkspaceWriteResult(
+        True,
+        destination_normalized,
+        f"Moved {source_normalized} to {destination_normalized}",
         revision_id=str(revision.id) if revision else None,
     )
 

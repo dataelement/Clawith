@@ -148,6 +148,7 @@ class UserOut(BaseModel):
     display_name: str
     avatar_url: str | None = None
     role: str
+    is_platform_admin: bool = False
     tenant_id: uuid.UUID | None = None
     title: str | None = None
     primary_mobile: str | None = None
@@ -181,6 +182,7 @@ class OAuthAuthorizeResponse(BaseModel):
 class OAuthCallbackRequest(BaseModel):
     code: str
     state: str
+    redirect_uri: str | None = None
 
 
 class IdentityBindRequest(BaseModel):
@@ -217,7 +219,7 @@ class AgentCreate(BaseModel):
     primary_model_id: uuid.UUID | None = None
     fallback_model_id: uuid.UUID | None = None
     # Permissions
-    permission_scope_type: str = "company"  # company | user
+    permission_scope_type: str = "company"  # company | user | custom
     permission_scope_ids: list[uuid.UUID] = []
     permission_access_level: str = "use"  # use | manage
     # Target tenant (admin-only override; otherwise ignored)
@@ -249,6 +251,12 @@ class AgentOut(BaseModel):
     tokens_used_today: int
     tokens_used_month: int
     tokens_used_total: int = 0
+    cache_read_tokens_today: int = 0
+    cache_read_tokens_month: int = 0
+    cache_read_tokens_total: int = 0
+    cache_creation_tokens_today: int = 0
+    cache_creation_tokens_month: int = 0
+    cache_creation_tokens_total: int = 0
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None
     context_window_size: int = 100
@@ -264,8 +272,10 @@ class AgentOut(BaseModel):
     expires_at: datetime | None = None
     is_expired: bool = False
     is_system: bool = False
+    access_mode: str = "company"
+    company_access_level: str = "use"
     llm_calls_today: int = 0
-    max_llm_calls_per_day: int = 100
+    max_llm_calls_per_day: int = 1000
     agent_type: str = "native"
     openclaw_last_seen: datetime | None = None
     unread_count: int = 0

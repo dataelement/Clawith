@@ -112,8 +112,6 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
         get_model_api_key,
     )
 
-    )
-
     model_id = target_agent.primary_model_id or target_agent.fallback_model_id
     if not model_id:
         return None

@@ -642,50 +642,51 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 logger.warning(f"Agent {agent.name}'s model {model.model} is disabled, skipping trigger invocation")
                 return
 
-            # Build trigger context
+            # Build trigger context. Keep this model-facing prompt in English so
+            # autonomous wakeups behave consistently across UI locales.
             context_parts = []
             trigger_names = []
             for t in triggers:
-                part = f"触发器：{t.name} ({t.type})\n原因：{t.reason}"
+                part = f"Trigger: {t.name} ({t.type})\nReason: {t.reason}"
                 if t.name == "daily_okr_collection":
                     part += (
-                        "\n执行要求：先调用 get_okr_settings 确认日报收集是否开启。"
-                        "如果开启，只能联系你关系网络中的成员和数字员工来收集今天的最终日报，"
-                        "并整理成不超过 2000 字的正式日报；"
-                        "如果未开启，则说明本次无需执行并停止。"
+                        "\nExecution requirements: First call get_okr_settings to confirm whether daily report collection is enabled. "
+                        "If it is enabled, only contact members and digital employees in your relationship network to collect today's final daily reports, "
+                        "then organize them into a formal daily report no longer than 2000 characters. "
+                        "If it is disabled, state that no action is needed and stop."
                     )
                 elif t.name in ("daily_okr_report", "weekly_okr_report", "monthly_okr_report"):
                     part += (
-                        "\n执行要求：本次公司级报表由系统自动汇总生成。"
-                        "如果你被唤醒，仅补充必要说明，不要再次向成员发起收集。"
+                        "\nExecution requirements: This company-level report is generated automatically by the system. "
+                        "If you are awakened, only add necessary clarification. Do not start another member collection round."
                     )
                 elif t.name == "biweekly_okr_checkin":
                     part += (
-                        "\n执行要求：先调用 get_okr_settings 确认 OKR 是否开启。"
-                        "如果开启，检查当前周期公司和成员 OKR，主动提醒尚未设置或进展滞后的相关成员；"
-                        "如果未开启，则说明本次无需执行并停止。"
+                        "\nExecution requirements: First call get_okr_settings to confirm whether OKR is enabled. "
+                        "If enabled, check the current-cycle company and member OKRs, then proactively remind members who have not set OKRs or whose progress is lagging. "
+                        "If disabled, state that no action is needed and stop."
                     )
                 elif t.name == "monthly_okr_report":
                     part += (
-                        "\n执行要求：先调用 get_okr_settings 确认 OKR 是否开启。"
-                        "如果开启，调用 generate_monthly_okr_report 生成刚结束月份的 OKR 月报，并发送给管理员或发布到广场；"
-                        "如果未开启，则说明本次无需执行并停止。"
+                        "\nExecution requirements: First call get_okr_settings to confirm whether OKR is enabled. "
+                        "If enabled, call generate_monthly_okr_report to generate the OKR monthly report for the month that just ended, "
+                        "then send it to admins or publish it to Plaza. If disabled, state that no action is needed and stop."
                     )
                 if t.focus_ref:
-                    part += f"\n关联 Focus：{t.focus_ref}"
+                    part += f"\nRelated Focus: {t.focus_ref}"
                 # Include matched message for on_message triggers
                 cfg = t.config or {}
                 if t.type == "on_message" and cfg.get("_matched_message"):
-                    part += f"\n收到来自 {cfg.get('_matched_from', '?')} 的消息：\n\"{cfg['_matched_message'][:500]}\""
+                    part += f"\nMatched message from {cfg.get('_matched_from', '?')}:\n\"{cfg['_matched_message'][:500]}\""
                 if t.type == "on_message" and cfg.get("okr_member_id") and cfg.get("okr_report_date"):
                     part += (
-                        "\n执行要求：这是一次日报回复入库事件。"
-                        f"\n1. 将对方回复整理成一段不超过 2000 字的最终日报。"
-                        f"\n2. 立即调用 upsert_member_daily_report(report_date=\"{cfg['okr_report_date']}\", "
+                        "\nExecution requirements: This is a daily-report reply ingestion event."
+                        f"\n1. Organize the other party's reply into a final daily report no longer than 2000 characters."
+                        f"\n2. Immediately call upsert_member_daily_report(report_date=\"{cfg['okr_report_date']}\", "
                         f"member_type=\"{cfg.get('okr_member_type', 'user')}\", "
-                        f"member_id=\"{cfg['okr_member_id']}\", content=\"<整理后的日报>\")。"
-                        "\n3. 工具调用成功后，再发送一句简短确认，明确你已收到并已记录。"
-                        "\n4. 不要只回复确认而不调用工具，也不要把原始长对话原样存入日报。"
+                        f"member_id=\"{cfg['okr_member_id']}\", content=\"<organized daily report>\")."
+                        "\n3. After the tool call succeeds, send a brief confirmation that you received and recorded it."
+                        "\n4. Do not only confirm without calling the tool, and do not store the raw long conversation verbatim as the daily report."
                     )
                 # Include webhook payload
                 if t.type == "webhook" and cfg.get("_webhook_payload"):
@@ -697,14 +698,14 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 trigger_names.append(t.name)
 
             trigger_context = (
-                "===== 本次唤醒上下文 =====\n"
-                f"唤醒来源：trigger（{'多个触发器同时触发' if len(triggers) > 1 else '触发器触发'}）\n\n"
+                "===== Wake Context =====\n"
+                f"Wake source: trigger ({'multiple triggers fired together' if len(triggers) > 1 else 'trigger fired'})\n\n"
                 + "\n---\n".join(context_parts)
-                + "\n==========================="
+                + "\n========================"
             )
 
             # Create Reflection Session
-            title = f"🤖 内心独白：{', '.join(trigger_names)}"
+            title = f"🤖 Reflection: {', '.join(trigger_names)}"
             # Find agent's participant
             result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)

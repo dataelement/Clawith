@@ -48,7 +48,11 @@ class AgentManager:
 
         if template_dir.exists():
             # Copy template
-            shutil.copytree(str(template_dir), str(agent_dir))
+            shutil.copytree(
+                str(template_dir),
+                str(agent_dir),
+                ignore=shutil.ignore_patterns("tasks.json", "todo.json", "enterprise_info"),
+            )
         else:
             # No template dir (local dev) — create minimal workspace structure
             logger.info(f"Template dir not found ({template_dir}), creating minimal workspace")
@@ -57,7 +61,6 @@ class AgentManager:
             (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
             (agent_dir / "memory").mkdir(exist_ok=True)
             (agent_dir / "skills").mkdir(exist_ok=True)
-            (agent_dir / "tasks.json").write_text("[]", encoding="utf-8")
 
         # Customize soul.md
         soul_path = agent_dir / "soul.md"

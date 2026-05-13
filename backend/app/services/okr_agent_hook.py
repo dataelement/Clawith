@@ -1,10 +1,10 @@
-"""Hook to automatically bind new users and non-private agents to the OKR Agent."""
+"""Hook to automatically bind new users and company-visible agents to the OKR Agent."""
 
 import uuid
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.agent import Agent, AgentPermission
+from app.models.agent import Agent
 from app.models.org import AgentRelationship, AgentAgentRelationship, OrgMember
 
 async def hook_new_org_member(db: AsyncSession, member_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
@@ -28,24 +28,61 @@ async def hook_new_org_member(db: AsyncSession, member_id: uuid.UUID, tenant_id:
         ))
         logger.info(f"[OKR Hook] Auto-bound OrgMember {member_id} to OKR Agent {okr_agent.id}")
 
+
+async def sync_okr_agent_platform_members(db: AsyncSession, tenant_id: uuid.UUID) -> int:
+    """Bind all existing active platform users in a tenant to its OKR Agent.
+
+    hook_new_org_member covers newly-created or newly-bound members. This
+    startup/backfill path covers users who already existed before OKR was
+    enabled or before the hook was introduced.
+    """
+    okr_agent = await _get_okr_agent(db, tenant_id)
+    if not okr_agent:
+        return 0
+
+    existing_result = await db.execute(
+        select(AgentRelationship.member_id).where(
+            AgentRelationship.agent_id == okr_agent.id,
+        )
+    )
+    existing_member_ids = {row[0] for row in existing_result.fetchall() if row[0]}
+
+    member_result = await db.execute(
+        select(OrgMember).where(
+            OrgMember.tenant_id == tenant_id,
+            OrgMember.status == "active",
+            OrgMember.user_id.isnot(None),
+        )
+    )
+    added = 0
+    for member in member_result.scalars().all():
+        if member.id in existing_member_ids:
+            continue
+        db.add(AgentRelationship(
+            agent_id=okr_agent.id,
+            member_id=member.id,
+            relation="okr_coordinator",
+        ))
+        existing_member_ids.add(member.id)
+        added += 1
+
+    if added:
+        await db.flush()
+        logger.info(f"[OKR Hook] Backfilled {added} platform member(s) to OKR Agent {okr_agent.id}")
+
+    return added
+
 async def hook_new_agent(db: AsyncSession, new_agent_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
-    """When a new non-private agent is created, bind to OKR Agent."""
-    from sqlalchemy.orm import selectinload
-    
-    # Check if new agent is private
+    """When a new company-visible agent is created, bind to OKR Agent."""
     agent_res = await db.execute(
         select(Agent)
-        .options(selectinload(Agent.permissions))
         .where(Agent.id == new_agent_id)
     )
     agent = agent_res.scalar_one_or_none()
     if not agent or getattr(agent, "is_system", False):
         return
-        
-    permissions = agent.permissions
-    # Private = user scoped
-    if any(p.scope_type == "user" for p in permissions):
-        return  # Do not bind private agents
+    if (getattr(agent, "access_mode", None) or "company") != "company":
+        return  # Do not bind private/custom agents into tenant-wide OKR relationships
         
     okr_agent = await _get_okr_agent(db, tenant_id)
     if not okr_agent:
