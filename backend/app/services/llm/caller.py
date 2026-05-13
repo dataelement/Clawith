@@ -284,6 +284,7 @@ async def _process_tool_call(
     on_tool_call,
     full_reasoning_content: str,
     allowed_tool_names: set[str],
+    on_code_output=None,
 ) -> str:
     """Process a single tool call and return result."""
     fn = tc["function"]
@@ -336,12 +337,14 @@ async def _process_tool_call(
         except Exception:
             pass
 
-    # Execute tool
+    # Execute tool — pass on_output for execute_code streaming
+    _on_output = on_code_output if tool_name in ("execute_code", "execute_code_e2b") else None
     result = await execute_tool(
         tool_name, args,
         agent_id=agent_id,
         user_id=user_id or agent_id,
         session_id=session_id,
+        on_output=_on_output,
     )
     logger.debug(f"[LLM] Tool result: {result[:100]}")
 
@@ -402,6 +405,7 @@ async def call_llm(
     supports_vision=False,
     max_tool_rounds_override: int | None = None,
     skip_tools: bool = False,
+    on_code_output=None,
 ) -> str:
     """Call LLM via unified client with function-calling tool loop."""
     # Get agent config for tool rounds
@@ -564,6 +568,7 @@ async def call_llm(
                 session_id=session_id,
                 supports_vision=supports_vision,
                 on_tool_call=on_tool_call,
+                on_code_output=on_code_output,
                 full_reasoning_content=full_reasoning_content,
                 allowed_tool_names=allowed_tool_names,
             )
@@ -597,6 +602,7 @@ async def call_llm_with_failover(
     supports_vision=False,
     on_failover=None,
     skip_tools: bool = False,
+    on_code_output=None,
 ) -> str:
     """Call LLM with automatic failover support."""
     guard = FailoverGuard()
@@ -637,6 +643,7 @@ async def call_llm_with_failover(
         on_thinking=on_thinking,
         supports_vision=supports_vision,
         skip_tools=skip_tools,
+        on_code_output=on_code_output,
     )
 
     # Check if we need to failover
@@ -699,6 +706,7 @@ async def call_llm_with_failover(
         on_thinking=on_thinking,
         supports_vision=getattr(fallback_model, 'supports_vision', False),
         skip_tools=skip_tools,
+        on_code_output=on_code_output,
     )
 
     # Combine error messages if fallback also failed

@@ -2471,6 +2471,7 @@ async def execute_tool(
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
     session_id: str = "",
+    on_output=None,
 ) -> str:
     """Execute a tool call and return the result as a string.
 
@@ -2807,7 +2808,7 @@ async def execute_tool(
             result = await _plaza_add_comment(agent_id, arguments)
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
-            result = await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
+            result = await _execute_code(agent_id, ws, arguments, tool_name=tool_name, on_output=on_output)
         elif tool_name == "upload_image":
             result = await _upload_image(agent_id, ws, arguments)
         elif tool_name == "generate_image_siliconflow":
@@ -7306,6 +7307,7 @@ async def _execute_code(
     arguments: dict,
     *,
     tool_name: str = "execute_code",
+    on_output=None,
 ) -> str:
     """Execute code using the configured sandbox backend.
 
@@ -7363,6 +7365,7 @@ async def _execute_code(
             language=language,
             timeout=timeout,
             work_dir=str(work_dir),
+            on_output=on_output,
         )
 
         # Format result for user display
@@ -7374,7 +7377,7 @@ async def _execute_code(
             # Do not silently fall back — surface the config error to the user
             return f"❌ E2B sandbox configuration error: {str(e)[:300]}\nPlease check the API key in the tool settings."
         logger.warning(f"[Sandbox] Config issue, falling back to legacy subprocess: {e}")
-        return await _execute_code_legacy(ws, arguments, allow_network=fallback_config.allow_network, max_timeout=fallback_config.max_timeout)
+        return await _execute_code_legacy(ws, arguments, allow_network=fallback_config.allow_network, max_timeout=fallback_config.max_timeout, on_output=on_output)
 
     except Exception as e:
         logger.exception(f"[Sandbox] Execution failed for agent {agent_id} (tool={tool_name})")
@@ -7383,13 +7386,13 @@ async def _execute_code(
             return f"❌ E2B execution error: {str(e)[:200]}"
         # For local tool: try legacy subprocess as last resort
         try:
-            return await _execute_code_legacy(ws, arguments, allow_network=sandbox_config.allow_network, max_timeout=sandbox_config.max_timeout)
+            return await _execute_code_legacy(ws, arguments, allow_network=sandbox_config.allow_network, max_timeout=sandbox_config.max_timeout, on_output=on_output)
         except Exception:
             logger.exception(f"[Sandbox] Fallback also failed for agent {agent_id}")
             return f"❌ Execution error: {str(e)[:200]}"
 
 
-async def _execute_code_legacy(ws: Path, arguments: dict, allow_network: bool = False, max_timeout: int = 60) -> str:
+async def _execute_code_legacy(ws: Path, arguments: dict, allow_network: bool = False, max_timeout: int = 60, on_output=None) -> str:
     """Legacy subprocess-based code execution (fallback)."""
     import asyncio
 
@@ -7447,15 +7450,22 @@ async def _execute_code_legacy(ws: Path, arguments: dict, allow_network: bool = 
         stdout_data = bytearray()
         stderr_data = bytearray()
 
-        async def read_stream(stream, out):
+        async def read_stream(stream, out, label="stdout"):
             while True:
                 chunk = await stream.read(4096)
                 if not chunk:
                     break
                 out.extend(chunk)
+                # Real-time streaming: push each chunk to the WebSocket
+                if on_output:
+                    try:
+                        text = chunk.decode("utf-8", errors="replace")
+                        await on_output(text, label)
+                    except Exception:
+                        pass
 
-        task1 = asyncio.create_task(read_stream(proc.stdout, stdout_data))
-        task2 = asyncio.create_task(read_stream(proc.stderr, stderr_data))
+        task1 = asyncio.create_task(read_stream(proc.stdout, stdout_data, "stdout"))
+        task2 = asyncio.create_task(read_stream(proc.stderr, stderr_data, "stderr"))
 
         is_timeout = False
         try:

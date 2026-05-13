@@ -520,9 +520,10 @@ export default function Chat() {
                             if (data.env === 'desktop') next.desktop = { screenshotUrl: imgUrl };
                             else next.browser = { screenshotUrl: imgUrl };
                         } else if (data.env === 'code' && data.output) {
-                            // Append code output
+                            // Real-time streaming: concatenate chunks directly
                             const existing = prev.code?.output || '';
-                            next.code = { output: existing + (existing ? '\n---\n' : '') + data.output };
+                            const prefix = data.stream === 'stderr' ? '⚠️ ' : '';
+                            next.code = { output: existing + prefix + data.output };
                         }
                         return next;
                     });
@@ -629,10 +630,8 @@ export default function Chat() {
                                     const imgUrl = lp.screenshot_url + '&_t=' + Date.now();
                                     if (lp.env === 'desktop') next.desktop = { screenshotUrl: imgUrl };
                                     else next.browser = { screenshotUrl: imgUrl };
-                                } else if (lp.env === 'code' && lp.output) {
-                                    const existing = prev.code?.output || '';
-                                    next.code = { output: existing + (existing ? '\n---\n' : '') + lp.output };
                                 }
+                                // Note: code env is handled via real-time streaming (agentbay_live events)
                                 return next;
                             });
                             setLivePanelVisible(true);
@@ -1101,6 +1100,13 @@ export default function Chat() {
                                 ...prev,
                                 [env]: { screenshotUrl: screenshotDataUri },
                             }));
+                        }}
+                        onClearCode={() => {
+                            setLiveState(prev => {
+                                const next = { ...prev };
+                                delete next.code;
+                                return next;
+                            });
                         }}
                     />
                 )}

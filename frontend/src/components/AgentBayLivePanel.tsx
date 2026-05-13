@@ -26,6 +26,8 @@ interface Props {
     sessionId?: string;   // needed for Take Control
     /** Called by TC panel on close to push the latest screenshot into liveState */
     onLiveUpdate?: (env: 'browser' | 'desktop', screenshotDataUri: string) => void;
+    /** Called when user clicks Clear in the code output panel */
+    onClearCode?: () => void;
 }
 
 /* ── Tab Icons (Linear-style minimal SVGs) ── */
@@ -85,7 +87,7 @@ function calcHalfContainerWidth(): number {
     return Math.max(MIN_WIDTH, Math.floor((window.innerWidth - 60) / 2));
 }
 
-export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId, onLiveUpdate }: Props) {
+export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId, onLiveUpdate, onClearCode }: Props) {
     const { t } = useTranslation();
 
     // Keep a ref to the latest onLiveUpdate so TakeControl callbacks always
@@ -259,6 +261,19 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
                             <path d="M3 3l5.5 10 1.5-4 4-1.5z" />
                         </svg>
                         <span>Control</span>
+                    </button>
+                )}
+                {/* Clear button for code output */}
+                {activeTab === 'code' && liveState.code && onClearCode && (
+                    <button
+                        className="live-panel-collapse"
+                        onClick={onClearCode}
+                        title="Clear output"
+                        style={{ marginRight: '2px' }}
+                    >
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M4 4l8 8M12 4l-8 8" />
+                        </svg>
                     </button>
                 )}
                 <button className="live-panel-collapse" onClick={onToggle} title="Collapse">

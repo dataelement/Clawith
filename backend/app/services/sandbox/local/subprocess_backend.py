@@ -276,6 +276,7 @@ class SubprocessBackend(BaseSandboxBackend):
         **kwargs
     ) -> ExecutionResult:
         """Execute code in a subprocess."""
+        on_output = kwargs.get("on_output")
         start_time = time.time()
 
         # Validate language
@@ -369,15 +370,22 @@ class SubprocessBackend(BaseSandboxBackend):
             stdout_data = bytearray()
             stderr_data = bytearray()
 
-            async def read_stream(stream, out):
+            async def read_stream(stream, out, label="stdout"):
                 while True:
                     chunk = await stream.read(4096)
                     if not chunk:
                         break
                     out.extend(chunk)
+                    # Real-time streaming: push each chunk to the WebSocket
+                    if on_output:
+                        try:
+                            text = chunk.decode("utf-8", errors="replace")
+                            await on_output(text, label)
+                        except Exception:
+                            pass
 
-            task1 = asyncio.create_task(read_stream(proc.stdout, stdout_data))
-            task2 = asyncio.create_task(read_stream(proc.stderr, stderr_data))
+            task1 = asyncio.create_task(read_stream(proc.stdout, stdout_data, "stdout"))
+            task2 = asyncio.create_task(read_stream(proc.stderr, stderr_data, "stderr"))
 
             is_timeout = False
             try:
