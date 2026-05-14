@@ -6154,6 +6154,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
             source_agent = src_result.scalar_one_or_none()
             source_name = source_agent.name if source_agent else "Unknown agent"
             source_tenant_id = source_agent.tenant_id if source_agent else None
+            source_creator_id = source_agent.creator_id if source_agent else from_agent_id
 
             # Build base filter: same tenant + not self
             base_filter = [AgentModel.id != from_agent_id]
@@ -6310,7 +6311,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
                     src_participant = src_part_r.scalar_one_or_none()
                     chat_session = ChatSession(
                         agent_id=session_agent_id,
-                        user_id=source_agent.creator_id if source_agent else from_agent_id,
+                        user_id=source_creator_id,
                         title=f"{source_name} ↔ {target_name}",
                         source_channel="agent",
                         participant_id=src_participant.id if src_participant else None,
@@ -6336,7 +6337,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
 
                 db2.add(ChatMessage(
                     agent_id=session_agent_id,
-                    user_id=source_agent.creator_id if source_agent else from_agent_id,
+                    user_id=source_creator_id,
                     role="user",
                     content=file_msg_content,
                     conversation_id=str(chat_session.id),
