@@ -6877,6 +6877,15 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                         round_chars = sum(len(m.content or '') for m in full_msgs if isinstance(m.content, str))
                         _a2a_accumulated_usage.add(estimate_token_usage_from_chars(round_chars))
 
+                    # Debug: log A2A LLM response summary
+                    _tc_names = [tc.get("function", {}).get("name", "?") for tc in (response.tool_calls or [])]
+                    logger.debug(
+                        f"[A2A] Round {_round+1} response for {target.name}: "
+                        f"content={repr((response.content or '')[:500])}, "
+                        f"tool_calls={_tc_names}, "
+                        f"reasoning={repr((response.reasoning_content or '')[:300])}"
+                    )
+
                     # Check for tool calls
                     if response.tool_calls:
                         # Add assistant message with tool calls to conversation

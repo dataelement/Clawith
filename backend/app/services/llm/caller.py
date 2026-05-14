@@ -513,6 +513,15 @@ async def call_llm(
         # Track tokens for this round
         _accumulated_usage.add(_usage_from_response_or_estimate(response, api_messages))
 
+        # Debug: log full LLM response summary
+        _tc_names = [tc.get("function", {}).get("name", "?") for tc in (response.tool_calls or [])]
+        logger.debug(
+            f"[LLM] Round {round_i+1} response: "
+            f"content={repr((response.content or '')[:500])}, "
+            f"tool_calls={_tc_names}, "
+            f"reasoning={repr((response.reasoning_content or '')[:300])}"
+        )
+
         # Plain assistant text is not a stop condition. The model must finish
         # explicitly via finish(content=...).
         if not response.tool_calls:
