@@ -6285,6 +6285,69 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
             detail={"source_agent": source_name, "source_file": rel_path, "delivered_file": target_rel_path},
         )
 
+        # ── Inject file-delivery message into A2A chat session ──
+        # This ensures the target agent sees the file delivery in its
+        # conversation context when send_message_to_agent is called next.
+        try:
+            from app.models.chat import ChatMessage, ChatSession
+            from app.models.participant import Participant
+            async with async_session() as db2:
+                # Find or create A2A session (same ordering as send_message_to_agent)
+                session_agent_id = min(from_agent_id, target_id, key=str)
+                session_peer_id = max(from_agent_id, target_id, key=str)
+                sess_r = await db2.execute(
+                    select(ChatSession).where(
+                        ChatSession.agent_id == session_agent_id,
+                        ChatSession.peer_agent_id == session_peer_id,
+                        ChatSession.source_channel == "agent",
+                    )
+                )
+                chat_session = sess_r.scalar_one_or_none()
+                if not chat_session:
+                    src_part_r = await db2.execute(
+                        select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id)
+                    )
+                    src_participant = src_part_r.scalar_one_or_none()
+                    chat_session = ChatSession(
+                        agent_id=session_agent_id,
+                        user_id=source_agent.creator_id if source_agent else from_agent_id,
+                        title=f"{source_name} ↔ {target_name}",
+                        source_channel="agent",
+                        participant_id=src_participant.id if src_participant else None,
+                        peer_agent_id=session_peer_id,
+                    )
+                    db2.add(chat_session)
+                    await db2.flush()
+
+                file_msg_content = (
+                    f"[文件投递通知 from {source_name}]\n"
+                    f"已向你发送文件：{delivered_name}\n"
+                    f"文件路径：{target_rel_path}\n"
+                    f"请使用 read_file(path=\"{target_rel_path}\") 阅读此文件。"
+                )
+                if delivery_note:
+                    file_msg_content += f"\n附言：{delivery_note}"
+
+                # Resolve sender participant for proper attribution
+                src_part_r2 = await db2.execute(
+                    select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id)
+                )
+                src_part2 = src_part_r2.scalar_one_or_none()
+
+                db2.add(ChatMessage(
+                    agent_id=session_agent_id,
+                    user_id=source_agent.creator_id if source_agent else from_agent_id,
+                    role="user",
+                    content=file_msg_content,
+                    conversation_id=str(chat_session.id),
+                    participant_id=src_part2.id if src_part2 else None,
+                ))
+                chat_session.last_message_at = ts
+                await db2.commit()
+                logger.info(f"[A2A-File] Injected file delivery message into session {chat_session.id} for {target_name}")
+        except Exception as e:
+            logger.warning(f"[A2A-File] Failed to inject file delivery message: {e}")
+
         return (
             f"✅ File sent to {target_name}.\n"
             f"- Delivered to: {target_rel_path}\n"
