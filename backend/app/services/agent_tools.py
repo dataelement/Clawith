@@ -2196,21 +2196,36 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
             explicitly_disabled_names = set()
             # Track tools included via is_default fallback (no AgentTool record)
             default_included_names = []
+
+            # Key insight: if the agent already has ANY AgentTool assignments,
+            # its tool panel has been configured by the user. In that case,
+            # only include tools with an explicit AgentTool(enabled=True)
+            # record.  Tools without any AgentTool record are NOT included
+            # (they will be provided by _always_tools if they are core tools).
+            #
+            # For agents with ZERO assignments (brand-new, never configured),
+            # fall back to is_default so they get a reasonable starting set.
+            agent_is_configured = len(assignments) > 0
+
             for t in all_tools:
                 tid = str(t.id)
                 at = assignments.get(tid)
-                enabled = at.enabled if at else t.is_default
+
+                if agent_is_configured:
+                    # Configured agent: require explicit AgentTool record
+                    if at is None:
+                        # No assignment → not included (unless _always_tools adds it)
+                        default_included_names.append(t.name)
+                        continue
+                    enabled = at.enabled
+                else:
+                    # Unconfigured agent: use is_default as fallback
+                    enabled = at.enabled if at else t.is_default
+
                 if not enabled:
-                    # If there is an explicit AgentTool assignment with
-                    # enabled=False, record the tool name so the
-                    # _always_tools loop won't override the user's choice.
                     if at and not at.enabled:
                         explicitly_disabled_names.add(t.name)
                     continue
-
-                # Track tools that are included via is_default (no explicit assignment)
-                if at is None and t.is_default:
-                    default_included_names.append(t.name)
 
                 # Skip feishu tools if the agent has no Feishu channel configured
                 if t.category == "feishu" and not has_feishu:
@@ -2252,8 +2267,9 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                     f"{sorted(explicitly_disabled_names)}"
                 )
             if default_included_names:
-                logger.debug(
-                    f"[Tools] agent={agent_id} included via is_default (no AgentTool record): "
+                logger.info(
+                    f"[Tools] agent={agent_id} skipped (no AgentTool record, "
+                    f"agent_configured={agent_is_configured}): "
                     f"{sorted(default_included_names)}"
                 )
 
