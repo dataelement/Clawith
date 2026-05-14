@@ -616,14 +616,16 @@ The target agent must be in your relationship list for the call to succeed.""")
     if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
-    # --- Focus (working memory) ---
-    try:
-        from app.services.focus_service import render_focus_context
-        focus = await render_focus_context(agent_id)
-        if focus.strip():
-            dynamic_parts.append(f"\n## Focus\n{focus}")
-    except Exception:
-        pass
+    # --- Focus (working memory) --- DISABLED: injecting completed focus items
+    # into the system prompt was reinforcing stale workflow patterns over updated
+    # soul.md instructions.  Agents can still query focus via list_focus_items.
+    # try:
+    #     from app.services.focus_service import render_focus_context
+    #     focus = await render_focus_context(agent_id)
+    #     if focus.strip():
+    #         dynamic_parts.append(f"\n## Focus\n{focus}")
+    # except Exception:
+    #     pass
 
     # --- Active Triggers ---
     try:
