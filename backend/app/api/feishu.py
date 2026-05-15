@@ -18,6 +18,11 @@ from app.models.user import User
 from app.models.identity import IdentityProvider
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.feishu_service import feishu_service
+from app.services.history_window import (
+    token_budget_from_context_window,
+    truncate_by_message_count,
+    truncate_by_token_budget,
+)
 
 router = APIRouter(tags=["feishu"])
 
@@ -1633,9 +1638,23 @@ async def _call_agent_llm(
     messages: list[dict] = []
     from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
     ctx_size = agent.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
+    user_message = {"role": "user", "content": user_text}
     if history:
-        messages.extend(_normalize_history_messages(history)[-ctx_size:])
-    messages.append({"role": "user", "content": user_text})
+        _normalized_history = _normalize_history_messages(history)
+        _conversation = [*_normalized_history, user_message]
+        _token_budget = token_budget_from_context_window(
+            getattr(model, "context_window_tokens", None)
+        )
+        if _token_budget:
+            messages.extend(
+                truncate_by_token_budget(_conversation, ctx_size, _token_budget)
+            )
+        else:
+            messages.extend(
+                truncate_by_message_count(_conversation, ctx_size)
+            )
+    else:
+        messages.append(user_message)
 
     # Use actual user_id so the system prompt knows who it's chatting with
     effective_user_id = user_id or agent_id
