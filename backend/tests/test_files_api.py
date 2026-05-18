@@ -330,3 +330,34 @@ async def test_apply_skill_folder_requires_confirmation_for_existing_target(monk
         )
 
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_empty_existing_target_folder_is_treated_as_update_and_requires_confirmation(monkeypatch, tmp_path):
+    monkeypatch.setattr(files_api, "check_agent_access", AsyncMock())
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+    agent_id = uuid.uuid4()
+    current_user = SimpleNamespace(id=uuid.uuid4(), role="org_admin", tenant_id=uuid.uuid4(), identity=None)
+    skill_root = tmp_path / str(agent_id) / "skills" / "demo-skill"
+    skill_root.mkdir(parents=True)
+
+    upload = _zip_upload({"demo-skill/SKILL.md": b"# New\n"})
+    preview = await files_api.preview_skill_folder_upload(
+        agent_id, upload, target_folder="demo-skill", current_user=current_user, db=object()
+    )
+
+    assert preview["mode"] == "update"
+
+    upload = _zip_upload({"demo-skill/SKILL.md": b"# New\n"})
+    with pytest.raises(HTTPException) as exc:
+        await files_api.apply_skill_folder_upload(
+            agent_id,
+            upload,
+            target_folder="demo-skill",
+            replace_confirmed=False,
+            expected_digest=preview["digest"],
+            current_user=current_user,
+            db=object(),
+        )
+
+    assert exc.value.status_code == 409

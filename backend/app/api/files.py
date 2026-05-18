@@ -995,9 +995,10 @@ async def preview_skill_folder_upload(
 
     archive = inspect_skill_archive(await file.read(), target_folder=target_folder)
     skill_dir = _agent_base_dir(agent_id) / "skills" / target_folder
+    target_exists = skill_dir.exists()
     existing_manifest = _read_skill_dir_manifest(skill_dir)
     diff = diff_skill_manifests(archive["files"], existing_manifest)
-    mode = "update" if existing_manifest else "create"
+    mode = "update" if target_exists else "create"
 
     return {
         "target_folder": target_folder,
@@ -1033,8 +1034,9 @@ async def apply_skill_folder_upload(
         raise HTTPException(status_code=409, detail="Uploaded archive no longer matches preview")
 
     skill_dir = _agent_base_dir(agent_id) / "skills" / target_folder
+    target_exists = skill_dir.exists()
     existing_manifest = _read_skill_dir_manifest(skill_dir)
-    if existing_manifest and not replace_confirmed:
+    if target_exists and not replace_confirmed:
         raise HTTPException(status_code=409, detail="Target folder already exists and requires confirmation")
 
     diff = diff_skill_manifests(archive["files"], existing_manifest)
@@ -1046,7 +1048,7 @@ async def apply_skill_folder_upload(
 
     return {
         "status": "ok",
-        "mode": "update" if existing_manifest else "create",
+        "mode": "update" if target_exists else "create",
         "target_folder": target_folder,
         "files_written": len(archive["files"]),
         "deleted_count": len(diff["deleted"]),
