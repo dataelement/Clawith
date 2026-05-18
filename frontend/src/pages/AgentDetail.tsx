@@ -10,6 +10,7 @@ import ChannelConfig from '../components/ChannelConfig';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import SkillAutocomplete from '../components/SkillAutocomplete';
+import SkillFolderUploadModal from '../components/skills/SkillFolderUploadModal';
 import OpenClawSettings from './OpenClawSettings';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAuthStore } from '../stores';
@@ -1604,6 +1605,7 @@ function AgentDetailInner() {
     const [showAgentUrlImport, setShowAgentUrlImport] = useState(false);
     const [agentUrlInput, setAgentUrlInput] = useState('');
     const [agentUrlImporting, setAgentUrlImporting] = useState(false);
+    const [showSkillFolderUploadModal, setShowSkillFolderUploadModal] = useState(false);
     const { data: schedules = [] } = useQuery({
         queryKey: ['schedules', id],
         queryFn: () => scheduleApi.list(id!),
@@ -2893,6 +2895,13 @@ function AgentDetailInner() {
                                             >
                                                 Import from Presets
                                             </button>
+                                            <button
+                                                className="btn btn-outline"
+                                                style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
+                                                onClick={() => setShowSkillFolderUploadModal(true)}
+                                            >
+                                                {t('agent.skills.uploadFolderModal.openButton')}
+                                            </button>
                                         </div>
                                     </div>
                                     <div style={{ marginTop: '8px', padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
@@ -3088,6 +3097,16 @@ function AgentDetailInner() {
                                         </div>
                                     </div>
                                 )}
+
+                                <SkillFolderUploadModal
+                                    open={showSkillFolderUploadModal}
+                                    onClose={() => setShowSkillFolderUploadModal(false)}
+                                    previewRequest={(file, targetFolder) => fileApi.previewSkillFolder(id!, file, targetFolder)}
+                                    applyRequest={(input) => fileApi.applySkillFolder(id!, input)}
+                                    onApplied={async () => {
+                                        await queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
+                                    }}
+                                />
 
                             </div>
                         );
