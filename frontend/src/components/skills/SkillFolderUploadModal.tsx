@@ -11,6 +11,8 @@ import { buildSkillFolderZip, deriveSkillRootName } from '../../utils/skillFolde
 type SkillFolderUploadModalProps = {
     open: boolean;
     onClose: () => void;
+    i18nPrefix: string;
+    cancelLabelKey?: string;
     previewRequest: (file: File, targetFolder: string) => Promise<SkillFolderUploadPreview>;
     applyRequest: (input: SkillFolderUploadApplyInput) => Promise<SkillFolderUploadApplyResult>;
     onApplied?: (result: SkillFolderUploadApplyResult) => void | Promise<void>;
@@ -40,6 +42,8 @@ function PreviewList({ title, paths }: { title: string; paths: string[] }) {
 export default function SkillFolderUploadModal({
     open,
     onClose,
+    i18nPrefix,
+    cancelLabelKey = 'common.cancel',
     previewRequest,
     applyRequest,
     onApplied,
@@ -54,6 +58,26 @@ export default function SkillFolderUploadModal({
     const [previewing, setPreviewing] = useState(false);
     const [applying, setApplying] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const openRef = useRef(open);
+    const previewRequestIdRef = useRef(0);
+    const applyRequestIdRef = useRef(0);
+    const previewStateVersionRef = useRef(0);
+
+    const invalidatePreviewState = (options?: { clearError?: boolean }) => {
+        previewStateVersionRef.current += 1;
+        previewRequestIdRef.current += 1;
+        applyRequestIdRef.current += 1;
+        setPreview(null);
+        setPreparedFile(null);
+        setPreviewing(false);
+        setApplying(false);
+        if (options?.clearError) setError(null);
+    };
+
+    const handleClose = () => {
+        invalidatePreviewState({ clearError: true });
+        onClose();
+    };
 
     useEffect(() => {
         const input = inputRef.current;
@@ -63,20 +87,23 @@ export default function SkillFolderUploadModal({
     }, []);
 
     useEffect(() => {
+        openRef.current = open;
+    }, [open]);
+
+    useEffect(() => {
         if (!open) {
+            invalidatePreviewState({ clearError: true });
             setSelectedFiles([]);
             setSourceFolderName('');
             setTargetFolder('');
-            setPreview(null);
-            setPreparedFile(null);
             setPreviewing(false);
             setApplying(false);
-            setError(null);
             if (inputRef.current) inputRef.current.value = '';
         }
     }, [open]);
 
     const selectedPaths = useMemo(() => selectedFiles.map((file) => getRelativeSkillPath(file)), [selectedFiles]);
+    const modalT = (key: string, options?: Record<string, unknown>) => t(`${i18nPrefix}.${key}`, options);
 
     const openPicker = () => inputRef.current?.click();
 
@@ -86,9 +113,7 @@ export default function SkillFolderUploadModal({
         setSelectedFiles(files);
         setSourceFolderName(derivedRoot);
         setTargetFolder(derivedRoot);
-        setPreview(null);
-        setPreparedFile(null);
-        setError(null);
+        invalidatePreviewState({ clearError: true });
     };
 
     const buildUploadFile = async (folderName: string) => buildSkillFolderZip(
@@ -98,54 +123,105 @@ export default function SkillFolderUploadModal({
 
     const handlePreview = async () => {
         if (!selectedFiles.length) {
-            setError(t('agent.skills.uploadFolderModal.validation.pickFolderFirst'));
+            setError(modalT('validation.pickFolderFirst'));
             return;
         }
 
         const normalizedTarget = targetFolder.trim();
         if (!normalizedTarget) {
-            setError(t('agent.skills.uploadFolderModal.validation.targetRequired'));
+            setError(modalT('validation.targetRequired'));
             return;
         }
 
         setPreviewing(true);
         setError(null);
+        const requestId = ++previewRequestIdRef.current;
+        const stateVersion = previewStateVersionRef.current;
         try {
             const uploadFile = await buildUploadFile(normalizedTarget);
+            if (
+                !openRef.current
+                || requestId !== previewRequestIdRef.current
+                || stateVersion !== previewStateVersionRef.current
+            ) {
+                return;
+            }
             const nextPreview = await previewRequest(uploadFile, normalizedTarget);
+            if (
+                !openRef.current
+                || requestId !== previewRequestIdRef.current
+                || stateVersion !== previewStateVersionRef.current
+            ) {
+                return;
+            }
             setPreparedFile(uploadFile);
             setPreview(nextPreview);
         } catch (err: any) {
-            setPreparedFile(null);
-            setPreview(null);
-            setError(String(err?.message || err));
+            if (
+                openRef.current
+                && requestId === previewRequestIdRef.current
+                && stateVersion === previewStateVersionRef.current
+            ) {
+                setPreparedFile(null);
+                setPreview(null);
+                setError(String(err?.message || err));
+            }
         } finally {
-            setPreviewing(false);
+            if (
+                openRef.current
+                && requestId === previewRequestIdRef.current
+                && stateVersion === previewStateVersionRef.current
+            ) {
+                setPreviewing(false);
+            }
         }
     };
 
     const handleApply = async () => {
         if (!preview || !preparedFile) {
-            setError(t('agent.skills.uploadFolderModal.validation.previewRequired'));
+            setError(modalT('validation.previewRequired'));
             return;
         }
 
         setApplying(true);
         setError(null);
+        const requestId = ++applyRequestIdRef.current;
+        const stateVersion = previewStateVersionRef.current;
+        const previewSnapshot = preview;
+        const preparedFileSnapshot = preparedFile;
         try {
             const result = await applyRequest({
-                file: preparedFile,
-                targetFolder: preview.target_folder,
-                expectedDigest: preview.digest,
-                expectedTargetStateDigest: preview.target_state_digest,
+                file: preparedFileSnapshot,
+                targetFolder: previewSnapshot.target_folder,
+                expectedDigest: previewSnapshot.digest,
+                expectedTargetStateDigest: previewSnapshot.target_state_digest,
                 replaceConfirmed: true,
             });
+            if (
+                !openRef.current
+                || requestId !== applyRequestIdRef.current
+                || stateVersion !== previewStateVersionRef.current
+            ) {
+                return;
+            }
             await onApplied?.(result);
-            onClose();
+            handleClose();
         } catch (err: any) {
-            setError(String(err?.message || err));
+            if (
+                openRef.current
+                && requestId === applyRequestIdRef.current
+                && stateVersion === previewStateVersionRef.current
+            ) {
+                setError(String(err?.message || err));
+            }
         } finally {
-            setApplying(false);
+            if (
+                openRef.current
+                && requestId === applyRequestIdRef.current
+                && stateVersion === previewStateVersionRef.current
+            ) {
+                setApplying(false);
+            }
         }
     };
 
@@ -154,7 +230,7 @@ export default function SkillFolderUploadModal({
     return (
         <div
             style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            onClick={onClose}
+            onClick={handleClose}
         >
             <div
                 onClick={(event) => event.stopPropagation()}
@@ -162,12 +238,12 @@ export default function SkillFolderUploadModal({
             >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
                     <div>
-                        <h3 style={{ margin: 0 }}>{t('agent.skills.uploadFolderModal.title')}</h3>
+                        <h3 style={{ margin: 0 }}>{modalT('title')}</h3>
                         <p style={{ margin: '6px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                            {t('agent.skills.uploadFolderModal.description')}
+                            {modalT('description')}
                         </p>
                     </div>
-                    <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
+                    <button onClick={handleClose} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
                 </div>
 
                 <input
@@ -181,28 +257,27 @@ export default function SkillFolderUploadModal({
                 <div style={{ display: 'grid', gap: '12px' }}>
                     <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
                         <button className="btn btn-secondary" onClick={openPicker}>
-                            {t('agent.skills.uploadFolderModal.pickFolder')}
+                            {modalT('pickFolder')}
                         </button>
                         <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                             {selectedFiles.length
-                                ? t('agent.skills.uploadFolderModal.selectedSummary', { folder: sourceFolderName, count: selectedFiles.length })
-                                : t('agent.skills.uploadFolderModal.noFolderSelected')}
+                                ? modalT('selectedSummary', { folder: sourceFolderName, count: selectedFiles.length })
+                                : modalT('noFolderSelected')}
                         </div>
                     </div>
 
                     <div>
                         <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: 600 }}>
-                            {t('agent.skills.uploadFolderModal.targetFolderLabel')}
+                            {modalT('targetFolderLabel')}
                         </label>
                         <input
                             className="input"
                             value={targetFolder}
                             onChange={(event) => {
                                 setTargetFolder(event.target.value);
-                                setPreview(null);
-                                setPreparedFile(null);
+                                invalidatePreviewState();
                             }}
-                            placeholder={t('agent.skills.uploadFolderModal.targetFolderPlaceholder')}
+                            placeholder={modalT('targetFolderPlaceholder')}
                             style={{ width: '100%', boxSizing: 'border-box' }}
                         />
                     </div>
@@ -221,7 +296,7 @@ export default function SkillFolderUploadModal({
                         ))}
                         {selectedPaths.length > 20 && (
                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
-                                {t('agent.skills.uploadFolderModal.moreFiles', { count: selectedPaths.length - 20 })}
+                                {modalT('moreFiles', { count: selectedPaths.length - 20 })}
                             </div>
                         )}
                     </div>
@@ -232,40 +307,40 @@ export default function SkillFolderUploadModal({
                         <div style={{ padding: '12px 14px', borderRadius: '8px', background: 'var(--bg-secondary)', display: 'grid', gap: '8px' }}>
                             <div style={{ fontSize: '13px', fontWeight: 600 }}>
                                 {preview.mode === 'create'
-                                    ? t('agent.skills.uploadFolderModal.previewCreate')
-                                    : t('agent.skills.uploadFolderModal.previewUpdate')}
+                                    ? modalT('previewCreate')
+                                    : modalT('previewUpdate')}
                             </div>
                             <div style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                                <span>{t('agent.skills.uploadFolderModal.summary.added', { count: preview.added_count })}</span>
-                                <span>{t('agent.skills.uploadFolderModal.summary.changed', { count: preview.changed_count })}</span>
-                                <span>{t('agent.skills.uploadFolderModal.summary.deleted', { count: preview.deleted_count })}</span>
+                                <span>{modalT('summary.added', { count: preview.added_count })}</span>
+                                <span>{modalT('summary.changed', { count: preview.changed_count })}</span>
+                                <span>{modalT('summary.deleted', { count: preview.deleted_count })}</span>
                             </div>
                             {(preview.changed_count > 0 || preview.deleted_count > 0) && (
                                 <div style={{ fontSize: '12px', color: '#fbbf24', lineHeight: 1.5 }}>
                                     {preview.deleted_count > 0
-                                        ? t('agent.skills.uploadFolderModal.warnings.deleteReplace')
-                                        : t('agent.skills.uploadFolderModal.warnings.replace')}
+                                        ? modalT('warnings.deleteReplace')
+                                        : modalT('warnings.replace')}
                                 </div>
                             )}
                         </div>
 
                         <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-                            <PreviewList title={t('agent.skills.uploadFolderModal.diff.added')} paths={preview.added_paths} />
-                            <PreviewList title={t('agent.skills.uploadFolderModal.diff.changed')} paths={preview.changed_paths} />
-                            <PreviewList title={t('agent.skills.uploadFolderModal.diff.deleted')} paths={preview.deleted_paths} />
+                            <PreviewList title={modalT('diff.added')} paths={preview.added_paths} />
+                            <PreviewList title={modalT('diff.changed')} paths={preview.changed_paths} />
+                            <PreviewList title={modalT('diff.deleted')} paths={preview.deleted_paths} />
                         </div>
                     </div>
                 )}
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: 'auto' }}>
-                    <button className="btn btn-secondary" onClick={onClose} disabled={previewing || applying}>
-                        {t('agent.skills.cancel')}
+                    <button className="btn btn-secondary" onClick={handleClose} disabled={previewing || applying}>
+                        {t(cancelLabelKey)}
                     </button>
                     <button className="btn btn-secondary" onClick={handlePreview} disabled={previewing || applying}>
-                        {previewing ? t('agent.skills.uploadFolderModal.previewing') : t('agent.skills.uploadFolderModal.preview')}
+                        {previewing ? modalT('previewing') : modalT('preview')}
                     </button>
                     <button className="btn btn-primary" onClick={handleApply} disabled={!preview || previewing || applying}>
-                        {applying ? t('agent.skills.uploadFolderModal.applying') : t('agent.skills.uploadFolderModal.apply')}
+                        {applying ? modalT('applying') : modalT('apply')}
                     </button>
                 </div>
             </div>

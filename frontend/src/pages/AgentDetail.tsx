@@ -3101,6 +3101,8 @@ function AgentDetailInner() {
                                 <SkillFolderUploadModal
                                     open={showSkillFolderUploadModal}
                                     onClose={() => setShowSkillFolderUploadModal(false)}
+                                    i18nPrefix="agent.skills.uploadFolderModal"
+                                    cancelLabelKey="agent.skills.cancel"
                                     previewRequest={(file, targetFolder) => fileApi.previewSkillFolder(id!, file, targetFolder)}
                                     applyRequest={(input) => fileApi.applySkillFolder(id!, input)}
                                     onApplied={async () => {
