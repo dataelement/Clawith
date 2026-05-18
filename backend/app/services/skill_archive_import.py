@@ -18,7 +18,9 @@ def _normalize_member_path(member: str) -> str:
 
     normalized_member = member.replace("\\", "/")
     path = Path(normalized_member)
-    if normalized_member.startswith("/") or path.is_absolute() or ".." in path.parts:
+    has_windows_drive = len(normalized_member) >= 3 and normalized_member[0].isalpha() and normalized_member[1:3] == ":/"
+    has_unc_prefix = normalized_member.startswith("//")
+    if normalized_member.startswith("/") or has_windows_drive or has_unc_prefix or path.is_absolute() or ".." in path.parts:
         raise HTTPException(status_code=400, detail="Invalid archive path")
 
     return str(path).replace("\\", "/")

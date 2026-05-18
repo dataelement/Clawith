@@ -77,3 +77,10 @@ def test_inspect_skill_archive_rejects_windows_style_parent_traversal():
 
     with pytest.raises(HTTPException):
         inspect_skill_archive(data, target_folder="demo")
+
+
+def test_inspect_skill_archive_rejects_windows_absolute_drive_paths():
+    data = _zip_bytes({"C:/evil.txt": b"bad", "SKILL.md": b"# Demo\n"})
+
+    with pytest.raises(HTTPException):
+        inspect_skill_archive(data, target_folder="demo")
