@@ -3,14 +3,17 @@
 import hashlib
 import json
 import secrets
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from loguru import logger
 from sqlalchemy import cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.permissions import build_visible_agents_query, check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
@@ -19,9 +22,11 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
+from app.services.storage import get_storage_backend
 from app.services.access_relationships import ensure_access_granted_platform_relationships
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+settings = get_settings()
 
 
 async def _get_active_admin_users(db: AsyncSession, tenant_id: uuid.UUID | None) -> list[User]:
@@ -404,10 +409,11 @@ async def create_agent(
 
     # Always include global default skills (mcp-installer, skill-creator,
     # complex-task-executor)
-    default_result = await db.execute(
-        select(Skill).where(Skill.is_default)
-    )
+    t_skills_copy_start = time.perf_counter()
+    t_default_query_start = time.perf_counter()
+    default_result = await db.execute(select(Skill).where(Skill.is_default))
     default_ids = {s.id for s in default_result.scalars().all()}
+    t_default_query = time.perf_counter() - t_default_query_start
 
     # Include the template's declared default skills (e.g. trading templates
     # ship with `market-data` / `financial-calendar` in their meta.yaml).
@@ -415,7 +421,9 @@ async def create_agent(
     # so the agent has no idea those MCP-backed skills exist and silently
     # falls back to web search.
     template_skill_ids: set = set()
+    t_template_query = 0.0
     if data.template_id:
+        t_template_query_start = time.perf_counter()
         tpl_r = await db.execute(
             select(AgentTemplate).where(AgentTemplate.id == data.template_id)
         )
@@ -426,30 +434,45 @@ async def create_agent(
                 select(Skill).where(Skill.folder_name.in_(folder_names))
             )
             template_skill_ids = {s.id for s in tpl_skills_r.scalars().all()}
+        t_template_query = time.perf_counter() - t_template_query_start
 
     # Merge user-selected + global default + template-default skill IDs
     all_skill_ids = set(data.skill_ids or []) | default_ids | template_skill_ids
 
     if all_skill_ids:
-        agent_dir = agent_manager._agent_dir(agent.id)
-        skills_dir = agent_dir / "skills"
-        skills_dir.mkdir(parents=True, exist_ok=True)
+        import asyncio
+        storage = get_storage_backend()
+        agent_prefix = agent_manager._agent_storage_prefix(agent.id)
 
-        for sid in all_skill_ids:
-            result = await db.execute(
-                select(Skill).where(Skill.id == sid).options(selectinload(Skill.files))
+        t_skill_fetch_start = time.perf_counter()
+        skills_result = await db.execute(
+            select(Skill).where(Skill.id.in_(all_skill_ids)).options(selectinload(Skill.files))
+        )
+        skills = skills_result.scalars().all()
+        t_skill_fetch = time.perf_counter() - t_skill_fetch_start
+
+        file_specs = [
+            (f"{agent_prefix}/skills/{skill.folder_name}/{sf.path}", sf.content)
+            for skill in skills
+            for sf in skill.files
+        ]
+
+        if file_specs:
+            t_upload_start = time.perf_counter()
+            await asyncio.gather(*[
+                storage.write_text(key, content, encoding="utf-8")
+                for key, content in file_specs
+            ])
+            logger.info(
+                f"[_skills_copy] agent={agent.id} skills={len(skills)} files={len(file_specs)} "
+                f"fetch={t_skill_fetch:.2f}s upload={time.perf_counter() - t_upload_start:.2f}s "
+                f"total={time.perf_counter() - t_skills_copy_start:.2f}s"
             )
-            skill = result.scalar_one_or_none()
-            if not skill:
-                continue
-            # Create folder: skills/<folder_name>/
-            skill_folder = skills_dir / skill.folder_name
-            skill_folder.mkdir(parents=True, exist_ok=True)
-            # Write each file
-            for sf in skill.files:
-                file_path = skill_folder / sf.path
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(sf.content, encoding="utf-8")
+        else:
+            logger.info(
+                f"[_skills_copy] agent={agent.id} no files "
+                f"fetch={t_skill_fetch:.2f}s total={time.perf_counter() - t_skills_copy_start:.2f}s"
+            )
 
     # Auto-install template-declared MCP servers using the system Smithery key.
     # For trading agents, this means shibui/finance lands in the agent's tool
@@ -466,7 +489,6 @@ async def create_agent(
         await db.commit()
         await db.refresh(agent)
 
-        from loguru import logger
         from app.services.resource_discovery import import_mcp_from_smithery
         for server_id in template_mcp_servers:
             try:
@@ -491,14 +513,47 @@ async def create_agent(
                     f"on agent {agent.id} raised: {e}"
                 )
 
-    # Start container
+    # Start container first (non-blocking if Docker available)
     await agent_manager.start_container(db, agent)
     await db.flush()
 
+    # Commit agent and basic setup before async operations
     from app.services.okr_agent_hook import hook_new_agent
     if agent.tenant_id:
         await hook_new_agent(db, agent.id, agent.tenant_id)
-        await db.commit()
+    await db.commit()
+    await db.refresh(agent)
+
+    # MCP import runs in background to avoid blocking the response
+    if template_mcp_servers:
+        import asyncio
+        from app.services.resource_discovery import import_mcp_from_smithery
+
+        async def _background_mcp_import(agent_id: uuid.UUID, server_ids: list[str]):
+            for server_id in server_ids:
+                try:
+                    result_msg = await import_mcp_from_smithery(
+                        server_id=server_id,
+                        agent_id=agent_id,
+                        config={},
+                    )
+                    if result_msg.startswith("❌"):
+                        logger.warning(
+                            f"[create_agent] MCP pre-install for '{server_id}' "
+                            f"on agent {agent_id} reported error: {result_msg[:200]}"
+                        )
+                    else:
+                        logger.info(
+                            f"[create_agent] MCP pre-install '{server_id}' "
+                            f"succeeded for agent {agent_id}"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"[create_agent] MCP pre-install for '{server_id}' "
+                        f"on agent {agent_id} raised: {e}"
+                    )
+
+        asyncio.create_task(_background_mcp_import(agent.id, template_mcp_servers))
 
     return await _agent_to_out(db, agent, current_user.id)
 

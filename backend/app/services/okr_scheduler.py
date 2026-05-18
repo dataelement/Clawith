@@ -16,14 +16,12 @@ Design decisions:
 import re
 import uuid
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Optional
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.database import async_session
 from app.models.agent import Agent
 from app.models.okr import (
@@ -33,9 +31,7 @@ from app.models.okr import (
     OKRSettings,
     WorkReport,
 )
-
-_settings = get_settings()
-WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
+from app.services.storage import agent_storage_key, get_storage_backend, store_agent_bytes
 
 
 # ─── Focus File Parsing ───────────────────────────────────────────────────────
@@ -138,17 +134,16 @@ async def collect_all_focus_updates(
         skipped_count = 0
         error_count = 0
         lines: list[str] = []
+        storage = get_storage_backend()
 
         for agent in agents:
-            agent_dir = WORKSPACE_ROOT / str(agent.id)
-            focus_path = agent_dir / "focus.md"
-
-            if not focus_path.exists():
+            focus_key = agent_storage_key(agent.id, "focus.md")
+            if not await storage.exists(focus_key):
                 skipped_count += 1
                 continue
 
             try:
-                content = focus_path.read_text(encoding="utf-8")
+                content = await storage.read_text(focus_key, encoding="utf-8", errors="replace")
                 updates = _parse_focus_md(content)
 
                 if not updates:
@@ -159,7 +154,7 @@ async def collect_all_focus_updates(
                     try:
                         kr_uuid = uuid.UUID(kr_id_str)
                     except ValueError:
-                        logger.warning(f"[OKRScheduler] Invalid KR UUID '{kr_id_str}' in {focus_path}")
+                        logger.warning(f"[OKRScheduler] Invalid KR UUID '{kr_id_str}' in {focus_key}")
                         continue
 
                     # Fetch the KR and verify it belongs to this tenant
@@ -403,12 +398,15 @@ async def _store_report(
     await db.commit()
 
 
-def _safe_write_report(agent_dir: Path, filename: str, content: str) -> None:
+async def _safe_write_report(okr_agent_id: uuid.UUID, filename: str, content: str) -> None:
     """Write report to OKR Agent's workspace/reports/ directory."""
     try:
-        reports_dir = agent_dir / "workspace" / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        (reports_dir / filename).write_text(content, encoding="utf-8")
+        await store_agent_bytes(
+            okr_agent_id,
+            f"workspace/reports/{filename}",
+            content.encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
+        )
     except Exception as exc:
         logger.warning(f"[OKRScheduler] Could not write report file {filename}: {exc}")
 
@@ -445,8 +443,7 @@ async def generate_daily_report(
         await _store_report(tenant_id, okr_agent_id, "daily", today, content, db)
 
     # Write file to workspace
-    agent_dir = WORKSPACE_ROOT / str(okr_agent_id)
-    _safe_write_report(agent_dir, f"daily_{today.strftime('%Y%m%d')}.md", content)
+    await _safe_write_report(okr_agent_id, f"daily_{today.strftime('%Y%m%d')}.md", content)
 
     logger.info(f"[OKRScheduler] Daily report generated for tenant {tenant_id}")
     return content
@@ -485,9 +482,8 @@ async def generate_weekly_report(
         monday = today - timedelta(days=today.weekday())
         await _store_report(tenant_id, okr_agent_id, "weekly", monday, content, db)
 
-    agent_dir = WORKSPACE_ROOT / str(okr_agent_id)
     week_label = monday.strftime("%Y-W%V")
-    _safe_write_report(agent_dir, f"weekly_{week_label}.md", content)
+    await _safe_write_report(okr_agent_id, f"weekly_{week_label}.md", content)
 
     logger.info(f"[OKRScheduler] Weekly report generated for tenant {tenant_id}")
     return content
@@ -565,9 +561,8 @@ async def generate_monthly_report(
         await _store_report(tenant_id, okr_agent_id, "monthly", month_start, content, db)
 
     # Write file to OKR Agent workspace
-    agent_dir = WORKSPACE_ROOT / str(okr_agent_id)
     month_label = month_start.strftime("%Y-%m")
-    _safe_write_report(agent_dir, f"monthly_{month_label}.md", content)
+    await _safe_write_report(okr_agent_id, f"monthly_{month_label}.md", content)
 
     logger.info(f"[OKRScheduler] Monthly report generated for tenant {tenant_id}")
     return content

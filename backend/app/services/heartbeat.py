@@ -13,7 +13,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import select, update, exists, and_
+from app.services.storage import agent_storage_key, get_storage_backend
 
 from app.services.llm.finish import FINISH_PROTOCOL_REMINDER, find_finish_call, parse_tool_arguments
 
@@ -184,15 +185,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             model_request_timeout = getattr(model, 'request_timeout', None)
 
             # Read HEARTBEAT.md if it exists, otherwise use default
-            from pathlib import Path
-            from app.config import get_settings
-            settings = get_settings()
-
-            ws_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
-            hb_file = ws_root / "HEARTBEAT.md"
-            if hb_file.exists():
+            storage = get_storage_backend()
+            hb_key = agent_storage_key(agent_id, "HEARTBEAT.md")
+            if await storage.exists(hb_key):
                 try:
-                    custom = hb_file.read_text(encoding="utf-8", errors="replace").strip()
+                    custom = await storage.read_text(hb_key, encoding="utf-8", errors="replace")
+                    custom = custom.strip()
                     if custom:
                         # Prepend privacy rules to custom heartbeat
                         heartbeat_instruction = custom + """

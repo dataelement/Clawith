@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
 from app.models.audit import AuditLog
+from app.services.storage import store_agent_bytes
 
 
 class CollaborationService:
@@ -111,21 +112,16 @@ class CollaborationService:
         from_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
         from_agent = from_result.scalar_one_or_none()
 
-        # Write message to target agent's workspace
-        from pathlib import Path
-        from app.config import get_settings
-        settings = get_settings()
-
-        inbox_dir = Path(settings.AGENT_DATA_DIR) / str(to_agent_id) / "workspace" / "inbox"
-        inbox_dir.mkdir(parents=True, exist_ok=True)
-
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        msg_file = inbox_dir / f"{timestamp}_{str(from_agent_id)[:8]}.md"
-        msg_file.write_text(
+        rel_path = f"workspace/inbox/{timestamp}_{str(from_agent_id)[:8]}.md"
+        await store_agent_bytes(
+            to_agent_id,
+            rel_path,
             f"# 来自 {from_agent.name if from_agent else 'Unknown'} 的消息\n"
             f"- 类型: {msg_type}\n"
             f"- 时间: {datetime.now(timezone.utc).isoformat()}\n\n"
-            f"{message}\n"
+            f"{message}\n".encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
         )
 
         db.add(AuditLog(

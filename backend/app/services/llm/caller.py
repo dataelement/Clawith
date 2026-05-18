@@ -21,6 +21,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import async_session
 from app.services.agent_tools import AGENT_TOOLS, execute_tool, get_agent_tools_for_llm
 from app.services.token_tracker import (
@@ -350,9 +351,8 @@ async def _process_tool_call(
     if supports_vision and agent_id:
         try:
             from app.services.vision_inject import try_inject_screenshot_vision
-            from app.config import get_settings
             settings = get_settings()
-            ws_path = Path(settings.AGENT_DATA_DIR) / str(agent_id)
+            ws_path = Path(settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR) / str(agent_id)
             vision_content = try_inject_screenshot_vision(tool_name, str(result), ws_path)
             if vision_content:
                 tool_content = vision_content

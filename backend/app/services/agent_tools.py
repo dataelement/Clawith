@@ -12,10 +12,13 @@ The agent reads/writes these files directly. No per-concept tools needed.
 """
 
 import asyncio
+from dataclasses import dataclass
+import fnmatch
 import json
 import multiprocessing as mp
 import os
 import queue
+import tempfile
 import uuid
 import unicodedata
 from contextvars import ContextVar
@@ -53,9 +56,13 @@ from app.services.focus_service import (
 from app.services.workspace_collaboration import (
     delete_workspace_file,
     move_workspace_path,
+    normalize_workspace_path,
     read_text_if_exists,
     write_workspace_file,
 )
+from app.services.storage import get_storage_backend, normalize_storage_key
+from app.services.storage_runtime.base import WriteCondition, content_hash_bytes
+from app.services.workspace_locking import workspace_locks
 from app.core.permissions import evaluate_agent_relationship_status, evaluate_human_relationship_status
 from app.services.access_relationships import ensure_access_granted_platform_relationships
 from app.config import get_settings
@@ -69,7 +76,10 @@ from app.services.llm.finish import (
 
 
 _settings = get_settings()
-WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
+WORKSPACE_ROOT = Path(_settings.STORAGE_LOCAL_ROOT or _settings.AGENT_DATA_DIR)
+TOOL_MATERIALIZE_MAX_FILE_BYTES = 10 * 1024 * 1024
+TOOL_MATERIALIZE_MAX_TOTAL_BYTES = 100 * 1024 * 1024
+TEMP_WORKSPACE_DEFAULT_PATHS = ["workspace", "memory", "skills", "focus.md", "soul.md", "HEARTBEAT.md"]
 
 # ─── Tool Config Cache ──────────────────────────────────────────
 # Cache tool configurations to avoid frequent DB queries
@@ -2256,60 +2266,139 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 
 # ─── Workspace initialization ──────────────────────────────────
 
-async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) -> Path:
-    """Initialize agent workspace with standard structure."""
-    ws = WORKSPACE_ROOT / str(agent_id)
-    ws.mkdir(parents=True, exist_ok=True)
 
-    # Create standard directories
-    (ws / "skills").mkdir(exist_ok=True)
-    (ws / "workspace").mkdir(exist_ok=True)
-    (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
-    (ws / "memory").mkdir(exist_ok=True)
+async def initialize_agent_workspace(agent_id: uuid.UUID) -> None:
+    """Seed default workspace files into shared storage once at agent creation time."""
+    storage = get_storage_backend()
+    mem_key = normalize_storage_key(f"{agent_id}/memory/memory.md")
+    if not await storage.is_file(mem_key):
+        await storage.write_text(
+            mem_key,
+            "# Memory\n\n_Record important information and knowledge here._\n",
+            encoding="utf-8",
+        )
 
-    # Ensure tenant-scoped enterprise_info directory exists
-    if tenant_id:
-        enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
-    else:
-        enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
-    enterprise_dir.mkdir(parents=True, exist_ok=True)
-    (enterprise_dir / "knowledge_base").mkdir(exist_ok=True)
-    # Create default company profile if missing
-    profile_path = enterprise_dir / "company_profile.md"
-    if not profile_path.exists():
-        profile_path.write_text("# Company Profile\n\n_Edit company information here. All digital employees can access this._\n\n## Basic Info\n- Company Name:\n- Industry:\n- Founded:\n\n## Business Overview\n\n## Organization Structure\n\n## Company Culture\n", encoding="utf-8")
-
-    # Migrate: move root-level memory.md into memory/ directory
-    if (ws / "memory.md").exists() and not (ws / "memory" / "memory.md").exists():
-        import shutil
-        shutil.move(str(ws / "memory.md"), str(ws / "memory" / "memory.md"))
-
-    # Create default memory file if missing
-    if not (ws / "memory" / "memory.md").exists():
-        (ws / "memory" / "memory.md").write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
-
-    if not (ws / "soul.md").exists():
-        # Try to load from DB
+    soul_key = normalize_storage_key(f"{agent_id}/soul.md")
+    if not await storage.is_file(soul_key):
+        soul_content = "# Personality\n\n_Describe your role and responsibilities._\n"
         try:
             async with async_session() as db:
-
-                r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-                agent = r.scalar_one_or_none()
+                result = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                agent = result.scalar_one_or_none()
                 if agent and agent.role_description:
-                    (ws / "soul.md").write_text(
-                        f"# Personality\n\n{agent.role_description}\n",
-                        encoding="utf-8",
-                    )
-                else:
-                    (ws / "soul.md").write_text("# Personality\n\n_Describe your role and responsibilities._\n", encoding="utf-8")
+                    soul_content = f"# Personality\n\n{agent.role_description}\n"
         except Exception:
-            (ws / "soul.md").write_text("# Personality\n\n_Describe your role and responsibilities._\n", encoding="utf-8")
+            pass
+        await storage.write_text(soul_key, soul_content, encoding="utf-8")
 
-    # Legacy compatibility: older workspaces may have tasks.json as a DB-backed
-    # task snapshot. Do not create it for new agents.
-    await _sync_tasks_to_file(agent_id, ws)
 
-    return ws
+@dataclass
+class TempWorkspaceManifestEntry:
+    rel_path: str
+    storage_key: str
+    base_version_token: str
+    base_hash: str
+    size: int
+
+
+@dataclass
+class TempWorkspace:
+    temp_dir: tempfile.TemporaryDirectory
+    root: Path
+    agent_id: uuid.UUID
+    tenant_id: str | None
+    selected_paths: list[str]
+    manifest: dict[str, TempWorkspaceManifestEntry]
+
+    def cleanup(self) -> None:
+        self.temp_dir.cleanup()
+
+
+async def _materialize_storage_workspace(storage, storage_key: str, local_root: Path) -> None:
+    if not await storage.is_dir(storage_key):
+        return
+    for entry in await storage.list_dir(storage_key):
+        await _materialize_storage_entry(storage, entry.key, storage_key, local_root)
+
+
+async def _materialize_storage_entry(storage, entry_key: str, root_key: str, local_root: Path) -> None:
+    rel = entry_key.removeprefix(root_key.rstrip("/") + "/")
+    target = (local_root / rel).resolve()
+    if not str(target).startswith(str(local_root.resolve())):
+        return
+    if await storage.is_dir(entry_key):
+        target.mkdir(parents=True, exist_ok=True)
+        for child in await storage.list_dir(entry_key):
+            await _materialize_storage_entry(storage, child.key, root_key, local_root)
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(await storage.read_bytes(entry_key))
+
+
+async def _prepare_temp_workspace(
+    agent_id: uuid.UUID,
+    tenant_id: str | None = None,
+    paths: list[str] | None = None,
+) -> TempWorkspace:
+    tmp = tempfile.TemporaryDirectory(prefix=f"clawith-agent-{str(agent_id)[:8]}-")
+    temp_ws = Path(tmp.name)
+    for folder in ("workspace", "memory", "skills"):
+        (temp_ws / folder).mkdir(parents=True, exist_ok=True)
+
+    storage = get_storage_backend()
+    budget = {"total": 0}
+    selected = TEMP_WORKSPACE_DEFAULT_PATHS if paths is None else [path for path in paths if path]
+    manifest: dict[str, TempWorkspaceManifestEntry] = {}
+    for rel_path in selected:
+        storage_key, normalized, is_enterprise = _tool_storage_key(agent_id, rel_path, tenant_id)
+        if is_enterprise:
+            continue
+        await _materialize_storage_path_with_budget(storage, storage_key, normalized, temp_ws, budget, manifest)
+    return TempWorkspace(
+        temp_dir=tmp,
+        root=temp_ws,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        selected_paths=list(selected),
+        manifest=manifest,
+    )
+
+
+async def _materialize_storage_path_with_budget(
+    storage,
+    storage_key: str,
+    rel_path: str,
+    local_root: Path,
+    budget: dict,
+    manifest: dict[str, TempWorkspaceManifestEntry],
+) -> None:
+    if await storage.is_file(storage_key):
+        version = await storage.get_version(storage_key)
+        if version.size > TOOL_MATERIALIZE_MAX_FILE_BYTES:
+            return
+        if budget["total"] + version.size > TOOL_MATERIALIZE_MAX_TOTAL_BYTES:
+            return
+        target = (local_root / rel_path).resolve()
+        if not str(target).startswith(str(local_root.resolve())):
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = await storage.read_bytes(storage_key)
+        target.write_bytes(data)
+        normalized_rel = normalize_workspace_path(rel_path)
+        manifest[normalized_rel] = TempWorkspaceManifestEntry(
+            rel_path=normalized_rel,
+            storage_key=storage_key,
+            base_version_token=version.token,
+            base_hash=content_hash_bytes(data),
+            size=version.size,
+        )
+        budget["total"] += version.size
+        return
+    if await storage.is_dir(storage_key):
+        (local_root / rel_path).mkdir(parents=True, exist_ok=True)
+        for entry in await storage.list_dir(storage_key):
+            child_rel = f"{rel_path.rstrip('/')}/{entry.name}" if rel_path else entry.name
+            await _materialize_storage_path_with_budget(storage, entry.key, child_rel, local_root, budget, manifest)
 
 
 async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
@@ -2342,6 +2431,85 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
         )
     except Exception as e:
         logger.error(f"[AgentTools] Failed to sync tasks: {e}")
+
+
+async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str = "fail") -> dict[str, list[str]]:
+    """Flush local changes back to storage using manifest-based conflict checks."""
+    storage = get_storage_backend()
+    selected_paths = [normalize_workspace_path(path) for path in temp_workspace.selected_paths]
+    manifest = temp_workspace.manifest
+    local_files = _collect_temp_workspace_files(temp_workspace.root, selected_paths)
+
+    updated: list[str] = []
+    conflicted: list[str] = []
+    deleted: list[str] = []
+    skipped: list[str] = []
+
+    async with workspace_locks(temp_workspace.agent_id, selected_paths):
+        for rel_path, local_path in local_files.items():
+            if local_path.name.startswith("_exec_tmp") or "__pycache__" in local_path.parts:
+                continue
+            data = local_path.read_bytes()
+            current_hash = content_hash_bytes(data)
+            entry = manifest.get(rel_path)
+            if entry and entry.base_hash == current_hash:
+                skipped.append(rel_path)
+                continue
+            condition = (
+                WriteCondition(version_token=entry.base_version_token)
+                if entry
+                else WriteCondition(require_absent=True)
+            )
+            storage_key = entry.storage_key if entry else normalize_storage_key(f"{temp_workspace.agent_id}/{rel_path}")
+            result = await storage.write_bytes_if_match(
+                storage_key,
+                data,
+                condition=condition,
+            )
+            if not result.ok:
+                conflicted.append(rel_path)
+                if conflict_mode == "fail":
+                    return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
+                continue
+            updated.append(rel_path)
+
+        for rel_path, entry in manifest.items():
+            if rel_path in local_files:
+                continue
+            result = await storage.delete_if_match(
+                entry.storage_key,
+                condition=WriteCondition(version_token=entry.base_version_token),
+            )
+            if not result.ok:
+                conflicted.append(rel_path)
+                if conflict_mode == "fail":
+                    return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
+                continue
+            deleted.append(rel_path)
+
+    return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
+
+
+def _collect_temp_workspace_files(root: Path, selected_paths: list[str]) -> dict[str, Path]:
+    files: dict[str, Path] = {}
+    root_resolved = root.resolve()
+    for selected in selected_paths:
+        if not selected:
+            continue
+        target = (root_resolved / selected).resolve()
+        if not str(target).startswith(str(root_resolved)):
+            continue
+        if target.is_file():
+            files[normalize_workspace_path(selected)] = target
+            continue
+        if not target.exists() or not target.is_dir():
+            continue
+        for path in target.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.resolve().relative_to(root_resolved).as_posix()
+            files[normalize_workspace_path(rel)] = path
+    return files
 
 
 # ─── Tool Executors ─────────────────────────────────────────────
@@ -2383,6 +2551,180 @@ async def _get_agent_tenant_id(agent_id: uuid.UUID) -> str | None:
     return None
 
 
+def _agent_workspace_root(agent_id: uuid.UUID) -> Path:
+    """Return the per-agent local path without creating or hydrating it."""
+    return WORKSPACE_ROOT / str(agent_id)
+
+
+def _non_empty_paths(*paths: str | None) -> list[str] | None:
+    selected = [path for path in paths if path]
+    return selected or None
+
+
+async def _run_with_temp_workspace(
+    agent_id: uuid.UUID,
+    tenant_id: str | None,
+    runner,
+    *,
+    paths: list[str] | None = None,
+    sync_back: bool = False,
+) -> str:
+    """Materialize a temporary workspace for tools that require local files."""
+    temp_workspace = await _prepare_temp_workspace(agent_id, tenant_id=tenant_id, paths=paths)
+    try:
+        result = await runner(temp_workspace.root)
+        if sync_back:
+            flush_result = await flush_temp_workspace(temp_workspace, conflict_mode="fail")
+            if flush_result["conflicted"]:
+                conflict_list = ", ".join(flush_result["conflicted"][:5])
+                return f"❌ Workspace sync conflict for: {conflict_list}"
+        return result
+    finally:
+        temp_workspace.cleanup()
+
+
+async def _execute_workspace_mutation(
+    tool_name: str,
+    arguments: dict,
+    *,
+    agent_id: uuid.UUID,
+    base_dir: Path,
+    session_id: str | None,
+) -> str:
+    """Handle shared workspace mutations for both direct and normal tool execution."""
+    if tool_name == "write_file":
+        path = arguments.get("path")
+        content = arguments.get("content")
+        if not path:
+            return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
+        if content is None:
+            return "❌ Missing required argument 'content' for write_file"
+        if is_focus_file_path(path):
+            return "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
+        if _is_enterprise_info_path(path):
+            return "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
+        async with async_session() as _wdb:
+            write_result = await write_workspace_file(
+                _wdb,
+                agent_id=agent_id,
+                base_dir=base_dir,
+                path=path,
+                content=content,
+                actor_type="agent",
+                actor_id=agent_id,
+                operation="write",
+                session_id=session_id,
+                enforce_human_lock=True,
+            )
+            await _wdb.commit()
+        return (
+            f"✅ Written to {write_result.path} ({len(content)} chars)"
+            if write_result.ok
+            else f"❌ {write_result.message}"
+        )
+
+    if tool_name == "move_file":
+        source_path = arguments.get("source_path")
+        destination_path = arguments.get("destination_path")
+        if not source_path:
+            return "❌ Missing required argument 'source_path' for move_file"
+        if not destination_path:
+            return "❌ Missing required argument 'destination_path' for move_file"
+        if is_focus_file_path(source_path) or is_focus_file_path(destination_path):
+            return "❌ Focus is no longer stored in focus.md. Use Focus tools instead."
+        if str(source_path).strip("/") in {"tasks.json", "soul.md"}:
+            return f"❌ {source_path} cannot be moved (protected)"
+        if _is_enterprise_info_path(source_path) or _is_enterprise_info_path(destination_path):
+            return "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
+        async with async_session() as _wdb:
+            move_result = await move_workspace_path(
+                _wdb,
+                agent_id=agent_id,
+                base_dir=base_dir,
+                source_path=source_path,
+                destination_path=destination_path,
+                actor_type="agent",
+                actor_id=agent_id,
+                session_id=session_id,
+                enforce_human_lock=True,
+                overwrite=bool(arguments.get("overwrite", False)),
+            )
+            await _wdb.commit()
+        return f"✅ {move_result.message}" if move_result.ok else f"❌ {move_result.message}"
+
+    if tool_name == "delete_file":
+        path = arguments.get("path", "")
+        if is_focus_file_path(path):
+            return "❌ Focus is no longer stored in focus.md. Use Focus tools instead."
+        if _is_enterprise_info_path(path):
+            return "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
+        async with async_session() as _wdb:
+            delete_result = await delete_workspace_file(
+                _wdb,
+                agent_id=agent_id,
+                base_dir=base_dir,
+                path=path,
+                actor_type="agent",
+                actor_id=agent_id,
+                session_id=session_id,
+                enforce_human_lock=True,
+            )
+            await _wdb.commit()
+        return f"✅ Deleted {delete_result.path}" if delete_result.ok else f"❌ {delete_result.message}"
+
+    if tool_name == "edit_file":
+        path = arguments.get("path")
+        old_string = arguments.get("old_string")
+        new_string = arguments.get("new_string")
+        if not path:
+            return "❌ Missing required argument 'path' for edit_file"
+        if old_string is None:
+            return "❌ Missing required argument 'old_string' for edit_file"
+        if new_string is None:
+            return "❌ Missing required argument 'new_string' for edit_file"
+        if is_focus_file_path(path):
+            return "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
+        if _is_enterprise_info_path(path):
+            return "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
+
+        replace_all = arguments.get("replace_all", False)
+        storage = get_storage_backend()
+        storage_key, normalized_path, _ = _tool_storage_key(agent_id, path, None)
+        if not await storage.is_file(storage_key):
+            return f"File not found: {path}"
+
+        content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
+        if old_string not in content:
+            return f"❌ 'old_string' not found in {path}. Please check the exact text including whitespace and newlines."
+        count = content.count(old_string)
+        if count > 1 and not replace_all:
+            return f"❌ 'old_string' appears {count} times in {path}. Use replace_all=true or provide more context to make the match unique."
+
+        new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+        async with async_session() as _wdb:
+            write_result = await write_workspace_file(
+                _wdb,
+                agent_id=agent_id,
+                base_dir=base_dir,
+                path=normalized_path,
+                content=new_content,
+                actor_type="agent",
+                actor_id=agent_id,
+                operation="edit",
+                session_id=session_id,
+                enforce_human_lock=True,
+            )
+            await _wdb.commit()
+        replaced = count if replace_all else 1
+        return (
+            f"✅ Replaced {replaced} occurrence(s) in {write_result.path}"
+            if write_result.ok
+            else f"❌ {write_result.message}"
+        )
+
+    return f"Tool {tool_name} does not support workspace mutation execution"
+
+
 async def _execute_tool_direct(
     tool_name: str,
     arguments: dict,
@@ -2394,48 +2736,24 @@ async def _execute_tool_direct(
     has been approved and needs to actually run.
     """
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
-    ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
+    ws = _agent_workspace_root(agent_id)
     try:
-        if tool_name == "delete_file":
-            path = arguments.get("path", "")
-            if _is_enterprise_info_path(path):
-                return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-            return _delete_file(ws, path)
-        elif tool_name == "write_file":
-            path = arguments.get("path")
-            content = arguments.get("content", "")
-            if not path:
-                return "Missing path"
-            if _is_enterprise_info_path(path):
-                return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-            return _write_file(ws, path, content, tenant_id=_agent_tenant_id)
-        elif tool_name == "move_file":
-            source_path = arguments.get("source_path")
-            destination_path = arguments.get("destination_path")
-            if not source_path or not destination_path:
-                return "Missing source_path or destination_path"
-            if _is_enterprise_info_path(source_path) or _is_enterprise_info_path(destination_path):
-                return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-            if str(source_path or "").strip("/").strip() in {"tasks.json", "soul.md"}:
-                return f"{source_path} cannot be moved (protected)"
-            async with async_session() as _wdb:
-                move_result = await move_workspace_path(
-                    _wdb,
-                    agent_id=agent_id,
-                    base_dir=ws,
-                    source_path=source_path,
-                    destination_path=destination_path,
-                    actor_type="agent",
-                    actor_id=agent_id,
-                    session_id=None,
-                    enforce_human_lock=True,
-                    overwrite=bool(arguments.get("overwrite", False)),
-                )
-                await _wdb.commit()
-            return f"✅ {move_result.message}" if move_result.ok else f"❌ {move_result.message}"
+        if tool_name in {"delete_file", "write_file", "move_file", "edit_file"}:
+            return await _execute_workspace_mutation(
+                tool_name,
+                arguments,
+                agent_id=agent_id,
+                base_dir=ws,
+                session_id=None,
+            )
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
-            return await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
+            return await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _execute_code(agent_id, temp_ws, arguments, tool_name=tool_name),
+                sync_back=True,
+            )
         elif tool_name == "web_search":
             return await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
@@ -2457,7 +2775,7 @@ async def _execute_tool_direct(
         elif tool_name == "send_message_to_agent":
             return await _send_message_to_agent(agent_id, arguments)
         elif tool_name == "send_file_to_agent":
-            return await _send_file_to_agent(agent_id, ws, arguments)
+            return await _send_file_to_agent(agent_id, arguments)
         else:
             return f"Tool {tool_name} does not support post-approval execution"
     except Exception as e:
@@ -2495,7 +2813,7 @@ async def execute_tool(
 
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
-    ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
+    ws = _agent_workspace_root(agent_id)
 
     # ── Autonomy boundary check ──
     action_type = _TOOL_AUTONOMY_MAP.get(tool_name)
@@ -2540,7 +2858,7 @@ async def execute_tool(
 
     try:
         if tool_name == "list_files":
-            result = _list_files(ws, arguments.get("path", ""), tenant_id=_agent_tenant_id)
+            result = await _storage_list_dir(agent_id, arguments.get("path", ""), tenant_id=_agent_tenant_id)
         elif tool_name == "list_focus_items":
             items = await list_focus_items(agent_id, include_completed=bool(arguments.get("include_completed", True)))
             if not items:
@@ -2580,164 +2898,68 @@ async def execute_tool(
                 return "❌ Focus is no longer stored in focus.md. Use list_focus_items, upsert_focus_item, and complete_focus_item."
             offset = int(arguments.get("offset", 0))
             limit = int(arguments.get("limit", 2000))
-            result = _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
+            result = await _storage_read_file(agent_id, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
         elif tool_name == "read_document":
             path = arguments.get("path")
             if not path:
                 return "❌ Missing required argument 'path' for read_document"
             max_chars = min(int(arguments.get("max_chars", 8000)), 20000)
-            result = await _read_document(ws, path, max_chars=max_chars, tenant_id=_agent_tenant_id)
-        elif tool_name == "write_file":
-            path = arguments.get("path")
-            content = arguments.get("content")
-            if not path:
-                return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
-            if content is None:
-                return "❌ Missing required argument 'content' for write_file"
-            if is_focus_file_path(path):
-                result = "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
-            elif _is_enterprise_info_path(path):
-                result = "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-            else:
-                async with async_session() as _wdb:
-                    write_result = await write_workspace_file(
-                        _wdb,
-                        agent_id=agent_id,
-                        base_dir=ws,
-                        path=path,
-                        content=content,
-                        actor_type="agent",
-                        actor_id=agent_id,
-                        operation="write",
-                        session_id=session_id,
-                        enforce_human_lock=True,
-                    )
-                    await _wdb.commit()
-                result = (
-                    f"✅ Written to {write_result.path} ({len(content)} chars)"
-                    if write_result.ok
-                    else f"❌ {write_result.message}"
-                )
-        elif tool_name == "move_file":
-            source_path = arguments.get("source_path")
-            destination_path = arguments.get("destination_path")
-            if not source_path:
-                return "❌ Missing required argument 'source_path' for move_file"
-            if not destination_path:
-                return "❌ Missing required argument 'destination_path' for move_file"
-            protected = {"tasks.json", "soul.md"}
-            if is_focus_file_path(source_path) or is_focus_file_path(destination_path):
-                result = "❌ Focus is no longer stored in focus.md. Use Focus tools instead."
-            elif str(source_path).strip("/") in protected:
-                result = f"❌ {source_path} cannot be moved (protected)"
-            elif _is_enterprise_info_path(source_path) or _is_enterprise_info_path(destination_path):
-                result = "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-            else:
-                async with async_session() as _wdb:
-                    move_result = await move_workspace_path(
-                        _wdb,
-                        agent_id=agent_id,
-                        base_dir=ws,
-                        source_path=source_path,
-                        destination_path=destination_path,
-                        actor_type="agent",
-                        actor_id=agent_id,
-                        session_id=session_id,
-                        enforce_human_lock=True,
-                        overwrite=bool(arguments.get("overwrite", False)),
-                    )
-                    await _wdb.commit()
-                result = f"✅ {move_result.message}" if move_result.ok else f"❌ {move_result.message}"
-        elif tool_name == "delete_file":
-            path = arguments.get("path", "")
-            if is_focus_file_path(path):
-                result = "❌ Focus is no longer stored in focus.md. Use Focus tools instead."
-            elif _is_enterprise_info_path(path):
-                result = "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-            else:
-                async with async_session() as _wdb:
-                    delete_result = await delete_workspace_file(
-                        _wdb,
-                        agent_id=agent_id,
-                        base_dir=ws,
-                        path=path,
-                        actor_type="agent",
-                        actor_id=agent_id,
-                        session_id=session_id,
-                        enforce_human_lock=True,
-                    )
-                    await _wdb.commit()
-                result = f"✅ Deleted {delete_result.path}" if delete_result.ok else f"❌ {delete_result.message}"
+            result = await _read_document_from_storage(agent_id, path, max_chars=max_chars, tenant_id=_agent_tenant_id)
+        elif tool_name in {"write_file", "move_file", "delete_file", "edit_file"}:
+            result = await _execute_workspace_mutation(
+                tool_name,
+                arguments,
+                agent_id=agent_id,
+                base_dir=ws,
+                session_id=session_id,
+            )
         # --- Enhanced file management tools ---
         elif tool_name == "convert_csv_to_xlsx":
-            result = await _convert_csv_to_xlsx(agent_id, ws, arguments)
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _convert_csv_to_xlsx(agent_id, temp_ws, arguments),
+                paths=_non_empty_paths(arguments.get("source_path", "")),
+                sync_back=True,
+            )
         elif tool_name == "convert_html_to_pdf":
-            result = await _convert_html_to_pdf(agent_id, ws, arguments)
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _convert_html_to_pdf(agent_id, temp_ws, arguments),
+                paths=_non_empty_paths(arguments.get("source_path", "")),
+                sync_back=True,
+            )
         elif tool_name == "convert_html_to_pptx":
-            result = await _convert_html_to_pptx(agent_id, ws, arguments)
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _convert_html_to_pptx(agent_id, temp_ws, arguments),
+                paths=_non_empty_paths(arguments.get("source_path", "")),
+                sync_back=True,
+            )
         elif tool_name == "convert_markdown_to_docx":
-            result = await _convert_markdown_to_docx(agent_id, ws, arguments)
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _convert_markdown_to_docx(agent_id, temp_ws, arguments),
+                paths=_non_empty_paths(arguments.get("source_path", "")),
+                sync_back=True,
+            )
         elif tool_name == "convert_markdown_to_pdf":
-            result = await _convert_markdown_to_pdf(agent_id, ws, arguments)
-        elif tool_name == "edit_file":
-            path = arguments.get("path")
-            old_string = arguments.get("old_string")
-            new_string = arguments.get("new_string")
-            if not path:
-                return "❌ Missing required argument 'path' for edit_file"
-            if old_string is None:
-                return "❌ Missing required argument 'old_string' for edit_file"
-            if new_string is None:
-                return "❌ Missing required argument 'new_string' for edit_file"
-            replace_all = arguments.get("replace_all", False)
-            if is_focus_file_path(path):
-                result = "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
-            elif _is_enterprise_info_path(path):
-                result = "❌ enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-            else:
-                file_path = (ws / path).resolve()
-                if not str(file_path).startswith(str(ws.resolve())):
-                    result = "Access denied for this path"
-                elif not file_path.exists():
-                    result = f"File not found: {path}"
-                elif not file_path.is_file():
-                    result = f"Not a file: {path}"
-                else:
-                    content = await read_text_if_exists(file_path) or ""
-                    if old_string not in content:
-                        result = f"❌ 'old_string' not found in {path}. Please check the exact text including whitespace and newlines."
-                    else:
-                        count = content.count(old_string)
-                        if count > 1 and not replace_all:
-                            result = f"❌ 'old_string' appears {count} times in {path}. Use replace_all=true or provide more context to make the match unique."
-                        else:
-                            new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
-                            async with async_session() as _wdb:
-                                write_result = await write_workspace_file(
-                                    _wdb,
-                                    agent_id=agent_id,
-                                    base_dir=ws,
-                                    path=path,
-                                    content=new_content,
-                                    actor_type="agent",
-                                    actor_id=agent_id,
-                                    operation="edit",
-                                    session_id=session_id,
-                                    enforce_human_lock=True,
-                                )
-                                await _wdb.commit()
-                            replaced = count if replace_all else 1
-                            result = (
-                                f"✅ Replaced {replaced} occurrence(s) in {write_result.path}"
-                                if write_result.ok
-                                else f"❌ {write_result.message}"
-                            )
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _convert_markdown_to_pdf(agent_id, temp_ws, arguments),
+                paths=_non_empty_paths(arguments.get("source_path", "")),
+                sync_back=True,
+            )
         elif tool_name == "search_files":
             pattern = arguments.get("pattern")
             if not pattern:
                 return "❌ Missing required argument 'pattern' for search_files"
-            result = _search_files(
-                ws,
+            result = await _storage_search_files(
+                agent_id,
                 pattern,
                 path=arguments.get("path", "."),
                 file_pattern=arguments.get("file_pattern", "*"),
@@ -2748,8 +2970,8 @@ async def execute_tool(
             pattern = arguments.get("pattern")
             if not pattern:
                 return "❌ Missing required argument 'pattern' for find_files"
-            result = _find_files(
-                ws,
+            result = await _storage_find_files(
+                agent_id,
                 pattern,
                 path=arguments.get("path", "."),
                 tenant_id=_agent_tenant_id
@@ -2778,9 +3000,18 @@ async def execute_tool(
         elif tool_name == "send_message_to_agent":
             result = await _send_message_to_agent(agent_id, arguments)
         elif tool_name == "send_file_to_agent":
-            result = await _send_file_to_agent(agent_id, ws, arguments)
+            result = await _send_file_to_agent(agent_id, arguments)
         elif tool_name == "send_channel_file":
-            result = await _send_channel_file(agent_id, ws, arguments)
+            file_path = (arguments.get("file_path") or "").strip()
+            if not file_path:
+                result = "Error: file_path is required"
+            else:
+                result = await _run_with_temp_workspace(
+                    agent_id,
+                    _agent_tenant_id,
+                    lambda temp_ws: _send_channel_file(agent_id, temp_ws, arguments),
+                    paths=[file_path],
+                )
         elif tool_name == "web_search":
             result = await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
@@ -2807,17 +3038,48 @@ async def execute_tool(
             result = await _plaza_add_comment(agent_id, arguments)
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
-            result = await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _execute_code(agent_id, temp_ws, arguments, tool_name=tool_name),
+                sync_back=True,
+            )
         elif tool_name == "upload_image":
-            result = await _upload_image(agent_id, ws, arguments)
+            file_path = (arguments.get("file_path") or "").strip()
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _upload_image(agent_id, temp_ws, arguments),
+                paths=_non_empty_paths(file_path),
+            )
         elif tool_name == "generate_image_siliconflow":
-            result = await _generate_image(agent_id, ws, arguments, "siliconflow")
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _generate_image(agent_id, temp_ws, arguments, "siliconflow"),
+                sync_back=True,
+            )
         elif tool_name == "generate_image_openai":
-            result = await _generate_image(agent_id, ws, arguments, "openai")
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _generate_image(agent_id, temp_ws, arguments, "openai"),
+                sync_back=True,
+            )
         elif tool_name == "generate_image_google":
-            result = await _generate_image(agent_id, ws, arguments, "google")
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _generate_image(agent_id, temp_ws, arguments, "google"),
+                sync_back=True,
+            )
         elif tool_name == "generate_image_custom":
-            result = await _generate_image(agent_id, ws, arguments, "custom")
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _generate_image(agent_id, temp_ws, arguments, "custom"),
+                sync_back=True,
+            )
         elif tool_name == "discover_resources":
             result = await _discover_resources(agent_id, arguments)
         elif tool_name == "import_mcp_server":
@@ -4195,6 +4457,191 @@ def _resolve_tool_target_path(ws: Path, rel_path: str, tenant_id: str | None = N
     return candidate
 
 
+def _tool_storage_key(agent_id: uuid.UUID, rel_path: str, tenant_id: str | None = None) -> tuple[str, str, bool]:
+    normalized = normalize_workspace_path(_normalize_tool_rel_path(rel_path))
+    if _is_enterprise_info_path(normalized):
+        if not tenant_id:
+            return normalize_storage_key("enterprise_info/" + normalized.removeprefix("enterprise_info").lstrip("/")), normalized, True
+        sub = normalized[len("enterprise_info"):].lstrip("/")
+        key = f"enterprise_info_{tenant_id}/{sub}" if sub else f"enterprise_info_{tenant_id}"
+        return normalize_storage_key(key), normalized, True
+    key = f"{agent_id}/{normalized}" if normalized else str(agent_id)
+    return normalize_storage_key(key), normalized, False
+
+
+def _display_size(size_bytes: int) -> str:
+    return f"{size_bytes}B" if size_bytes < 1024 else f"{size_bytes / 1024:.1f}KB"
+
+
+async def _storage_list_dir(agent_id: uuid.UUID, rel_path: str, tenant_id: str | None = None) -> str:
+    storage = get_storage_backend()
+    storage_key, normalized, is_enterprise = _tool_storage_key(agent_id, rel_path, tenant_id)
+
+    exists = await storage.exists(storage_key)
+    is_dir = await storage.is_dir(storage_key)
+    if exists and not is_dir:
+        return f"Path is not a directory: {rel_path}"
+    if not exists and not is_dir and normalized:
+        return f"Directory not found: {rel_path or '/'}"
+
+    items: list[str] = []
+    dir_count = 0
+    file_count = 0
+    if not normalized and tenant_id:
+        items.append("  📁 enterprise_info/ (shared company info)")
+        dir_count += 1
+
+    entries = await storage.list_dir(storage_key) if exists or is_dir else []
+    for entry in entries:
+        if entry.name.startswith("."):
+            continue
+        if entry.is_dir:
+            dir_count += 1
+            try:
+                child_count = len([c for c in await storage.list_dir(entry.key) if not c.name.startswith(".")])
+            except Exception:
+                child_count = 0
+            items.append(f"  📁 {entry.name}/ ({child_count} items)")
+        else:
+            file_count += 1
+            items.append(f"  📄 {entry.name} ({_display_size(entry.size)})")
+
+    if not items:
+        return f"📂 {rel_path or 'root'}: Empty directory (0 files, 0 folders)"
+    header = f"📂 {rel_path or 'root'}: {dir_count} folder(s), {file_count} file(s)\n"
+    return header + "\n".join(items)
+
+
+async def _storage_read_file(
+    agent_id: uuid.UUID,
+    rel_path: str,
+    tenant_id: str | None = None,
+    offset: int = 0,
+    limit: int = 2000,
+) -> str:
+    storage = get_storage_backend()
+    storage_key, normalized, _ = _tool_storage_key(agent_id, rel_path, tenant_id)
+    if not normalized:
+        return "File not found: root"
+    if not await storage.is_file(storage_key):
+        return f"File not found: {rel_path}"
+    try:
+        content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
+        lines = content.splitlines()
+        total_lines = len(lines)
+        start = max(0, offset)
+        end = min(total_lines, start + limit)
+        if start >= total_lines and total_lines > 0:
+            return f"Offset {offset} exceeds file length ({total_lines} lines total)"
+        selected_lines = lines[start:end]
+        output = "\n".join(f"{i + 1:6}\t{line}" for i, line in enumerate(selected_lines, start=start))
+        if total_lines > end:
+            output += f"\n\n... [{total_lines - end} more lines not shown, lines {end + 1}-{total_lines}]"
+        header = f"📄 {rel_path} (lines {start + 1 if total_lines else 0}-{end} of {total_lines})\n"
+        return header + output
+    except Exception as e:
+        return f"Read failed: {e}"
+
+
+async def _storage_walk_files(storage, root_key: str) -> list:
+    out = []
+    for entry in await storage.list_dir(root_key):
+        if entry.name.startswith("."):
+            continue
+        out.append(entry)
+        if entry.is_dir:
+            out.extend(await _storage_walk_files(storage, entry.key))
+    return out
+
+
+def _relative_storage_display(entry_key: str, base_key: str, display_base: str) -> str:
+    rel = entry_key.removeprefix(base_key.rstrip("/") + "/")
+    return f"{display_base.rstrip('/')}/{rel}".strip("/") if display_base else rel
+
+
+async def _storage_search_files(
+    agent_id: uuid.UUID,
+    pattern: str,
+    path: str = ".",
+    file_pattern: str = "*",
+    ignore_case: bool = False,
+    tenant_id: str | None = None,
+) -> str:
+    storage = get_storage_backend()
+    rel_path = "" if path in ("", ".") else path
+    base_key, normalized, _ = _tool_storage_key(agent_id, rel_path, tenant_id)
+    if not await storage.is_dir(base_key) and normalized:
+        return f"Directory not found: {path}"
+    flags = re.IGNORECASE if ignore_case else 0
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        return f"Invalid regex pattern: {e}"
+
+    results: list[str] = []
+    total_matches = 0
+    files_searched = 0
+    entries = await _storage_walk_files(storage, base_key) if await storage.is_dir(base_key) else []
+    for entry in entries:
+        if entry.is_dir:
+            continue
+        rel_display = _relative_storage_display(entry.key, base_key, normalized)
+        if not fnmatch.fnmatch(Path(rel_display).name, file_pattern) and not fnmatch.fnmatch(rel_display, file_pattern):
+            continue
+        if Path(rel_display).suffix.lower() in {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}:
+            continue
+        files_searched += 1
+        try:
+            content = await storage.read_text(entry.key, encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for i, line in enumerate(content.splitlines(), 1):
+            if regex.search(line):
+                results.append(f"{rel_display}:{i}: {line.strip()[:100]}")
+                total_matches += 1
+                if len(results) >= 50:
+                    break
+        if len(results) >= 50:
+            break
+    if not results:
+        return f"No matches found for pattern '{pattern}' in {files_searched} file(s)"
+    truncated = total_matches > len(results)
+    truncation_note = f" (showing first {len(results)} of {total_matches}+ — refine pattern or path for more)" if truncated else ""
+    return f"🔍 Found {total_matches}+ match(es) in {files_searched} file(s) for pattern '{pattern}'{truncation_note}:\n" + "\n".join(results)
+
+
+async def _storage_find_files(
+    agent_id: uuid.UUID,
+    pattern: str,
+    path: str = ".",
+    tenant_id: str | None = None,
+) -> str:
+    storage = get_storage_backend()
+    rel_path = "" if path in ("", ".") else path
+    base_key, normalized, _ = _tool_storage_key(agent_id, rel_path, tenant_id)
+    if not await storage.is_dir(base_key) and normalized:
+        return f"Directory not found: {path}"
+    entries = await _storage_walk_files(storage, base_key) if await storage.is_dir(base_key) else []
+    matches = []
+    for entry in entries:
+        rel_display = _relative_storage_display(entry.key, base_key, normalized)
+        if fnmatch.fnmatch(rel_display, pattern) or fnmatch.fnmatch(Path(rel_display).name, pattern):
+            matches.append((entry, rel_display))
+    if not matches:
+        return f"No files matching pattern: {pattern}"
+    results = []
+    dir_count = 0
+    file_count = 0
+    for entry, rel_display in matches[:100]:
+        if entry.is_dir:
+            dir_count += 1
+            results.append(f"📁 {rel_display}/")
+        else:
+            file_count += 1
+            results.append(f"📄 {rel_display} ({_display_size(entry.size)})")
+    return f"📂 Found {len(matches)} item(s) ({dir_count} dirs, {file_count} files) matching '{pattern}':\n" + "\n".join(results)
+
+
 def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
@@ -4596,6 +5043,19 @@ def _read_document_with_timeout(ws: Path, rel_path: str, max_chars: int = 8000, 
 async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
     """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
     return await asyncio.to_thread(_read_document_with_timeout, ws, rel_path, max_chars, tenant_id)
+
+
+async def _read_document_from_storage(
+    agent_id: uuid.UUID,
+    rel_path: str,
+    max_chars: int = 8000,
+    tenant_id: str | None = None,
+) -> str:
+    temp_workspace = await _prepare_temp_workspace(agent_id, tenant_id=tenant_id, paths=[rel_path])
+    try:
+        return await _read_document(temp_workspace.root, rel_path, max_chars=max_chars, tenant_id=None)
+    finally:
+        temp_workspace.cleanup()
 
 
 # ─── Format Conversion Tools ────────────────────────────────────
@@ -6055,7 +6515,7 @@ async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
         return f"❌ Web message send error: {str(e)[:200]}"
 
 
-async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) -> str:
+async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     """Send a workspace file to another digital employee (agent)."""
     agent_name = (args.get("agent_name") or "").strip()
     rel_path = (args.get("file_path") or "").strip()
@@ -6064,35 +6524,28 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
     if not agent_name or not rel_path:
         return "❌ Please provide both agent_name and file_path"
 
-    # Resolve source file path inside sender workspace
-    source_file_path = (ws / rel_path).resolve()
-    ws_resolved = ws.resolve()
-    sender_root = (WORKSPACE_ROOT / str(from_agent_id)).resolve()
-    if not str(source_file_path).startswith(str(ws_resolved)):
-        source_file_path = (sender_root / rel_path).resolve()
-    if not str(source_file_path).startswith(str(sender_root)):
-        return "❌ Access denied: source path is outside your workspace"
-
-    if not source_file_path.exists():
+    storage = get_storage_backend()
+    source_key = normalize_storage_key(f"{from_agent_id}/{rel_path}")
+    if not await storage.is_file(source_key):
         return f"❌ Source file not found: {rel_path}"
-    if not source_file_path.is_file():
-        return f"❌ Source path is not a file: {rel_path}"
+    source_entry = await storage.stat(source_key)
 
     # File size limit (50 MB)
     MAX_FILE_SIZE = 50 * 1024 * 1024
-    file_size = source_file_path.stat().st_size
+    file_size = source_entry.size
     if file_size > MAX_FILE_SIZE:
         size_mb = file_size / (1024 * 1024)
         return f"❌ File too large ({size_mb:.1f} MB). Maximum allowed is 50 MB."
+    source_bytes = await storage.read_bytes(source_key)
+    source_name = Path(rel_path).name
 
     try:
         from app.services.activity_logger import log_activity
-        import shutil
 
         async with async_session() as db:
             src_result = await db.execute(select(AgentModel).where(AgentModel.id == from_agent_id))
             source_agent = src_result.scalar_one_or_none()
-            source_name = source_agent.name if source_agent else "Unknown agent"
+            source_agent_name = source_agent.name if source_agent else "Unknown agent"
             source_tenant_id = source_agent.tenant_id if source_agent else None
 
             # Build base filter: same tenant + not self
@@ -6144,38 +6597,29 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
                 if status_info["access_status"] != "active":
                     return f"❌ Relationship to {target_agent.name} is not active ({status_info['access_status_reason'] or 'restricted'}). Ask a manager of both agents to review Relationships."
 
-            target_tenant_id = str(target_agent.tenant_id) if target_agent.tenant_id else None
             target_name = target_agent.name
             target_id = target_agent.id
 
-        target_ws = await ensure_workspace(target_id, tenant_id=target_tenant_id)
-        inbox_dir = (target_ws / "workspace" / "inbox").resolve()
-        files_dir = (inbox_dir / "files").resolve()
-        target_ws_resolved = target_ws.resolve()
-        if not str(inbox_dir).startswith(str(target_ws_resolved)) or not str(files_dir).startswith(str(target_ws_resolved)):
-            return "❌ Access denied for target agent inbox path"
-
-        inbox_dir.mkdir(parents=True, exist_ok=True)
-        files_dir.mkdir(parents=True, exist_ok=True)
-
         ts = datetime.now(timezone.utc)
         stamp = ts.strftime("%Y%m%d_%H%M%S_%f")
-        delivered_name = source_file_path.name
-        delivered_path = files_dir / delivered_name
-        while delivered_path.exists():
-            delivered_name = f"{stamp}_{source_file_path.name}"
-            delivered_path = files_dir / delivered_name
+        delivered_name = source_name
+        target_rel_path = f"workspace/inbox/files/{delivered_name}"
+        target_key = normalize_storage_key(f"{target_id}/{target_rel_path}")
+        while await storage.exists(target_key):
+            delivered_name = f"{stamp}_{source_name}"
+            target_rel_path = f"workspace/inbox/files/{delivered_name}"
+            target_key = normalize_storage_key(f"{target_id}/{target_rel_path}")
 
-        shutil.copy2(source_file_path, delivered_path)
+        await storage.write_bytes(target_key, source_bytes)
 
         sender_short = str(from_agent_id)[:8]
-        note_path = inbox_dir / f"{stamp}_{sender_short}_file_delivery.md"
-        target_rel_path = f"workspace/inbox/files/{delivered_name}"
+        note_rel_path = f"workspace/inbox/{stamp}_{sender_short}_file_delivery.md"
+        note_key = normalize_storage_key(f"{target_id}/{note_rel_path}")
         note_lines = [
-            f"# File delivery from {source_name}",
+            f"# File delivery from {source_agent_name}",
             "",
             f"- Time (UTC): {ts.isoformat()}",
-            f"- Sender: {source_name}",
+            f"- Sender: {source_agent_name}",
             f"- Source path: {rel_path}",
             f"- Delivered file: {target_rel_path}",
             "",
@@ -6186,7 +6630,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
             note_lines.append("")
         note_lines.append("## Action")
         note_lines.append(f"- Read the file via `read_file(path=\"{target_rel_path}\")`")
-        note_path.write_text("\n".join(note_lines), encoding="utf-8")
+        await storage.write_text(note_key, "\n".join(note_lines), encoding="utf-8")
 
         from app.models.audit import AuditLog
         async with async_session() as db:
@@ -6205,7 +6649,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
                 action="collaboration:file_receive",
                 details={
                     "from_agent": str(from_agent_id),
-                    "from_agent_name": source_name,
+                    "from_agent_name": source_agent_name,
                     "source_file": rel_path,
                     "delivered_file": target_rel_path,
                 },
@@ -6221,14 +6665,14 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, ws: Path, args: dict) ->
         await log_activity(
             target_id,
             "agent_file_received",
-            f"Received file from {source_name}",
-            detail={"source_agent": source_name, "source_file": rel_path, "delivered_file": target_rel_path},
+            f"Received file from {source_agent_name}",
+            detail={"source_agent": source_agent_name, "source_file": rel_path, "delivered_file": target_rel_path},
         )
 
         return (
             f"✅ File sent to {target_name}.\n"
             f"- Delivered to: {target_rel_path}\n"
-            f"- Inbox note: workspace/inbox/{note_path.name}"
+            f"- Inbox note: {note_rel_path}"
         )
     except Exception as e:
         return f"❌ Agent file send error: {str(e)[:200]}"

@@ -43,6 +43,8 @@ dependencies = [
     "weasyprint>=62.0",
     "markdown>=3.6",
     "beautifulsoup4>=4.12.0",
+    "boto3>=1.35.0",
+    "aioboto3>=13.0.0",
 ]
 
 [project.optional-dependencies]

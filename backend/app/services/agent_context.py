@@ -8,23 +8,17 @@ import uuid
 from pathlib import Path
 
 from app.config import get_settings
+from app.services.storage import get_storage_backend, normalize_storage_key
 
 settings = get_settings()
 
-PERSISTENT_DATA = Path(settings.AGENT_DATA_DIR)
-
-
-def _agent_workspace(agent_id: uuid.UUID) -> Path:
-    """Return the canonical persistent workspace path for an agent."""
-    return PERSISTENT_DATA / str(agent_id)
-
-
-def _read_file_safe(path: Path, max_chars: int = 3000) -> str:
-    """Read a file, return empty string if missing. Truncate if too long."""
-    if not path.exists():
+async def _read_file_safe(key: str, max_chars: int = 3000) -> str:
+    """Read a storage-backed text file, return empty string if missing."""
+    storage = get_storage_backend()
+    if not await storage.exists(key) or not await storage.is_file(key):
         return ""
     try:
-        content = path.read_text(encoding="utf-8", errors="replace").strip()
+        content = (await storage.read_text(key, encoding="utf-8", errors="replace")).strip()
         if len(content) > max_chars:
             content = content[:max_chars] + "\n...(truncated)"
         return content
@@ -76,7 +70,7 @@ def _parse_skill_frontmatter(content: str, filename: str) -> tuple[str, str]:
     return name, description
 
 
-def _load_skills_index(agent_id: uuid.UUID) -> str:
+async def _load_skills_index(agent_id: uuid.UUID) -> str:
     """Load skill index (name + description) from skills/ directory.
 
     Supports two formats:
@@ -87,36 +81,36 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
     prompt. The model is instructed to call read_file to load full content
     when a skill is relevant.
     """
-    ws_root = _agent_workspace(agent_id)
     skills: list[tuple[str, str, str]] = []  # (name, description, path_relative_to_skills)
-    skills_dir = ws_root / "skills"
-    if skills_dir.exists():
-        for entry in sorted(skills_dir.iterdir()):
+    storage = get_storage_backend()
+    skills_prefix = normalize_storage_key(f"{agent_id}/skills")
+    if await storage.exists(skills_prefix) and await storage.is_dir(skills_prefix):
+        for entry in await storage.list_dir(skills_prefix):
             if entry.name.startswith("."):
                 continue
+            entry_key = entry.key
 
             # Case 1: Folder-based skill — skills/<folder>/SKILL.md
-            if entry.is_dir():
-                skill_md = entry / "SKILL.md"
-                if not skill_md.exists():
-                    # Also try lowercase skill.md
-                    skill_md = entry / "skill.md"
-                if skill_md.exists():
+            if entry.is_dir:
+                skill_md_key = f"{entry_key}/SKILL.md"
+                if not await storage.exists(skill_md_key):
+                    skill_md_key = f"{entry_key}/skill.md"
+                if await storage.exists(skill_md_key):
                     try:
-                        content = skill_md.read_text(encoding="utf-8", errors="replace").strip()
+                        content = (await storage.read_text(skill_md_key, encoding="utf-8", errors="replace")).strip()
                         name, desc = _parse_skill_frontmatter(content, entry.name)
                         skills.append((name, desc, f"{entry.name}/SKILL.md"))
                     except Exception:
                         skills.append((entry.name, "", f"{entry.name}/SKILL.md"))
 
             # Case 2: Flat file — skills/<name>.md
-            elif entry.suffix == ".md" and entry.is_file():
+            elif Path(entry.name).suffix == ".md" and not entry.is_dir:
                 try:
-                    content = entry.read_text(encoding="utf-8", errors="replace").strip()
-                    name, desc = _parse_skill_frontmatter(content, entry.stem)
+                    content = (await storage.read_text(entry_key, encoding="utf-8", errors="replace")).strip()
+                    name, desc = _parse_skill_frontmatter(content, Path(entry.name).stem)
                     skills.append((name, desc, entry.name))
                 except Exception:
-                    skills.append((entry.stem, "", entry.name))
+                    skills.append((Path(entry.name).stem, "", entry.name))
 
     # Deduplicate by name
     seen: set[str] = set()
@@ -158,24 +152,24 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     - skills/ → skill names + summaries
     - relationships.md → relationship descriptions
     """
-    ws_root = _agent_workspace(agent_id)
-
     # --- Soul ---
-    soul = _read_file_safe(ws_root / "soul.md", 2000)
+    soul = await _read_file_safe(normalize_storage_key(f"{agent_id}/soul.md"), 2000)
     # Strip markdown heading if present
     if soul.startswith("# "):
         soul = "\n".join(soul.split("\n")[1:]).strip()
 
     # --- Memory ---
-    memory = _read_file_safe(ws_root / "memory" / "memory.md", 2000) or _read_file_safe(ws_root / "memory.md", 2000)
+    memory = await _read_file_safe(normalize_storage_key(f"{agent_id}/memory/memory.md"), 2000)
+    if not memory:
+        memory = await _read_file_safe(normalize_storage_key(f"{agent_id}/memory.md"), 2000)
     if memory.startswith("# "):
         memory = "\n".join(memory.split("\n")[1:]).strip()
 
     # --- Skills index (progressive disclosure) ---
-    skills_text = _load_skills_index(agent_id)
+    skills_text = await _load_skills_index(agent_id)
 
     # --- Relationships ---
-    relationships = _read_file_safe(ws_root / "relationships.md", 2000)
+    relationships = await _read_file_safe(normalize_storage_key(f"{agent_id}/relationships.md"), 2000)
     if relationships.startswith("# "):
         relationships = "\n".join(relationships.split("\n")[1:]).strip()
 

@@ -15,7 +15,7 @@ from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.security import hash_password
+from app.core.security import hash_password_async
 from app.models.identity import IdentityProvider
 from app.models.tenant import Tenant
 from app.models.user import User, Identity
@@ -201,7 +201,7 @@ class RegistrationService:
             email=email,
             phone=normalized_phone,
             username=final_username,
-            password_hash=hash_password(password) if password else None,
+            password_hash=await hash_password_async(password) if password else None,
             is_platform_admin=is_platform_admin,
             email_verified=is_verified,
         )
