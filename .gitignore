@@ -6,6 +6,7 @@ dist/
 uv.lock
 .vite/
 *.log
+pnpm-lock.yaml
 build/
 __pycache__/
 *.pyc

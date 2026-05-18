@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.security import create_access_token, encrypt_data, get_current_admin
 from app.database import get_db
-from app.models.identity import IdentityProvider, SSOScanSession
+from app.models.identity import SSOScanSession
 from app.models.user import User
 from app.services.auth_provider import GoogleWorkspaceAuthProvider
 from app.services.auth_registry import auth_provider_registry
@@ -26,6 +26,7 @@ from app.services.google_workspace_oauth import (
     probe_google_directory,
     sign_google_oauth_state,
 )
+from app.services.identity_provider_lookup import get_preferred_identity_provider
 
 router = APIRouter(tags=["google_workspace"])
 settings = get_settings()
@@ -56,6 +57,7 @@ async def get_google_workspace_sync_authorize_url(
 async def _handle_google_sso_callback(
     code: str,
     sid: uuid.UUID | None,
+    provider_id: uuid.UUID | None,
     request: Request | None,
     db: AsyncSession,
 ):
@@ -66,19 +68,28 @@ async def _handle_google_sso_callback(
         if session:
             tenant_id = session.tenant_id
 
-    auth_provider = await auth_provider_registry.get_provider(
-        db, "google_workspace", str(tenant_id) if tenant_id else None
-    )
+    provider = None
+    if provider_id:
+        provider = await get_google_provider(db, provider_id)
+        if tenant_id and provider.tenant_id != tenant_id:
+            return HTMLResponse("Auth failed: provider does not belong to this tenant")
+
+    auth_provider = None
+    if provider:
+        auth_provider = GoogleWorkspaceAuthProvider(provider=provider, config=provider.config or {})
+    else:
+        auth_provider = await auth_provider_registry.get_provider(
+            db, "google_workspace", str(tenant_id) if tenant_id else None
+        )
     if not auth_provider:
         return HTMLResponse("Auth failed: Google Workspace provider not configured for this tenant")
 
-    provider_result = await db.execute(
-        select(IdentityProvider).where(
-            IdentityProvider.provider_type == "google_workspace",
-            IdentityProvider.tenant_id == tenant_id,
+    if not provider:
+        provider = await get_preferred_identity_provider(
+            db,
+            "google_workspace",
+            str(tenant_id) if tenant_id else None,
         )
-    )
-    provider = provider_result.scalar_one_or_none()
     if provider:
         redirect_uri = await get_google_redirect_uri(db, provider, request)
         auth_provider.config["redirect_uri"] = redirect_uri
@@ -189,9 +200,11 @@ async def google_workspace_callback(
     if parsed_state:
         state_kind, state_value = parsed_state
         if state_kind == GOOGLE_SYNC_STATE_KIND:
-            return await _handle_google_admin_sync_callback(code, state_value, request, db)
+            return await _handle_google_admin_sync_callback(code, state_value[0], request, db)
         if state_kind == GOOGLE_SSO_STATE_KIND:
-            return await _handle_google_sso_callback(code, state_value, request, db)
+            sid = state_value[0]
+            provider_id = state_value[1] if len(state_value) > 1 else None
+            return await _handle_google_sso_callback(code, sid, provider_id, request, db)
 
     sid: uuid.UUID | None = None
     if state:
@@ -200,4 +213,4 @@ async def google_workspace_callback(
         except (ValueError, AttributeError):
             return HTMLResponse("Authorization failed: invalid state")
 
-    return await _handle_google_sso_callback(code, sid, request, db)
+    return await _handle_google_sso_callback(code, sid, None, request, db)
