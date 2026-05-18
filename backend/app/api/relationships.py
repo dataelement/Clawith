@@ -1,14 +1,13 @@
 """Agent relationship management API — human + agent-to-agent."""
 
-import json
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.config import get_settings
 from app.core.permissions import (
@@ -25,7 +24,7 @@ from app.models.agent import Agent
 from app.models.org import AgentRelationship, AgentAgentRelationship, OrgMember
 from app.services.access_relationships import ensure_access_granted_platform_relationships
 from app.services.org_sync_adapter import derive_member_department_paths
-from app.models.user import Identity, User
+from app.models.user import User
 
 settings = get_settings()
 router = APIRouter(prefix="/agents/{agent_id}/relationships", tags=["relationships"])
@@ -63,6 +62,24 @@ def _display_provider_name(provider_name: str | None, provider_type: str | None)
 
 async def _can_manage_agent(db: AsyncSession, user_id: uuid.UUID, agent: Agent) -> bool:
     return (await get_agent_access_level_for_user_id(db, user_id, agent)) == "manage"
+
+
+async def _get_valid_member_user_id(
+    db: AsyncSession,
+    member: OrgMember,
+    tenant_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Return the linked platform user only when it belongs to the same tenant."""
+    if not member.user_id:
+        return None
+    result = await db.execute(
+        select(User.id).where(
+            User.id == member.user_id,
+            User.tenant_id == tenant_id,
+            User.is_active == True,  # noqa: E712
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 # ─── Schemas ───────────────────────────────────────────
@@ -137,8 +154,10 @@ async def get_relationships(
         db,
         [r.member for r, _provider_name, _provider_type in rows if r.member],
     )
-    return [
-        {
+    out = []
+    for r, provider_name, provider_type in rows:
+        linked_user_id = await _get_valid_member_user_id(db, r.member, source_agent.tenant_id) if r.member else None
+        out.append({
             "id": str(r.id),
             "member_id": str(r.member_id),
             "relation": r.relation,
@@ -153,12 +172,11 @@ async def get_relationships(
                 "email": r.member.email,
                 "provider_name": _display_provider_name(provider_name, provider_type),
                 "provider_type": "platform" if (provider_type or "").lower() == "web" else provider_type,
-                "user_id": str(r.member.user_id) if r.member.user_id else None,
-                "is_platform_user": bool(r.member.user_id),
+                "user_id": str(linked_user_id) if linked_user_id else None,
+                "is_platform_user": bool(linked_user_id),
             } if r.member else None,
-        }
-        for r, provider_name, provider_type in rows
-    ]
+        })
+    return out
 
 
 @router.get("/member-candidates")
@@ -175,15 +193,30 @@ async def search_human_relationship_candidates(
     if not _can_manage_relationships(current_user, access_level):
         raise HTTPException(status_code=403, detail="Only org admins or managers can modify relationships")
 
-    allowed_user_ids = await get_agent_accessible_user_ids(db, agent)
     search_text = (search or "").strip()
+    access_mode = getattr(agent, "access_mode", None) or "company"
+    LinkedUser = aliased(User)
 
     query = (
-        select(OrgMember, IdentityProvider.name.label("provider_name"), IdentityProvider.provider_type)
+        select(
+            OrgMember,
+            IdentityProvider.name.label("provider_name"),
+            IdentityProvider.provider_type,
+            LinkedUser.id.label("linked_user_id"),
+        )
         .outerjoin(IdentityProvider, OrgMember.provider_id == IdentityProvider.id)
+        .outerjoin(
+            LinkedUser,
+            and_(
+                OrgMember.user_id == LinkedUser.id,
+                LinkedUser.tenant_id == agent.tenant_id,
+                LinkedUser.is_active == True,  # noqa: E712
+            ),
+        )
         .where(
             OrgMember.tenant_id == agent.tenant_id,
             OrgMember.status == "active",
+            or_(OrgMember.user_id.is_(None), LinkedUser.id.isnot(None)),
         )
     )
     if search_text:
@@ -197,76 +230,39 @@ async def search_human_relationship_candidates(
             )
         )
 
+    allowed_user_ids: set[uuid.UUID] | None = None
+    if access_mode != "company":
+        allowed_user_ids = await get_agent_accessible_user_ids(db, agent)
+        query = query.where(
+            or_(
+                OrgMember.user_id.is_(None),
+                LinkedUser.id.in_(allowed_user_ids),
+            )
+        )
+
     result = await db.execute(query.order_by(OrgMember.name).limit(200))
     rows = result.all()
-    filtered = [
-        (m, provider_name, provider_type)
-        for m, provider_name, provider_type in rows
-        if not m.user_id or m.user_id in allowed_user_ids
-    ]
     deduped_filtered = []
-    by_user_id: dict[uuid.UUID, tuple[OrgMember, str | None, str | None]] = {}
-    for row in filtered:
-        member, provider_name, provider_type = row
-        if not member.user_id:
+    by_user_id: dict[uuid.UUID, tuple[OrgMember, str | None, str | None, uuid.UUID | None]] = {}
+    for row in rows:
+        member, provider_name, provider_type, linked_user_id = row
+        if not linked_user_id:
             deduped_filtered.append(row)
             continue
-        existing = by_user_id.get(member.user_id)
+        existing = by_user_id.get(linked_user_id)
         if not existing:
-            by_user_id[member.user_id] = row
+            by_user_id[linked_user_id] = row
             continue
         existing_type = (existing[2] or "").lower()
         current_type = (provider_type or "").lower()
         if existing_type in ("", "web", "platform") and current_type not in ("", "web", "platform"):
-            by_user_id[member.user_id] = row
+            by_user_id[linked_user_id] = row
     filtered = [*deduped_filtered, *by_user_id.values()]
-
-    existing_platform_user_ids = {m.user_id for m, _provider_name, _provider_type in filtered if m.user_id}
-    missing_platform_user_ids = allowed_user_ids - existing_platform_user_ids
-    virtual_platform_members = []
-    if missing_platform_user_ids:
-        from sqlalchemy.orm import selectinload as _selectinload
-
-        users_query = (
-            select(User)
-            .where(
-                User.id.in_(missing_platform_user_ids),
-                User.tenant_id == agent.tenant_id,
-                User.is_active == True,  # noqa: E712
-            )
-            .options(_selectinload(User.identity))
-        )
-        if search_text:
-            pattern = f"%{search_text}%"
-            users_query = users_query.where(
-                or_(
-                    User.display_name.ilike(pattern),
-                    User.identity.has(Identity.username.ilike(pattern)),
-                    User.identity.has(Identity.email.ilike(pattern)),
-                )
-            )
-        users_result = await db.execute(users_query.order_by(User.created_at.asc()).limit(200))
-        for user in users_result.scalars().all():
-            virtual_platform_members.append({
-                "id": f"platform-user:{user.id}",
-                "name": user.display_name or user.username or user.email or str(user.id),
-                "email": user.email,
-                "title": user.title or "",
-                "department_path": "",
-                "avatar_url": user.avatar_url,
-                "external_id": f"platform:{user.id}",
-                "provider_id": None,
-                "provider_name": "Platform",
-                "provider_type": "platform",
-                "user_id": str(user.id),
-                "is_platform_user": True,
-                "platform_access_level": await get_agent_access_level_for_user_id(db, user.id, agent),
-            })
 
     filtered = sorted(filtered, key=lambda row: (row[0].name or "").lower())[:100]
     member_paths = await derive_member_department_paths(
         db,
-        [m for m, _provider_name, _provider_type in filtered],
+        [m for m, _provider_name, _provider_type, _linked_user_id in filtered],
     )
     org_member_candidates = [
         {
@@ -280,20 +276,17 @@ async def search_human_relationship_candidates(
             "provider_id": str(m.provider_id) if m.provider_id else None,
             "provider_name": _display_provider_name(provider_name, provider_type) if m.provider_id else None,
             "provider_type": "platform" if (provider_type or "").lower() == "web" else provider_type if m.provider_id else None,
-            "user_id": str(m.user_id) if m.user_id else None,
-            "is_platform_user": bool(m.user_id),
+            "user_id": str(linked_user_id) if linked_user_id else None,
+            "is_platform_user": bool(linked_user_id),
             "platform_access_level": (
-                await get_agent_access_level_for_user_id(db, m.user_id, agent)
-                if m.user_id
+                await get_agent_access_level_for_user_id(db, linked_user_id, agent)
+                if linked_user_id
                 else None
             ),
         }
-        for m, provider_name, provider_type in filtered
+        for m, provider_name, provider_type, linked_user_id in filtered
     ]
-    return sorted(
-        [*org_member_candidates, *virtual_platform_members],
-        key=lambda item: (item.get("name") or "").lower(),
-    )[:100]
+    return sorted(org_member_candidates, key=lambda item: (item.get("name") or "").lower())[:100]
 
 
 @router.put("/")
@@ -355,7 +348,10 @@ async def save_relationships(
             member = member_result.scalar_one_or_none()
         if not member or member.tenant_id != _agent.tenant_id or member.status != "active":
             raise HTTPException(status_code=400, detail="Relationship member is not available")
-        if member.user_id and not await get_agent_access_level_for_user_id(db, member.user_id, _agent):
+        linked_user_id = await _get_valid_member_user_id(db, member, _agent.tenant_id)
+        if member.user_id and not linked_user_id:
+            raise HTTPException(status_code=400, detail="Relationship member is linked to an unavailable platform user")
+        if linked_user_id and not await get_agent_access_level_for_user_id(db, linked_user_id, _agent):
             raise HTTPException(status_code=403, detail="Platform user does not have access to this agent")
         existing = existing_by_member.get(member_id)
         db.add(AgentRelationship(
