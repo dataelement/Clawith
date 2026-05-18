@@ -22,6 +22,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.workspace import WorkspaceFileRevision
 from app.services.focus_service import is_focus_file_path
+from app.services.skill_archive_import import diff_skill_manifests, inspect_skill_archive
 from app.services.workspace_collaboration import (
     acquire_edit_lock,
     content_hash,
@@ -810,6 +811,46 @@ def _rewrite_zip_member_path(member_path: str, zip_root: str, root_name: str) ->
     return rel_path
 
 
+def _read_skill_dir_manifest(skill_dir: Path) -> dict[str, str]:
+    if not skill_dir.exists():
+        return {}
+
+    manifest: dict[str, str] = {}
+    for path in sorted(skill_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        manifest[path.relative_to(skill_dir).as_posix()] = path.read_text(encoding="utf-8", errors="replace")
+    return manifest
+
+
+def _apply_skill_dir_exact_sync(skill_dir: Path, uploaded_files: dict[str, str]) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_root = skill_dir.resolve()
+
+    for rel_path, content in uploaded_files.items():
+        out_path = (skill_root / rel_path).resolve()
+        if not str(out_path).startswith(str(skill_root)):
+            raise HTTPException(status_code=400, detail="Invalid skill archive path")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(content, encoding="utf-8")
+
+    existing_paths = {
+        path.relative_to(skill_root).as_posix(): path
+        for path in skill_root.rglob("*")
+        if path.is_file()
+    }
+    for rel_path, path in existing_paths.items():
+        if rel_path in uploaded_files:
+            continue
+        path.unlink()
+
+    for directory in sorted((path for path in skill_root.rglob("*") if path.is_dir()), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
+
+
 @upload_router.post("/upload")
 async def upload_file_to_workspace(
     agent_id: uuid.UUID,
@@ -936,6 +977,79 @@ async def extract_zip(
         "status": "ok",
         "extracted": len(extracted),
         "files": extracted[:50],
+    }
+
+
+@upload_router.post("/preview-skill-folder")
+async def preview_skill_folder_upload(
+    agent_id: uuid.UUID,
+    file: UploadFileType = FastFile(...),
+    target_folder: str = Form(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_agent_access(db, current_user, agent_id)
+
+    if not _VALID_ROOT_NAME.match(target_folder):
+        raise HTTPException(status_code=400, detail="Invalid target folder name")
+
+    archive = inspect_skill_archive(await file.read(), target_folder=target_folder)
+    skill_dir = _agent_base_dir(agent_id) / "skills" / target_folder
+    existing_manifest = _read_skill_dir_manifest(skill_dir)
+    diff = diff_skill_manifests(archive["files"], existing_manifest)
+    mode = "update" if existing_manifest else "create"
+
+    return {
+        "target_folder": target_folder,
+        "mode": mode,
+        "digest": archive["digest"],
+        "total_files": archive["total_files"],
+        "added_count": len(diff["added"]),
+        "changed_count": len(diff["changed"]),
+        "deleted_count": len(diff["deleted"]),
+        "added_paths": diff["added"][:50],
+        "changed_paths": diff["changed"][:50],
+        "deleted_paths": diff["deleted"][:50],
+    }
+
+
+@upload_router.post("/apply-skill-folder")
+async def apply_skill_folder_upload(
+    agent_id: uuid.UUID,
+    file: UploadFileType = FastFile(...),
+    target_folder: str = Form(...),
+    replace_confirmed: bool = Form(False),
+    expected_digest: str = Form(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_agent_access(db, current_user, agent_id)
+
+    if not _VALID_ROOT_NAME.match(target_folder):
+        raise HTTPException(status_code=400, detail="Invalid target folder name")
+
+    archive = inspect_skill_archive(await file.read(), target_folder=target_folder)
+    if archive["digest"] != expected_digest:
+        raise HTTPException(status_code=409, detail="Uploaded archive no longer matches preview")
+
+    skill_dir = _agent_base_dir(agent_id) / "skills" / target_folder
+    existing_manifest = _read_skill_dir_manifest(skill_dir)
+    if existing_manifest and not replace_confirmed:
+        raise HTTPException(status_code=409, detail="Target folder already exists and requires confirmation")
+
+    diff = diff_skill_manifests(archive["files"], existing_manifest)
+    _apply_skill_dir_exact_sync(skill_dir, archive["files"])
+
+    from app.services import skill_map
+
+    skill_map.invalidate_cache(agent_id)
+
+    return {
+        "status": "ok",
+        "mode": "update" if existing_manifest else "create",
+        "target_folder": target_folder,
+        "files_written": len(archive["files"]),
+        "deleted_count": len(diff["deleted"]),
     }
 
 
