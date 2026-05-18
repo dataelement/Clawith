@@ -203,3 +203,130 @@ async def test_read_file_blocks_openclaw_config(monkeypatch, tmp_path):
         )
 
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_preview_skill_folder_reports_update_diff(monkeypatch, tmp_path):
+    monkeypatch.setattr(files_api, "check_agent_access", AsyncMock())
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+    agent_id = uuid.uuid4()
+    current_user = SimpleNamespace(id=uuid.uuid4(), role="org_admin", tenant_id=uuid.uuid4(), identity=None)
+
+    existing_root = tmp_path / str(agent_id) / "skills" / "demo-skill"
+    existing_root.mkdir(parents=True)
+    (existing_root / "SKILL.md").write_text("# Old\n", encoding="utf-8")
+    (existing_root / "stale.txt").write_text("remove me\n", encoding="utf-8")
+
+    upload = _zip_upload({
+        "demo-skill/SKILL.md": b"# New\n",
+        "demo-skill/scripts/run.py": b"print('ok')\n",
+    })
+
+    result = await files_api.preview_skill_folder_upload(
+        agent_id,
+        upload,
+        target_folder="demo-skill",
+        current_user=current_user,
+        db=object(),
+    )
+
+    assert result["mode"] == "update"
+    assert result["changed_count"] == 1
+    assert result["added_count"] == 1
+    assert result["deleted_count"] == 1
+    assert result["deleted_paths"] == ["stale.txt"]
+
+
+@pytest.mark.asyncio
+async def test_apply_skill_folder_exact_sync_removes_stale_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(files_api, "check_agent_access", AsyncMock())
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(skill_map, "invalidate_cache", lambda _agent_id: None)
+    agent_id = uuid.uuid4()
+    current_user = SimpleNamespace(id=uuid.uuid4(), role="org_admin", tenant_id=uuid.uuid4(), identity=None)
+
+    existing_root = tmp_path / str(agent_id) / "skills" / "demo-skill"
+    existing_root.mkdir(parents=True)
+    (existing_root / "SKILL.md").write_text("# Old\n", encoding="utf-8")
+    (existing_root / "stale.txt").write_text("remove me\n", encoding="utf-8")
+
+    upload = _zip_upload({
+        "demo-skill/SKILL.md": b"# New\n",
+        "demo-skill/scripts/run.py": b"print('ok')\n",
+    })
+
+    preview = await files_api.preview_skill_folder_upload(
+        agent_id,
+        upload,
+        target_folder="demo-skill",
+        current_user=current_user,
+        db=object(),
+    )
+
+    upload = _zip_upload({
+        "demo-skill/SKILL.md": b"# New\n",
+        "demo-skill/scripts/run.py": b"print('ok')\n",
+    })
+    result = await files_api.apply_skill_folder_upload(
+        agent_id,
+        upload,
+        target_folder="demo-skill",
+        replace_confirmed=True,
+        expected_digest=preview["digest"],
+        current_user=current_user,
+        db=object(),
+    )
+
+    assert result["mode"] == "update"
+    assert (existing_root / "SKILL.md").read_text() == "# New\n"
+    assert (existing_root / "scripts" / "run.py").read_text() == "print('ok')\n"
+    assert not (existing_root / "stale.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_preview_skill_folder_rejects_missing_skill_md(monkeypatch):
+    monkeypatch.setattr(files_api, "check_agent_access", AsyncMock())
+    agent_id = uuid.uuid4()
+    current_user = SimpleNamespace(id=uuid.uuid4(), role="org_admin", tenant_id=uuid.uuid4(), identity=None)
+    upload = _zip_upload({"demo-skill/readme.md": b"oops\n"})
+
+    with pytest.raises(HTTPException) as exc:
+        await files_api.preview_skill_folder_upload(
+            agent_id,
+            upload,
+            target_folder="demo-skill",
+            current_user=current_user,
+            db=object(),
+        )
+
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_apply_skill_folder_requires_confirmation_for_existing_target(monkeypatch, tmp_path):
+    monkeypatch.setattr(files_api, "check_agent_access", AsyncMock())
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+    agent_id = uuid.uuid4()
+    current_user = SimpleNamespace(id=uuid.uuid4(), role="org_admin", tenant_id=uuid.uuid4(), identity=None)
+    skill_root = tmp_path / str(agent_id) / "skills" / "demo-skill"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("# Old\n", encoding="utf-8")
+
+    upload = _zip_upload({"demo-skill/SKILL.md": b"# New\n"})
+    preview = await files_api.preview_skill_folder_upload(
+        agent_id, upload, target_folder="demo-skill", current_user=current_user, db=object()
+    )
+    upload = _zip_upload({"demo-skill/SKILL.md": b"# New\n"})
+
+    with pytest.raises(HTTPException) as exc:
+        await files_api.apply_skill_folder_upload(
+            agent_id,
+            upload,
+            target_folder="demo-skill",
+            replace_confirmed=False,
+            expected_digest=preview["digest"],
+            current_user=current_user,
+            db=object(),
+        )
+
+    assert exc.value.status_code == 409
