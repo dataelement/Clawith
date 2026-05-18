@@ -5,6 +5,7 @@ dist/
 *.zip
 .vite/
 *.log
+pnpm-lock.yaml
 build/
 __pycache__/
 *.pyc
