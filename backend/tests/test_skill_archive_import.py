@@ -55,3 +55,25 @@ def test_inspect_skill_archive_rejects_parent_traversal():
 
     with pytest.raises(HTTPException):
         inspect_skill_archive(data, target_folder="demo")
+
+
+def test_inspect_skill_archive_preserves_root_files_without_common_folder():
+    data = _zip_bytes({"SKILL.md": b"# Demo\n", "scripts/run.py": b"print('ok')\n"})
+
+    result = inspect_skill_archive(data, target_folder="demo")
+
+    assert sorted(result["files"].keys()) == ["SKILL.md", "scripts/run.py"]
+
+
+def test_inspect_skill_archive_rejects_leading_slash_paths():
+    data = _zip_bytes({"/etc/passwd": b"bad", "SKILL.md": b"# Demo\n"})
+
+    with pytest.raises(HTTPException):
+        inspect_skill_archive(data, target_folder="demo")
+
+
+def test_inspect_skill_archive_rejects_windows_style_parent_traversal():
+    data = _zip_bytes({r"..\\evil.txt": b"bad", "SKILL.md": b"# Demo\n"})
+
+    with pytest.raises(HTTPException):
+        inspect_skill_archive(data, target_folder="demo")

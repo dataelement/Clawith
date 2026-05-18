@@ -13,10 +13,23 @@ MAX_SKILL_UNCOMPRESSED = 500 * 1024 * 1024
 
 
 def _normalize_member_path(member: str) -> str:
-    path = Path(member.strip("/"))
-    if not member or path.is_absolute() or ".." in path.parts:
+    if not member:
         raise HTTPException(status_code=400, detail="Invalid archive path")
+
+    normalized_member = member.replace("\\", "/")
+    path = Path(normalized_member)
+    if normalized_member.startswith("/") or path.is_absolute() or ".." in path.parts:
+        raise HTTPException(status_code=400, detail="Invalid archive path")
+
     return str(path).replace("\\", "/")
+
+
+def _shared_root_folder(paths: list[str]) -> str:
+    if not paths or any("/" not in path for path in paths):
+        return ""
+
+    roots = {path.split("/", 1)[0] for path in paths}
+    return roots.pop() if len(roots) == 1 else ""
 
 
 def inspect_skill_archive(data: bytes, *, target_folder: str) -> dict:
@@ -39,12 +52,11 @@ def inspect_skill_archive(data: bytes, *, target_folder: str) -> dict:
             raise HTTPException(status_code=400, detail="Too many files in skill archive")
 
         raw_paths = [_normalize_member_path(item.filename) for item in members]
-        roots = {path.split("/", 1)[0] for path in raw_paths if "/" in path}
-        strip_root = roots.pop() if len(roots) == 1 else ""
+        strip_root = _shared_root_folder(raw_paths)
 
         for item, raw_path in zip(members, raw_paths, strict=False):
             rel_path = raw_path
-            if strip_root and rel_path.startswith(f"{strip_root}/"):
+            if strip_root:
                 rel_path = rel_path[len(strip_root) + 1 :]
             rel_path = rel_path.strip("/")
             if not rel_path:
