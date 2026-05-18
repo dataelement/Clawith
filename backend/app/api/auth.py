@@ -11,7 +11,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import create_access_token, get_authenticated_user, get_current_user, hash_password, verify_password
+from app.core.security import create_access_token, get_authenticated_user, get_current_user, hash_password_async, verify_password_async
 from app.database import get_db
 from app.models.user import Identity, User
 from app.schemas.schemas import (
@@ -194,7 +194,7 @@ async def register_init(
         )
 
     # If identity existed, verify password
-    if identity.password_hash and not verify_password(data.password, identity.password_hash):
+    if identity.password_hash and not await verify_password_async(data.password, identity.password_hash):
          raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email already registered. Incorrect password."
@@ -445,7 +445,7 @@ async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSes
     result = await db.execute(query)
     identity = result.scalar_one_or_none()
 
-    if not identity or not identity.password_hash or not verify_password(data.password, identity.password_hash):
+    if not identity or not identity.password_hash or not await verify_password_async(data.password, identity.password_hash):
         logger.warning(f"[LOGIN] Invalid credentials for {data.login_identifier} identity_id={identity.id if identity else 'None'}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
@@ -669,9 +669,9 @@ async def reset_password(data: ResetPasswordRequest, db: AsyncSession = Depends(
     if not identity or not identity.is_active:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
-    new_hash = hash_password(data.new_password)
+    new_hash = await hash_password_async(data.new_password)
     identity.password_hash = new_hash
-    
+
     await db.flush()
     await db.commit()
     return {"ok": True}
@@ -863,10 +863,10 @@ async def change_password(
     user = res.scalar_one()
     identity = user.identity
 
-    if not identity or not identity.password_hash or not verify_password(old_password, identity.password_hash):
+    if not identity or not identity.password_hash or not await verify_password_async(old_password, identity.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    new_hash = hash_password(new_password)
+    new_hash = await hash_password_async(new_password)
     identity.password_hash = new_hash
     
     await db.flush()
