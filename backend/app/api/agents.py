@@ -527,7 +527,6 @@ async def create_agent(
     # MCP import runs in background to avoid blocking the response
     if template_mcp_servers:
         import asyncio
-        from loguru import logger
         from app.services.resource_discovery import import_mcp_from_smithery
 
         async def _background_mcp_import(agent_id: uuid.UUID, server_ids: list[str]):
