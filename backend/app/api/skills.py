@@ -28,6 +28,7 @@ CLAWHUB_MIRROR_BASE = os.getenv("CLAWHUB_MIRROR_BASE", "https://cn.clawhub-mirro
 GITHUB_API = "https://api.github.com"
 
 MAX_SKILL_SIZE = 512_000  # 500 KB total limit per skill
+_VALID_SKILL_FOLDER_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 async def _get_tenant_setting(tenant_id: str | None, key: str) -> str:
@@ -353,7 +354,13 @@ async def _load_skill_by_folder(db, *, target_folder: str, current_user: User) -
     return result.scalar_one_or_none()
 
 
+def _validate_skill_folder_name(target_folder: str) -> None:
+    if not _VALID_SKILL_FOLDER_NAME.match(target_folder):
+        raise HTTPException(status_code=400, detail="Invalid target folder name")
+
+
 async def preview_folder_upload_from_archive(data: bytes, *, target_folder: str, current_user: User) -> dict:
+    _validate_skill_folder_name(target_folder)
     archive = inspect_skill_archive(data, target_folder=target_folder)
 
     async with async_session() as db:
@@ -387,6 +394,7 @@ async def apply_folder_upload_from_archive(
     replace_confirmed: bool,
     current_user: User,
 ) -> dict:
+    _validate_skill_folder_name(target_folder)
     archive = inspect_skill_archive(data, target_folder=target_folder)
     if archive["digest"] != expected_digest:
         raise HTTPException(status_code=409, detail="Uploaded archive no longer matches preview")

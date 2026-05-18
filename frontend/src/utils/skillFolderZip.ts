@@ -25,6 +25,8 @@ type SkillZipEntry = {
     dosTime: number;
 };
 
+const ZIP_UTF8_FLAG = 0x0800;
+
 export function crc32(bytes: Uint8Array): number {
     let value = 0xFFFFFFFF;
 
@@ -109,7 +111,7 @@ export async function buildSkillFolderZip(files: SkillFolderFile[], rootFolder: 
         const localHeader = createHeader(30);
         localHeader.setUint32(0, 0x04034B50, true);
         localHeader.setUint16(4, 20, true);
-        localHeader.setUint16(6, 0, true);
+        localHeader.setUint16(6, ZIP_UTF8_FLAG, true);
         localHeader.setUint16(8, 0, true);
         localHeader.setUint16(10, entry.dosTime, true);
         localHeader.setUint16(12, entry.dosDate, true);
@@ -126,7 +128,7 @@ export async function buildSkillFolderZip(files: SkillFolderFile[], rootFolder: 
         centralHeader.setUint32(0, 0x02014B50, true);
         centralHeader.setUint16(4, 20, true);
         centralHeader.setUint16(6, 20, true);
-        centralHeader.setUint16(8, 0, true);
+        centralHeader.setUint16(8, ZIP_UTF8_FLAG, true);
         centralHeader.setUint16(10, 0, true);
         centralHeader.setUint16(12, entry.dosTime, true);
         centralHeader.setUint16(14, entry.dosDate, true);

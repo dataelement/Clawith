@@ -335,6 +335,24 @@ async def test_preview_folder_upload_rejects_missing_root_skill_md(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_preview_folder_upload_rejects_invalid_target_folder(monkeypatch, platform_admin_user):
+    session = FakeSession(skill=None)
+    monkeypatch.setattr(skills_api, "async_session", FakeAsyncSessionFactory(session))
+
+    archive = _zip_bytes({"demo-skill/SKILL.md": b"# Demo\n"})
+
+    with pytest.raises(HTTPException) as exc:
+        await skills_api.preview_folder_upload_from_archive(
+            archive,
+            target_folder="bad/name",
+            current_user=platform_admin_user,
+        )
+
+    assert exc.value.status_code == 400
+    assert "folder" in str(exc.value.detail).lower()
+
+
+@pytest.mark.asyncio
 async def test_upload_folder_apply_requires_target_state_digest_field(client, monkeypatch, platform_admin_user):
     async def _should_not_run(**_kwargs):
         raise AssertionError("handler should not run when required form field is missing")
