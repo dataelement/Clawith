@@ -2,6 +2,7 @@
 
 import base64
 import csv
+import hashlib
 import io
 import mimetypes
 import re
@@ -823,6 +824,19 @@ def _read_skill_dir_manifest(skill_dir: Path) -> dict[str, str]:
     return manifest
 
 
+def _skill_target_state_digest(target_exists: bool, manifest: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"exists\0")
+    digest.update(b"1" if target_exists else b"0")
+    digest.update(b"\0")
+    for path in sorted(manifest):
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(manifest[path].encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _apply_skill_dir_exact_sync(skill_dir: Path, uploaded_files: dict[str, str]) -> None:
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_root = skill_dir.resolve()
@@ -997,6 +1011,7 @@ async def preview_skill_folder_upload(
     skill_dir = _agent_base_dir(agent_id) / "skills" / target_folder
     target_exists = skill_dir.exists()
     existing_manifest = _read_skill_dir_manifest(skill_dir)
+    target_state_digest = _skill_target_state_digest(target_exists, existing_manifest)
     diff = diff_skill_manifests(archive["files"], existing_manifest)
     mode = "update" if target_exists else "create"
 
@@ -1004,6 +1019,7 @@ async def preview_skill_folder_upload(
         "target_folder": target_folder,
         "mode": mode,
         "digest": archive["digest"],
+        "target_state_digest": target_state_digest,
         "total_files": archive["total_files"],
         "added_count": len(diff["added"]),
         "changed_count": len(diff["changed"]),
@@ -1021,6 +1037,7 @@ async def apply_skill_folder_upload(
     target_folder: str = Form(...),
     replace_confirmed: bool = Form(False),
     expected_digest: str = Form(...),
+    expected_target_state_digest: str = Form(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1036,6 +1053,9 @@ async def apply_skill_folder_upload(
     skill_dir = _agent_base_dir(agent_id) / "skills" / target_folder
     target_exists = skill_dir.exists()
     existing_manifest = _read_skill_dir_manifest(skill_dir)
+    current_target_state_digest = _skill_target_state_digest(target_exists, existing_manifest)
+    if current_target_state_digest != expected_target_state_digest:
+        raise HTTPException(status_code=409, detail="Target folder changed since preview")
     if target_exists and not replace_confirmed:
         raise HTTPException(status_code=409, detail="Target folder already exists and requires confirmation")
 
