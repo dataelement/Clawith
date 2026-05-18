@@ -121,6 +121,51 @@ async function postFormData<T>(url: string, formData: FormData): Promise<T> {
     return res.json();
 }
 
+export type SkillFolderUploadPreview = {
+    target_folder: string;
+    mode: 'create' | 'update';
+    digest: string;
+    target_state_digest: string;
+    total_files: number;
+    added_count: number;
+    changed_count: number;
+    deleted_count: number;
+    added_paths: string[];
+    changed_paths: string[];
+    deleted_paths: string[];
+};
+
+export type SkillFolderUploadApplyInput = {
+    file: File;
+    targetFolder: string;
+    expectedDigest: string;
+    expectedTargetStateDigest: string;
+    replaceConfirmed?: boolean;
+};
+
+export type SkillFolderUploadApplyResult = {
+    status: 'ok';
+    mode: 'create' | 'update';
+    target_folder: string;
+    files_written: number;
+    deleted_count: number;
+};
+
+function createSkillFolderFormData(file: File, targetFolder: string): FormData {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('target_folder', targetFolder);
+    return formData;
+}
+
+function createSkillFolderApplyFormData(input: SkillFolderUploadApplyInput): FormData {
+    const formData = createSkillFolderFormData(input.file, input.targetFolder);
+    formData.append('expected_digest', input.expectedDigest);
+    formData.append('expected_target_state_digest', input.expectedTargetStateDigest);
+    formData.append('replace_confirmed', String(Boolean(input.replaceConfirmed)));
+    return formData;
+}
+
 // Upload with progress tracking via XMLHttpRequest.
 // Returns { promise, abort } — call abort() to cancel the upload.
 // Progress callback: 0-100 = upload phase, 101 = processing phase (server is parsing the file).
@@ -397,6 +442,12 @@ export const fileApi = {
         return postFormData<{ extracted: number }>(`/agents/${agentId}/files/extract-zip`, formData);
     },
 
+    previewSkillFolder: (agentId: string, file: File, targetFolder: string) =>
+        postFormData<SkillFolderUploadPreview>(`/agents/${agentId}/files/preview-skill-folder`, createSkillFolderFormData(file, targetFolder)),
+
+    applySkillFolder: (agentId: string, input: SkillFolderUploadApplyInput) =>
+        postFormData<SkillFolderUploadApplyResult>(`/agents/${agentId}/files/apply-skill-folder`, createSkillFolderApplyFormData(input)),
+
     downloadUrl: (agentId: string, path: string, options?: { inline?: boolean }) => {
         const token = localStorage.getItem('token');
         const params = new URLSearchParams({ path, token: token || '' });
@@ -554,6 +605,12 @@ export const skillApi = {
         request<any>('/skills/import-from-url', { method: 'POST', body: JSON.stringify({ url }) }),
     previewUrl: (url: string) =>
         request<any>('/skills/import-from-url/preview', { method: 'POST', body: JSON.stringify({ url }) }),
+    folderUpload: {
+        preview: (file: File, targetFolder: string) =>
+            postFormData<SkillFolderUploadPreview>('/skills/upload-folder/preview', createSkillFolderFormData(file, targetFolder)),
+        apply: (input: SkillFolderUploadApplyInput) =>
+            postFormData<SkillFolderUploadApplyResult>('/skills/upload-folder/apply', createSkillFolderApplyFormData(input)),
+    },
     // Tenant-level settings
     settings: {
         getToken: () => request<{ configured: boolean; source: string; masked: string; clawhub_configured: boolean; clawhub_masked: string }>('/skills/settings/token'),
