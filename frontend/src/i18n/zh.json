@@ -377,7 +377,43 @@
       "importedSuccess": "已导入 \"{{name}}\" ({{count}} 个文件)",
       "importFailed": "导入失败",
       "importing": "导入中...",
-      "importBtn": "导入"
+      "importBtn": "导入",
+      "uploadFolderModal": {
+        "openButton": "上传技能文件夹",
+        "title": "上传技能文件夹",
+        "description": "选择本地技能文件夹，先预览文件差异，再确认上传。",
+        "pickFolder": "选择文件夹",
+        "noFolderSelected": "尚未选择文件夹。",
+        "selectedSummary": "已选择 {{folder}} · 共 {{count}} 个文件",
+        "targetFolderLabel": "目标文件夹",
+        "targetFolderPlaceholder": "my-skill",
+        "moreFiles": "另有 {{count}} 个文件",
+        "preview": "预览变更",
+        "previewing": "预览中...",
+        "apply": "确认上传",
+        "applying": "上传中...",
+        "previewCreate": "这将创建一个新的技能文件夹。",
+        "previewUpdate": "这将更新现有的技能文件夹。",
+        "summary": {
+          "added": "新增 {{count}} 个",
+          "changed": "变更 {{count}} 个",
+          "deleted": "删除 {{count}} 个"
+        },
+        "warnings": {
+          "replace": "确认上传后将覆盖目标技能文件夹中已变更的文件。",
+          "deleteReplace": "确认上传后将覆盖已变更文件，并删除所选文件夹中不存在的目标文件。"
+        },
+        "diff": {
+          "added": "新增文件",
+          "changed": "变更文件",
+          "deleted": "删除文件"
+        },
+        "validation": {
+          "pickFolderFirst": "请先选择本地文件夹再预览。",
+          "targetRequired": "请输入目标文件夹名称。",
+          "previewRequired": "请先预览上传内容，再执行确认上传。"
+        }
+      }
     },
     "toolMgmt": {
       "title": "工具管理",

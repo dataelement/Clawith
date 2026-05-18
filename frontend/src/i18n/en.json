@@ -370,7 +370,43 @@
       "importedSuccess": "Imported \"{{name}}\" ({{count}} files)",
       "importFailed": "Import failed",
       "importing": "Importing...",
-      "importBtn": "Import"
+      "importBtn": "Import",
+      "uploadFolderModal": {
+        "openButton": "Upload Skill Folder",
+        "title": "Upload Skill Folder",
+        "description": "Pick a local skill folder, preview the file diff, then confirm the upload.",
+        "pickFolder": "Choose Folder",
+        "noFolderSelected": "No folder selected yet.",
+        "selectedSummary": "{{folder}} · {{count}} files selected",
+        "targetFolderLabel": "Target folder",
+        "targetFolderPlaceholder": "my-skill",
+        "moreFiles": "+{{count}} more files",
+        "preview": "Preview Changes",
+        "previewing": "Previewing...",
+        "apply": "Apply Upload",
+        "applying": "Applying...",
+        "previewCreate": "This will create a new skill folder.",
+        "previewUpdate": "This will update an existing skill folder.",
+        "summary": {
+          "added": "{{count}} added",
+          "changed": "{{count}} changed",
+          "deleted": "{{count}} deleted"
+        },
+        "warnings": {
+          "replace": "Applying this upload will replace changed files in the target skill folder.",
+          "deleteReplace": "Applying this upload will replace changed files and delete files missing from the selected folder."
+        },
+        "diff": {
+          "added": "Added files",
+          "changed": "Changed files",
+          "deleted": "Deleted files"
+        },
+        "validation": {
+          "pickFolderFirst": "Choose a local folder before previewing.",
+          "targetRequired": "Enter a target folder name.",
+          "previewRequired": "Preview the upload before applying it."
+        }
+      }
     },
     "toolMgmt": {
       "title": "Tool Management",
