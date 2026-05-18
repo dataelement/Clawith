@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import PromptModal from '../../../components/PromptModal';
 import FileBrowser from '../../../components/FileBrowser';
 import type { FileBrowserApi } from '../../../components/FileBrowser';
+import SkillFolderUploadModal from '../../../components/skills/SkillFolderUploadModal';
 import { skillApi } from '../../../services/api';
 
 // ─── Skills Tab ────────────────────────────────────
@@ -11,6 +12,7 @@ export default function SkillsTab() {
     const [refreshKey, setRefreshKey] = useState(0);
     const [showClawhubModal, setShowClawhubModal] = useState(false);
     const [showUrlModal, setShowUrlModal] = useState(false);
+    const [showSkillFolderUploadModal, setShowSkillFolderUploadModal] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [searching, setSearching] = useState(false);
@@ -140,6 +142,13 @@ export default function SkillsTab() {
                             <circle cx="12" cy="12" r="3" />
                             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                         </svg>
+                    </button>
+                    <button
+                        className="btn btn-secondary"
+                        style={{ fontSize: '13px' }}
+                        onClick={() => setShowSkillFolderUploadModal(true)}
+                    >
+                        {t('enterprise.tools.uploadFolderModal.openButton')}
                     </button>
                     <button
                         className="btn btn-secondary"
@@ -326,6 +335,17 @@ export default function SkillsTab() {
                 features={{ newFile: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }}
                 title={t('agent.skills.skillFiles', 'Skill Files')}
                 onRefresh={() => setRefreshKey(k => k + 1)}
+            />
+
+            <SkillFolderUploadModal
+                open={showSkillFolderUploadModal}
+                onClose={() => setShowSkillFolderUploadModal(false)}
+                i18nPrefix="enterprise.tools.uploadFolderModal"
+                previewRequest={(file, targetFolder) => skillApi.folderUpload.preview(file, targetFolder)}
+                applyRequest={(input) => skillApi.folderUpload.apply(input)}
+                onApplied={async () => {
+                    setRefreshKey(k => k + 1);
+                }}
             />
 
             {/* Toast */}
