@@ -10,6 +10,7 @@ const __dirname = path.dirname(__filename);
 const outdir = path.resolve(__dirname, '../.tmp-tests');
 const outfile = path.join(outdir, 'skillsActionItems.mjs');
 const enterpriseSkillsTabPath = path.resolve(__dirname, '../src/pages/enterprise-settings/tabs/SkillsTab.tsx');
+const agentDetailPath = path.resolve(__dirname, '../src/pages/AgentDetail.tsx');
 
 await mkdir(outdir, { recursive: true });
 await build({
@@ -24,6 +25,8 @@ await build({
 const { getEnterpriseSkillActionIds, getAgentSkillActionIds } = await import(pathToFileURL(outfile).href);
 const enterpriseSkillsTabSource = await readFile(enterpriseSkillsTabPath, 'utf8');
 const normalizedEnterpriseSkillsTabSource = enterpriseSkillsTabSource.replace(/\s+/g, ' ');
+const agentDetailSource = await readFile(agentDetailPath, 'utf8');
+const normalizedAgentDetailSource = agentDetailSource.replace(/\s+/g, ' ');
 
 test('getEnterpriseSkillActionIds returns the locked enterprise action order', () => {
   assert.deepEqual(getEnterpriseSkillActionIds(), [
@@ -57,4 +60,14 @@ test('getAgentSkillActionIds returns the locked agent action order', () => {
     'import-presets',
     'upload-folder',
   ]);
+});
+
+test('agent detail skills surface is wired to the shared action and upload seams', () => {
+  assert.ok(normalizedAgentDetailSource.includes("import SkillsActionBar, { type SkillsActionBarAction } from '../components/skills/SkillsActionBar';"));
+  assert.ok(normalizedAgentDetailSource.includes("import { createAgentSkillUploadAdapter } from '../components/skills/skillUploadSurfaceAdapters';"));
+  assert.ok(normalizedAgentDetailSource.includes("import { getAgentSkillActionIds, type SkillActionId } from '../components/skills/skillsActionItems';"));
+  assert.ok(normalizedAgentDetailSource.includes("getAgentSkillActionIds() .map((id) => actionConfig[id])") || normalizedAgentDetailSource.includes("getAgentSkillActionIds().map((id) => actionConfig[id])"));
+  assert.ok(normalizedAgentDetailSource.includes('previewRequest={uploadAdapter.previewRequest}'));
+  assert.ok(normalizedAgentDetailSource.includes('applyRequest={uploadAdapter.applyRequest}'));
+  assert.ok(normalizedAgentDetailSource.includes('onApplied={uploadAdapter.onApplied}'));
 });

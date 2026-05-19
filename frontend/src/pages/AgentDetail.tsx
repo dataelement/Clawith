@@ -11,6 +11,9 @@ import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import SkillAutocomplete from '../components/SkillAutocomplete';
 import SkillFolderUploadModal from '../components/skills/SkillFolderUploadModal';
+import SkillsActionBar, { type SkillsActionBarAction } from '../components/skills/SkillsActionBar';
+import { createAgentSkillUploadAdapter } from '../components/skills/skillUploadSurfaceAdapters';
+import { getAgentSkillActionIds, type SkillActionId } from '../components/skills/skillsActionItems';
 import OpenClawSettings from './OpenClawSettings';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAuthStore } from '../stores';
@@ -1602,9 +1605,6 @@ function AgentDetailInner() {
     const [agentClawhubResults, setAgentClawhubResults] = useState<any[]>([]);
     const [agentClawhubSearching, setAgentClawhubSearching] = useState(false);
     const [agentClawhubInstalling, setAgentClawhubInstalling] = useState<string | null>(null);
-    const [showAgentUrlImport, setShowAgentUrlImport] = useState(false);
-    const [agentUrlInput, setAgentUrlInput] = useState('');
-    const [agentUrlImporting, setAgentUrlImporting] = useState(false);
     const [showSkillFolderUploadModal, setShowSkillFolderUploadModal] = useState(false);
     const { data: schedules = [] } = useQuery({
         queryKey: ['schedules', id],
@@ -2865,45 +2865,46 @@ function AgentDetailInner() {
                             extractZip: (file, targetPath, rootName) => fileApi.extractZip(id!, file, targetPath, rootName),
                             downloadUrl: (p) => fileApi.downloadUrl(id!, p),
                         };
+                        const uploadAdapter = createAgentSkillUploadAdapter({
+                            preview: (file, targetFolder) => fileApi.previewSkillFolder(id!, file, targetFolder),
+                            apply: (input) => fileApi.applySkillFolder(id!, input),
+                            refresh: () => queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] }),
+                        });
+                        const actionConfig: Record<SkillActionId, SkillsActionBarAction | undefined> = {
+                            settings: undefined,
+                            'upload-folder': {
+                                id: 'upload-folder',
+                                label: t('agent.skills.uploadFolderModal.openButton'),
+                                onClick: () => setShowSkillFolderUploadModal(true),
+                            },
+                            'import-url': undefined,
+                            'browse-clawhub': {
+                                id: 'browse-clawhub',
+                                label: t('agent.skills.browseClawhub', 'Browse ClawHub'),
+                                onClick: () => {
+                                    setShowAgentClawhub(true);
+                                    setAgentClawhubQuery('');
+                                    setAgentClawhubResults([]);
+                                },
+                            },
+                            'import-presets': {
+                                id: 'import-presets',
+                                label: t('agent.skills.importPreset', 'Import from Presets'),
+                                variant: 'primary',
+                                onClick: () => setShowImportSkillModal(true),
+                            },
+                        };
+                        const agentActions = getAgentSkillActionIds()
+                            .map((id) => actionConfig[id])
+                            .filter((action): action is SkillsActionBarAction => Boolean(action));
                         return (
                             <div>
                                 <div style={{ marginBottom: '16px' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                        <div>
-                                            <h3 style={{ marginBottom: '4px' }}>{t('agent.skills.title')}</h3>
-                                            <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.skills.description')}</p>
-                                        </div>
-                                        <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
-                                            <button
-                                                className="btn btn-secondary"
-                                                style={{ fontSize: '13px' }}
-                                                onClick={() => { setShowAgentUrlImport(true); setAgentUrlInput(''); }}
-                                            >
-                                                Import from URL
-                                            </button>
-                                            <button
-                                                className="btn btn-secondary"
-                                                style={{ fontSize: '13px' }}
-                                                onClick={() => { setShowAgentClawhub(true); setAgentClawhubQuery(''); setAgentClawhubResults([]); }}
-                                            >
-                                                Browse ClawHub
-                                            </button>
-                                            <button
-                                                className="btn btn-primary"
-                                                style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
-                                                onClick={() => setShowImportSkillModal(true)}
-                                            >
-                                                Import from Presets
-                                            </button>
-                                            <button
-                                                className="btn btn-outline"
-                                                style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
-                                                onClick={() => setShowSkillFolderUploadModal(true)}
-                                            >
-                                                {t('agent.skills.uploadFolderModal.openButton')}
-                                            </button>
-                                        </div>
-                                    </div>
+                                    <SkillsActionBar
+                                        title={t('agent.skills.title')}
+                                        description={t('agent.skills.description')}
+                                        actions={agentActions}
+                                    />
                                     <div style={{ marginTop: '8px', padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                                         <strong>Skill Format:</strong><br />
                                         • <code>skills/my-skill/SKILL.md</code> — {t('agent.skills.folderFormat', 'Each skill is a folder with a SKILL.md file and optional auxiliary files (scripts/, examples/)')}
@@ -2984,50 +2985,6 @@ function AgentDetailInner() {
                                     </div>
                                 )}
 
-                                {/* Import from URL Modal */}
-                                {showAgentUrlImport && (
-                                    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowAgentUrlImport(false)}>
-                                        <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '500px', width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                                <h3>Import from GitHub URL</h3>
-                                                <button onClick={() => setShowAgentUrlImport(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>x</button>
-                                            </div>
-                                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 12px' }}>
-                                                Paste a GitHub URL pointing to a skill directory (must contain SKILL.md).
-                                            </p>
-                                            <input
-                                                className="input"
-                                                placeholder="https://github.com/owner/repo/tree/main/path/to/skill"
-                                                value={agentUrlInput}
-                                                onChange={e => setAgentUrlInput(e.target.value)}
-                                                style={{ width: '100%', fontSize: '13px', marginBottom: '12px', boxSizing: 'border-box' }}
-                                            />
-                                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                                                <button className="btn btn-secondary" onClick={() => setShowAgentUrlImport(false)}>Cancel</button>
-                                                <button
-                                                    className="btn btn-primary"
-                                                    disabled={!agentUrlInput.trim() || agentUrlImporting}
-                                                    onClick={async () => {
-                                                        setAgentUrlImporting(true);
-                                                        try {
-                                                            const res = await skillApi.agentImport.fromUrl(id!, agentUrlInput.trim());
-                                                            alert(`Imported ${res.files_written} files`);
-                                                            queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
-                                                            setShowAgentUrlImport(false);
-                                                        } catch (err: any) {
-                                                            alert(`Import failed: ${err?.message || err}`);
-                                                        } finally {
-                                                            setAgentUrlImporting(false);
-                                                        }
-                                                    }}
-                                                >
-                                                    {agentUrlImporting ? 'Importing...' : 'Import'}
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-
                                 {/* Import from Presets Modal */}
                                 {showImportSkillModal && (
                                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillModal(false)}>
@@ -3103,11 +3060,9 @@ function AgentDetailInner() {
                                     onClose={() => setShowSkillFolderUploadModal(false)}
                                     i18nPrefix="agent.skills.uploadFolderModal"
                                     cancelLabelKey="agent.skills.cancel"
-                                    previewRequest={(file, targetFolder) => fileApi.previewSkillFolder(id!, file, targetFolder)}
-                                    applyRequest={(input) => fileApi.applySkillFolder(id!, input)}
-                                    onApplied={async () => {
-                                        await queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
-                                    }}
+                                    previewRequest={uploadAdapter.previewRequest}
+                                    applyRequest={uploadAdapter.applyRequest}
+                                    onApplied={uploadAdapter.onApplied}
                                 />
 
                             </div>
