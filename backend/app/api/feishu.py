@@ -218,6 +218,30 @@ def _build_llm_history_from_chat_messages(history_messages: list) -> list[dict]:
     return history
 
 
+def _build_uploaded_file_user_text(
+    *,
+    filename: str,
+    workspace_rel_path: str,
+    extracted_rel_path: str | None = None,
+) -> str:
+    """Build the synthetic user turn for a Feishu file upload."""
+    lines = [
+        f"[用户上传了文件：{filename}]",
+        f"文件已保存到 `{workspace_rel_path}`。",
+    ]
+
+    if extracted_rel_path:
+        lines.extend([
+            f"已自动提取文本到 `{extracted_rel_path}`。",
+            f"请先调用 `read_file(path=\"{extracted_rel_path}\")` 阅读提取文本；如需核对原始版式、表格或分页，再调用 `read_document(path=\"{workspace_rel_path}\")`。",
+        ])
+    else:
+        lines.append(f"请直接调用 `read_document(path=\"{workspace_rel_path}\")` 读取文件内容。")
+
+    lines.append("完成读取后，请简短确认已收到这份文件，给出 1-2 句初步判断，并询问用户接下来希望你做什么。")
+    return "\n".join(lines)
+
+
 async def _save_feishu_tool_call(
     *,
     db_session_factory,
@@ -1174,13 +1198,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
 
 IMPORT_RE = None  # lazy sentinel
-_FILE_ACK_MESSAGES = [
-    "收到你的文件，请问有什么需要帮忙的？",
-    "文件收到了！你想让我怎么处理它？",
-    "好的，我已经收到这份文件，请告诉我你的需求~",
-    "已收到文件，随时准备好为你处理！",
-    "收到！请问希望我对这份文件做什么？",
-]
 
 
 async def _handle_feishu_file(
@@ -1194,17 +1211,15 @@ async def _handle_feishu_file(
     chat_id,
 ):
     """Handle incoming file or image messages from Feishu (runs as a background task)."""
-    import asyncio, random, json
+    import asyncio, json
     from pathlib import Path
     from app.config import get_settings
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel
-    from app.models.user import User as UserModel
     from app.services.channel_session import find_or_create_channel_session
-    from app.core.security import hash_password
+    from app.services.text_extractor import needs_extraction, save_extracted_text
     from app.database import async_session as _async_session
     from datetime import datetime as _dt, timezone as _tz
-    import uuid as _uuid
     from sqlalchemy import select as _select
 
     msg_type = message.get("message_type", "file")
@@ -1230,6 +1245,8 @@ async def _handle_feishu_file(
     upload_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     save_path = upload_dir / filename
+    workspace_rel_path = f"workspace/uploads/{filename}"
+    extracted_rel_path: str | None = None
 
     # Download the file
     try:
@@ -1250,6 +1267,14 @@ async def _handle_feishu_file(
         except Exception as e2:
             logger.error(f"[Feishu] Also failed to send error tip: {e2}")
         return
+
+    if msg_type != "image" and needs_extraction(filename):
+        try:
+            extracted_md_path = save_extracted_text(save_path, file_bytes, filename)
+            if extracted_md_path:
+                extracted_rel_path = f"workspace/uploads/{extracted_md_path.name}"
+        except Exception as e:
+            logger.warning(f"[Feishu] Failed to extract text from {filename}: {e}")
 
     # Resolve platform user and session using a fresh db session
     async with _async_session() as db:
@@ -1527,10 +1552,8 @@ async def _handle_feishu_file(
         await log_activity(agent_id, "chat_reply", f"回复了飞书图片消息: {reply_text[:80]}", detail={"channel": "feishu", "type": "image"})
         return
 
-    # For non-image files: send simple ack as before
-    await asyncio.sleep(random.uniform(1.0, 2.0))
-
-    ack = random.choice(_FILE_ACK_MESSAGES)
+    # For non-image files: acknowledge immediately, then run the agent against the uploaded document.
+    ack = "已收到文件，正在读取内容，请稍等。"
     try:
         if chat_type == "group" and chat_id:
             await feishu_service.send_message(
@@ -1550,6 +1573,69 @@ async def _handle_feishu_file(
         db2.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
                             content=ack, conversation_id=session_conv_id))
         await db2.commit()
+
+    file_user_text = _build_uploaded_file_user_text(
+        filename=filename,
+        workspace_rel_path=workspace_rel_path,
+        extracted_rel_path=extracted_rel_path,
+    )
+
+    async with _async_session() as _db_file:
+        reply_text = await _call_agent_llm(
+            _db_file,
+            agent_id,
+            file_user_text,
+            history=_history,
+            user_id=platform_user_id,
+            session_id=session_conv_id,
+        )
+
+    logger.info(f"[Feishu] File LLM reply: {reply_text[:100]}")
+
+    try:
+        if chat_type == "group" and chat_id:
+            await feishu_service.send_message(
+                config.app_id,
+                config.app_secret,
+                chat_id,
+                "text",
+                json.dumps({"text": reply_text}),
+                receive_id_type="chat_id",
+            )
+        else:
+            await feishu_service.send_message(
+                config.app_id,
+                config.app_secret,
+                sender_open_id,
+                "text",
+                json.dumps({"text": reply_text}),
+            )
+    except Exception as e:
+        logger.error(f"[Feishu] Failed to send file reply: {e}")
+
+    async with _async_session() as db3:
+        db3.add(ChatMessage(
+            agent_id=agent_id,
+            user_id=platform_user_id,
+            role="assistant",
+            content=reply_text,
+            conversation_id=session_conv_id,
+        ))
+        await db3.commit()
+
+    from app.services.activity_logger import log_activity
+    await log_activity(
+        agent_id,
+        "chat_reply",
+        f"回复了飞书文件消息: {reply_text[:80]}",
+        detail={
+            "channel": "feishu",
+            "type": "file",
+            "filename": filename,
+            "workspace_path": workspace_rel_path,
+            "extracted_path": extracted_rel_path,
+        },
+    )
 
 
 
