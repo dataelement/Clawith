@@ -6,7 +6,7 @@ import type { FileBrowserApi } from '../../../components/FileBrowser';
 import SkillFolderUploadModal from '../../../components/skills/SkillFolderUploadModal';
 import SkillsActionBar, { type SkillsActionBarAction } from '../../../components/skills/SkillsActionBar';
 import { createEnterpriseSkillUploadAdapter } from '../../../components/skills/skillUploadSurfaceAdapters';
-import { getEnterpriseSkillActionIds } from '../../../components/skills/skillsActionItems';
+import { getEnterpriseSkillActionIds, type SkillActionId } from '../../../components/skills/skillsActionItems';
 import { skillApi } from '../../../services/api';
 
 // ─── Skills Tab ────────────────────────────────────
@@ -121,7 +121,7 @@ export default function SkillsTab() {
         }
     };
 
-    const actionConfig: Record<string, SkillsActionBarAction> = {
+    const actionConfig: Record<SkillActionId, SkillsActionBarAction | undefined> = {
         settings: {
             id: 'settings',
             label: t('common.settings', 'Settings'),
@@ -153,9 +153,12 @@ export default function SkillsTab() {
                 setHasSearched(false);
             },
         },
+        'import-presets': undefined,
     };
 
-    const enterpriseActions = getEnterpriseSkillActionIds().map((id) => actionConfig[id]);
+    const enterpriseActions = getEnterpriseSkillActionIds()
+        .map((id) => actionConfig[id])
+        .filter((action): action is SkillsActionBarAction => Boolean(action));
 
     const tierBadge = (tier: number) => {
         const styles: Record<number, { bg: string; color: string; label: string }> = {

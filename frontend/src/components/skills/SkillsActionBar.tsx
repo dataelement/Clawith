@@ -1,7 +1,8 @@
 import React from 'react';
+import type { SkillActionId } from './skillsActionItems';
 
 export type SkillsActionBarAction = {
-  id: string;
+  id: SkillActionId;
   label: string;
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost';
   title?: string;
@@ -32,7 +33,7 @@ export default function SkillsActionBar({
           <button
             key={action.id}
             className={`btn btn-${action.variant || 'secondary'}`}
-            style={{ fontSize: '13px', padding: action.id === 'settings' ? '6px 10px' : undefined, minWidth: action.id === 'settings' ? 'auto' : undefined }}
+            style={{ fontSize: '13px' }}
             onClick={action.onClick}
             title={action.title}
           >
