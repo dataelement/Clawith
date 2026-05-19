@@ -18,6 +18,11 @@ type SkillFolderUploadModalProps = {
     onApplied?: (result: SkillFolderUploadApplyResult) => void | Promise<void>;
 };
 
+const directoryPickerProps = {
+    webkitdirectory: '',
+    directory: '',
+} as const;
+
 function getRelativeSkillPath(file: File): string {
     const relativePath = file.webkitRelativePath || file.name;
     const segments = relativePath.split('/').filter(Boolean);
@@ -78,13 +83,6 @@ export default function SkillFolderUploadModal({
         invalidatePreviewState({ clearError: true });
         onClose();
     };
-
-    useEffect(() => {
-        const input = inputRef.current;
-        if (!input) return;
-        input.setAttribute('webkitdirectory', '');
-        input.setAttribute('directory', '');
-    }, []);
 
     useEffect(() => {
         openRef.current = open;
@@ -250,6 +248,7 @@ export default function SkillFolderUploadModal({
                     ref={inputRef}
                     type="file"
                     multiple
+                    {...directoryPickerProps}
                     style={{ display: 'none' }}
                     onChange={(event) => handleFilesSelected(Array.from(event.target.files || []))}
                 />
