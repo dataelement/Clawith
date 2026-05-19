@@ -21,8 +21,8 @@ await build({
 });
 
 const {
-  createEnterpriseSkillUploadSurfaceAdapter,
-  createAgentSkillUploadSurfaceAdapter,
+  createEnterpriseSkillUploadAdapter,
+  createAgentSkillUploadAdapter,
 } = await import(pathToFileURL(outfile).href);
 
 test('enterprise upload surface adapter delegates preview, apply, and refresh', async () => {
@@ -38,7 +38,7 @@ test('enterprise upload surface adapter delegates preview, apply, and refresh', 
     replaceConfirmed: true,
   };
 
-  const adapter = createEnterpriseSkillUploadSurfaceAdapter({
+  const adapter = createEnterpriseSkillUploadAdapter({
     preview: async (...args) => {
       calls.push(['preview', ...args]);
       return previewResult;
@@ -79,7 +79,7 @@ test('agent upload surface adapter delegates preview, apply, and waits for refre
   };
   let refreshResolved = false;
 
-  const adapter = createAgentSkillUploadSurfaceAdapter({
+  const adapter = createAgentSkillUploadAdapter({
     preview: async (...args) => {
       calls.push(['preview', ...args]);
       return previewResult;

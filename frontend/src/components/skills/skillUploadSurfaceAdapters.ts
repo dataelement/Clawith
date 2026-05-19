@@ -30,13 +30,13 @@ function createSkillUploadSurfaceAdapter({
   };
 }
 
-export function createEnterpriseSkillUploadSurfaceAdapter(
+export function createEnterpriseSkillUploadAdapter(
   deps: SkillUploadSurfaceAdapterDeps,
 ): SkillUploadSurfaceAdapter {
   return createSkillUploadSurfaceAdapter(deps);
 }
 
-export function createAgentSkillUploadSurfaceAdapter(
+export function createAgentSkillUploadAdapter(
   deps: SkillUploadSurfaceAdapterDeps,
 ): SkillUploadSurfaceAdapter {
   return createSkillUploadSurfaceAdapter(deps);
