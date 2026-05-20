@@ -10648,10 +10648,16 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
         from app.database import async_session as _async_session
         from sqlalchemy import select as _sa_select
         from app.models.org import OrgMember as _OrgMember
+        from app.models.agent import Agent as _AgentModel
         async with _async_session() as _db:
-            _r = await _db.execute(
-                _sa_select(_OrgMember).where(_OrgMember.name.ilike(f"%{name}%"))
+            _agent_tenant_id = await _db.execute(
+                _sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id)
             )
+            _tid = _agent_tenant_id.scalar_one_or_none()
+            _query = _sa_select(_OrgMember).where(_OrgMember.name.ilike(f"%{name}%"))
+            if _tid:
+                _query = _query.where(_OrgMember.tenant_id == _tid)
+            _r = await _db.execute(_query)
             _org_members = _r.scalars().all()
         if _org_members:
             lines = [f"🔍 从通讯录找到 {len(_org_members)} 位匹配「{name}」的用户：\n"]
@@ -10674,10 +10680,16 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
         from app.database import async_session as _async_session
         from sqlalchemy import select as _sa_select
         from app.models.user import User as _User
+        from app.models.agent import Agent as _AgentModel2
         async with _async_session() as _db:
-            _r = await _db.execute(
-                _sa_select(_User).where(_User.display_name.ilike(f"%{name}%"))
+            _agent_tenant_id2 = await _db.execute(
+                _sa_select(_AgentModel2.tenant_id).where(_AgentModel2.id == agent_id)
             )
+            _tid2 = _agent_tenant_id2.scalar_one_or_none()
+            _query2 = _sa_select(_User).where(_User.display_name.ilike(f"%{name}%"))
+            if _tid2:
+                _query2 = _query2.where(_User.tenant_id == _tid2)
+            _r = await _db.execute(_query2)
             _platform_users = _r.scalars().all()
         for _pu in _platform_users:
             _uid = getattr(_pu, "feishu_user_id", None)

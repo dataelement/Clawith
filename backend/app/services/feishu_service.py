@@ -558,12 +558,18 @@ class FeishuService:
 
             # Send text accompany message first if provided
             if accompany_msg:
-                await client.post(
+                text_resp = await client.post(
                     f"{FEISHU_SEND_MSG_URL}?receive_id_type={receive_id_type}",
                     json={"receive_id": receive_id, "msg_type": "text",
                           "content": _json.dumps({"text": accompany_msg})},
                     headers=headers,
                 )
+                if text_resp.status_code != 200:
+                    logger.error(
+                        f"[Feishu] Failed to send text accompany message: "
+                        f"status={text_resp.status_code}, body={text_resp.text}, "
+                        f"receive_id={receive_id}, receive_id_type={receive_id_type}"
+                    )
 
             # Send file message
             resp = await client.post(
@@ -572,6 +578,13 @@ class FeishuService:
                       "content": _json.dumps({"file_key": file_key})},
                 headers=headers,
             )
+            if resp.status_code != 200:
+                logger.error(
+                    f"[Feishu] Failed to send file message: "
+                    f"status={resp.status_code}, body={resp.text}, "
+                    f"receive_id={receive_id}, receive_id_type={receive_id_type}, "
+                    f"file_key={file_key}"
+                )
             return resp.json()
 
     # --- Bitable (多维表格) API ---
