@@ -57,6 +57,7 @@ steps:
       https_proxy:
         from_secret: PROXY
     commands:
+      - apk add --no-cache git
       - echo "========================================"
       - echo "开始构建 Docker 镜像"
       - echo "事件 $DRONE_BUILD_EVENT"
