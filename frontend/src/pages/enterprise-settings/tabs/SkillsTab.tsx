@@ -1,9 +1,15 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
 import PromptModal from '../../../components/PromptModal';
 import FileBrowser from '../../../components/FileBrowser';
 import type { FileBrowserApi } from '../../../components/FileBrowser';
 import { skillApi } from '../../../services/api';
+import { fetchJson } from '../utils/fetchJson';
+import { useAuthStore } from '../../../stores';
+import { buildCompanyRegions, CompanyRegion } from '../../../utils/companyRegions';
+import { IconCheck } from '@tabler/icons-react';
+import { useToast } from '../../../components/Toast/ToastProvider';
 
 // ─── Skills Tab ────────────────────────────────────
 export default function SkillsTab() {

@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
-import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
+import AgentBayLivePanel, { appendLiveCodeOutput, LivePreviewState } from '../components/AgentBayLivePanel';
 import ModelSwitcher from '../components/ModelSwitcher';
 import { agentApi, enterpriseApi, tenantApi, uploadFileWithProgress } from '../services/api';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
@@ -293,6 +293,7 @@ export default function Chat() {
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
+    const liveCodeSeen = useRef(false);
     // Track history load + whether we've already fired the one-shot onboarding
     // trigger so the agent greets the user at most once per mount.
     const historyLoaded = useRef(false);
@@ -512,6 +513,7 @@ export default function Chat() {
                 // ── AgentBay live preview events ──
                 if (data.type === 'agentbay_live') {
                     console.log('[LivePreview] Received:', data.env, 'url:', data.screenshot_url?.substring(0, 60));
+                    let shouldOpenLivePanel = data.env !== 'code';
                     setLiveState(prev => {
                         const next = { ...prev };
                         if ((data.env === 'desktop' || data.env === 'browser') && data.screenshot_url) {
@@ -520,14 +522,22 @@ export default function Chat() {
                             if (data.env === 'desktop') next.desktop = { screenshotUrl: imgUrl };
                             else next.browser = { screenshotUrl: imgUrl };
                         } else if (data.env === 'code' && data.output) {
-                            // Append code output
+                            // Real-time streaming: concatenate chunks directly
                             const existing = prev.code?.output || '';
-                            next.code = { output: existing + (existing ? '\n---\n' : '') + data.output };
+                            const prefix = data.stream === 'stderr' ? '⚠️ ' : '';
+                            next.code = { output: appendLiveCodeOutput(existing, prefix + data.output) };
                         }
                         return next;
                     });
-                    // Auto-expand the live panel on first data
-                    setLivePanelVisible(true);
+                    if (data.env === 'code' && data.output) {
+                        shouldOpenLivePanel = !liveCodeSeen.current;
+                        liveCodeSeen.current = true;
+                    }
+                    // Auto-expand the live panel on first data arrival
+                    // (for desktop/browser screenshots, or the first code chunk only)
+                    if (shouldOpenLivePanel) {
+                        setLivePanelVisible(true);
+                    }
                     return;
                 }
 
@@ -629,10 +639,8 @@ export default function Chat() {
                                     const imgUrl = lp.screenshot_url + '&_t=' + Date.now();
                                     if (lp.env === 'desktop') next.desktop = { screenshotUrl: imgUrl };
                                     else next.browser = { screenshotUrl: imgUrl };
-                                } else if (lp.env === 'code' && lp.output) {
-                                    const existing = prev.code?.output || '';
-                                    next.code = { output: existing + (existing ? '\n---\n' : '') + lp.output };
                                 }
+                                // Note: code env is handled via real-time streaming (agentbay_live events)
                                 return next;
                             });
                             setLivePanelVisible(true);
@@ -1101,6 +1109,14 @@ export default function Chat() {
                                 ...prev,
                                 [env]: { screenshotUrl: screenshotDataUri },
                             }));
+                        }}
+                        onClearCode={() => {
+                            liveCodeSeen.current = false;
+                            setLiveState(prev => {
+                                const next = { ...prev };
+                                delete next.code;
+                                return next;
+                            });
                         }}
                     />
                 )}

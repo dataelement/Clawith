@@ -22,31 +22,43 @@ GOOGLE_CALLBACK_PATH = "/auth/google_workspace/callback"
 GOOGLE_HTTP_PROXY = settings.HTTP_PROXY or None
 
 
-def sign_google_oauth_state(kind: str, value: uuid.UUID) -> str:
-    raw = str(value)
-    payload = f"{kind}:{raw}"
+def _sign_google_oauth_payload(payload: str) -> str:
     sig = hmac.new(settings.SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{sig}"
 
 
-def parse_google_oauth_state(state: str) -> tuple[str, uuid.UUID] | None:
+def sign_google_oauth_state(kind: str, value: uuid.UUID) -> str:
+    return _sign_google_oauth_payload(f"{kind}:{value}")
+
+
+def sign_google_sso_state(session_id: uuid.UUID, provider_id: uuid.UUID) -> str:
+    return _sign_google_oauth_payload(f"{GOOGLE_SSO_STATE_KIND}:{session_id}:{provider_id}")
+
+
+def parse_google_oauth_state(state: str) -> tuple[str, tuple[uuid.UUID, ...]] | None:
     parts = state.split(":")
-    if len(parts) != 3:
+    if len(parts) not in {3, 4}:
         return None
 
-    kind, raw, sig = parts
+    kind = parts[0]
     if kind not in {GOOGLE_SSO_STATE_KIND, GOOGLE_SYNC_STATE_KIND}:
         return None
 
-    payload = f"{kind}:{raw}"
+    payload = ":".join(parts[:-1])
+    sig = parts[-1]
     expected = hmac.new(settings.SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected):
         return None
 
     try:
-        return kind, uuid.UUID(raw)
+        values = tuple(uuid.UUID(raw) for raw in parts[1:-1])
     except ValueError:
         return None
+    if kind == GOOGLE_SYNC_STATE_KIND and len(values) != 1:
+        return None
+    if kind == GOOGLE_SSO_STATE_KIND and len(values) not in {1, 2}:
+        return None
+    return kind, values
 
 
 async def get_google_provider(db: AsyncSession, provider_id: uuid.UUID) -> IdentityProvider:

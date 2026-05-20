@@ -8,8 +8,8 @@ import {
     IconAlertTriangle,
     IconArrowRight,
     IconCheck,
-    IconWorld,
 } from '@tabler/icons-react';
+import { AtlasFrame, OriginPlate } from '../components/atlas';
 
 export default function Login() {
     const { t, i18n } = useTranslation();
@@ -402,37 +402,26 @@ export default function Login() {
     const shouldShowGlobalOAuth = !tenant?.sso_enabled && !isRegister && !showVerification;
 
     return (
-        <div className="login-page">
-            {/* ── Left: Branding Panel ── */}
-            <div className="login-hero">
-                <div className="login-hero-bg" />
-                <div className="login-hero-mark" aria-hidden="true">
-                    <img src="/logo-black.png" className="login-hero-mark-logo" alt="" />
-                    <span>Clawith</span>
-                    <span className="login-hero-mark-divider" />
-                    <span>{t('login.hero.mark')}</span>
+        <AtlasFrame onToggleLang={toggleLang}>
+            <div className="atlas-screen-split atlas-login-split">
+                {/* ── Left: Hero with compass ── */}
+                <div className="atlas-screen-plate atlas-login-hero">
+                    <div className="atlas-login-compass">
+                        <OriginPlate size={620} />
+                    </div>
+                    <div className="atlas-login-welcome">
+                        <h1 className="atlas-h1">
+                            {isZh
+                                ? '欢迎，创始人。'
+                                : `${t('login.hero.welcome')} ${t('login.hero.founder')}.`}
+                        </h1>
+                        <p className="atlas-body atlas-body--muted">{t('login.hero.description')}</p>
+                    </div>
                 </div>
-                <div className="login-hero-content">
-                    <h1 className="login-hero-title">
-                        {t('login.hero.welcome')}{' '}
-                        <span>{t('login.hero.founder')}</span>
-                    </h1>
-                    <p className="login-hero-desc">{t('login.hero.description')}</p>
-                </div>
-            </div>
 
-            {/* ── Right: Form Panel ── */}
-            <div className="login-form-panel">
-                <div className="login-form-wrapper">
-                    <button
-                        type="button"
-                        className="login-language-switcher"
-                        onClick={toggleLang}
-                        aria-label={t('common.switchLanguage', 'Switch language')}
-                        title={t('common.switchLanguage', 'Switch language')}
-                    >
-                        <span className="login-language-switcher-icon" aria-hidden="true"><IconWorld size={18} stroke={1.8} /></span>
-                    </button>
+                {/* ── Right: Form Panel ── */}
+                <div className="atlas-screen-form atlas-login-form-pane">
+                    <div className="atlas-login-form-wrapper">
                     {checkingEmail ? (
                         // While resolving invitation email, show a minimal loading indicator
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '200px', gap: '16px' }}>
@@ -868,8 +857,9 @@ export default function Login() {
                     )}
                     </>
                     )}
+                    </div>
                 </div>
             </div>
-        </div>
+        </AtlasFrame>
     );
 }

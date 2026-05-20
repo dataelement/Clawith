@@ -5,6 +5,7 @@ dist/
 *.zip
 .vite/
 *.log
+pnpm-lock.yaml
 build/
 __pycache__/
 *.pyc
@@ -35,3 +36,4 @@ _agents/
 # Internal docs
 docs/
 .agents/rules/deploy.md
+backend/tests/test_agent_api_live.py

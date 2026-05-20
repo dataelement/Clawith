@@ -20,6 +20,7 @@ from app.services.auth_provider import (
     MicrosoftTeamsAuthProvider,
     WeComAuthProvider,
 )
+from app.services.identity_provider_lookup import get_preferred_identity_provider
 
 
 class AuthProviderRegistry:
@@ -51,14 +52,12 @@ class AuthProviderRegistry:
             return self._cache[cache_key]
 
         # Try to get provider config from database
-        query = select(IdentityProvider).where(
-            IdentityProvider.provider_type == provider_type,
-            IdentityProvider.is_active == True,
-            IdentityProvider.tenant_id == tenant_id
+        provider_model = await get_preferred_identity_provider(
+            db,
+            provider_type,
+            tenant_id,
+            is_active=True,
         )
-
-        result = await db.execute(query)
-        provider_model = result.scalar_one_or_none()
 
         # Create provider instance
         provider = self._create_provider(provider_type, provider_model)

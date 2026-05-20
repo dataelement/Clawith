@@ -1,6 +1,7 @@
 """Tool management API — CRUD for tools and per-agent assignments."""
 
 import uuid
+from loguru import logger
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -337,6 +338,35 @@ async def get_agent_tools(
         .order_by(Tool.category, Tool.name)
     )
     all_tools = all_tools_r.scalars().all()
+
+    # ── Backfill: create missing AgentTool records ──────────────────────
+    # For agents that already have at least one AgentTool assignment (i.e.
+    # the tool panel has been configured), create AgentTool records for any
+    # visible tool that doesn't have one yet.  The initial `enabled` value
+    # is taken from `is_default`.
+    #
+    # This keeps the UI state and `get_agent_tools_for_llm` in sync: both
+    # now rely on explicit AgentTool records instead of the implicit
+    # `is_default` fallback.
+    if assignments:
+        backfilled = 0
+        for t in all_tools:
+            tid = str(t.id)
+            if tid not in assignments:
+                new_at = AgentTool(
+                    agent_id=agent_id,
+                    tool_id=t.id,
+                    enabled=t.is_default,
+                )
+                db.add(new_at)
+                assignments[tid] = new_at
+                backfilled += 1
+        if backfilled:
+            await db.commit()
+            logger.info(
+                f"[Tools] Backfilled {backfilled} AgentTool records for "
+                f"agent={agent_id}"
+            )
 
     result = []
     for t in all_tools:

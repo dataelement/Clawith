@@ -23,6 +23,9 @@ from app.services.llm import call_llm, call_llm_with_failover
 
 router = APIRouter(tags=["websocket"])
 
+MAX_LIVE_CODE_STREAM_CHARS = 120_000
+LIVE_CODE_TRUNCATED_NOTICE = "\n\n[... live output truncated; execution continues ...]\n"
+
 
 class ConnectionManager:
     """Manage WebSocket connections per agent."""
@@ -808,6 +811,36 @@ async def websocket_chat(
                         except Exception as _onb_err:
                             logger.warning(f"[WS] Onboarding prompt resolve failed (non-fatal): {_onb_err}")
 
+                        live_code_chars_sent = 0
+                        live_code_truncated_sent = False
+
+                        async def code_output_to_ws(text: str, label: str = "stdout"):
+                            """Stream execute_code output chunks to the frontend live panel in real-time."""
+                            nonlocal live_code_chars_sent, live_code_truncated_sent
+                            try:
+                                remaining = MAX_LIVE_CODE_STREAM_CHARS - live_code_chars_sent
+                                if remaining <= 0:
+                                    if not live_code_truncated_sent:
+                                        live_code_truncated_sent = True
+                                        await websocket.send_json({
+                                            "type": "agentbay_live",
+                                            "env": "code",
+                                            "output": LIVE_CODE_TRUNCATED_NOTICE,
+                                            "stream": label,
+                                        })
+                                    return
+
+                                output = text[:remaining]
+                                live_code_chars_sent += len(output)
+                                await websocket.send_json({
+                                    "type": "agentbay_live",
+                                    "env": "code",
+                                    "output": output,
+                                    "stream": label,
+                                })
+                            except Exception:
+                                pass
+
                         return await call_llm_with_failover(
                             primary_model=effective_llm_model,
                             fallback_model=fallback_llm_model,
@@ -824,6 +857,7 @@ async def websocket_chat(
                             supports_vision=getattr(effective_llm_model, 'supports_vision', False),
                             on_failover=_on_failover,
                             skip_tools=skip_tools_for_greeting,
+                            on_code_output=code_output_to_ws,
                         )
 
                     llm_task = _aio.create_task(_call_with_failover())

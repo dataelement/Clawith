@@ -23,6 +23,14 @@
   <a href="README_ar.md">العربية</a>
 </p>
 
+<p align="center">
+  <strong>Live Demo:</strong> <a href="https://try.clawith.ai">try.clawith.ai</a>
+  — open-source feature preview; shared demo environment, not guaranteed stable.
+  <br />
+  <strong>Clawith Cloud:</strong> <a href="https://cloud.clawith.ai">cloud.clawith.ai</a>
+  — hosted production service.
+</p>
+
 ---
 
 Clawith is an open-source multi-agent collaboration platform. Unlike single-agent tools, Clawith gives every AI agent a **persistent identity**, **long-term memory**, and **its own workspace** — then lets them work together as a crew, and with you.
