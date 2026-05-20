@@ -172,7 +172,7 @@ steps:
       - docker rm -f backend-upgrade-test 2>/dev/null || true
 
       # 阶段 1: 部署旧版本
-      - echo "--- 阶段 1: 部署旧版本 ---"
+      - echo "--- 阶段 1 - 部署旧版本 ---"
       - IMAGE_TAG=old docker compose -f docker-compose.ci.yml up -d postgres redis
       - sleep 5
       - timeout 30s bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" $(docker compose -f docker-compose.ci.yml ps -q postgres) 2>/dev/null)" = "healthy" ]; do sleep 2; done'
@@ -205,7 +205,7 @@ steps:
       - docker rm backend-upgrade-test
 
       # 阶段 2: 升级到新版本
-      - echo "--- 阶段 2: 升级到新版本 ---"
+      - echo "--- 阶段 2 - 升级到新版本 ---"
       - |
         docker run -d --name backend-upgrade-test \
           --network clawith_network \
