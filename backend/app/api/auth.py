@@ -164,20 +164,22 @@ async def register_init(
 
     logger.info(f"[REGISTER_INIT] Starting registration for email={data.email}")
 
-    # Check if this is the first user (platform admin setup)
-    from sqlalchemy import func
-    ident_count_result = await db.execute(select(func.count()).select_from(Identity))
-    is_first_user = ident_count_result.scalar() == 0
-    
+    # Resolve email config once
+    from app.services.system_email_service import resolve_email_config_async
+    email_config = await resolve_email_config_async(db)
+
+    # Check if this is the first user (platform admin setup) - Optimize with EXISTS
+    is_first_user = (await db.execute(select(Identity.id).limit(1))).scalar() is None
+
     # Find or Create Identity
     identity = await registration_service.find_or_create_identity(
         db,
         email=data.email,
         username=data.username,
         password=data.password,
-        is_platform_admin=is_first_user
+        is_platform_admin=is_first_user,
+        email_config=email_config,
     )
-
     # Defense-in-depth: verify the returned identity actually belongs to the
     # submitted email. Under normal circumstances this should never trigger
     # (find_or_create_identity no longer uses username as a lookup key), but
@@ -312,9 +314,12 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
     from app.services.registration_service import registration_service
     from sqlalchemy import func
 
-    # Check if first user
-    user_count_result = await db.execute(select(func.count()).select_from(User))
-    is_first_user = user_count_result.scalar() == 0
+    # Resolve email config once
+    from app.services.system_email_service import resolve_email_config_async
+    email_config = await resolve_email_config_async(db)
+
+    # Check if first user - Optimize with EXISTS
+    is_first_user = (await db.execute(select(User.id).limit(1))).scalar() is None
 
     # Resolve tenant
     tenant_uuid = None
@@ -361,7 +366,8 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         email=data.email,
         username=data.username,
         password=data.password,
-        is_platform_admin=is_first_user
+        is_platform_admin=is_first_user,
+        email_config=email_config,
     )
 
     # Defense-in-depth: verify the returned identity actually belongs to the
@@ -390,7 +396,8 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         display_name=data.display_name or data.username,
         role=role,
         tenant_id=tenant_uuid,
-        registration_source="web"
+        registration_source="web",
+        email_config=email_config,
     )
 
     # Seed default agents for first user

@@ -76,10 +76,10 @@ class RegistrationService:
 
         domain = email.split("@")[1].lower()
 
-        # Try to find tenant by custom domain
+        # Try to find tenant by custom domain - Exact match to use index
         result = await db.execute(
             select(Tenant).where(
-                Tenant.sso_domain.ilike(f"%{domain}%"),
+                Tenant.sso_domain == domain,
                 Tenant.is_active == True,
             )
         )
@@ -138,14 +138,11 @@ class RegistrationService:
         username: str | None = None,
         password: str | None = None,
         is_platform_admin: bool = False,
+        email_config: Any = None,
     ) -> Identity:
         """Find an existing identity or create a new one.
 
         Security note: only email and phone are authoritative identity claims.
-        Username is NOT used as a lookup key — it is just a display name and
-        cannot prove ownership. Using it as a fallback would allow account
-        takeover when two users share the same email prefix (e.g. alice@gmail.com
-        and alice@yahoo.com both produce username 'alice').
         """
         identity = None
 
@@ -160,32 +157,31 @@ class RegistrationService:
             res = await db.execute(select(Identity).where(Identity.phone == normalized_phone))
             identity = res.scalar_one_or_none()
 
-        # Username is intentionally NOT used as a lookup key.
-        # If we cannot establish ownership via email or phone, treat this as a
-        # new identity to avoid returning another user's record.
-
         if identity:
-            # Auto-verify if SMTP is not configured anywhere (env or DB)
-            from app.services.system_email_service import resolve_email_config_async
-            email_config = await resolve_email_config_async(db)
+            # Auto-verify if SMTP is not configured
+            if not email_config:
+                from app.services.system_email_service import resolve_email_config_async
+                email_config = await resolve_email_config_async(db)
+            
             if not email_config:
                 if not identity.email_verified:
                     identity.email_verified = True
                     db.add(identity)
             return identity
 
-        # Check if SMTP is configured anywhere (env or DB) for auto-verification
-        from app.services.system_email_service import resolve_email_config_async
-        email_config = await resolve_email_config_async(db)
+        # Check if SMTP is configured for auto-verification
+        if not email_config:
+            from app.services.system_email_service import resolve_email_config_async
+            email_config = await resolve_email_config_async(db)
+        
         is_verified = not email_config  # Auto-verify only if no SMTP configured
 
-        # Resolve a safe username: if the desired username is already taken by
-        # another identity, append a short random hex suffix to avoid collisions
-        # without blocking the registration.
+        # Resolve a safe username
         final_username = username
         if username:
+            # Use EXISTS for faster lookup
             existing_res = await db.execute(
-                select(Identity).where(Identity.username == username)
+                select(Identity.id).where(Identity.username == username).limit(1)
             )
             if existing_res.scalar_one_or_none():
                 final_username = f"{username}_{uuid.uuid4().hex[:6]}"
@@ -217,27 +213,16 @@ class RegistrationService:
         role: str = "member",
         tenant_id: uuid.UUID | None = None,
         registration_source: str = "web",
+        email_config: Any = None,
     ) -> User:
-        """Create a new tenant-specific user linked to an identity.
-
-        Args:
-            db: Database session
-            identity: The global identity
-            display_name: Tenant-specific display name
-            role: Role within the tenant
-            tenant_id: Tenant ID
-            registration_source: Source of registration
-
-        Returns:
-            Created User (tenant-user)
-        """
-        # Ensure unique display name / username within tenant if needed
-        # (Using display_name or identity info)
+        """Create a new tenant-specific user linked to an identity."""
         name = display_name or identity.username or "User"
 
-        # Check if SMTP is configured anywhere (env or DB) for auto-activation
-        from app.services.system_email_service import resolve_email_config_async
-        email_config = await resolve_email_config_async(db)
+        # Check if SMTP is configured for auto-activation
+        if not email_config:
+            from app.services.system_email_service import resolve_email_config_async
+            email_config = await resolve_email_config_async(db)
+            
         is_active = identity.email_verified
         if not email_config:
             is_active = True  # Auto-activate if no SMTP configured
