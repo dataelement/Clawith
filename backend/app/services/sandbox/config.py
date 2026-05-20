@@ -35,8 +35,8 @@ class SandboxConfig(BaseModel):
     api_url: str = ""
 
     # Common options
-    default_timeout: int = Field(default=30, ge=1, le=300)
-    max_timeout: int = Field(default=60, ge=1, le=300)
+    default_timeout: int = Field(default=30, ge=1, le=3600)
+    max_timeout: int = Field(default=60, ge=1, le=3600)
 
     # Language mapping for API sandboxes
     # Maps our internal language names to API-specific language IDs

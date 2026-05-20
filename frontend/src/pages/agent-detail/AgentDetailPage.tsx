@@ -10,7 +10,7 @@ import type { FileBrowserApi } from '../../components/FileBrowser';
 import FileBrowser from '../../components/FileBrowser';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import PromptModal from '../../components/PromptModal';
-import type { LivePreviewState } from '../../components/AgentBayLivePanel';
+import { appendLiveCodeOutput, type LivePreviewState } from '../../components/AgentBayLivePanel';
 import AgentSidePanel, { SidePanelTab } from '../../components/AgentSidePanel';
 import type { WorkspaceActivity, WorkspaceLiveDraft } from '../../components/WorkspaceOperationPanel';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, focusApi, scheduleApi, skillApi, taskApi, tenantApi, triggerApi, uploadFileWithProgress } from '../../services/api';
@@ -3175,6 +3175,34 @@ export default function AgentDetailPage() {
                 setChatInfoMsg(d.content || '');
                 if (chatInfoTimerRef.current) clearTimeout(chatInfoTimerRef.current);
                 chatInfoTimerRef.current = setTimeout(() => setChatInfoMsg(null), 6000);
+            } else if (d.type === 'agentbay_live') {
+                // Real-time streaming from execute_code or other AgentBay envs
+                if ((d.env === 'desktop' || d.env === 'browser') && d.screenshot_url) {
+                    setLiveState(prev => ({
+                        ...prev,
+                        [d.env]: { screenshotUrl: d.screenshot_url },
+                    }));
+                    if (allowLivePanelAutoFocus()) {
+                        setSidePanelTab(d.env === 'desktop' ? 'desktop' : 'browser');
+                        setLivePanelVisible(true);
+                        collapseSidebarsForLivePanel();
+                    }
+                } else if (d.env === 'code' && d.output) {
+                    setLiveState(prev => ({
+                        ...prev,
+                        code: {
+                            output: appendLiveCodeOutput(
+                                prev.code?.output || '',
+                                `${d.stream === 'stderr' ? '⚠️ ' : ''}${d.output}`
+                            ),
+                        },
+                    }));
+                    if (allowLivePanelAutoFocus()) {
+                        setSidePanelTab('code');
+                        setLivePanelVisible(true);
+                        collapseSidebarsForLivePanel();
+                    }
+                }
             } else {
                 setChatMessages(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
             }
