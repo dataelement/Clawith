@@ -11,9 +11,9 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.identity import IdentityProvider
 from app.models.tenant import Tenant
 from app.models.user import Identity, User
+from app.services.identity_provider_lookup import get_preferred_identity_provider
 from app.services.platform_service import platform_service
 
 
@@ -167,12 +167,7 @@ class SSOService:
         """
 
         # Get provider
-        query = select(IdentityProvider).where(IdentityProvider.provider_type == provider_type)
-        if tenant_id:
-            query = query.where(IdentityProvider.tenant_id == tenant_id)
-            
-        result = await db.execute(query)
-        provider = result.scalar_one_or_none()
+        provider = await get_preferred_identity_provider(db, provider_type, tenant_id)
 
         if not provider:
             return None
@@ -326,13 +321,7 @@ class SSOService:
         from app.models.org import OrgMember
 
         # Get or create provider
-        query = select(IdentityProvider).where(
-            IdentityProvider.provider_type == provider_type,
-            IdentityProvider.tenant_id == tenant_id
-        )
-            
-        result = await db.execute(query)
-        provider = result.scalar_one_or_none()
+        provider = await get_preferred_identity_provider(db, provider_type, tenant_id)
 
         if not provider:
             raise ValueError(f"Provider {provider_type} not found for tenant {tenant_id}")
@@ -438,12 +427,7 @@ class SSOService:
         from app.models.org import OrgMember
 
         # Get provider
-        query = select(IdentityProvider).where(IdentityProvider.provider_type == provider_type)
-        if tenant_id:
-            query = query.where(IdentityProvider.tenant_id == tenant_id)
-            
-        result = await db.execute(query)
-        provider = result.scalar_one_or_none()
+        provider = await get_preferred_identity_provider(db, provider_type, tenant_id)
 
         if not provider:
             return False

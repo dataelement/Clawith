@@ -8,7 +8,10 @@
       "badge": "Open Source · Multi-Agent Collaboration",
       "title": "Clawith",
       "subtitle": "Your Agent Company.",
-      "description": "OpenClaw empowers individuals.<br>Clawith scales it to frontier organizations.",
+      "welcome": "Welcome,",
+      "founder": "Founder",
+      "description": "Let's build your Agent Company",
+      "mark": "Your Agent Company",
       "features": {
         "multiAgent": {
           "title": "Multi-Agent Crew",

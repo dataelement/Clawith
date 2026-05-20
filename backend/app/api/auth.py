@@ -11,7 +11,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import create_access_token, get_authenticated_user, get_current_user, hash_password, verify_password
+from app.core.security import create_access_token, get_authenticated_user, get_current_user, hash_password_async, verify_password_async
 from app.database import get_db
 from app.models.user import Identity, User
 from app.schemas.schemas import (
@@ -196,7 +196,7 @@ async def register_init(
         )
 
     # If identity existed, verify password
-    if identity.password_hash and not verify_password(data.password, identity.password_hash):
+    if identity.password_hash and not await verify_password_async(data.password, identity.password_hash):
          raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email already registered. Incorrect password."
@@ -409,15 +409,18 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         except Exception as e:
             logger.warning(f"Failed to seed default agents: {e}")
 
-    # Send verification email
-    await _send_verification_email_task(user, background_tasks, settings, db)
+    # Send verification email only when the identity still needs it. If the
+    # platform has no system email configured, registration_service auto-verifies
+    # the identity so local/self-hosted installs are not blocked.
+    if not identity.email_verified:
+        await _send_verification_email_task(user, background_tasks, settings, db)
 
     return RegisterInitResponse(
         user_id=user.id,
         email=user.email,
         access_token=create_access_token(str(user.id), user.role),
         user=UserOut.model_validate(user),
-        message="Registration successful. Please verify your email.",
+        message="Registration successful. Please verify your email." if not identity.email_verified else "Registration successful.",
         needs_company_setup=user.tenant_id is None,
     )
 
@@ -449,7 +452,7 @@ async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSes
     result = await db.execute(query)
     identity = result.scalar_one_or_none()
 
-    if not identity or not identity.password_hash or not verify_password(data.password, identity.password_hash):
+    if not identity or not identity.password_hash or not await verify_password_async(data.password, identity.password_hash):
         logger.warning(f"[LOGIN] Invalid credentials for {data.login_identifier} identity_id={identity.id if identity else 'None'}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
@@ -459,23 +462,37 @@ async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSes
 
     if not identity.email_verified:
         from app.config import get_settings
-        # Find any user record (just for the task)
-        user_res = await db.execute(select(User).where(User.identity_id == identity.id).limit(1))
-        user = user_res.scalar_one_or_none()
-        
-        # Trigger email delivery in background
-        if user:
-            await _send_verification_email_task(user, background_tasks, get_settings(), db)
-        
-        # Consistent with identity-first flow: Return 403 Forbidden with verification intent
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "needs_verification": True,
-                "email": identity.email,
-                "message": "Please verify your email to continue."
-            }
-        )
+        from sqlalchemy import update
+        from app.services.system_email_service import resolve_email_config_async
+
+        email_config = await resolve_email_config_async(db)
+        if not email_config:
+            identity.email_verified = True
+            identity.is_active = True
+            await db.execute(
+                update(User)
+                .where(User.identity_id == identity.id)
+                .values(is_active=True)
+            )
+            await db.flush()
+        else:
+            # Find any user record (just for the task)
+            user_res = await db.execute(select(User).where(User.identity_id == identity.id).limit(1))
+            user = user_res.scalar_one_or_none()
+            
+            # Trigger email delivery in background
+            if user:
+                await _send_verification_email_task(user, background_tasks, get_settings(), db)
+            
+            # Consistent with identity-first flow: Return 403 Forbidden with verification intent
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "needs_verification": True,
+                    "email": identity.email,
+                    "message": "Please verify your email to continue."
+                }
+            )
 
     # 3. Find all User records (tenants)
     result = await db.execute(select(User).where(User.identity_id == identity.id).options(selectinload(User.identity)))
@@ -659,9 +676,9 @@ async def reset_password(data: ResetPasswordRequest, db: AsyncSession = Depends(
     if not identity or not identity.is_active:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
-    new_hash = hash_password(data.new_password)
+    new_hash = await hash_password_async(data.new_password)
     identity.password_hash = new_hash
-    
+
     await db.flush()
     await db.commit()
     return {"ok": True}
@@ -853,10 +870,10 @@ async def change_password(
     user = res.scalar_one()
     identity = user.identity
 
-    if not identity or not identity.password_hash or not verify_password(old_password, identity.password_hash):
+    if not identity or not identity.password_hash or not await verify_password_async(old_password, identity.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    new_hash = hash_password(new_password)
+    new_hash = await hash_password_async(new_password)
     identity.password_hash = new_hash
     
     await db.flush()
@@ -923,7 +940,7 @@ async def oauth_callback(
 
     try:
         # Exchange code for token
-        token_data = await auth_provider.exchange_code_for_token(data.code)
+        token_data = await auth_provider.exchange_code_for_token(data.code, data.redirect_uri)
         access_token = token_data.get("access_token")
         if not access_token:
             raise HTTPException(status_code=400, detail="Failed to get access token from provider")

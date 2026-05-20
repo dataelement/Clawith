@@ -1,0 +1,15 @@
+name: "Private Assistant"
+description: "A discreet personal assistant for daily notes, follow-ups, drafts, lightweight planning, and keeping your workday organized."
+icon: "PA"
+category: "office"
+capability_bullets:
+  - "Daily coordination — summarize priorities, reminders, and loose ends"
+  - "Drafting support — messages, notes, and short updates in your style"
+  - "Follow-up memory — keep track of people, decisions, and pending tasks"
+default_skills:
+  - "meeting-notes"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

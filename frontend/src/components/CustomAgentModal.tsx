@@ -368,22 +368,32 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                             </button>
                             {mode === 'native' ? (
                                 <>
-                                    <button
-                                        className="btn btn-secondary"
-                                        disabled={busy || nativeHasNoModel}
+                                    <span
                                         title={disabledByNoModel}
-                                        onClick={() => createAgent.mutate({ chatNow: false })}
+                                        style={{ display: 'inline-flex', cursor: nativeHasNoModel ? 'not-allowed' : undefined }}
                                     >
-                                        {t('customAgentModal.createOnly', isChinese ? '仅创建' : 'Just create')}
-                                    </button>
-                                    <button
-                                        className="btn btn-primary"
-                                        disabled={busy || nativeHasNoModel}
+                                        <button
+                                            className="btn btn-secondary"
+                                            disabled={busy || nativeHasNoModel}
+                                            style={{ pointerEvents: nativeHasNoModel ? 'none' : undefined }}
+                                            onClick={() => createAgent.mutate({ chatNow: false })}
+                                        >
+                                            {t('customAgentModal.createOnly', isChinese ? '仅创建' : 'Just create')}
+                                        </button>
+                                    </span>
+                                    <span
                                         title={disabledByNoModel}
-                                        onClick={() => createAgent.mutate({ chatNow: true })}
+                                        style={{ display: 'inline-flex', cursor: nativeHasNoModel ? 'not-allowed' : undefined }}
                                     >
-                                        {busy ? t('customAgentModal.creating', isChinese ? '创建中...' : 'Creating...') : t('customAgentModal.chatNow', isChinese ? '立即对话' : 'Chat now')}
-                                    </button>
+                                        <button
+                                            className="btn btn-primary"
+                                            disabled={busy || nativeHasNoModel}
+                                            style={{ pointerEvents: nativeHasNoModel ? 'none' : undefined }}
+                                            onClick={() => createAgent.mutate({ chatNow: true })}
+                                        >
+                                            {busy ? t('customAgentModal.creating', isChinese ? '创建中...' : 'Creating...') : t('customAgentModal.chatNow', isChinese ? '立即对话' : 'Chat now')}
+                                        </button>
+                                    </span>
                                 </>
                             ) : (
                                 <button

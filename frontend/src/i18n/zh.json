@@ -8,7 +8,10 @@
       "badge": "开源 · 多智能体协作",
       "title": "Clawith",
       "subtitle": "Your Agent Company.",
-      "description": "OpenClaw 赋能个人。<br>Clawith 将其扩展到前沿组织。",
+      "welcome": "欢迎，",
+      "founder": "Founder",
+      "description": "来构建你的 Agent Company",
+      "mark": "Your Agent Company",
       "features": {
         "multiAgent": {
           "title": "多智能体团队",

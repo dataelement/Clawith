@@ -17,7 +17,6 @@ from app.services.workspace_paths import WorkspacePathError, resolve_path_within
 _DANGEROUS_BASH_ALWAYS = [
     "rm -rf /", "rm -rf ~", "sudo ", "mkfs", "dd if=",
     ":(){ :", "chmod 777 /", "chown ", "shutdown", "reboot",
-    "python3 -c", "python -c",
 ]
 
 _DANGEROUS_BASH_NETWORK = [
@@ -25,18 +24,17 @@ _DANGEROUS_BASH_NETWORK = [
 ]
 
 _DANGEROUS_PYTHON_IMPORTS_ALWAYS = [
-    "subprocess", "shutil.rmtree", "os.system", "os.popen",
+    "shutil.rmtree", "os.system", "os.popen",
     "os.exec", "os.spawn",
 ]
 
 _DANGEROUS_PYTHON_IMPORTS_NETWORK = [
     "socket", "http.client", "urllib.request", "requests",
     "ftplib", "smtplib", "telnetlib", "ctypes",
-    "__import__", "importlib",
 ]
 
 _DANGEROUS_NODE_ALWAYS = [
-    "child_process", "fs.rmSync", "fs.rmdirSync", "process.exit",
+    "fs.rmSync", "fs.rmdirSync", "process.exit",
 ]
 
 _DANGEROUS_NODE_NETWORK = [
@@ -105,25 +103,74 @@ class SubprocessBackend(BaseSandboxBackend):
     def __init__(self, config: SandboxConfig):
         self.config = config
 
-    def _build_command(self, language: str, script_path: str) -> list[str]:
+    def _venv_python(self, work_path: Path) -> str:
+        return f"/workspace/{work_path.joinpath('.venv', 'bin', 'python').relative_to(work_path)}"
+
+    def _host_venv_python(self, work_path: Path) -> str:
+        return str(work_path / ".venv" / "bin" / "python")
+
+    def _build_command(self, language: str, script_path: str, work_path: Path) -> list[str]:
         if language == "python":
-            return ["python3", "-I", "-B", str(script_path)]
+            return [self._venv_python(work_path), "-I", "-B", str(script_path)]
+        if language == "bash":
+            return ["bash", "--noprofile", "--norc", str(script_path)]
+        return ["node", str(script_path)]
+
+    def _build_host_command(self, language: str, script_path: Path, work_path: Path) -> list[str]:
+        if language == "python":
+            return [self._host_venv_python(work_path), "-I", "-B", str(script_path)]
         if language == "bash":
             return ["bash", "--noprofile", "--norc", str(script_path)]
         return ["node", str(script_path)]
 
     def _build_safe_env(self, work_path: Path) -> dict[str, str]:
+        venv_bin = work_path / ".venv" / "bin"
+        workspace_tmp = work_path / ".tmp"
         env = {
             "HOME": str(work_path),
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PATH": f"{venv_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONNOUSERSITE": "1",
-            "TMPDIR": str(work_path / ".tmp"),
+            "TMPDIR": str(workspace_tmp),
             "NODE_PATH": "",
             "BASH_ENV": "",
             "ENV": "",
+            "VIRTUAL_ENV": str(work_path / ".venv"),
+            "PIP_CACHE_DIR": str(workspace_tmp / "pip-cache"),
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         }
         return env
+
+    def _bind_if_exists(self, host_path: str, guest_path: str | None = None, *, read_only: bool = True) -> list[str]:
+        host = Path(host_path)
+        if not host.exists():
+            return []
+        target = guest_path or host_path
+        bind_flag = "--ro-bind" if read_only else "--bind"
+        return [bind_flag, str(host), target]
+
+    def _ensure_workspace_venv(self, work_path: Path) -> None:
+        venv_python = work_path / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            return
+
+        import subprocess
+
+        subprocess.run(
+            ["python3", "-m", "venv", str(work_path / ".venv")],
+            check=True,
+            cwd=str(work_path),
+        )
+
+    def _build_exec_kwargs(self, work_path: Path, timeout: int, use_preexec: bool = False) -> dict:
+        kwargs = {
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+            "env": self._build_safe_env(work_path),
+        }
+        if use_preexec:
+            kwargs["preexec_fn"] = self._build_preexec_fn(work_path, timeout)
+        return kwargs
 
     def _build_preexec_fn(self, work_path: Path, timeout: int):
         def _preexec():
@@ -177,6 +224,15 @@ class SubprocessBackend(BaseSandboxBackend):
                 SubprocessBackend._bwrap_missing_warned = True
             return None
 
+        base_binds = (
+            self._bind_if_exists("/usr")
+            + self._bind_if_exists("/usr/local")
+            + self._bind_if_exists("/bin")
+            + self._bind_if_exists("/lib")
+            + self._bind_if_exists("/lib64")
+            + self._bind_if_exists("/etc")
+        )
+
         cmd = [
             bwrap,
             "--die-with-parent",
@@ -186,22 +242,22 @@ class SubprocessBackend(BaseSandboxBackend):
             "--unshare-pid",
             "--unshare-uts",
             "--unshare-cgroup",
-            "--ro-bind", "/usr", "/usr",
-            "--ro-bind", "/bin", "/bin",
-            "--ro-bind", "/lib", "/lib",
-            "--ro-bind", "/lib64", "/lib64",
-            "--ro-bind", "/etc", "/etc",
+            *base_binds,
             "--bind", str(work_path), "/workspace",
             "--dev", "/dev",
             "--proc", "/proc",
             "--dir", "/tmp",
             "--setenv", "HOME", "/workspace",
+            "--setenv", "PATH", f"/workspace/.venv/bin:{os.environ.get('PATH', '/usr/bin:/bin')}",
             "--setenv", "TMPDIR", "/workspace/.tmp",
             "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
             "--setenv", "PYTHONNOUSERSITE", "1",
             "--setenv", "NODE_PATH", "",
             "--setenv", "BASH_ENV", "",
             "--setenv", "ENV", "",
+            "--setenv", "VIRTUAL_ENV", "/workspace/.venv",
+            "--setenv", "PIP_CACHE_DIR", "/workspace/.tmp/pip-cache",
+            "--setenv", "PIP_DISABLE_PIP_VERSION_CHECK", "1",
             "--chdir", "/workspace",
         ]
         if not self.config.allow_network:
@@ -283,6 +339,7 @@ class SubprocessBackend(BaseSandboxBackend):
             )
         work_path.mkdir(parents=True, exist_ok=True)
         (work_path / ".tmp").mkdir(parents=True, exist_ok=True)
+        (work_path / ".tmp" / "pip-cache").mkdir(parents=True, exist_ok=True)
 
         # Determine command and file extension
         if language == "python":
@@ -296,37 +353,42 @@ class SubprocessBackend(BaseSandboxBackend):
         script_path = work_path / f"_exec_tmp{ext}"
 
         try:
+            self._ensure_workspace_venv(work_path)
             script_path.write_text(code, encoding="utf-8")
 
-            sandbox_command = self._build_command(language, f"/workspace/{script_path.name}")
+            sandbox_command = self._build_command(language, f"/workspace/{script_path.name}", work_path)
             bwrap_command = self._build_bwrap_command(sandbox_command, work_path)
             if not bwrap_command:
-                duration_ms = int((time.time() - start_time) * 1000)
-                return ExecutionResult(
-                    success=False,
-                    stdout="",
-                    stderr="",
-                    exit_code=1,
-                    duration_ms=duration_ms,
-                    error=(
-                        "bubblewrap (bwrap) is required for execute_code but is not available. "
-                        "Install bwrap in the runtime environment and restart the backend."
-                    ),
+                if not self.config.allow_unsafe_fallback_when_bwrap_missing:
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    return ExecutionResult(
+                        success=False,
+                        stdout="",
+                        stderr="",
+                        exit_code=1,
+                        duration_ms=duration_ms,
+                        error=(
+                            "bubblewrap (bwrap) is required for execute_code but is not available. "
+                            "Install bwrap in the runtime environment or enable "
+                            "allow_unsafe_fallback_when_bwrap_missing for local development."
+                        ),
+                    )
+
+                host_command = self._build_host_command(language, script_path, work_path)
+                logger.warning(
+                    "[Subprocess] bubblewrap missing; using local fallback without filesystem isolation"
                 )
-
-            safe_env = self._build_safe_env(work_path)
-
-            kwargs = {
-                "stdout": asyncio.subprocess.PIPE,
-                "stderr": asyncio.subprocess.PIPE,
-                "env": safe_env,
-            }
-
-            proc = await asyncio.create_subprocess_exec(
-                *bwrap_command,
-                cwd=str(work_path),
-                **kwargs,
-            )
+                proc = await asyncio.create_subprocess_exec(
+                    *host_command,
+                    cwd=str(work_path),
+                    **self._build_exec_kwargs(work_path, timeout, use_preexec=True),
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *bwrap_command,
+                    cwd=str(work_path),
+                    **self._build_exec_kwargs(work_path, timeout),
+                )
 
             try:
                 stdout, stderr = await asyncio.wait_for(

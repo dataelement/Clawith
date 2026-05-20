@@ -16,6 +16,8 @@ from loguru import logger
 from sqlalchemy import select, update, exists, and_
 from app.services.storage import agent_storage_key, get_storage_backend
 
+from app.services.llm.finish import FINISH_PROTOCOL_REMINDER, find_finish_call, parse_tool_arguments
+
 # Default heartbeat instruction used when HEARTBEAT.md doesn't exist
 DEFAULT_HEARTBEAT_INSTRUCTION = """[Heartbeat Check]
 
@@ -341,6 +343,18 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                     reasoning_content=response.reasoning_content,
                 ))
 
+                finish_call = find_finish_call(response.tool_calls)
+                if finish_call:
+                    if finish_call.valid:
+                        reply = finish_call.content
+                        break
+                    llm_messages.append(LLMMessage(
+                        role="tool",
+                        tool_call_id=finish_call.call_id,
+                        content=finish_call.error or "`finish` was invalid.",
+                    ))
+                    continue
+
                 # Tools that require arguments — if LLM sends empty args, skip and ask to retry
                 # (aligned with call_llm in websocket.py)
                 _TOOLS_REQUIRING_ARGS = {
@@ -355,7 +369,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                     raw_args = fn.get("arguments", "{}")
                     logger.info(f"[Heartbeat] Raw arguments for {tool_name} (len={len(raw_args) if raw_args else 0}): {repr(raw_args[:300]) if raw_args else 'None'}")
                     try:
-                        args = json.loads(raw_args) if raw_args else {}
+                        args = parse_tool_arguments(raw_args)
                     except json.JSONDecodeError as je:
                         logger.warning(f"[Heartbeat] JSON parse failed for {tool_name}: {je}. Raw: {repr(raw_args[:200])}")
                         args = {}
@@ -393,8 +407,10 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                         content=str(tool_result),
                     ))
             else:
-                reply = response.content or ""
-                break
+                if response.content:
+                    llm_messages.append(LLMMessage(role="assistant", content=response.content))
+                llm_messages.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
+                continue
 
         await client.close()
 
@@ -686,12 +702,24 @@ async def run_agent_oneshot(
                     reasoning_content=response.reasoning_content,
                 ))
 
+                finish_call = find_finish_call(response.tool_calls)
+                if finish_call:
+                    if finish_call.valid:
+                        reply = finish_call.content
+                        break
+                    llm_messages.append(LLMMessage(
+                        role="tool",
+                        tool_call_id=finish_call.call_id,
+                        content=finish_call.error or "`finish` was invalid.",
+                    ))
+                    continue
+
                 for tc in response.tool_calls:
                     fn = tc["function"]
                     tool_name = fn["name"]
                     raw_args = fn.get("arguments", "{}")
                     try:
-                        args = json.loads(raw_args) if raw_args else {}
+                        args = parse_tool_arguments(raw_args)
                     except json.JSONDecodeError:
                         args = {}
 
@@ -704,9 +732,10 @@ async def run_agent_oneshot(
                         content=str(tool_result),
                     ))
             else:
-                # No more tool calls — agent has finished
-                reply = response.content or ""
-                break
+                if response.content:
+                    llm_messages.append(LLMMessage(role="assistant", content=response.content))
+                llm_messages.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
+                continue
 
         await client.close()
 

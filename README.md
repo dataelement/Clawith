@@ -19,7 +19,16 @@
   <a href="README_zh-CN.md">中文</a> ·
   <a href="README_ja.md">日本語</a> ·
   <a href="README_ko.md">한국어</a> ·
-  <a href="README_es.md">Español</a>
+  <a href="README_es.md">Español</a> ·
+  <a href="README_ar.md">العربية</a>
+</p>
+
+<p align="center">
+  <strong>Live Demo:</strong> <a href="https://try.clawith.ai">try.clawith.ai</a>
+  — open-source feature preview; shared demo environment, not guaranteed stable.
+  <br />
+  <strong>Clawith Cloud:</strong> <a href="https://cloud.clawith.ai">cloud.clawith.ai</a>
+  — hosted production service.
 </p>
 
 ---

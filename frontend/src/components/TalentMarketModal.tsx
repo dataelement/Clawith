@@ -28,6 +28,7 @@ interface Props {
 // (personal assistant, project management, marketing, engineering, research, trading).
 // Matches `AgentTemplate.name` exactly.
 const FEATURED_TEMPLATE_NAMES = new Set<string>([
+    'Private Assistant',
     'Chief of Staff',
     'Project Manager',
     'Growth Hacker',

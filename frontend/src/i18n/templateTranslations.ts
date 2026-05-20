@@ -41,6 +41,15 @@ const ZH: Record<string, TemplateLocale> = {
             '跟进追踪 —— 跨会话不让任何事掉链子',
         ],
     },
+    'Private Assistant': {
+        name: '私人助理',
+        description: '你的私人助理 —— 日常备忘、跟进提醒、草拟消息和轻量计划整理。',
+        bullets: [
+            '日常协调 —— 整理优先级、提醒和未完成事项',
+            '拟稿支持 —— 消息、纪要、短更新先给你一版',
+            '跟进记忆 —— 记录人、决策和待办',
+        ],
+    },
 
     // ─── Software Development ───────────────────────────
     'Frontend Developer': {

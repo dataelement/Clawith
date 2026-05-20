@@ -513,14 +513,47 @@ async def create_agent(
                     f"on agent {agent.id} raised: {e}"
                 )
 
-    # Start container
+    # Start container first (non-blocking if Docker available)
     await agent_manager.start_container(db, agent)
     await db.flush()
 
+    # Commit agent and basic setup before async operations
     from app.services.okr_agent_hook import hook_new_agent
     if agent.tenant_id:
         await hook_new_agent(db, agent.id, agent.tenant_id)
-        await db.commit()
+    await db.commit()
+    await db.refresh(agent)
+
+    # MCP import runs in background to avoid blocking the response
+    if template_mcp_servers:
+        import asyncio
+        from app.services.resource_discovery import import_mcp_from_smithery
+
+        async def _background_mcp_import(agent_id: uuid.UUID, server_ids: list[str]):
+            for server_id in server_ids:
+                try:
+                    result_msg = await import_mcp_from_smithery(
+                        server_id=server_id,
+                        agent_id=agent_id,
+                        config={},
+                    )
+                    if result_msg.startswith("❌"):
+                        logger.warning(
+                            f"[create_agent] MCP pre-install for '{server_id}' "
+                            f"on agent {agent_id} reported error: {result_msg[:200]}"
+                        )
+                    else:
+                        logger.info(
+                            f"[create_agent] MCP pre-install '{server_id}' "
+                            f"succeeded for agent {agent_id}"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"[create_agent] MCP pre-install for '{server_id}' "
+                        f"on agent {agent_id} raised: {e}"
+                    )
+
+        asyncio.create_task(_background_mcp_import(agent.id, template_mcp_servers))
 
     return await _agent_to_out(db, agent, current_user.id)
 

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { IconAlertTriangle, IconWorld } from '@tabler/icons-react';
+import { IconAlertTriangle, IconArrowRight, IconX } from '@tabler/icons-react';
 import { useAuthStore } from '../stores';
 import { tenantApi, authApi } from '../services/api';
+import { AtlasFrame, StarField } from '../components/atlas';
 
 export default function CompanySetup() {
     const { t, i18n } = useTranslation();
@@ -19,10 +20,11 @@ export default function CompanySetup() {
     // Fallback: if user exists but is not active, they're in the registration flow
     // (the Navigate in ProtectedRoute may strip location.state).
     const fromRegister = (location.state as any)?.fromRegister || (user && !user.is_active);
-    const registerEmail = (location.state as any)?.email || user?.email;
 
     // Join company form
     const [inviteCode, setInviteCode] = useState('');
+    const [showJoinModal, setShowJoinModal] = useState(false);
+    const [joinError, setJoinError] = useState('');
     // Create company form
     const [companyName, setCompanyName] = useState('');
 
@@ -75,18 +77,17 @@ export default function CompanySetup() {
 
     const handleJoin = async (e: React.FormEvent) => {
         e.preventDefault();
+        setJoinError('');
         setError('');
         setLoading(true);
         try {
             const result = await tenantApi.join(inviteCode);
             await applyTenantSetupResult(result);
-            if (fromRegister) {
-                navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
-            } else {
-                navigate('/');
-            }
+            navigate('/onboarding?mode=join');
         } catch (err: any) {
-            setError(err.message || 'Failed to join company');
+            const msg = err.message || 'Failed to join company';
+            if (showJoinModal) setJoinError(msg);
+            else setError(msg);
         } finally {
             setLoading(false);
         }
@@ -100,9 +101,9 @@ export default function CompanySetup() {
             const result = await tenantApi.selfCreate({ name: companyName });
             await applyTenantSetupResult(result);
             if (fromRegister) {
-                navigate('/verify-email', { state: { email: registerEmail || user?.email, fromRegister: true } });
+                navigate('/onboarding?mode=create');
             } else {
-                navigate('/enterprise');
+                navigate('/onboarding?mode=create');
             }
         } catch (err: any) {
             setError(err.message || 'Failed to create company');
@@ -120,107 +121,149 @@ export default function CompanySetup() {
         return null;
     }
 
-    // --- Debug: log guard state ---
-    console.log('[CompanySetup] guards:', { fromRegister, fromTenantSelection, tenant_id: user?.tenant_id });
+    const isZh = i18n.language.startsWith('zh');
+    const MAX_LEN = 48;
 
     return (
-        <div className="company-setup-page">
-            {/* Language Switcher */}
-            <div style={{
-                position: 'absolute', top: '16px', right: '16px',
-                cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)',
-                display: 'flex', alignItems: 'center', gap: '4px',
-                padding: '6px 12px', borderRadius: '8px',
-                background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
-                zIndex: 101,
-            }} onClick={toggleLang}>
-                <IconWorld size={44} stroke={1.6} />
-            </div>
-
-            <div className="company-setup-container">
-                <div className="company-setup-header">
-                    <img src="/logo-black.png" alt="" style={{ width: 32, height: 32 }} />
-                    <h1>{t('companySetup.title', 'Set Up Your Workspace')}</h1>
-                    <p className="company-setup-subtitle">
-                        {t('companySetup.subtitle', 'Join an existing company or create your own to get started.')}
+        <AtlasFrame onToggleLang={toggleLang}>
+            <StarField density="medium" seed={17} />
+            <svg
+                className="atlas-name-bg-circle"
+                viewBox="0 0 800 800"
+                aria-hidden="true"
+            >
+                <circle cx="400" cy="400" r="320" fill="none" stroke="currentColor" strokeWidth="0.5" />
+                <circle cx="400" cy="400" r="220" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2 4" />
+            </svg>
+            <div className="atlas-screen-center atlas-screen-pad">
+                <div className="atlas-name-stack">
+                    <h1 className="atlas-display atlas-display--centered">
+                        {isZh ? (
+                            <><span>开始吧。</span><br /><span>给你的公司起个名字。</span></>
+                        ) : (
+                            <><span>Let's begin.</span><br /><span>Name your Company.</span></>
+                        )}
+                    </h1>
+                    <p className="atlas-body atlas-body--muted atlas-name-sub">
+                        {isZh
+                            ? '每个宇宙都从一个名字开始。让它具体、属于你 —— 之后随时能改。'
+                            : 'Every universe begins with a name. Make it specific, make it yours — it can change later.'}
                     </p>
-                </div>
 
-                {error && (
-                    <div className="login-error" style={{ marginBottom: 16 }}>
-                        <span><IconAlertTriangle size={14} stroke={1.8} /></span> {error}
-                    </div>
-                )}
-
-                <div className={`company-setup-panels ${!allowCreate ? 'single' : ''}`}>
-                    {/* ── Join Company Panel ── */}
-                    <form className="company-setup-panel" onSubmit={handleJoin}>
-                        <div className="company-setup-panel-header">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                                <polyline points="10 17 15 12 10 7" />
-                                <line x1="15" y1="12" x2="3" y2="12" />
-                            </svg>
-                            <h3>{t('companySetup.joinTitle', 'Join a Company')}</h3>
+                    {error && (
+                        <div className="atlas-error">
+                            <IconAlertTriangle size={14} stroke={1.8} /> {error}
                         </div>
-                        <p className="company-setup-panel-desc">
-                            {t('companySetup.joinDesc', 'Enter the invitation code provided by your company administrator.')}
-                        </p>
-                        <div className="login-field">
-                            <label>{t('companySetup.inviteCode', 'Invitation Code')}</label>
+                    )}
+
+                    {allowCreate ? (
+                        <form className="atlas-name-form" onSubmit={handleCreate}>
                             <input
+                                className="atlas-input atlas-input--serif-lg atlas-name-input"
+                                value={companyName}
+                                maxLength={MAX_LEN}
+                                onChange={(e) => setCompanyName(e.target.value)}
+                                required
+                                autoFocus
+                                placeholder={isZh ? '在这里写下名字' : 'Atlas & Co.'}
+                            />
+                            <div className="atlas-input-meta atlas-input-meta--right">
+                                <span>{companyName.length} / {MAX_LEN}</span>
+                            </div>
+                            <button
+                                className="atlas-btn atlas-btn--primary atlas-name-cta"
+                                type="submit"
+                                disabled={loading || !companyName.trim()}
+                            >
+                                {loading ? '…' : (isZh ? '继续' : 'Continue')}
+                                <IconArrowRight size={14} stroke={1.5} />
+                            </button>
+                            <button
+                                type="button"
+                                className="atlas-text-underline"
+                                onClick={() => { setJoinError(''); setShowJoinModal(true); }}
+                            >
+                                {isZh ? '加入已有团队？' : 'Joining an existing team?'}
+                            </button>
+                        </form>
+                    ) : (
+                        <form className="atlas-name-form" onSubmit={handleJoin}>
+                            <input
+                                className="atlas-input atlas-input--serif-lg atlas-name-input"
                                 value={inviteCode}
                                 onChange={(e) => setInviteCode(e.target.value)}
                                 required
+                                autoFocus
                                 placeholder={t('companySetup.inviteCodePlaceholder', 'e.g. ABC12345')}
-                                style={{ textTransform: 'uppercase', letterSpacing: '2px', fontFamily: 'monospace' }}
+                                style={{ textTransform: 'uppercase', letterSpacing: '4px', fontFamily: 'var(--font-mono)' }}
                             />
-                        </div>
-                        <button className="login-submit" type="submit" disabled={loading || !inviteCode}>
-                            {loading ? <span className="login-spinner" /> : t('companySetup.joinBtn', 'Join Company')}
-                        </button>
-                    </form>
-
-                    {/* ── Create Company Panel ── */}
-                    {allowCreate && (
-                        <>
-                            <div className="company-setup-divider">
-                                <span>{t('companySetup.or', 'OR')}</span>
+                            <div className="atlas-input-meta">
+                                <span>{isZh ? '邀请码' : 'INVITATION CODE'}</span>
+                                <span>{isZh ? '必填' : 'REQUIRED'}</span>
                             </div>
-                            <form className="company-setup-panel" onSubmit={handleCreate}>
-                                <div className="company-setup-panel-header">
-                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
-                                        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
-                                    </svg>
-                                    <h3>{t('companySetup.createTitle', 'Create a Company')}</h3>
-                                </div>
-                                <p className="company-setup-panel-desc">
-                                    {t('companySetup.createDesc', 'Start a new workspace. You can invite team members later.')}
-                                </p>
-                                <div className="login-field">
-                                    <label>{t('companySetup.companyName', 'Company Name')}</label>
-                                    <input
-                                        value={companyName}
-                                        onChange={(e) => setCompanyName(e.target.value)}
-                                        required
-                                        placeholder={t('companySetup.companyNamePlaceholder', 'e.g. Acme Inc.')}
-                                    />
-                                </div>
-                                <button className="login-submit" type="submit" disabled={loading || !companyName}>
-                                    {loading ? <span className="login-spinner" /> : t('companySetup.createBtn', 'Create Company')}
-                                </button>
-                            </form>
-                        </>
+                            <button
+                                className="atlas-btn atlas-btn--primary atlas-name-cta"
+                                type="submit"
+                                disabled={loading || !inviteCode.trim()}
+                            >
+                                {loading ? '…' : t('companySetup.joinBtn', 'Join Company')}
+                                <IconArrowRight size={14} stroke={1.5} />
+                            </button>
+                        </form>
                     )}
                 </div>
-
-                {!allowCreate && (
-                    <p className="company-setup-hint">
-                        {t('companySetup.contactAdmin', 'Contact your platform administrator for an invitation code.')}
-                    </p>
-                )}
             </div>
-        </div>
+
+            {showJoinModal && (
+                <div
+                    className="atlas-modal-overlay"
+                    onClick={() => !loading && setShowJoinModal(false)}
+                >
+                    <div className="atlas-modal" onClick={(e) => e.stopPropagation()}>
+                        <button
+                            type="button"
+                            className="atlas-modal-close"
+                            onClick={() => setShowJoinModal(false)}
+                            disabled={loading}
+                            aria-label="Close"
+                        >
+                            <IconX size={18} stroke={1.8} />
+                        </button>
+                        <h2 className="atlas-modal-title">
+                            {isZh ? '加入已有团队' : 'Join an existing team'}
+                        </h2>
+                        <p className="atlas-modal-desc">
+                            {isZh
+                                ? '输入团队管理员发给你的邀请码。'
+                                : 'Enter the invitation code your team admin shared with you.'}
+                        </p>
+                        <form onSubmit={handleJoin} className="atlas-form">
+                            <input
+                                className="atlas-input-standalone"
+                                value={inviteCode}
+                                onChange={(e) => setInviteCode(e.target.value)}
+                                required
+                                autoFocus
+                                placeholder={t('companySetup.inviteCodePlaceholder', 'e.g. ABC12345')}
+                                style={{ textTransform: 'uppercase', letterSpacing: '2px', fontFamily: 'var(--font-mono)' }}
+                            />
+                            {joinError && (
+                                <div className="atlas-error">
+                                    <IconAlertTriangle size={14} stroke={1.8} /> {joinError}
+                                </div>
+                            )}
+                            <button
+                                className="atlas-btn atlas-btn--primary"
+                                type="submit"
+                                disabled={loading || !inviteCode.trim()}
+                            >
+                                {loading ? '…' : (isZh ? '加入' : 'Join')}
+                                <IconArrowRight size={14} stroke={1.5} />
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            )}
+        </AtlasFrame>
     );
 }

@@ -66,6 +66,13 @@ from app.services.workspace_locking import workspace_locks
 from app.core.permissions import evaluate_agent_relationship_status, evaluate_human_relationship_status
 from app.services.access_relationships import ensure_access_granted_platform_relationships
 from app.config import get_settings
+from app.services.llm.finish import (
+    FINISH_PROTOCOL_REMINDER,
+    FINISH_TOOL_DEFINITION,
+    FINISH_TOOL_NAME,
+    find_finish_call,
+    parse_tool_arguments,
+)
 
 
 _settings = get_settings()
@@ -223,6 +230,7 @@ channel_feishu_sender_open_id: ContextVar = ContextVar('channel_feishu_sender_op
 # ─── Tool Definitions (OpenAI function-calling format) ──────────
 
 AGENT_TOOLS = [
+    FINISH_TOOL_DEFINITION,
     {
         "type": "function",
         "function": {
@@ -1911,6 +1919,7 @@ AGENT_TOOLS = [
 # to avoid sending duplicate tool definitions to the LLM.
 _ALWAYS_INCLUDE_CORE = {
     "complete_focus_item",
+    FINISH_TOOL_NAME,
     "list_focus_items",
     "send_channel_file",
     "send_file_to_agent",
@@ -2798,6 +2807,9 @@ async def execute_tool(
         .replace("\ufeff", "")
         .strip()
     )
+    if tool_name == FINISH_TOOL_NAME:
+        content = arguments.get("content", "")
+        return content if isinstance(content, str) else str(content)
 
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
@@ -7263,18 +7275,27 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                             reasoning_content=response.reasoning_content,
                         ))
 
+                        finish_call = find_finish_call(response.tool_calls)
+                        if finish_call:
+                            if finish_call.valid:
+                                target_reply = finish_call.content
+                                break
+                            full_msgs.append(LLMMessage(
+                                role="tool",
+                                tool_call_id=finish_call.call_id,
+                                content=finish_call.error or "`finish` was invalid.",
+                            ))
+                            continue
+
                         # Execute each tool call
                         for tc in response.tool_calls:
                             fn = tc.get("function", {})
                             tool_name = fn.get("name", "")
                             raw_args = fn.get("arguments", "{}")
-                            if isinstance(raw_args, dict):
-                                tool_args = raw_args
-                            else:
-                                try:
-                                    tool_args = json.loads(raw_args) if raw_args else {}
-                                except Exception:
-                                    tool_args = {}
+                            try:
+                                tool_args = parse_tool_arguments(raw_args)
+                            except Exception:
+                                tool_args = {}
 
                             tool_result = await execute_tool(tool_name, tool_args, target.id, owner_id)
 
@@ -7315,9 +7336,9 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                             ))
                         continue  # Next LLM round
 
-                    # No tool calls — this is the final text response
-                    target_reply = response.content or ""
-                    break
+                    if response.content:
+                        full_msgs.append(LLMMessage(role="assistant", content=response.content))
+                    full_msgs.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
             finally:
                 await llm_client.close()
 
@@ -7659,45 +7680,66 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
 # ─── Code Execution ─────────────────────────────────────────────
 
 # Dangerous patterns to block (for legacy fallback)
-_DANGEROUS_BASH = [
+_DANGEROUS_BASH_ALWAYS = [
     "rm -rf /", "rm -rf ~", "sudo ", "mkfs", "dd if=",
     ":(){ :", "chmod 777 /", "chown ", "shutdown", "reboot",
-    "curl ", "wget ", "nc ", "ncat ", "ssh ", "scp ",
-    "python3 -c", "python -c",
 ]
 
-_DANGEROUS_PYTHON_IMPORTS = [
-    "subprocess", "shutil.rmtree", "os.system", "os.popen",
+_DANGEROUS_BASH_NETWORK = [
+    "curl ", "wget ", "nc ", "ncat ", "ssh ", "scp ",
+]
+
+_DANGEROUS_PYTHON_IMPORTS_ALWAYS = [
+    "shutil.rmtree", "os.system", "os.popen",
     "os.exec", "os.spawn",
+]
+
+_DANGEROUS_PYTHON_IMPORTS_NETWORK = [
     "socket", "http.client", "urllib.request", "requests",
     "ftplib", "smtplib", "telnetlib", "ctypes",
-    "__import__", "importlib",
+]
+
+_DANGEROUS_NODE_ALWAYS = [
+    "fs.rmSync", "fs.rmdirSync", "process.exit",
+]
+
+_DANGEROUS_NODE_NETWORK = [
+    "require('http')", "require('https')", "require('net')",
 ]
 
 
-def _check_code_safety(language: str, code: str) -> str | None:
+def _check_code_safety(language: str, code: str, allow_network: bool = False) -> str | None:
     """Check code for dangerous patterns. Returns error message if unsafe, None if ok."""
     code_lower = code.lower()
 
     if language == "bash":
-        for pattern in _DANGEROUS_BASH:
+        for pattern in _DANGEROUS_BASH_ALWAYS:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: dangerous command detected ({pattern.strip()})"
-        # Block deep path traversal outside workspace
+        if not allow_network:
+            for pattern in _DANGEROUS_BASH_NETWORK:
+                if pattern.lower() in code_lower:
+                    return f"❌ Blocked: network command not allowed ({pattern.strip()})"
         if "../../" in code:
             return "❌ Blocked: directory traversal not allowed"
 
     elif language == "python":
-        for pattern in _DANGEROUS_PYTHON_IMPORTS:
+        for pattern in _DANGEROUS_PYTHON_IMPORTS_ALWAYS:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: unsafe operation detected ({pattern})"
+        if not allow_network:
+            for pattern in _DANGEROUS_PYTHON_IMPORTS_NETWORK:
+                if pattern.lower() in code_lower:
+                    return f"❌ Blocked: network operation not allowed ({pattern})"
 
     elif language == "node":
-        dangerous_node = ["child_process", "fs.rmSync", "fs.rmdirSync", "process.exit",
-                          "require('http')", "require('https')", "require('net')"]
-        for pattern in dangerous_node:
+        for pattern in _DANGEROUS_NODE_ALWAYS:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: unsafe operation detected ({pattern})"
+        if not allow_network:
+            for pattern in _DANGEROUS_NODE_NETWORK:
+                if pattern.lower() in code_lower:
+                    return f"❌ Blocked: network operation not allowed ({pattern})"
 
     return None
 
@@ -7773,7 +7815,7 @@ async def _execute_code(
             # Do not silently fall back — surface the config error to the user
             return f"❌ E2B sandbox configuration error: {str(e)[:300]}\nPlease check the API key in the tool settings."
         logger.warning(f"[Sandbox] Config issue, falling back to legacy subprocess: {e}")
-        return await _execute_code_legacy(ws, arguments)
+        return await _execute_code_legacy(ws, arguments, allow_network=fallback_config.allow_network)
 
     except Exception as e:
         logger.exception(f"[Sandbox] Execution failed for agent {agent_id} (tool={tool_name})")
@@ -7782,13 +7824,13 @@ async def _execute_code(
             return f"❌ E2B execution error: {str(e)[:200]}"
         # For local tool: try legacy subprocess as last resort
         try:
-            return await _execute_code_legacy(ws, arguments)
+            return await _execute_code_legacy(ws, arguments, allow_network=sandbox_config.allow_network)
         except Exception:
             logger.exception(f"[Sandbox] Fallback also failed for agent {agent_id}")
             return f"❌ Execution error: {str(e)[:200]}"
 
 
-async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
+async def _execute_code_legacy(ws: Path, arguments: dict, allow_network: bool = False) -> str:
     """Legacy subprocess-based code execution (fallback)."""
     import asyncio
 
@@ -7803,7 +7845,7 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
         return f"❌ Unsupported language: {language}. Use: python, bash, or node"
 
     # Security check
-    safety_error = _check_code_safety(language, code)
+    safety_error = _check_code_safety(language, code, allow_network)
     if safety_error:
         return safety_error
 
