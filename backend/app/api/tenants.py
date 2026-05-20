@@ -414,26 +414,34 @@ async def resolve_tenant_by_domain(
     """
     tenant = None
 
-    # 1. Match by stripping protocol from stored sso_domain
-    # sso_domain = "https://acme.clawith.ai" → compare against "acme.clawith.ai"
-    for proto in ("https://", "http://"):
-        result = await db.execute(
-            select(Tenant).where(Tenant.sso_domain == f"{proto}{domain}")
-        )
-        tenant = result.scalar_one_or_none()
-        if tenant:
-            break
+    from app.models.system_settings import SystemSetting
+    setting_result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "sso_custom_domain_redirect_enabled")
+    )
+    setting_s = setting_result.scalar_one_or_none()
+    sso_redirect_enabled = setting_s.value.get("enabled", True) if setting_s else True
 
-    # 2. Try without port (e.g. domain = "1.2.3.4:3009" → try "1.2.3.4")
-    if not tenant and ":" in domain:
-        domain_no_port = domain.split(":")[0]
+    if sso_redirect_enabled:
+        # 1. Match by stripping protocol from stored sso_domain
+        # sso_domain = "https://acme.clawith.ai" → compare against "acme.clawith.ai"
         for proto in ("https://", "http://"):
             result = await db.execute(
-                select(Tenant).where(Tenant.sso_domain.like(f"{proto}{domain_no_port}%"))
+                select(Tenant).where(Tenant.sso_domain == f"{proto}{domain}")
             )
             tenant = result.scalar_one_or_none()
             if tenant:
                 break
+
+        # 2. Try without port (e.g. domain = "1.2.3.4:3009" → try "1.2.3.4")
+        if not tenant and ":" in domain:
+            domain_no_port = domain.split(":")[0]
+            for proto in ("https://", "http://"):
+                result = await db.execute(
+                    select(Tenant).where(Tenant.sso_domain.like(f"{proto}{domain_no_port}%"))
+                )
+                tenant = result.scalar_one_or_none()
+                if tenant:
+                    break
 
     # 3. Fallback: extract slug from subdomain pattern
     if not tenant:

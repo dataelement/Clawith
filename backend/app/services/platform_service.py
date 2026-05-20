@@ -41,13 +41,15 @@ class PlatformService:
 
 
     async def get_tenant_sso_base_url(self, db: AsyncSession, tenant, request: Request | None = None) -> str:
-        """Generate the SSO base URL for a tenant based on IP/Domain logic.
-        
-        Priority:
-        1. Explicit sso_domain stored in tenant record (if present)
-        2. Auto-generated URL based on the unified public_base_url (ENV > Request > Fallback)
-        """
-        if tenant.sso_domain:
+        """Generate the SSO base URL for a tenant based on IP/Domain logic."""
+        # Check if custom domain SSO redirect is enabled globally
+        setting_result = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "sso_custom_domain_redirect_enabled")
+        )
+        setting_s = setting_result.scalar_one_or_none()
+        sso_redirect_enabled = setting_s.value.get("enabled", True) if setting_s else True
+
+        if sso_redirect_enabled and tenant.sso_domain:
             return tenant.sso_domain.rstrip("/")
 
         base_url = await self.get_public_base_url(db, request)

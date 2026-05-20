@@ -1681,6 +1681,8 @@
     "platformSettings": "平台设置",
     "allowSelfCreate": "允许用户自行创建公司",
     "allowSelfCreateDesc": "关闭后，仅平台管理员可以创建公司。",
+    "ssoCustomDomainRedirect": "启用租户 SSO 自定义域名重定向",
+    "ssoCustomDomainRedirectDesc": "关闭后，整个平台所有的租户都无法使用自定义域名或专属链接跳转到单点登录提供商。",
     "inviteCodeRequired": "注册需要邀请码",
     "inviteCodeRequiredDesc": "开启后，新用户必须提供有效的邀请码才能注册。",
     "companyNamePlaceholder": "公司名称",

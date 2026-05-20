@@ -1838,6 +1838,8 @@
     "next": "Next",
     "allowSelfCreate": "Allow users to create their own companies",
     "allowSelfCreateDesc": "When disabled, only platform admins can create companies.",
+    "ssoCustomDomainRedirect": "Enable tenant SSO custom domain redirect",
+    "ssoCustomDomainRedirectDesc": "When disabled, all tenants will be blocked from using custom domains or dedicated links to redirect to SSO providers.",
     "editCompany": "Edit Company",
     "ssoConfigTitle": "SSO & Domain Configuration",
     "ssoConfigDesc": "Configure SSO and custom domain for this company.",
