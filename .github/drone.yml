@@ -292,7 +292,6 @@ trigger:
   branch:
     - main
     - release
-    - feature-ha
   event:
     - push
     - pull_request
