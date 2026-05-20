@@ -291,7 +291,7 @@ trigger:
   branch:
     - main
     - release
-    - feat-devops
+    - feature-ha
   event:
     - push
     - pull_request
