@@ -52,6 +52,9 @@ class PlatformService:
         if sso_redirect_enabled and tenant.sso_domain:
             return tenant.sso_domain.rstrip("/")
 
+        if not sso_redirect_enabled:
+            return await self.get_public_base_url(db, request)
+
         base_url = await self.get_public_base_url(db, request)
         
         # Parse protocol and host

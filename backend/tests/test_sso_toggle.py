@@ -78,11 +78,51 @@ async def test_get_tenant_sso_base_url_toggle():
     url = await platform_service.get_tenant_sso_base_url(db=db_enabled, tenant=tenant)
     assert url == "https://acme.com"
 
-    # 2. Disabled: falls back to generated slug domain URL
+    # 2. Disabled: falls back to public base URL
     setting_disabled = SimpleNamespace(key="sso_custom_domain_redirect_enabled", value={"enabled": False})
     db_disabled = RecordingDB(responses=[
         DummyResult(values=[setting_disabled]),  # sso_custom_domain_redirect_enabled -> False
     ])
     with patch.object(platform_service, "get_public_base_url", return_value="https://try.clawith.ai"):
         url = await platform_service.get_tenant_sso_base_url(db=db_disabled, tenant=tenant)
-        assert url == "https://acme.clawith.ai"
+        assert url == "https://try.clawith.ai"
+
+
+@pytest.mark.asyncio
+async def test_switch_tenant_sso_toggle():
+    """Verify that switch_tenant API respects the sso_custom_domain_redirect_enabled toggle."""
+    from app.api import auth as auth_api
+    from app.schemas.schemas import TenantSwitchRequest
+    import uuid
+
+    target_tenant_id = uuid.uuid4()
+    target_user = SimpleNamespace(id=uuid.uuid4(), role="member")
+    tenant = SimpleNamespace(id=target_tenant_id, slug="acme", sso_domain="https://acme.com", is_active=True)
+    current_user = SimpleNamespace(identity_id=uuid.uuid4())
+    data = TenantSwitchRequest(tenant_id=target_tenant_id)
+    request = MagicMock()
+
+    # Case 1: Toggle enabled -> redirect_url is returned
+    db_enabled = RecordingDB(responses=[
+        DummyResult(values=[target_user]), # user check
+        DummyResult(values=[tenant]),      # tenant details
+        DummyResult(),                     # auth_api setting check (default True)
+        DummyResult(),                     # platform_service setting check (default True)
+    ])
+    with patch("app.api.auth.create_access_token", return_value="jwt-token"):
+        res = await auth_api.switch_tenant(data, request, current_user, db_enabled)
+        assert res.access_token == "jwt-token"
+        assert res.redirect_url is not None
+        assert "https://acme.com" in res.redirect_url
+
+    # Case 2: Toggle disabled -> redirect_url is None
+    setting_disabled = SimpleNamespace(key="sso_custom_domain_redirect_enabled", value={"enabled": False})
+    db_disabled = RecordingDB(responses=[
+        DummyResult(values=[target_user]), # user check
+        DummyResult(values=[tenant]),      # tenant details
+        DummyResult(values=[setting_disabled]), # auth_api setting check (disabled)
+    ])
+    with patch("app.api.auth.create_access_token", return_value="jwt-token"):
+        res = await auth_api.switch_tenant(data, request, current_user, db_disabled)
+        assert res.access_token == "jwt-token"
+        assert res.redirect_url is None

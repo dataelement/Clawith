@@ -3840,7 +3840,7 @@ export default function AgentDetailPage() {
     const { data: schedules = [] } = useQuery({
         queryKey: ['schedules', id],
         queryFn: () => scheduleApi.list(id!),
-        enabled: !!id && activeTab === 'tasks',
+        enabled: !!id && (activeTab as string) === 'tasks',
     });
 
     // Schedule form state
