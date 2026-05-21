@@ -139,6 +139,7 @@ async def _sync_okr_report_triggers(db, settings: OKRSettings) -> None:
         focus_ref="system:okr_reports",
         description="OKR 自动汇总、日报收集与周期报告",
         system=True,
+        db=db,
     )
 
     daily_hour, daily_minute = 18, 0

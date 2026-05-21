@@ -202,67 +202,82 @@ def _serialize_focus_item(item: AgentFocusItemModel) -> dict:
     }
 
 
-async def migrate_legacy_focus_file(agent_id: uuid.UUID) -> int:
+async def migrate_legacy_focus_file(agent_id: uuid.UUID, db=None) -> int:
     """Import legacy focus.md once when the DB has no focus rows."""
-    async with async_session() as db:
-        existing_count = await db.scalar(
-            select(func.count()).select_from(AgentFocusItemModel).where(AgentFocusItemModel.agent_id == agent_id)
-        )
-        if existing_count:
-            return 0
+    if db is not None:
+        return await _migrate_legacy_focus_file_impl(db, agent_id, should_commit=False)
+    async with async_session() as new_db:
+        return await _migrate_legacy_focus_file_impl(new_db, agent_id, should_commit=True)
 
-        path = _focus_path(agent_id)
-        if not path.exists():
-            return 0
 
-        try:
-            content = ensure_focus_sections(path.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            return 0
-
-        rows: list[dict] = []
-        seen: set[str] = set()
-        for order, legacy in enumerate(parse_focus_items(content)):
-            key = legacy.key[:200]
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            status = "completed" if legacy.marker == "x" or legacy.section == COMPLETED_SECTION else "in_progress"
-            kind = "system" if legacy.section == SYSTEM_SECTION or key.startswith("system:") else "normal"
-            rows.append({
-                "agent_id": agent_id,
-                "key": key,
-                "description": legacy.description or key,
-                "status": status,
-                "kind": kind,
-                "source": "migration",
-                "sort_order": order,
-                "completed_at": datetime.now(timezone.utc) if status == "completed" else None,
-                "item_metadata": {"legacy_section": legacy.section, "legacy_marker": legacy.marker},
-            })
-        if rows:
-            stmt = insert(AgentFocusItemModel).values(rows)
-            stmt = stmt.on_conflict_do_nothing(index_elements=["agent_id", "key"])
-            result = await db.execute(stmt)
-            await db.commit()
-            return result.rowcount or 0
+async def _migrate_legacy_focus_file_impl(db, agent_id: uuid.UUID, should_commit: bool) -> int:
+    existing_count = await db.scalar(
+        select(func.count()).select_from(AgentFocusItemModel).where(AgentFocusItemModel.agent_id == agent_id)
+    )
+    if existing_count:
         return 0
 
+    path = _focus_path(agent_id)
+    if not path.exists():
+        return 0
 
-async def list_focus_items(agent_id: uuid.UUID, *, include_completed: bool = True) -> list[dict]:
-    await migrate_legacy_focus_file(agent_id)
-    async with async_session() as db:
-        stmt = select(AgentFocusItemModel).where(AgentFocusItemModel.agent_id == agent_id)
-        if not include_completed:
-            stmt = stmt.where(AgentFocusItemModel.status != "completed")
-        stmt = stmt.order_by(
-            AgentFocusItemModel.status.desc(),
-            AgentFocusItemModel.kind.desc(),
-            AgentFocusItemModel.sort_order.asc(),
-            AgentFocusItemModel.created_at.asc(),
-        )
+    try:
+        content = ensure_focus_sections(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return 0
+
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for order, legacy in enumerate(parse_focus_items(content)):
+        key = legacy.key[:200]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        status = "completed" if legacy.marker == "x" or legacy.section == COMPLETED_SECTION else "in_progress"
+        kind = "system" if legacy.section == SYSTEM_SECTION or key.startswith("system:") else "normal"
+        rows.append({
+            "agent_id": agent_id,
+            "key": key,
+            "description": legacy.description or key,
+            "status": status,
+            "kind": kind,
+            "source": "migration",
+            "sort_order": order,
+            "completed_at": datetime.now(timezone.utc) if status == "completed" else None,
+            "item_metadata": {"legacy_section": legacy.section, "legacy_marker": legacy.marker},
+        })
+    if rows:
+        stmt = insert(AgentFocusItemModel).values(rows)
+        stmt = stmt.on_conflict_do_nothing(index_elements=["agent_id", "key"])
         result = await db.execute(stmt)
-        return [_serialize_focus_item(item) for item in result.scalars().all()]
+        if should_commit:
+            await db.commit()
+        else:
+            await db.flush()
+        return result.rowcount or 0
+    return 0
+
+
+async def list_focus_items(agent_id: uuid.UUID, *, include_completed: bool = True, db=None) -> list[dict]:
+    await migrate_legacy_focus_file(agent_id, db=db)
+    if db is not None:
+        return await _list_focus_items_impl(db, agent_id, include_completed)
+    async with async_session() as new_db:
+        return await _list_focus_items_impl(new_db, agent_id, include_completed)
+
+
+async def _list_focus_items_impl(db, agent_id: uuid.UUID, include_completed: bool) -> list[dict]:
+    stmt = select(AgentFocusItemModel).where(AgentFocusItemModel.agent_id == agent_id)
+    if not include_completed:
+        stmt = stmt.where(AgentFocusItemModel.status != "completed")
+    stmt = stmt.order_by(
+        AgentFocusItemModel.status.desc(),
+        AgentFocusItemModel.kind.desc(),
+        AgentFocusItemModel.sort_order.asc(),
+        AgentFocusItemModel.created_at.asc(),
+    )
+    result = await db.execute(stmt)
+    return [_serialize_focus_item(item) for item in result.scalars().all()]
 
 
 async def upsert_focus_item(
@@ -274,8 +289,9 @@ async def upsert_focus_item(
     kind: str = "normal",
     source: str = "user",
     metadata: dict | None = None,
+    db = None,
 ) -> dict:
-    await migrate_legacy_focus_file(agent_id)
+    await migrate_legacy_focus_file(agent_id, db=db)
     desc = (description or "").strip()
     item_key = (key or "").strip() or slugify_focus_key(desc)
     item_key = item_key[:200]
@@ -286,41 +302,60 @@ async def upsert_focus_item(
     if kind not in VALID_KINDS:
         kind = "normal"
 
-    async with async_session() as db:
-        result = await db.execute(
-            select(AgentFocusItemModel).where(
-                AgentFocusItemModel.agent_id == agent_id,
-                AgentFocusItemModel.key == item_key,
-            )
+    if db is not None:
+        return await _upsert_focus_item_impl(db, agent_id, item_key, desc, status, kind, source, metadata, should_commit=False)
+    async with async_session() as new_db:
+        return await _upsert_focus_item_impl(new_db, agent_id, item_key, desc, status, kind, source, metadata, should_commit=True)
+
+
+async def _upsert_focus_item_impl(
+    db,
+    agent_id: uuid.UUID,
+    item_key: str,
+    desc: str,
+    status: str,
+    kind: str,
+    source: str,
+    metadata: dict | None,
+    should_commit: bool,
+) -> dict:
+    result = await db.execute(
+        select(AgentFocusItemModel).where(
+            AgentFocusItemModel.agent_id == agent_id,
+            AgentFocusItemModel.key == item_key,
         )
-        item = result.scalar_one_or_none()
-        if item:
-            item.description = desc or item.description or item_key
-            item.status = status
-            item.kind = kind
-            item.source = source or item.source or "user"
-            if metadata:
-                item.item_metadata = {**(item.item_metadata or {}), **metadata}
-            item.completed_at = datetime.now(timezone.utc) if status == "completed" else None
-        else:
-            max_order = await db.scalar(
-                select(func.max(AgentFocusItemModel.sort_order)).where(AgentFocusItemModel.agent_id == agent_id)
-            )
-            item = AgentFocusItemModel(
-                agent_id=agent_id,
-                key=item_key,
-                description=desc or item_key,
-                status=status,
-                kind=kind,
-                source=source or "user",
-                item_metadata=metadata or {},
-                sort_order=(max_order or 0) + 1,
-                completed_at=datetime.now(timezone.utc) if status == "completed" else None,
-            )
-            db.add(item)
+    )
+    item = result.scalar_one_or_none()
+    if item:
+        item.description = desc or item.description or item_key
+        item.status = status
+        item.kind = kind
+        item.source = source or item.source or "user"
+        if metadata:
+            item.item_metadata = {**(item.item_metadata or {}), **metadata}
+        item.completed_at = datetime.now(timezone.utc) if status == "completed" else None
+    else:
+        max_order = await db.scalar(
+            select(func.max(AgentFocusItemModel.sort_order)).where(AgentFocusItemModel.agent_id == agent_id)
+        )
+        item = AgentFocusItemModel(
+            agent_id=agent_id,
+            key=item_key,
+            description=desc or item_key,
+            status=status,
+            kind=kind,
+            source=source or "user",
+            item_metadata=metadata or {},
+            sort_order=(max_order or 0) + 1,
+            completed_at=datetime.now(timezone.utc) if status == "completed" else None,
+        )
+        db.add(item)
+    if should_commit:
         await db.commit()
         await db.refresh(item)
-        return _serialize_focus_item(item)
+    else:
+        await db.flush()
+    return _serialize_focus_item(item)
 
 
 async def ensure_focus_item(
@@ -330,6 +365,7 @@ async def ensure_focus_item(
     description: str,
     system: bool = False,
     source: str = "trigger",
+    db = None,
 ) -> str:
     item = await upsert_focus_item(
         agent_id,
@@ -338,6 +374,7 @@ async def ensure_focus_item(
         status="in_progress",
         kind="system" if system else "normal",
         source=source,
+        db=db,
     )
     return item["key"]
 
