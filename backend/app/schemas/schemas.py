@@ -112,6 +112,10 @@ class MultiTenantResponse(BaseModel):
     requires_tenant_selection: bool = True
     login_identifier: str
     tenants: list[TenantChoice]
+    # Opaque short-lived token used by OAuth flows (no password available for re-auth).
+    # When present, the client must POST to /auth/select-oauth-tenant instead of re-calling /auth/login.
+    pending_token: str | None = None
+
 
 
 class TenantSwitchRequest(BaseModel):
@@ -180,9 +184,12 @@ class OAuthAuthorizeResponse(BaseModel):
 
 
 class OAuthCallbackRequest(BaseModel):
-    code: str
+    code: str | None = None          # Step 1: initial OAuth code exchange
     state: str
     redirect_uri: str | None = None
+    # Step 2: tenant selection (no code needed)
+    tenant_id: str | None = None
+    pending_token: str | None = None
 
 
 class IdentityBindRequest(BaseModel):

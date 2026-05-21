@@ -908,6 +908,42 @@ async def list_providers(
     return [{"id": str(p.id), "provider_type": p.provider_type, "name": p.name, "is_active": p.is_active} for p in providers]
 
 
+# Redis keys for OAuth two-step tenant selection
+_OAUTH_PENDING_PREFIX = "oauth_pending:"
+_OAUTH_PENDING_TTL = 600  # 10 minutes
+
+
+async def _cache_oauth_pending(
+    pending_token: str,
+    provider_type: str,
+    user_info_dict: dict,
+    token_data: dict,
+) -> None:
+    """Store OAuth intermediate data in Redis for the two-step tenant-selection flow."""
+    import json
+    from app.core.events import get_redis
+    r = await get_redis()
+    payload = json.dumps({
+        "provider_type": provider_type,
+        "user_info": user_info_dict,
+        "token_data": token_data,
+    })
+    await r.set(f"{_OAUTH_PENDING_PREFIX}{pending_token}", payload, ex=_OAUTH_PENDING_TTL)
+
+
+async def _get_oauth_pending(pending_token: str) -> dict | None:
+    """Retrieve (and delete) cached OAuth data from Redis. Returns None if expired/missing."""
+    import json
+    from app.core.events import get_redis
+    r = await get_redis()
+    raw = await r.get(f"{_OAUTH_PENDING_PREFIX}{pending_token}")
+    if not raw:
+        return None
+    # Single-use: delete immediately after retrieval
+    await r.delete(f"{_OAUTH_PENDING_PREFIX}{pending_token}")
+    return json.loads(raw)
+
+
 @router.get("/{provider}/authorize", response_model=OAuthAuthorizeResponse)
 async def authorize(
     provider: str,
@@ -936,36 +972,75 @@ async def authorize(
     return OAuthAuthorizeResponse(authorization_url=auth_url)
 
 
-@router.post("/{provider}/callback", response_model=TokenResponse)
+@router.post("/{provider}/callback", response_model=Any)
 async def oauth_callback(
     provider: str,
     data: OAuthCallbackRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Handle OAuth callback and login/register user."""
+    """Handle OAuth callback — supports a two-step flow for multi-tenant selection.
+
+    Step 1 (code provided): exchange code with provider, detect multiple tenants,
+    cache user_info in Redis, return MultiTenantResponse with opaque pending_token.
+
+    Step 2 (pending_token + tenant_id provided): retrieve cached user_info from Redis,
+    call find_or_create_user with the chosen tenant_id, return TokenResponse.
+    """
+    import uuid as _uuid
+    from app.models.tenant import Tenant
     from app.services.auth_registry import auth_provider_registry
 
-    # Get provider
+    # ── Step 2: User has selected a tenant ───────────────────────────────────
+    if data.pending_token and data.tenant_id:
+        pending = await _get_oauth_pending(data.pending_token)
+        if not pending:
+            raise HTTPException(
+                status_code=400,
+                detail="OAuth session expired or invalid. Please sign in again.",
+            )
+
+        auth_provider = await auth_provider_registry.get_provider(db, pending["provider_type"])
+        if not auth_provider:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Provider '{pending['provider_type']}' not supported",
+            )
+
+        from app.services.auth_provider import ExternalUserInfo
+        user_info = ExternalUserInfo(**pending["user_info"])
+
+        user, _ = await auth_provider.find_or_create_user(db, user_info, tenant_id=data.tenant_id)
+        if not user:
+            raise HTTPException(status_code=500, detail="Failed to create user")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="Account is disabled")
+
+        jwt_token = create_access_token(str(user.id), user.role)
+        return TokenResponse(
+            access_token=jwt_token,
+            user=UserOut.model_validate(user),
+            needs_company_setup=user.tenant_id is None,
+        )
+
+    # ── Step 1: Exchange code, detect multi-tenant ────────────────────────────
+    if not data.code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+
     auth_provider = await auth_provider_registry.get_provider(db, provider)
     if not auth_provider:
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not supported")
 
     try:
-        # Exchange code for token
         token_data = await auth_provider.exchange_code_for_token(data.code, data.redirect_uri)
         access_token = token_data.get("access_token")
         if not access_token:
             raise HTTPException(status_code=400, detail="Failed to get access token from provider")
 
-        # Get user info
         user_info = await auth_provider.get_user_info(access_token)
-
-        # Find or create user
         user, is_new = await auth_provider.find_or_create_user(db, user_info)
 
         if not user:
             raise HTTPException(status_code=500, detail="Failed to create user")
-
         if not user.is_active:
             raise HTTPException(status_code=403, detail="Account is disabled")
 
@@ -975,9 +1050,56 @@ async def oauth_callback(
         logger.error(f"OAuth callback failed for {provider}: {e}")
         raise HTTPException(status_code=500, detail="OAuth authentication failed")
 
-    # Generate JWT token
-    jwt_token = create_access_token(str(user.id), user.role)
+    # Check if this identity has multiple tenant memberships
+    if user.identity_id:
+        all_users_result = await db.execute(
+            select(User).where(User.identity_id == user.identity_id)
+        )
+        all_users = list(all_users_result.scalars().all())
+        tenant_users = [u for u in all_users if u.tenant_id is not None]
 
+        if len(tenant_users) > 1:
+            # Cache the full user_info in Redis so Step 2 can reconstruct it
+            pending_token = _uuid.uuid4().hex
+            await _cache_oauth_pending(
+                pending_token,
+                provider,
+                {
+                    "provider_type": user_info.provider_type,
+                    "provider_union_id": user_info.provider_union_id,
+                    "provider_user_id": user_info.provider_user_id,
+                    "name": user_info.name,
+                    "email": user_info.email,
+                    "avatar_url": user_info.avatar_url,
+                    "mobile": user_info.mobile,
+                    "raw_data": user_info.raw_data,
+                },
+                token_data,
+            )
+
+            tenant_ids = [u.tenant_id for u in tenant_users]
+            tenants_result = await db.execute(select(Tenant).where(Tenant.id.in_(tenant_ids)))
+            tenants_map = {str(t.id): t for t in tenants_result.scalars().all()}
+
+            tenant_choices = [
+                TenantChoice(
+                    tenant_id=u.tenant_id,
+                    tenant_name=tenants_map[str(u.tenant_id)].name if str(u.tenant_id) in tenants_map else "Unknown",
+                    tenant_slug=tenants_map[str(u.tenant_id)].slug if str(u.tenant_id) in tenants_map else "",
+                    logo_url=tenants_map[str(u.tenant_id)].logo_url if str(u.tenant_id) in tenants_map else None,
+                )
+                for u in tenant_users
+            ]
+
+            return MultiTenantResponse(
+                requires_tenant_selection=True,
+                login_identifier=user_info.email or "",
+                tenants=tenant_choices,
+                pending_token=pending_token,
+            )
+
+    # Single tenant (or new user with no tenant yet) — issue token directly
+    jwt_token = create_access_token(str(user.id), user.role)
     return TokenResponse(
         access_token=jwt_token,
         user=UserOut.model_validate(user),

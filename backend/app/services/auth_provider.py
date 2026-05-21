@@ -801,7 +801,7 @@ class GoogleAuthProvider(BaseAuthProvider):
         return f"{self.GOOGLE_AUTHORIZE_URL}?{urlencode(params)}"
 
     async def exchange_code_for_token(self, code: str, redirect_uri: str | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, proxy=GOOGLE_HTTP_PROXY) as client:
             resp = await client.post(
                 self.GOOGLE_TOKEN_URL,
                 data={
@@ -819,7 +819,7 @@ class GoogleAuthProvider(BaseAuthProvider):
             return data
 
     async def get_user_info(self, access_token: str) -> ExternalUserInfo:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, proxy=GOOGLE_HTTP_PROXY) as client:
             resp = await client.get(
                 self.GOOGLE_USER_INFO_URL,
                 headers={"Authorization": f"Bearer {access_token}"},
