@@ -16,6 +16,36 @@ SYNC_IS_DEFAULT_TOOL_NAMES = {
     "jina_search",
     "jina_read",
     "update_objective",
+    # AgentBay tools should NOT be is_default=True. Older seeder versions may
+    # have set them to True; include them here so the seeder corrects the DB.
+    "agentbay_browser_navigate",
+    "agentbay_browser_screenshot",
+    "agentbay_browser_save_screenshot",
+    "agentbay_browser_click",
+    "agentbay_browser_type",
+    "agentbay_browser_extract",
+    "agentbay_browser_observe",
+    "agentbay_browser_login",
+    "agentbay_code_execute",
+    "agentbay_code_write_file",
+    "agentbay_code_read_file",
+    "agentbay_code_edit_file",
+    "agentbay_command_exec",
+    "agentbay_computer_screenshot",
+    "agentbay_computer_save_screenshot",
+    "agentbay_computer_click",
+    "agentbay_computer_precision_screenshot",
+    "agentbay_computer_input_text",
+    "agentbay_computer_press_keys",
+    "agentbay_computer_scroll",
+    "agentbay_computer_move_mouse",
+    "agentbay_computer_drag_mouse",
+    "agentbay_computer_get_installed_apps",
+    "agentbay_computer_start_app",
+    "agentbay_computer_list_windows",
+    "agentbay_computer_close_window",
+    "agentbay_computer_dismiss_dialog",
+    "agentbay_file_transfer",
 }
 
 LEGACY_IMAGE_TOOL_MODEL_DEFAULTS = {
@@ -931,7 +961,7 @@ BUILTIN_TOOLS = [
                     "type": "number",
                     "default": 30,
                     "min": 5,
-                    "max": 300,
+                    "max": 3600,
                 },
                 {
                     "key": "max_timeout",
@@ -939,7 +969,7 @@ BUILTIN_TOOLS = [
                     "type": "number",
                     "default": 60,
                     "min": 10,
-                    "max": 300,
+                    "max": 3600,
                 },
             ]
         },
@@ -982,7 +1012,7 @@ BUILTIN_TOOLS = [
                     "type": "number",
                     "default": 30,
                     "min": 5,
-                    "max": 300,
+                    "max": 3600,
                 },
                 {
                     "key": "max_timeout",
@@ -990,7 +1020,7 @@ BUILTIN_TOOLS = [
                     "type": "number",
                     "default": 60,
                     "min": 10,
-                    "max": 300,
+                    "max": 3600,
                 },
             ]
         },

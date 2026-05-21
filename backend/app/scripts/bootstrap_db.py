@@ -42,8 +42,21 @@ PATCHES = [
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_calls_today INTEGER DEFAULT 0",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS max_llm_calls_per_day INTEGER DEFAULT 1000",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_calls_reset_at TIMESTAMPTZ",
+    "ALTER TABLE tools ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'builtin'",
+    "ALTER TABLE tools ADD COLUMN IF NOT EXISTS tenant_id UUID",
     "ALTER TABLE agent_tools ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'system'",
     "ALTER TABLE agent_tools ADD COLUMN IF NOT EXISTS installed_by_agent_id UUID",
+    "UPDATE tools SET source = 'builtin' WHERE type = 'builtin'",
+    "UPDATE tools SET source = 'admin' WHERE type = 'mcp' AND category = 'custom' AND tenant_id IS NOT NULL",
+    "UPDATE tools SET source = 'agent' WHERE type = 'mcp' AND source = 'builtin'",
+    """
+    UPDATE agent_tools
+    SET source = 'user_installed'
+    WHERE source = 'system'
+      AND tool_id IN (
+          SELECT id FROM tools WHERE source = 'agent'
+      )
+    """,
     "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS source_channel VARCHAR(20) NOT NULL DEFAULT 'web'",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_daily_reset TIMESTAMPTZ",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_monthly_reset TIMESTAMPTZ",

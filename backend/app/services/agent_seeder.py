@@ -616,6 +616,7 @@ async def _seed_okr_triggers(db, agent_id: uuid.UUID) -> None:
         focus_ref="system:okr_reports",
         description="OKR 自动汇总、日报收集与周期报告",
         system=True,
+        db=db,
     )
 
     triggers_to_create = [

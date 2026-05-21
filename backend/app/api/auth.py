@@ -834,7 +834,19 @@ async def switch_tenant(
     # 4. Determine redirect URL
     # Determine redirect URL (Priority: sso_domain > ENV > Request > Fallback)
     from app.services.platform_service import platform_service
-    redirect_url = await platform_service.get_tenant_sso_base_url(db, tenant, request)
+    from app.models.system_settings import SystemSetting
+    
+    # Check if custom domain SSO redirect is enabled globally
+    setting_result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "sso_custom_domain_redirect_enabled")
+    )
+    setting_s = setting_result.scalar_one_or_none()
+    sso_redirect_enabled = setting_s.value.get("enabled", True) if setting_s else True
+
+    if not sso_redirect_enabled:
+        redirect_url = None
+    else:
+        redirect_url = await platform_service.get_tenant_sso_base_url(db, tenant, request)
 
 
     # Include token in redirect URL for cross-domain switching if needed

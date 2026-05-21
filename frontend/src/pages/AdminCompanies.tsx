@@ -459,11 +459,12 @@ function PlatformTab() {
                 }}>{toast.msg}</div>
             )}
 
-            {/* Allow self-create company toggle */}
+            {/* Allow self-create company and SSO redirect toggle */}
             <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {[
                         { key: 'allow_self_create_company', label: t('admin.allowSelfCreate', 'Allow users to create their own companies'), desc: t('admin.allowSelfCreateDesc', 'When disabled, only platform admins can create companies.') },
+                        { key: 'sso_custom_domain_redirect_enabled', label: t('admin.ssoCustomDomainRedirect', 'Enable tenant SSO custom domain redirect'), desc: t('admin.ssoCustomDomainRedirectDesc', 'When disabled, all tenants will be blocked from using custom domains or dedicated links to redirect to SSO providers.') },
                     ].map(s => (
                         <div key={s.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
                             <div>

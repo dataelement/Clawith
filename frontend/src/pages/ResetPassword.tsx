@@ -70,7 +70,7 @@ export default function ResetPassword() {
                     )}
 
                     {success && (
-                        <div className="login-error" style={{ background: 'rgba(34,197,94,0.14)', borderColor: 'rgba(34,197,94,0.35)', color: '#dcfce7' }}>
+                        <div className="login-error" style={{ background: 'var(--success-subtle)', borderColor: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' }}>
                             <span><IconCheck size={14} stroke={1.8} /></span> {t('auth.resetPasswordSuccess', 'Password updated. Redirecting to login...')}
                         </div>
                     )}
