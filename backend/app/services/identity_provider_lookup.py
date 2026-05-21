@@ -8,11 +8,11 @@ from loguru import logger
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.identity import IdentityProvider
+from app.models.identity import AuthProviderType, IdentityProvider
 
 
 def build_identity_provider_query(
-    provider_type: str,
+    provider_type: AuthProviderType | str,
     tenant_id: str | None = None,
     *,
     is_active: bool | None = None,
@@ -35,7 +35,7 @@ def build_identity_provider_query(
 def choose_preferred_identity_provider(
     providers: Iterable[IdentityProvider],
     *,
-    provider_type: str,
+    provider_type: AuthProviderType | str,
     tenant_id: str | None = None,
 ) -> IdentityProvider | None:
     """Pick the preferred provider and warn when duplicates are present."""
@@ -55,7 +55,7 @@ def choose_preferred_identity_provider(
 
 async def get_preferred_identity_provider(
     db: AsyncSession,
-    provider_type: str,
+    provider_type: AuthProviderType | str,
     tenant_id: str | None = None,
     *,
     is_active: bool | None = None,
@@ -64,8 +64,21 @@ async def get_preferred_identity_provider(
     result = await db.execute(
         build_identity_provider_query(provider_type, tenant_id, is_active=is_active)
     )
-    return choose_preferred_identity_provider(
+    provider = choose_preferred_identity_provider(
         result.scalars().all(),
         provider_type=provider_type,
         tenant_id=tenant_id,
     )
+    
+    # Fallback to global provider if tenant-scoped provider is not found and a tenant_id was specified
+    if not provider and tenant_id is not None:
+        result = await db.execute(
+            build_identity_provider_query(provider_type, None, is_active=is_active)
+        )
+        provider = choose_preferred_identity_provider(
+            result.scalars().all(),
+            provider_type=provider_type,
+            tenant_id=None,
+        )
+        
+    return provider

@@ -10,11 +10,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.permissions import build_visible_agents_query, check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission, AgentTemplate
+from app.models.org import OrgMember
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.user import User
@@ -146,7 +148,7 @@ async def _build_unread_count_by_agent(
         .where(
             ChatSession.agent_id.in_(agent_ids),
             ChatSession.user_id == current_user.id,
-            ChatSession.is_group == False,
+            ChatSession.is_group.is_(False),
             ChatSession.source_channel.notin_(["agent", "trigger"]),
             ChatMessage.role.in_(["assistant", "system", "tool_call"]),
             ChatMessage.created_at > func.coalesce(
@@ -732,32 +734,76 @@ async def get_agent_permission_candidates(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return platform users that can be granted custom access."""
+    """Return org members that can be granted custom access.
+
+    For members without a linked platform account (user_id is None), we call
+    get_platform_user_by_org_member which will find-or-create a User using the
+    member's email/phone, then link it back to the OrgMember row.
+    """
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only manager can change permissions")
 
-    user_query = select(User).where(User.tenant_id == agent.tenant_id, User.is_active == True)
+    member_query = select(OrgMember).where(
+        OrgMember.tenant_id == agent.tenant_id,
+        OrgMember.status == "active",
+    )
     if search:
         pattern = f"%{search}%"
-        user_query = user_query.where(
-            (User.username.ilike(pattern)) |
-            (User.display_name.ilike(pattern)) |
-            (User.email.ilike(pattern))
+        member_query = member_query.where(
+            OrgMember.name.ilike(pattern) |
+            OrgMember.email.ilike(pattern) |
+            OrgMember.name_translit_full.ilike(pattern) |
+            OrgMember.name_translit_initial.ilike(pattern)
         )
 
-    users_result = await db.execute(user_query.order_by(User.created_at.asc()).limit(50))
-    users = users_result.scalars().all()
+    members_result = await db.execute(member_query.order_by(OrgMember.name.asc()).limit(50))
+    members = members_result.scalars().all()
+
+    # For members already linked, batch-load User rows for display info.
+    linked_user_ids = [m.user_id for m in members if m.user_id]
+    users_by_id: dict[uuid.UUID, User] = {}
+    if linked_user_ids:
+        users_result = await db.execute(
+            select(User)
+            .where(User.id.in_(linked_user_ids), User.tenant_id == agent.tenant_id)
+            .options(selectinload(User.identity))
+        )
+        users_by_id = {u.id: u for u in users_result.scalars().all()}
+
+    from app.services.channel_user_service import get_platform_user_by_org_member
+
+    candidates = []
+    for m in members:
+        if m.user_id:
+            u = users_by_id.get(m.user_id)
+        else:
+            # No platform account yet — find-or-create one from OrgMember info
+            # and link it back so future lookups hit Case 1.
+            try:
+                u = await get_platform_user_by_org_member(
+                    db, m, agent_tenant_id=agent.tenant_id
+                )
+            except Exception:
+                # If user creation fails for any reason, skip this member
+                continue
+
+        if u is None:
+            continue
+
+        candidates.append({
+            "id": str(u.id),  # always a valid User.id
+            "name": m.name,
+            "username": u.username if u else None,
+            "email": m.email or (u.email if u else None),
+            "title": m.title or None,
+            "avatar_url": m.avatar_url or None,
+        })
+
+    await db.commit()
+
     return {
-        "users": [
-            {
-                "id": str(u.id),
-                "name": u.display_name or u.username,
-                "username": u.username,
-                "email": u.email,
-            }
-            for u in users
-        ],
+        "users": candidates,
         "agents": [],
     }
 
