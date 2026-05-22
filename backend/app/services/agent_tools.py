@@ -2981,7 +2981,7 @@ async def execute_tool(
                 agent_id,
                 _agent_tenant_id,
                 lambda temp_ws: _convert_csv_to_xlsx(agent_id, temp_ws, arguments),
-                paths=_non_empty_paths(arguments.get("source_path", "")),
+                paths=_non_empty_paths(arguments.get("source_path", ""), arguments.get("target_path", "")),
                 sync_back=True,
             )
         elif tool_name == "convert_html_to_pdf":
@@ -2989,7 +2989,7 @@ async def execute_tool(
                 agent_id,
                 _agent_tenant_id,
                 lambda temp_ws: _convert_html_to_pdf(agent_id, temp_ws, arguments),
-                paths=_non_empty_paths(arguments.get("source_path", "")),
+                paths=_non_empty_paths(arguments.get("source_path", ""), arguments.get("target_path", "")),
                 sync_back=True,
             )
         elif tool_name == "convert_html_to_pptx":
@@ -2997,7 +2997,7 @@ async def execute_tool(
                 agent_id,
                 _agent_tenant_id,
                 lambda temp_ws: _convert_html_to_pptx(agent_id, temp_ws, arguments),
-                paths=_non_empty_paths(arguments.get("source_path", "")),
+                paths=_non_empty_paths(arguments.get("source_path", ""), arguments.get("target_path", "")),
                 sync_back=True,
             )
         elif tool_name == "convert_markdown_to_docx":
@@ -3005,7 +3005,7 @@ async def execute_tool(
                 agent_id,
                 _agent_tenant_id,
                 lambda temp_ws: _convert_markdown_to_docx(agent_id, temp_ws, arguments),
-                paths=_non_empty_paths(arguments.get("source_path", "")),
+                paths=_non_empty_paths(arguments.get("source_path", ""), arguments.get("target_path", "")),
                 sync_back=True,
             )
         elif tool_name == "convert_markdown_to_pdf":
@@ -3013,7 +3013,7 @@ async def execute_tool(
                 agent_id,
                 _agent_tenant_id,
                 lambda temp_ws: _convert_markdown_to_pdf(agent_id, temp_ws, arguments),
-                paths=_non_empty_paths(arguments.get("source_path", "")),
+                paths=_non_empty_paths(arguments.get("source_path", ""), arguments.get("target_path", "")),
                 sync_back=True,
             )
         elif tool_name == "search_files":
