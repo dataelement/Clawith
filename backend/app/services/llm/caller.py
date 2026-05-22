@@ -23,7 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import async_session
-from app.services.agent_tools import AGENT_TOOLS, execute_tool, get_agent_tools_for_llm
+
+# NOTE: agent_tools imports are deferred to function bodies to avoid circular
+# import: agent_tools → llm.finish → llm/__init__ → caller → agent_tools
 from app.services.token_tracker import (
     TokenUsage,
     record_token_usage,
@@ -339,6 +341,7 @@ async def _process_tool_call(
             pass
 
     # Execute tool — pass on_output for execute_code streaming
+    from app.services.agent_tools import execute_tool
     _on_output = on_code_output if tool_name in ("execute_code", "execute_code_e2b") else None
     result = await execute_tool(
         tool_name, args,
@@ -429,6 +432,7 @@ async def call_llm(
     if skip_tools:
         tools_for_llm = [FINISH_TOOL_DEFINITION]
     else:
+        from app.services.agent_tools import AGENT_TOOLS, get_agent_tools_for_llm
         tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
     allowed_tool_names = _allowed_tool_names(tools_for_llm)
 
@@ -836,6 +840,7 @@ async def call_agent_llm_with_tools(
     ]
 
     # Load tools
+    from app.services.agent_tools import get_agent_tools_for_llm
     tools_for_llm = await get_agent_tools_for_llm(agent_id)
     allowed_tool_names = _allowed_tool_names(tools_for_llm)
 
@@ -930,6 +935,7 @@ async def call_agent_llm_with_tools(
                         logger.warning(f"[call_agent_llm_with_tools] Blocked disabled tool call: {tool_name} agent_id={agent_id}")
                         result = _tool_not_enabled_message(tool_name)
                     else:
+                        from app.services.agent_tools import execute_tool
                         result = await execute_tool(
                             tool_name, args,
                             agent_id=agent_id,
