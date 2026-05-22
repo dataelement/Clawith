@@ -47,4 +47,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("tenant_settings")
+    # This backfill revision may attach to legacy installs that already created
+    # tenant_settings outside Alembic history. Keep rollback non-destructive.
+    return None
