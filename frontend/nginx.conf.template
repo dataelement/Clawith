@@ -52,6 +52,19 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
 
+    # MinIO S3 proxy
+    location /minio/ {
+        set $minio_upstream http://${MINIO_UPSTREAM:-minio:9000};
+        proxy_pass $minio_upstream/;
+        proxy_set_header Host ${MINIO_UPSTREAM:-minio:9000};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Disable buffering and allow large files
+        proxy_buffering off;
+        client_max_body_size 0;
+    }
+
     # WebSocket proxy
     location /ws/ {
         proxy_pass $api_upstream;

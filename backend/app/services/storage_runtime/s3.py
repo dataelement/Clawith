@@ -291,12 +291,20 @@ class S3StorageBackend(StorageBackend):
         if filename:
             disposition = "inline" if inline else "attachment"
             params["ResponseContentDisposition"] = f'{disposition}; filename="{filename}"'
-        return await asyncio.to_thread(
+        url = await asyncio.to_thread(
             client.generate_presigned_url,
             "get_object",
             Params=params,
             ExpiresIn=self.presign_ttl_seconds,
         )
+        if url and self.endpoint_url:
+            from urllib.parse import urlparse, urlunparse
+            parsed_url = urlparse(url)
+            parsed_endpoint = urlparse(self.endpoint_url)
+            if parsed_url.netloc == parsed_endpoint.netloc:
+                new_path = "/minio" + parsed_url.path
+                url = urlunparse(("", "", new_path, parsed_url.params, parsed_url.query, parsed_url.fragment))
+        return url
 
 
 def _strip_prefix(raw_key: str, prefix: str) -> str:
