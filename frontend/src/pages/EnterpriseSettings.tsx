@@ -8,6 +8,7 @@ import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import UserManagement from './UserManagement';
 import InvitationCodes from './InvitationCodes';
+import OkrTab from './enterprise-settings/tabs/OkrTab';
 import SkillsTab from './enterprise-settings/tabs/SkillsTab';
 import {
     getDepartmentTotalMembers,
@@ -529,7 +530,13 @@ function BroadcastSection() {
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
     const qc = useQueryClient();
-    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users' | 'invites'>('info');
+    type EnterpriseTab = 'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'okr' | 'quotas' | 'users' | 'invites';
+    const ENTERPRISE_TABS = ['info', 'llm', 'tools', 'skills', 'okr', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit'] as const;
+    const getInitialTab = (): EnterpriseTab => {
+        const hashTab = typeof window !== 'undefined' ? window.location.hash.replace('#', '') : '';
+        return ENTERPRISE_TABS.includes(hashTab as EnterpriseTab) ? (hashTab as EnterpriseTab) : 'info';
+    };
+    const [activeTab, setActiveTab] = useState<EnterpriseTab>(getInitialTab);
 
     // Track selected tenant as state so page refreshes on company switch
     const [selectedTenantId, setSelectedTenantId] = useState(localStorage.getItem('current_tenant_id') || '');
@@ -541,6 +548,13 @@ export default function EnterpriseSettings() {
         };
         window.addEventListener('storage', handler);
         return () => window.removeEventListener('storage', handler);
+    }, []);
+
+    useEffect(() => {
+        const syncFromHash = () => setActiveTab(getInitialTab());
+        window.addEventListener('hashchange', syncFromHash);
+        syncFromHash();
+        return () => window.removeEventListener('hashchange', syncFromHash);
     }, []);
 
     // Tenant quota defaults
@@ -774,12 +788,14 @@ export default function EnterpriseSettings() {
                 </div>
 
                 <div className="tabs">
-                    {(['info', 'llm', 'tools', 'skills', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit'] as const).map(tab => (
+                    {ENTERPRISE_TABS.map(tab => (
                         <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
                             {tab === 'quotas' ? t('enterprise.tabs.quotas', 'Quotas') : tab === 'users' ? t('enterprise.tabs.users', 'Users') : tab === 'invites' ? t('enterprise.tabs.invites', 'Invitations') : t(`enterprise.tabs.${tab}`)}
                         </div>
                     ))}
                 </div>
+
+                {activeTab === 'okr' && <OkrTab tenantId={selectedTenantId} t={t} />}
 
                 {/* ── LLM Model Pool ── */}
                 {activeTab === 'llm' && (
