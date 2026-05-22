@@ -101,12 +101,14 @@ async def test_list_tools_query_keeps_builtin_tools_when_tenant_is_selected():
 
 
 @pytest.mark.asyncio
-async def test_clean_orphaned_mcp_tools_only_targets_global_records(monkeypatch):
+async def test_clean_orphaned_mcp_tools_only_targets_global_agent_records(monkeypatch):
     db = RecordingDB([DummyResult([]), DummyResult(rowcount=0)])
     monkeypatch.setattr(tool_seeder, "async_session", FakeSessionFactory(db))
 
     await tool_seeder.clean_orphaned_mcp_tools()
 
     sql = db.statements[1]
+    assert "tools.type =" in sql
+    assert "tools.source =" in sql
     assert "tools.tenant_id IS NULL" in sql
     assert db.committed is True

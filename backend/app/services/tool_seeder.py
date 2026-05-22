@@ -3684,11 +3684,13 @@ async def clean_orphaned_mcp_tools():
         all_assigned_r = await db.execute(select(AgentTool.tool_id).distinct())
         assigned_ids = [row[0] for row in all_assigned_r.fetchall()]
         
-        # 2. Delete MCP tools that have NO tenant_id AND are NOT in the assigned list
-        # tenant_id == None ensures we don't delete Global Tools manually added by company admins
+        # 2. Delete only agent-installed global MCP tools that are no longer assigned.
+        # Admin-seeded global MCP tools (for example Atlassian Rovo) intentionally stay unassigned
+        # until a user links them to an agent, so they must not be removed here.
         stmt = delete(Tool).where(
             and_(
                 Tool.type == "mcp",
+                Tool.source == "agent",
                 Tool.tenant_id.is_(None),
                 ~Tool.id.in_(assigned_ids) if assigned_ids else True
             )
