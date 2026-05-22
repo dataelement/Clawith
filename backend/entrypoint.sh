@@ -57,8 +57,5 @@ else
     echo "[entrypoint] Step 1: Skipping alembic for PROCESS_ROLE=${PROCESS_ROLE}"
 fi
 
-echo "[entrypoint] Step 1.5: Checking runtime dependencies..."
-python scripts/check-runtime-deps.py
-
 echo "[entrypoint] Step 2: Starting uvicorn..."
 exec /bin/bash -lc "$START_COMMAND"
