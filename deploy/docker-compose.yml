@@ -87,6 +87,7 @@ services:
     environment:
       VITE_API_URL: http://localhost:8000
       API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
+      MINIO_UPSTREAM: ${MINIO_UPSTREAM:-minio:9000}
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
     networks:

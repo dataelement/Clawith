@@ -951,9 +951,17 @@ async def push_default_skills_to_existing_agents():
 
         pushed = 0
         updated = 0
+        removed_legacy = 0
         storage = get_storage_backend()
         for agent in agents:
             agent_prefix = agent_manager._agent_storage_prefix(agent.id)
+            legacy_key = f"{agent_prefix}/skills/MCP_INSTALLER.md"
+            if await storage.is_file(legacy_key):
+                try:
+                    await storage.delete(legacy_key)
+                    removed_legacy += 1
+                except Exception as exc:
+                    logger.warning(f"[SkillSeeder] Failed to remove legacy MCP_INSTALLER.md for agent {agent.id}: {exc}")
             for skill in default_skills:
                 if not skill.files:
                     continue

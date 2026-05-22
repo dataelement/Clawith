@@ -5,7 +5,7 @@ server {
     index index.html;
 
     resolver 127.0.0.11 ipv6=off valid=30s;
-    set $api_upstream http://${API_UPSTREAM:-backend:8000};
+    set $api_upstream http://${API_UPSTREAM};
 
     # Allow large file uploads (up to 100MB)
     client_max_body_size 500m;
@@ -54,9 +54,9 @@ server {
 
     # MinIO S3 proxy
     location /minio/ {
-        set $minio_upstream http://${MINIO_UPSTREAM:-minio:9000};
+        set $minio_upstream http://${MINIO_UPSTREAM};
         proxy_pass $minio_upstream/;
-        proxy_set_header Host ${MINIO_UPSTREAM:-minio:9000};
+        proxy_set_header Host ${MINIO_UPSTREAM};
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
 
