@@ -9,6 +9,11 @@ import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS }
 import UserManagement from './UserManagement';
 import InvitationCodes from './InvitationCodes';
 import SkillsTab from './enterprise-settings/tabs/SkillsTab';
+import {
+    getDepartmentTotalMembers,
+    normalizeDepartmentItems,
+    normalizeMembersResponse,
+} from './enterprise-settings/utils/orgData';
 
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -115,11 +120,14 @@ function OrgTab() {
     }, [config]);
 
     const currentTenantId = localStorage.getItem('current_tenant_id') || '';
-    const { data: departments = [] } = useQuery({
+    const { data: departmentsResponse } = useQuery({
         queryKey: ['org-departments', currentTenantId],
-        queryFn: () => fetchJson<any[]>(`/enterprise/org/departments${currentTenantId ? `?tenant_id=${currentTenantId}` : ''}`),
+        queryFn: () => fetchJson<any>(`/enterprise/org/departments${currentTenantId ? `?tenant_id=${currentTenantId}` : ''}`),
     });
-    const { data: members = [] } = useQuery({
+    const departments = normalizeDepartmentItems<any>(departmentsResponse);
+    const totalMembers = getDepartmentTotalMembers(departmentsResponse);
+
+    const { data: membersResponse } = useQuery({
         queryKey: ['org-members', selectedDept, memberSearch, currentTenantId],
         queryFn: () => {
             const params = new URLSearchParams();
@@ -129,6 +137,7 @@ function OrgTab() {
             return fetchJson<any[]>(`/enterprise/org/members?${params}`);
         },
     });
+    const members = normalizeMembersResponse<any>(membersResponse);
 
     const saveConfig = async () => {
         await fetchJson('/enterprise/system-settings/feishu_org_sync', {
@@ -199,6 +208,9 @@ function OrgTab() {
                             onClick={() => setSelectedDept(null)}
                         >
                             {t('common.all')}
+                            {typeof totalMembers === 'number' && totalMembers > 0 && (
+                                <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: '4px' }}>({totalMembers})</span>
+                            )}
                         </div>
                         <DeptTree departments={departments} parentId={null} selectedDept={selectedDept} onSelect={setSelectedDept} level={0} />
                         {departments.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px' }}>{t('common.noData')}</div>}
