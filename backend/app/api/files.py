@@ -570,6 +570,12 @@ async def download_file(
     key, _ = _visible_storage_key(agent_id, path, user.tenant_id)
     if not await storage.exists(key) or not await storage.is_file(key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    presigned = await storage.presign_download_url(key, filename=Path(path).name, inline=inline)
+    if presigned:
+        return Response(
+            status_code=302,
+            headers={"Location": presigned},
+        )
     local_path = await storage.local_path_for(key)
     if local_path is not None:
         return FileResponse(
