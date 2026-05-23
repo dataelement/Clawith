@@ -51,6 +51,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
     const [visibility, setVisibility] = useState<Visibility>('only_me');
     const [modelId, setModelId] = useState('');
     const [createdExternal, setCreatedExternal] = useState<CreatedAgent | null>(null);
+    const [fieldError, setFieldError] = useState('');
 
     const { data: myTenant } = useQuery({
         queryKey: ['tenant', 'me'],
@@ -115,6 +116,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
             setVisibility('only_me');
             setModelId('');
             setCreatedExternal(null);
+            setFieldError('');
         }
     }, [open, initialMode]);
 
@@ -132,7 +134,14 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
         mutationFn: async ({ chatNow }: { chatNow: boolean }) => {
             const trimmedName = name.trim();
             if (!trimmedName) {
-                throw new Error(t('customAgentModal.nameRequired', isChinese ? '请填写名称' : 'Name is required'));
+                const error = new Error(t('customAgentModal.nameRequired', isChinese ? '请填写名称' : 'Name is required')) as any;
+                error.localValidation = true;
+                throw error;
+            }
+            if (trimmedName.length < 2) {
+                const error = new Error(t('customAgentModal.nameTooShort', isChinese ? '名称至少需要 2 个字符' : 'Name must be at least 2 characters')) as any;
+                error.localValidation = true;
+                throw error;
             }
             if (mode === 'native' && enabledModels.length === 0) {
                 throw new Error(
@@ -177,6 +186,10 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
             if (chatNow) navigate(`/agents/${agent.id}#chat`);
         },
         onError: async (err: any) => {
+            if (err?.localValidation) {
+                setFieldError(String(err.message || ''));
+                return;
+            }
             await dialog.alert(isChinese ? '创建失败' : 'Creation failed', {
                 type: 'error',
                 details: String(err?.message || err),
@@ -187,6 +200,12 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
     if (!open) return null;
 
     const busy = createAgent.isPending;
+    const trimmedNameLength = name.trim().length;
+    const nameLengthError = trimmedNameLength > 0 && trimmedNameLength < 2
+        ? t('customAgentModal.nameTooShort', isChinese ? '名称至少需要 2 个字符' : 'Name must be at least 2 characters')
+        : '';
+    const displayedFieldError = fieldError || nameLengthError;
+    const nameInvalid = trimmedNameLength < 2;
     const setupInstruction = createdExternal?.api_key
         ? buildOpenClawInstruction(createdExternal.api_key)
         : '';
@@ -281,7 +300,10 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                                     <input
                                         className="form-input"
                                         value={name}
-                                        onChange={(e) => setName(e.target.value)}
+                                        onChange={(e) => {
+                                            setName(e.target.value);
+                                            if (fieldError) setFieldError('');
+                                        }}
                                         maxLength={100}
                                         placeholder={mode === 'native'
                                             ? t('customAgentModal.namePlaceholderNative', isChinese ? '例如：客户研究员' : 'e.g. Customer researcher')
@@ -290,6 +312,11 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                                         autoFocus
                                         style={{ width: '100%' }}
                                     />
+                                    {displayedFieldError ? (
+                                        <span style={{ fontSize: '12px', color: 'var(--error)', lineHeight: 1.4 }}>
+                                            {displayedFieldError}
+                                        </span>
+                                    ) : null}
                                 </Field>
 
                                 <Field label={t('customAgentModal.role', isChinese ? '角色描述' : 'Role')}>
@@ -374,7 +401,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                                     >
                                         <button
                                             className="btn btn-secondary"
-                                            disabled={busy || nativeHasNoModel}
+                                            disabled={busy || nativeHasNoModel || nameInvalid}
                                             style={{ pointerEvents: nativeHasNoModel ? 'none' : undefined }}
                                             onClick={() => createAgent.mutate({ chatNow: false })}
                                         >
@@ -387,7 +414,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                                     >
                                         <button
                                             className="btn btn-primary"
-                                            disabled={busy || nativeHasNoModel}
+                                            disabled={busy || nativeHasNoModel || nameInvalid}
                                             style={{ pointerEvents: nativeHasNoModel ? 'none' : undefined }}
                                             onClick={() => createAgent.mutate({ chatNow: true })}
                                         >
@@ -398,7 +425,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                             ) : (
                                 <button
                                     className="btn btn-primary"
-                                    disabled={busy}
+                                    disabled={busy || nameInvalid}
                                     onClick={() => createAgent.mutate({ chatNow: false })}
                                 >
                                     {busy ? t('customAgentModal.creating', isChinese ? '创建中...' : 'Creating...') : t('customAgentModal.createConnection', isChinese ? '创建连接' : 'Create connection')}

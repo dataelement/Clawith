@@ -52,7 +52,13 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
                 .map((e: any) => {
                     const field = e.loc?.slice(-1)[0] || '';
                     const label = fieldLabels[field] || field;
-                    return label ? `${label}: ${e.msg}` : e.msg;
+                    let msg = e.msg || '';
+                    if (typeof msg === 'string' && msg.includes('String should have at least') && e.ctx?.min_length) {
+                        msg = `至少需要 ${e.ctx.min_length} 个字符`;
+                    } else if (typeof msg === 'string' && msg.includes('String should have at most') && e.ctx?.max_length) {
+                        msg = `不能超过 ${e.ctx.max_length} 个字符`;
+                    }
+                    return label ? `${label}: ${msg}` : msg;
                 })
                 .join('; ');
         } else if (typeof error.detail === 'object' && error.detail !== null) {
