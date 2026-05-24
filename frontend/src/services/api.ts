@@ -373,6 +373,7 @@ export type FocusApiItem = {
     id: string;
     agent_id: string;
     key: string;
+    title?: string | null;
     description: string;
     status: 'in_progress' | 'completed';
     kind: 'normal' | 'system';
@@ -389,7 +390,7 @@ export const focusApi = {
     list: (agentId: string, includeCompleted = true) =>
         request<FocusApiItem[]>(`/agents/${agentId}/focus/?include_completed=${includeCompleted ? 'true' : 'false'}`),
 
-    upsert: (agentId: string, data: { key?: string; description: string; status?: string; kind?: string; source?: string; metadata?: Record<string, any> }) =>
+    upsert: (agentId: string, data: { key?: string; title?: string | null; description: string; status?: string; kind?: string; source?: string; metadata?: Record<string, any> }) =>
         request<FocusApiItem>(`/agents/${agentId}/focus/`, { method: 'POST', body: JSON.stringify(data) }),
 
     complete: (agentId: string, key: string) =>

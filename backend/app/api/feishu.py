@@ -4,6 +4,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from loguru import logger
@@ -18,6 +19,7 @@ from app.models.user import User
 from app.models.identity import IdentityProvider
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.feishu_service import feishu_service
+from app.services.storage import agent_upload_key, get_storage_backend, store_agent_upload
 
 router = APIRouter(tags=["feishu"])
 
@@ -33,6 +35,21 @@ _USER_RESOLUTION_ERROR_TIP = (
     "抱歉，我暂时无法稳定识别你的飞书账号，已停止本次处理以避免重复创建账号。"
     "请稍后重试，或联系管理员检查飞书 Contact API 权限。"
 )
+
+
+def _storage_mtime(entry) -> float:
+    raw = str(getattr(entry, "modified_at", "") or "")
+    if not raw:
+        return 0.0
+    try:
+        return float(raw)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
+
+
 def _build_card(
     answer_text: str,
     thinking_text: str = "",
@@ -566,20 +583,18 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             if _post_image_keys:
                 import base64 as _b64
                 _msg_id = message.get("message_id", "")
-                from pathlib import Path as _PostPath
-                from app.config import get_settings as _post_gs
-                _post_settings = _post_gs()
-                _upload_dir = _PostPath(_post_settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
-                _upload_dir.mkdir(parents=True, exist_ok=True)
                 for _ik in _post_image_keys:
                     try:
                         _img_bytes = await feishu_service.download_message_resource(
                             config.app_id, config.app_secret, _msg_id, _ik, "image"
                         )
-                        # Save to workspace
-                        _save_path = _upload_dir / f"image_{_ik[-8:]}.jpg"
-                        _save_path.write_bytes(_img_bytes)
-                        logger.info(f"[Feishu] Saved post image to {_save_path} ({len(_img_bytes)} bytes)")
+                        _, _workspace_path, _save_path = await store_agent_upload(
+                            agent_id,
+                            f"image_{_ik[-8:]}.jpg",
+                            _img_bytes,
+                            content_type="image/jpeg",
+                        )
+                        logger.info(f"[Feishu] Saved post image to {_workspace_path} ({len(_img_bytes)} bytes)")
                         # Embed as base64 marker for vision models
                         _b64_data = _b64.b64encode(_img_bytes).decode("ascii")
                         _image_markers.append(f"[image_data:data:image/jpeg;base64,{_b64_data}]")
@@ -817,21 +832,22 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             # to disk always succeeds even if the DB transaction fails.
             try:
                 import time as _time
-                import pathlib as _pl
-                from app.config import get_settings as _gs
-                _upload_dir = _pl.Path(_gs().AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
+                _storage = get_storage_backend()
+                _upload_key = agent_upload_key(agent_id, "placeholder").rsplit("/", 1)[0]
                 _recent_file_path = None
-                if _upload_dir.exists() and "uploads/" not in user_text and "workspace/" not in user_text:
+                if "uploads/" not in user_text and "workspace/" not in user_text:
                     _now = _time.time()
-                    _candidates = sorted(
-                        _upload_dir.iterdir(),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
-                    )
-                    for _fp in _candidates:
-                        if _fp.is_file() and (_now - _fp.stat().st_mtime) < 1800:  # 30 min
-                            _recent_file_path = f"uploads/{_fp.name}"
-                            break
+                    if await _storage.exists(_upload_key) and await _storage.is_dir(_upload_key):
+                        _candidates = sorted(
+                            [e for e in await _storage.list_dir(_upload_key) if not e.is_dir],
+                            key=_storage_mtime,
+                            reverse=True,
+                        )
+                        for _entry in _candidates:
+                            _mtime = _storage_mtime(_entry)
+                            if _mtime and (_now - _mtime) < 1800:
+                                _recent_file_path = f"uploads/{_entry.name}"
+                                break
                 if _recent_file_path:
                     # _recent_file_path is relative to uploads dir; agent workspace root is
                     # AGENT_DATA_DIR/{agent_id}/, so the correct relative path is workspace/uploads/
@@ -869,11 +885,16 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     _fs = _gs_fallback()
                     _base_url = getattr(_fs, 'BASE_URL', '').rstrip('/') or ''
                     _fp = _P(file_path)
-                    _ws_root = _P(_fs.AGENT_DATA_DIR)
+                    _parts = list(_fp.parts)
                     try:
-                        _rel = str(_fp.relative_to(_ws_root / str(agent_id)))
+                        _workspace_idx = _parts.index("workspace")
+                        _rel = "/".join(_parts[_workspace_idx:])
                     except ValueError:
-                        _rel = _fp.name
+                        _ws_root = _P(getattr(_fs, "STORAGE_LOCAL_ROOT", "") or _fs.AGENT_DATA_DIR)
+                        try:
+                            _rel = str(_fp.relative_to(_ws_root / str(agent_id)))
+                        except ValueError:
+                            _rel = _fp.name
                     _fallback_parts = []
                     if msg:
                         _fallback_parts.append(msg)
@@ -1195,8 +1216,6 @@ async def _handle_feishu_file(
 ):
     """Handle incoming file or image messages from Feishu (runs as a background task)."""
     import asyncio, random, json
-    from pathlib import Path
-    from app.config import get_settings
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel
     from app.models.user import User as UserModel
@@ -1226,18 +1245,18 @@ async def _handle_feishu_file(
         return
 
     # Resolve workspace upload dir
-    settings = get_settings()
-    upload_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    save_path = upload_dir / filename
-
     # Download the file
     try:
         file_bytes = await feishu_service.download_message_resource(
             config.app_id, config.app_secret, message_id, file_key, res_type
         )
-        save_path.write_bytes(file_bytes)
-        logger.info(f"[Feishu] Saved {msg_type} to {save_path} ({len(file_bytes)} bytes)")
+        _, workspace_path, save_path = await store_agent_upload(
+            agent_id,
+            filename,
+            file_bytes,
+            content_type="image/jpeg" if msg_type == "image" else None,
+        )
+        logger.info(f"[Feishu] Saved {msg_type} to {workspace_path} ({len(file_bytes)} bytes)")
     except Exception as e:
         logger.error(f"[Feishu] Failed to download {msg_type}: {e}")
         err_tip = "抱歉，文件下载失败。可能原因：机器人缺少 `im:resource` 权限（文件读取）。\n请在飞书开放平台 → 权限管理 → 批量导入权限 JSON → 重新发布机器人版本后重试。"
@@ -1555,20 +1574,18 @@ async def _handle_feishu_file(
 
 async def _download_post_images(agent_id, config, message_id, image_keys):
     """Download images embedded in a Feishu post message to the agent's workspace."""
-    from pathlib import Path
-    from app.config import get_settings
-    settings = get_settings()
-    upload_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
     for ik in image_keys:
         try:
             file_bytes = await feishu_service.download_message_resource(
                 config.app_id, config.app_secret, message_id, ik, "image"
             )
-            save_path = upload_dir / f"image_{ik[-8:]}.jpg"
-            save_path.write_bytes(file_bytes)
-            logger.info(f"[Feishu] Saved post image to {save_path} ({len(file_bytes)} bytes)")
+            _, workspace_path, _ = await store_agent_upload(
+                agent_id,
+                f"image_{ik[-8:]}.jpg",
+                file_bytes,
+                content_type="image/jpeg",
+            )
+            logger.info(f"[Feishu] Saved post image to {workspace_path} ({len(file_bytes)} bytes)")
         except Exception as e:
                 logger.error(f"[Feishu] Failed to download post image {ik}: {e}")
 

@@ -71,6 +71,8 @@ class SandboxConfig(BaseModel):
                     value = getattr(fallback_config, key, default)
                 else:
                     value = default
+            if key == "allow_network":
+                logger.info(f"[SandboxConfig] allow_network: raw={config.get(key)!r}, resolved={value!r}")
 
             # 解密敏感字段
             if encrypt and value:

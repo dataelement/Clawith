@@ -130,6 +130,7 @@ BUILTIN_TOOLS = [
             "type": "object",
             "properties": {
                 "key": {"type": "string", "description": "Stable short identifier, snake_case preferred."},
+                "title": {"type": "string", "description": "Short title (Focus名称)."},
                 "description": {"type": "string", "description": "Human-readable description of what is being tracked."},
                 "kind": {"type": "string", "enum": ["normal", "system"], "description": "normal or system"},
                 "source": {"type": "string", "description": "Optional origin label, e.g. user, trigger, a2a, okr."},

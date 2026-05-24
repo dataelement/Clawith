@@ -20,6 +20,7 @@ class FocusItemResponse(BaseModel):
     id: str
     agent_id: str
     key: str
+    title: str | None = None
     description: str
     status: str
     kind: str
@@ -33,6 +34,7 @@ class FocusItemResponse(BaseModel):
 
 class FocusUpsertBody(BaseModel):
     key: str | None = None
+    title: str | None = None
     description: str
     status: str = "in_progress"
     kind: str = "normal"
@@ -66,6 +68,7 @@ async def upsert_agent_focus(
     return await upsert_focus_item(
         agent_id,
         key=body.key,
+        title=body.title,
         description=body.description,
         status=body.status,
         kind=body.kind,

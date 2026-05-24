@@ -104,11 +104,11 @@ class User(Base):
     identity: Mapped["Identity"] = relationship(back_populates="tenant_users", lazy="selectin")
 
     # Association proxies for backward compatibility
-    email = association_proxy("identity", "email")
-    username = association_proxy("identity", "username")
-    password_hash = association_proxy("identity", "password_hash")
-    email_verified = association_proxy("identity", "email_verified")
-    primary_mobile = association_proxy("identity", "phone")
+    email = association_proxy("identity", "email", creator=lambda val: Identity(email=val))
+    username = association_proxy("identity", "username", creator=lambda val: Identity(username=val))
+    password_hash = association_proxy("identity", "password_hash", creator=lambda val: Identity(password_hash=val))
+    email_verified = association_proxy("identity", "email_verified", creator=lambda val: Identity(email_verified=val))
+    primary_mobile = association_proxy("identity", "phone", creator=lambda val: Identity(phone=val))
 
     created_agents: Mapped[list["Agent"]] = relationship(back_populates="creator", foreign_keys="Agent.creator_id")
 

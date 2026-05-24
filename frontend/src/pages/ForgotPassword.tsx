@@ -74,13 +74,13 @@ export default function ForgotPassword() {
                     )}
 
                     {message && (
-                        <div className="login-error" style={{ background: 'rgba(34,197,94,0.14)', borderColor: 'rgba(34,197,94,0.35)', color: '#dcfce7' }}>
+                        <div className="login-error" style={{ background: 'var(--success-subtle)', borderColor: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' }}>
                             <span><IconCheck size={14} stroke={1.8} /></span> {message}
                         </div>
                     )}
 
                     {hintResult && (
-                        <div className="login-error" style={{ background: 'rgba(56,189,248,0.1)', borderColor: 'rgba(56,189,248,0.3)', color: '#bae6fd' }}>
+                        <div className="login-error" style={{ background: 'var(--info-subtle)', borderColor: 'color-mix(in srgb, var(--info) 20%, transparent)', color: 'var(--info)' }}>
                             <IconBulb size={14} stroke={1.8} style={{ marginRight: '6px' }} />
                             {t('auth.emailHintResult', 'Email hint')}: <strong>{hintResult}</strong>
                         </div>

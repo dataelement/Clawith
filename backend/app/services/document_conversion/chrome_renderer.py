@@ -50,6 +50,7 @@ async def collect_browser_layout(
 ) -> dict[str, Any] | None:
     import socket
     import subprocess
+    import sys
     import tempfile
     import time
     import urllib.request
@@ -64,19 +65,25 @@ async def collect_browser_layout(
         port = sock.getsockname()[1]
 
     profile_dir = tempfile.TemporaryDirectory(prefix="clawith-html-pptx-")
+    
+    chrome_args = [
+        chrome,
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--allow-file-access-from-files",
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile_dir.name}",
+        "about:blank",
+    ]
+    if sys.platform.startswith("linux"):
+        # Linux environments (like Docker containers) require no-sandbox in standard restricted container contexts
+        chrome_args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
+
     proc = subprocess.Popen(
-        [
-            chrome,
-            "--headless=new",
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--allow-file-access-from-files",
-            f"--remote-debugging-port={port}",
-            f"--user-data-dir={profile_dir.name}",
-            "about:blank",
-        ],
+        chrome_args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

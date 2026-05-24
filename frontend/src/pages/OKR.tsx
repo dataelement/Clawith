@@ -871,6 +871,12 @@ export default function OKR() {
         return () => document.removeEventListener('mousedown', handlePointerDown);
     }, [periodMenuOpen]);
 
+    useEffect(() => {
+        if (settings && !settings.daily_report_enabled) {
+            setActiveTab('dashboards');
+        }
+    }, [settings?.daily_report_enabled]);
+
     // Fetch objectives for selected period — fresh on mount/focus so OKR Agent creation is visible
     const { data: objectives = [], isLoading: objLoading } = useQuery<Objective[]>({
         queryKey: ['okr-objectives', selectedPeriod?.start, selectedPeriod?.end],
@@ -965,7 +971,9 @@ export default function OKR() {
             {/* Page Header */}
             <div style={{
                 display: 'grid',
-                gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)',
+                gridTemplateColumns: settings?.daily_report_enabled
+                    ? 'minmax(0, 1fr) auto minmax(0, 1fr)'
+                    : '1fr auto',
                 alignItems: 'center',
                 marginBottom: '24px',
                 gap: '12px',
@@ -979,42 +987,44 @@ export default function OKR() {
                     </div>
                 </div>
 
-                <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    height: 38,
-                    background: 'var(--bg-secondary)',
-                    padding: '2px',
-                    borderRadius: '8px',
-                    justifySelf: 'center',
-                    alignSelf: 'start',
-                    marginTop: '2px',
-                }}>
-                    <button
-                        onClick={() => setActiveTab('dashboards')}
-                        style={{
-                            padding: '6px 16px', borderRadius: '6px', fontSize: '13px', fontWeight: 500,
-                            background: activeTab === 'dashboards' ? 'var(--bg-primary)' : 'transparent',
-                            color: activeTab === 'dashboards' ? 'var(--text-primary)' : 'var(--text-secondary)',
-                            boxShadow: activeTab === 'dashboards' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
-                            border: 'none', cursor: 'pointer', transition: 'all 0.15s',
-                        }}
-                    >
-                        {isChinese ? '概览' : 'Dashboard'}
-                    </button>
-                    <button
-                        onClick={() => setActiveTab('reports')}
-                        style={{
-                            padding: '6px 16px', borderRadius: '6px', fontSize: '13px', fontWeight: 500,
-                            background: activeTab === 'reports' ? 'var(--bg-primary)' : 'transparent',
-                            color: activeTab === 'reports' ? 'var(--text-primary)' : 'var(--text-secondary)',
-                            boxShadow: activeTab === 'reports' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
-                            border: 'none', cursor: 'pointer', transition: 'all 0.15s',
-                        }}
-                    >
-                        {isChinese ? '工作汇报' : 'Reports'}
-                    </button>
-                </div>
+                {settings?.daily_report_enabled && (
+                    <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        height: 38,
+                        background: 'var(--bg-secondary)',
+                        padding: '2px',
+                        borderRadius: '8px',
+                        justifySelf: 'center',
+                        alignSelf: 'start',
+                        marginTop: '2px',
+                    }}>
+                        <button
+                            onClick={() => setActiveTab('dashboards')}
+                            style={{
+                                padding: '6px 16px', borderRadius: '6px', fontSize: '13px', fontWeight: 500,
+                                background: activeTab === 'dashboards' ? 'var(--bg-primary)' : 'transparent',
+                                color: activeTab === 'dashboards' ? 'var(--text-primary)' : 'var(--text-secondary)',
+                                boxShadow: activeTab === 'dashboards' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
+                                border: 'none', cursor: 'pointer', transition: 'all 0.15s',
+                            }}
+                        >
+                            {isChinese ? '概览' : 'Dashboard'}
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('reports')}
+                            style={{
+                                padding: '6px 16px', borderRadius: '6px', fontSize: '13px', fontWeight: 500,
+                                background: activeTab === 'reports' ? 'var(--bg-primary)' : 'transparent',
+                                color: activeTab === 'reports' ? 'var(--text-primary)' : 'var(--text-secondary)',
+                                boxShadow: activeTab === 'reports' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
+                                border: 'none', cursor: 'pointer', transition: 'all 0.15s',
+                            }}
+                        >
+                            {isChinese ? '工作汇报' : 'Reports'}
+                        </button>
+                    </div>
+                )}
 
                 <div style={{
                     display: 'flex',
@@ -1275,7 +1285,7 @@ export default function OKR() {
                 </>
             )}
 
-            {activeTab === 'reports' && (
+            {settings?.daily_report_enabled && activeTab === 'reports' && (
                 <ReportsTab isChinese={isChinese} />
             )}
         </div>

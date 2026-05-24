@@ -20,11 +20,79 @@ from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.chat_session_service import ensure_primary_platform_session
 from app.services.llm import call_llm, call_llm_with_failover
+from app.services.realtime import realtime_router
 
 router = APIRouter(tags=["websocket"])
 
 MAX_LIVE_CODE_STREAM_CHARS = 120_000
 LIVE_CODE_TRUNCATED_NOTICE = "\n\n[... live output truncated; execution continues ...]\n"
+
+
+def extract_partial_content(args_str: str) -> str:
+    """Extract the string value of the 'content' field from a partial JSON tool-arguments string.
+
+    When the LLM streams the finish tool call, arguments arrive as an
+    incrementally-growing JSON fragment like '{"content": "hello \\\\n wor'.
+    This function parses what is available so far, correctly handling JSON
+    escape sequences (\\n, \\", \\\\, \\\\uXXXX, etc.) even when the string is
+    truncated mid-escape.
+    """
+    import re as _re
+    s = args_str.strip()
+    match = _re.search(r'"content"\s*:\s*"', s)
+    if not match:
+        return ""
+
+    start_idx = match.end()
+    val_chars: list[str] = []
+    escaped = False
+    i = start_idx
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if escaped:
+            if c == 'n':
+                val_chars.append('\n')
+            elif c == 't':
+                val_chars.append('\t')
+            elif c == 'r':
+                val_chars.append('\r')
+            elif c == 'b':
+                val_chars.append('\b')
+            elif c == 'f':
+                val_chars.append('\f')
+            elif c == '"':
+                val_chars.append('"')
+            elif c == '\\':
+                val_chars.append('\\')
+            elif c == '/':
+                val_chars.append('/')
+            elif c == 'u':
+                if i + 4 < n:
+                    try:
+                        hex_val = int(s[i + 1:i + 5], 16)
+                        val_chars.append(chr(hex_val))
+                        i += 4
+                    except ValueError:
+                        val_chars.append('\\')
+                        val_chars.append('u')
+                else:
+                    # Incomplete \uXXXX — wait for more data
+                    val_chars.append('\\')
+                    val_chars.append('u')
+            else:
+                val_chars.append(c)
+            escaped = False
+        else:
+            if c == '\\':
+                escaped = True
+            elif c == '"':
+                # End of the JSON string value
+                break
+            else:
+                val_chars.append(c)
+        i += 1
+    return "".join(val_chars)
 
 
 class ConnectionManager:
@@ -35,59 +103,82 @@ class ConnectionManager:
         self.active_connections: dict[str, list[tuple]] = {}
 
     async def connect(self, agent_id: str, websocket: WebSocket, session_id: str = None, user_id: str | None = None):
-        await websocket.accept()
         if agent_id not in self.active_connections:
             self.active_connections[agent_id] = []
         self.active_connections[agent_id].append((websocket, session_id, user_id))
+        await realtime_router.register_connection(
+            agent_id=agent_id,
+            websocket=websocket,
+            session_id=session_id,
+            user_id=user_id,
+        )
 
-    def disconnect(self, agent_id: str, websocket: WebSocket):
+    async def disconnect(self, agent_id: str, websocket: WebSocket):
         if agent_id in self.active_connections:
             self.active_connections[agent_id] = [
                 (ws, sid, uid) for ws, sid, uid in self.active_connections[agent_id] if ws != websocket
             ]
+        await realtime_router.unregister_connection(agent_id=agent_id, websocket=websocket)
+
+    def _local_connections(self, agent_id: str) -> list[tuple[WebSocket, str | None, str | None]]:
+        return self.active_connections.get(agent_id, [])
+
+    async def deliver_pubsub_message(
+        self,
+        *,
+        agent_id: str,
+        payload: dict,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> None:
+        if agent_id not in self.active_connections:
+            return
+        for ws, sid, uid in list(self.active_connections[agent_id]):
+            if session_id is not None and sid != session_id:
+                continue
+            if user_id is not None and uid != user_id:
+                continue
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                pass
 
     async def send_message(self, agent_id: str, message: dict):
-        if agent_id in self.active_connections:
-            for ws, _sid, _uid in self.active_connections[agent_id]:
-                try:
-                    await ws.send_json(message)
-                except Exception:
-                    pass
+        await realtime_router.route_message(
+            agent_id=agent_id,
+            message=message,
+            local_connections=self._local_connections(agent_id),
+        )
 
     async def send_to_session(self, agent_id: str, session_id: str, message: dict):
         """Send message only to WebSocket connections matching the given session_id."""
-        if agent_id in self.active_connections:
-            for ws, sid, _uid in self.active_connections[agent_id]:
-                if sid == session_id:
-                    try:
-                        await ws.send_json(message)
-                    except Exception:
-                        pass
+        await realtime_router.route_message(
+            agent_id=agent_id,
+            message=message,
+            local_connections=self._local_connections(agent_id),
+            session_id=session_id,
+        )
 
     async def send_to_user(self, agent_id: str, user_id: str, message: dict):
         """Send message to all live WebSocket sessions of a given platform user for an agent."""
-        if agent_id in self.active_connections:
-            for ws, _sid, uid in self.active_connections[agent_id]:
-                if uid == user_id:
-                    try:
-                        await ws.send_json(message)
-                    except Exception:
-                        pass
+        await realtime_router.route_message(
+            agent_id=agent_id,
+            message=message,
+            local_connections=self._local_connections(agent_id),
+            user_id=user_id,
+        )
 
-    def get_active_session_ids(self, agent_id: str) -> list[str]:
+    async def get_active_session_ids(self, agent_id: str) -> list[str]:
         """Return distinct session IDs for all active WS connections of an agent."""
-        if agent_id not in self.active_connections:
-            return []
-        return list(set(sid for _ws, sid, _uid in self.active_connections[agent_id] if sid))
+        return await realtime_router.get_active_session_ids(agent_id)
 
-    def is_user_viewing_session(self, agent_id: str, session_id: str, user_id: str) -> bool:
+    async def is_user_viewing_session(self, agent_id: str, session_id: str, user_id: str) -> bool:
         """Return True if the given platform user currently has this exact session open."""
-        if agent_id not in self.active_connections:
-            return False
-        for _ws, sid, uid in self.active_connections[agent_id]:
-            if sid == session_id and uid == user_id:
-                return True
-        return False
+        return await realtime_router.is_user_viewing_session(
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+        )
 
 
 manager = ConnectionManager()
@@ -101,7 +192,7 @@ async def maybe_mark_session_read_for_active_viewer(
     user_id: uuid.UUID,
 ) -> bool:
     """Advance last_read_at_by_user if the owner is actively viewing this exact session."""
-    if not manager.is_user_viewing_session(str(agent_id), session_id, str(user_id)):
+    if not await manager.is_user_viewing_session(str(agent_id), session_id, str(user_id)):
         return False
 
     session = await db.get(ChatSession, uuid.UUID(session_id))
@@ -327,9 +418,7 @@ async def websocket_chat(
         return
 
     agent_id_str = str(agent_id)
-    if agent_id_str not in manager.active_connections:
-        manager.active_connections[agent_id_str] = []
-    manager.active_connections[agent_id_str].append((websocket, conv_id, str(user_id)))
+    await manager.connect(agent_id_str, websocket, conv_id, str(user_id))
     logger.info(f"[WS] Ready! Agent={agent_name}")
 
     # Send session_id to frontend so Take Control can reference the correct session.
@@ -557,6 +646,7 @@ async def websocket_chat(
 
             # Track thinking content for storage (initialize before condition)
             thinking_content = []
+            queued_messages: list[dict] = []
 
             # Reload model config on every message so Settings changes take effect
             # immediately without requiring a page refresh / WebSocket reconnect.
@@ -588,6 +678,8 @@ async def websocket_chat(
                     
                     # Accumulate partial content for abort handling
                     partial_chunks: list[str] = []
+                    # Track how many characters of finish-tool content have been streamed
+                    finish_content_sent_len = 0
 
                     # Set inside _call_with_failover when an onboarding prompt
                     # was injected for this turn. The first streamed chunk then
@@ -731,8 +823,26 @@ async def websocket_chat(
                     _workspace_draft_cache: dict[str, str] = {}
 
                     async def tool_delta_to_ws(data: dict):
-                        """Stream workspace file-operation drafts while tool args are still arriving."""
+                        """Stream workspace file-operation drafts while tool args are still arriving.
+
+                        Also intercepts the 'finish' tool to forward its content
+                        argument as real-time chunk packets so the final response
+                        streams to the user.
+                        """
+                        nonlocal finish_content_sent_len
                         tool_name = data.get("name", "")
+
+                        # Stream finish tool content as real-time chunks
+                        if tool_name == "finish":
+                            raw_args = data.get("arguments", "")
+                            if isinstance(raw_args, str) and raw_args:
+                                current_content = extract_partial_content(raw_args)
+                                if len(current_content) > finish_content_sent_len:
+                                    delta = current_content[finish_content_sent_len:]
+                                    finish_content_sent_len = len(current_content)
+                                    await stream_to_ws(delta)
+                            return
+
                         if tool_name not in {
                             "write_file",
                             "edit_file",
@@ -864,7 +974,6 @@ async def websocket_chat(
 
                     # Listen for abort while LLM is running
                     aborted = False
-                    queued_messages: list[dict] = []
                     while not llm_task.done():
                         try:
                             msg = await _aio.wait_for(
@@ -1000,9 +1109,9 @@ async def websocket_chat(
 
     except WebSocketDisconnect:
         logger.info(f"[WS] Client disconnected: {user_id}")
-        manager.disconnect(str(agent_id), websocket)
+        await manager.disconnect(str(agent_id), websocket)
     except Exception as e:
         logger.error(f"[WS] Unexpected error: {e}")
         import traceback
         traceback.print_exc()
-        manager.disconnect(str(agent_id), websocket)
+        await manager.disconnect(str(agent_id), websocket)

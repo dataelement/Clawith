@@ -28,6 +28,7 @@ class AgentFocusItem(Base):
         UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
     )
     key: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="in_progress", index=True)
     kind: Mapped[str] = mapped_column(String(24), nullable=False, default="normal", index=True)

@@ -227,8 +227,9 @@ export default function ToolsManager({ agentId, canManage = false }: { agentId: 
     if (loading) return <div style={{ color: 'var(--text-tertiary)', padding: '20px' }}>{t('common.loading')}</div>;
 
     // Company tools = platform presets (builtin) + company admin-added tools (admin)
-    const companyTools = tools.filter(t => t.source === 'builtin' || t.source === 'admin');
-    const agentInstalledTools = tools.filter(t => t.source === 'agent');
+    // Hide system-internal tools (e.g. finish) — they are protocol-level and not user-facing.
+    const companyTools = tools.filter(t => (t.source === 'builtin' || t.source === 'admin') && t.category !== 'system');
+    const agentInstalledTools = tools.filter(t => t.source === 'agent' && t.category !== 'system');
 
     const mcpGroupKey = (tool: any) => {
         const serverName = String(tool.mcp_server_name || '').trim();

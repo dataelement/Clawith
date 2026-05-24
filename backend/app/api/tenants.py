@@ -9,9 +9,7 @@ import secrets
 import uuid
 import io
 from datetime import datetime
-from pathlib import Path
 
-import aiofiles
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from PIL import Image
@@ -25,6 +23,7 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.storage import ensure_local_path, get_storage_backend, normalize_storage_key
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -64,20 +63,12 @@ class TenantUpdate(BaseModel):
     a2a_async_enabled: bool | None = None
 
 
-def _tenant_logo_dir() -> Path:
-    return Path(get_settings().AGENT_DATA_DIR) / "_tenant_logos"
-
-
-def _tenant_logo_path(tenant_id: uuid.UUID) -> Path:
-    return _tenant_logo_dir() / f"{tenant_id}.png"
+def _tenant_logo_key(tenant_id: uuid.UUID) -> str:
+    return normalize_storage_key(f"_tenant_logos/{tenant_id}.png")
 
 
 def _tenant_logo_url(tenant_id: uuid.UUID) -> str:
-    try:
-        mtime = int(_tenant_logo_path(tenant_id).stat().st_mtime)
-    except OSError:
-        mtime = int(datetime.utcnow().timestamp())
-    return f"/api/tenants/{tenant_id}/logo?v={mtime}"
+    return f"/api/tenants/{tenant_id}/logo?v={int(datetime.utcnow().timestamp())}"
 
 
 async def _get_updateable_tenant(
@@ -414,26 +405,34 @@ async def resolve_tenant_by_domain(
     """
     tenant = None
 
-    # 1. Match by stripping protocol from stored sso_domain
-    # sso_domain = "https://acme.clawith.ai" → compare against "acme.clawith.ai"
-    for proto in ("https://", "http://"):
-        result = await db.execute(
-            select(Tenant).where(Tenant.sso_domain == f"{proto}{domain}")
-        )
-        tenant = result.scalar_one_or_none()
-        if tenant:
-            break
+    from app.models.system_settings import SystemSetting
+    setting_result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "sso_custom_domain_redirect_enabled")
+    )
+    setting_s = setting_result.scalar_one_or_none()
+    sso_redirect_enabled = setting_s.value.get("enabled", True) if setting_s else True
 
-    # 2. Try without port (e.g. domain = "1.2.3.4:3009" → try "1.2.3.4")
-    if not tenant and ":" in domain:
-        domain_no_port = domain.split(":")[0]
+    if sso_redirect_enabled:
+        # 1. Match by stripping protocol from stored sso_domain
+        # sso_domain = "https://acme.clawith.ai" → compare against "acme.clawith.ai"
         for proto in ("https://", "http://"):
             result = await db.execute(
-                select(Tenant).where(Tenant.sso_domain.like(f"{proto}{domain_no_port}%"))
+                select(Tenant).where(Tenant.sso_domain == f"{proto}{domain}")
             )
             tenant = result.scalar_one_or_none()
             if tenant:
                 break
+
+        # 2. Try without port (e.g. domain = "1.2.3.4:3009" → try "1.2.3.4")
+        if not tenant and ":" in domain:
+            domain_no_port = domain.split(":")[0]
+            for proto in ("https://", "http://"):
+                result = await db.execute(
+                    select(Tenant).where(Tenant.sso_domain.like(f"{proto}{domain_no_port}%"))
+                )
+                tenant = result.scalar_one_or_none()
+                if tenant:
+                    break
 
     # 3. Fallback: extract slug from subdomain pattern
     if not tenant:
@@ -582,9 +581,11 @@ async def update_tenant(
 @router.get("/{tenant_id}/logo")
 async def get_tenant_logo(tenant_id: uuid.UUID):
     """Serve a tenant logo. Logos are public UI assets, addressed by UUID."""
-    path = _tenant_logo_path(tenant_id)
-    if not path.exists():
+    storage = get_storage_backend()
+    key = _tenant_logo_key(tenant_id)
+    if not await storage.exists(key):
         raise HTTPException(status_code=404, detail="Logo not found")
+    path = await ensure_local_path(key)
     return FileResponse(path, media_type="image/png")
 
 
@@ -621,11 +622,8 @@ async def upload_tenant_logo(
     if len(png_data) > 1024 * 1024:
         raise HTTPException(status_code=400, detail="Logo image must be 1 MB or smaller after processing")
 
-    logo_dir = _tenant_logo_dir()
-    logo_dir.mkdir(parents=True, exist_ok=True)
-    path = _tenant_logo_path(tenant_id)
-    async with aiofiles.open(path, "wb") as f:
-        await f.write(png_data)
+    storage = get_storage_backend()
+    await storage.write_bytes(_tenant_logo_key(tenant_id), png_data, content_type="image/png")
 
     config = dict(tenant.im_config or {})
     config["logo_url"] = _tenant_logo_url(tenant_id)
@@ -643,12 +641,10 @@ async def delete_tenant_logo(
     """Remove a custom company logo and fall back to the generated default."""
     tenant = await _get_updateable_tenant(tenant_id, current_user, db)
 
-    path = _tenant_logo_path(tenant_id)
-    if path.exists():
-        try:
-            path.unlink()
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail="Failed to delete logo") from exc
+    storage = get_storage_backend()
+    key = _tenant_logo_key(tenant_id)
+    if await storage.exists(key):
+        await storage.delete(key)
 
     config = dict(tenant.im_config or {})
     config.pop("logo_url", None)

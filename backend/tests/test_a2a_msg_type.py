@@ -384,37 +384,14 @@ async def test_no_relationship_returns_error():
 
 
 @pytest.mark.asyncio
-async def test_append_focus_item_creates_file(tmp_path):
-    """_append_focus_item should create/append to focus.md."""
+async def test_append_focus_item_success():
+    """_append_focus_item should call ensure_focus_item."""
     from app.services.agent_tools import _append_focus_item
 
     agent_id = uuid.uuid4()
-    with patch("app.services.agent_tools.WORKSPACE_ROOT", tmp_path):
+    with patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure:
         await _append_focus_item(agent_id, "test_item", "Test description")
-
-        focus_path = tmp_path / str(agent_id) / "focus.md"
-        assert focus_path.exists()
-        content = focus_path.read_text()
-        assert "test_item" in content
-        assert "Test description" in content
-        assert "- [ ]" in content
-
-
-@pytest.mark.asyncio
-async def test_append_focus_item_no_duplicate(tmp_path):
-    """_append_focus_item should not duplicate existing items."""
-    from app.services.agent_tools import _append_focus_item
-
-    agent_id = uuid.uuid4()
-    focus_path = tmp_path / str(agent_id) / "focus.md"
-    focus_path.parent.mkdir(parents=True, exist_ok=True)
-    focus_path.write_text("# Focus\n\n- [ ] test_item: Existing description\n")
-
-    with patch("app.services.agent_tools.WORKSPACE_ROOT", tmp_path):
-        await _append_focus_item(agent_id, "test_item", "New description")
-
-    content = focus_path.read_text()
-    assert content.count("test_item") == 1
+        mock_ensure.assert_awaited_once_with(agent_id, focus_ref="test_item", description="Test description")
 
 
 @pytest.mark.asyncio
@@ -440,7 +417,9 @@ async def test_create_on_message_trigger():
         enter_count += 1
         return db
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx:
+    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
+         patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure:
+        mock_ensure.return_value = "test_focus"
         mock_session_ctx.return_value.__aenter__ = AsyncMock(side_effect=_enter)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 

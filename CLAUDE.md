@@ -152,3 +152,7 @@ Each agent has a private file workspace under `agent_template/`. The files `soul
 - **Integrations**: Feishu/Lark, DingTalk, WeCom, Slack, Discord, Jira/Confluence, Microsoft Teams
 - **Linting**: Ruff (Python, line-length 120, target py311), TypeScript strict mode
 - **Testing**: pytest + pytest-asyncio (asyncio_mode = "auto")
+
+## Code Guidelines
+
+- **Python Imports**: Python imports should be placed at the top of the file (file header) as much as possible. Avoid inline imports within functions or methods unless strictly necessary (e.g., to prevent circular import dependencies).

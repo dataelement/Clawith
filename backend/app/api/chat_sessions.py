@@ -361,6 +361,8 @@ async def delete_session(
 async def get_session_messages(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    limit: int = Query(20, ge=1, le=500, description="Number of messages to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -382,35 +384,34 @@ async def get_session_messages(
         raise HTTPException(status_code=403, detail="Not authorized to view this session")
 
     # Query messages by conversation_id only (agent-to-agent uses session_agent_id)
-    # Query the latest 500 messages (subquery in DESC, then reverse for display order)
+    # Optimized: use a single query with ORDER BY and LIMIT instead of subquery
     from sqlalchemy import desc
-    latest_subq = (
-        select(ChatMessage.id)
-        .where(ChatMessage.conversation_id == str(session_id))
-        .order_by(desc(ChatMessage.created_at))
-        .limit(500)
-        .subquery()
-    )
     msgs_result = await db.execute(
         select(ChatMessage)
-        .where(ChatMessage.id.in_(select(latest_subq.c.id)))
-        .order_by(ChatMessage.created_at.asc())
+        .where(ChatMessage.conversation_id == str(session_id))
+        .order_by(desc(ChatMessage.created_at))
+        .limit(limit)
+        .offset(offset)
     )
-    messages = msgs_result.scalars().all()
+    messages = list(reversed(msgs_result.scalars().all()))
 
     # Reading your own first-party/channel session should clear its unread state.
     if str(session.user_id) == str(current_user.id) and not session.is_group and session.source_channel not in ("agent", "trigger"):
         session.last_read_at_by_user = datetime.now(tz.utc)
         await db.commit()
 
-    # Resolve sender names for agent sessions
+    # Batch fetch all participant names to avoid N+1 queries
     sender_cache: dict = {}
     if session.source_channel == "agent":
         from app.models.participant import Participant
-        for m in messages:
-            if m.participant_id and str(m.participant_id) not in sender_cache:
-                p_r = await db.execute(select(Participant.display_name).where(Participant.id == m.participant_id))
-                sender_cache[str(m.participant_id)] = p_r.scalar_one_or_none() or "Unknown"
+        participant_ids = list({m.participant_id for m in messages if m.participant_id})
+        if participant_ids:
+            p_result = await db.execute(
+                select(Participant.id, Participant.display_name)
+                .where(Participant.id.in_(participant_ids))
+            )
+            for row in p_result.all():
+                sender_cache[str(row[0])] = row[1] or "Unknown"
 
     out = []
     for m in messages:

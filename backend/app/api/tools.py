@@ -55,16 +55,18 @@ def _agent_visible_tool_clause(agent_tenant_id: uuid.UUID | None, assignments: d
 
     Visibility rules:
     - builtin tools are global platform capabilities
-    - admin tools belong only to the agent's company
-    - agent-installed tools are visible only when explicitly assigned
+    - admin tools belong only to the agent's company or are platform-wide (tenant_id is NULL)
+    - explicitly assigned tools are always visible
     """
     clauses = [Tool.source == "builtin"]
+    admin_cond = (Tool.tenant_id == None)
     if agent_tenant_id:
-        clauses.append((Tool.source == "admin") & (Tool.tenant_id == agent_tenant_id))
+        admin_cond = admin_cond | (Tool.tenant_id == agent_tenant_id)
+    clauses.append((Tool.source == "admin") & admin_cond)
 
     assigned_tool_ids = [uuid.UUID(tool_id) for tool_id in assignments]
     if assigned_tool_ids:
-        clauses.append((Tool.source == "agent") & Tool.id.in_(assigned_tool_ids))
+        clauses.append(Tool.id.in_(assigned_tool_ids))
 
     return or_(*clauses)
 
@@ -75,10 +77,12 @@ def _tool_record_visible_to_agent(
     assignments: dict[str, AgentTool],
 ) -> bool:
     """Pure visibility check mirroring _agent_visible_tool_clause."""
+    if str(tool.id) in assignments:
+        return True
     if tool.source == "builtin":
         return True
     if tool.source == "admin":
-        return bool(agent_tenant_id and tool.tenant_id == agent_tenant_id)
+        return tool.tenant_id is None or (agent_tenant_id is not None and tool.tenant_id == agent_tenant_id)
     if tool.source == "agent":
         return str(tool.id) in assignments
     return False
@@ -419,8 +423,14 @@ async def update_agent_tools(
                 _agent_visible_tool_clause(agent_obj.tenant_id, assignments),
             )
         )
-        if not tool_r.scalar_one_or_none():
+        tool_obj = tool_r.scalar_one_or_none()
+        if not tool_obj:
             raise HTTPException(status_code=404, detail="Tool not found")
+
+        # System-category tools (e.g. finish) are protocol-level and
+        # must always remain enabled — reject any attempt to disable them.
+        if tool_obj.category == "system" and not u.enabled:
+            continue
 
         # Upsert
         result = await db.execute(

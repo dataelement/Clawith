@@ -9,12 +9,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
 from loguru import logger
 from app.core.security import get_current_user
 from app.models.user import User
-from app.config import get_settings
+from app.services.storage import ensure_local_path, get_storage_backend, guess_content_type, normalize_storage_key
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-_settings = get_settings()
-WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
 
 # Supported extensions and their text extraction method
 TEXT_EXTENSIONS = {
@@ -125,20 +122,19 @@ async def upload_file(
     # Determine save directory
     workspace_path = ""
     if agent_id:
-        # Save to agent's workspace/uploads/
-        uploads_dir = WORKSPACE_ROOT / agent_id / "workspace" / "uploads"
-        uploads_dir.mkdir(parents=True, exist_ok=True)
-        save_path = uploads_dir / file.filename
-        # Avoid overwriting: add suffix if file exists
-        if save_path.exists():
-            stem = save_path.stem
-            suffix = save_path.suffix
-            counter = 1
-            while save_path.exists():
-                save_path = uploads_dir / f"{stem}_{counter}{suffix}"
-                counter += 1
-        save_path.write_bytes(content)
-        workspace_path = f"workspace/uploads/{save_path.name}"
+        storage = get_storage_backend()
+        filename = file.filename.replace("/", "_").replace("\\", "_")
+        workspace_path = f"workspace/uploads/{filename}"
+        key = normalize_storage_key(f"{agent_id}/{workspace_path}")
+        counter = 1
+        while await storage.exists(key):
+            stem, ext = os.path.splitext(filename)
+            filename = f"{stem}_{counter}{ext}"
+            workspace_path = f"workspace/uploads/{filename}"
+            key = normalize_storage_key(f"{agent_id}/{workspace_path}")
+            counter += 1
+        await storage.write_bytes(key, content, content_type=guess_content_type(filename))
+        save_path = await ensure_local_path(key)
     else:
         # Fallback: save to /tmp (legacy behavior)
         fallback_dir = Path("/tmp/clawith_uploads")

@@ -12,6 +12,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
@@ -22,6 +23,13 @@ from app.services.wechat_channel import WECHAT_CHANNEL_VERSION, WECHAT_ILINK_BAS
 
 
 router = APIRouter(tags=["wechat"])
+settings = get_settings()
+
+
+def _role_enabled(*required: str) -> bool:
+    raw = (settings.PROCESS_ROLE or "all").strip().lower()
+    roles = {part.strip() for part in raw.split(",") if part.strip()} or {"all"}
+    return "all" in roles or any(role in roles for role in required)
 
 
 def _route_tag(data: dict | None = None) -> str | None:
@@ -133,7 +141,8 @@ async def get_wechat_qrcode_status(
             await db.flush()
 
         await db.commit()
-        asyncio.create_task(wechat_poll_manager.start_client(agent_id))
+        if _role_enabled("connector"):
+            asyncio.create_task(wechat_poll_manager.start_client(agent_id))
 
     return payload
 

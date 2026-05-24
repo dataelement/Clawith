@@ -24,7 +24,7 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
 
         design_w_px = int(arguments.get("design_width") or 1280)
         design_h_px = int(arguments.get("design_height") or 720)
-        render_mode = str(arguments.get("render_mode") or "editable").lower()
+        render_mode = str(arguments.get("render_mode") or "visual").lower()
         try:
             render_scale = float(arguments.get("render_scale") or 2.0)
         except (TypeError, ValueError):

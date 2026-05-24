@@ -39,6 +39,7 @@
   --error: #ef4444;
   --error-subtle: rgba(239, 68, 68, 0.12);
   --info: #3b82f6;
+  --info-subtle: rgba(59, 130, 246, 0.12);
   --info-card-accent: #818cf8;
   --info-card-accent-end: #a78bfa;
 
@@ -251,6 +252,7 @@
   --error: #dc2626;
   --error-subtle: rgba(220, 38, 38, 0.08);
   --info: #2563eb;
+  --info-subtle: rgba(37, 99, 235, 0.08);
   --info-card-accent: #6366f1;
   --info-card-accent-end: #8b5cf6;
 
@@ -5023,6 +5025,15 @@ select:focus {
   line-height: 1.45;
   color: var(--text-tertiary);
   margin-top: 2px;
+}
+
+.aware-side-item-desc {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  text-align: left;
+  white-space: pre-wrap;
 }
 
 .aware-side-trigger-main {

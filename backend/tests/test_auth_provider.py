@@ -59,7 +59,7 @@ class _DummyDB:
 
 
 @pytest.mark.asyncio
-async def test_feishu_auth_provider_prefers_contact_user_id_over_open_id():
+async def test_feishu_auth_provider_get_user_info():
     provider = FeishuAuthProvider(config={"app_id": "app-id", "app_secret": "app-secret"})
 
     responses = [
@@ -69,19 +69,9 @@ async def test_feishu_auth_provider_prefers_contact_user_id_over_open_id():
                     "open_id": "ou_open_123",
                     "union_id": "on_union_456",
                     "name": "Alice",
+                    "email": "alice@example.com",
+                    "mobile": "13800000000",
                 }
-            }
-        ),
-        _DummyResponse(
-            {
-                "code": 0,
-                "data": {
-                    "user": {
-                        "user_id": "u_emp_789",
-                        "email": "alice@example.com",
-                        "mobile": "13800000000",
-                    }
-                },
             }
         ),
     ]
@@ -90,11 +80,12 @@ async def test_feishu_auth_provider_prefers_contact_user_id_over_open_id():
         with patch.object(provider, "get_app_access_token", AsyncMock(return_value="app-token")):
             user_info = await provider.get_user_info("user-token")
 
-    assert user_info.provider_user_id == "u_emp_789"
+    assert user_info.provider_user_id is None
     assert user_info.provider_union_id == "on_union_456"
+    assert user_info.name == "Alice"
     assert user_info.email == "alice@example.com"
     assert user_info.mobile == "13800000000"
-    assert user_info.raw_data["user_id"] == "u_emp_789"
+
 
 
 @pytest.mark.asyncio

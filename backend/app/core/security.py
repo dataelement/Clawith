@@ -1,8 +1,10 @@
 """Security utilities: JWT, password hashing, and authentication dependencies."""
 
+import asyncio
 import base64
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -22,6 +24,31 @@ settings = get_settings()
 
 # Bearer token scheme
 security = HTTPBearer()
+
+# Thread pool for CPU-intensive bcrypt operations (avoids blocking the event loop)
+_bcrypt_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bcrypt")
+
+
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt (sync, for use in background tasks)."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its hash (sync, for use in background tasks)."""
+    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+
+
+async def hash_password_async(password: str) -> str:
+    """Hash a password using bcrypt without blocking the event loop."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_bcrypt_executor, hash_password, password)
+
+
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its hash without blocking the event loop."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_bcrypt_executor, verify_password, plain_password, hashed_password)
 
 
 def encrypt_data(plaintext: str, key: str) -> str:
@@ -96,14 +123,6 @@ def decrypt_data(ciphertext: str, key: str) -> str:
         raise ValueError(f"Decryption failed: {e}") from e
 
 
-def hash_password(password: str) -> str:
-    """Hash a password using bcrypt."""
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash."""
-    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
 
 def create_access_token(user_id: str, role: str, expires_delta: timedelta | None = None) -> str:

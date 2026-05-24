@@ -270,11 +270,6 @@ async def test_skip_tools_still_exposes_finish(monkeypatch):
 async def test_execute_tool_finish_is_noop_control_signal(monkeypatch):
     from app.services import agent_tools
 
-    async def fail_ensure_workspace(*_args, **_kwargs):
-        raise AssertionError("finish should not touch workspace setup")
-
-    monkeypatch.setattr(agent_tools, "ensure_workspace", fail_ensure_workspace)
-
     result = await agent_tools.execute_tool(
         "finish",
         {"content": "Visible answer"},

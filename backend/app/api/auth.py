@@ -11,7 +11,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import create_access_token, get_authenticated_user, get_current_user, hash_password, verify_password
+from app.core.security import create_access_token, get_authenticated_user, get_current_user, hash_password_async, verify_password_async
 from app.database import get_db
 from app.models.user import Identity, User
 from app.schemas.schemas import (
@@ -164,20 +164,22 @@ async def register_init(
 
     logger.info(f"[REGISTER_INIT] Starting registration for email={data.email}")
 
-    # Check if this is the first user (platform admin setup)
-    from sqlalchemy import func
-    ident_count_result = await db.execute(select(func.count()).select_from(Identity))
-    is_first_user = ident_count_result.scalar() == 0
-    
+    # Resolve email config once
+    from app.services.system_email_service import resolve_email_config_async
+    email_config = await resolve_email_config_async(db)
+
+    # Check if this is the first user (platform admin setup) - Optimize with EXISTS
+    is_first_user = (await db.execute(select(Identity.id).limit(1))).scalar() is None
+
     # Find or Create Identity
     identity = await registration_service.find_or_create_identity(
         db,
         email=data.email,
         username=data.username,
         password=data.password,
-        is_platform_admin=is_first_user
+        is_platform_admin=is_first_user,
+        email_config=email_config,
     )
-
     # Defense-in-depth: verify the returned identity actually belongs to the
     # submitted email. Under normal circumstances this should never trigger
     # (find_or_create_identity no longer uses username as a lookup key), but
@@ -194,7 +196,7 @@ async def register_init(
         )
 
     # If identity existed, verify password
-    if identity.password_hash and not verify_password(data.password, identity.password_hash):
+    if identity.password_hash and not await verify_password_async(data.password, identity.password_hash):
          raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email already registered. Incorrect password."
@@ -312,9 +314,12 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
     from app.services.registration_service import registration_service
     from sqlalchemy import func
 
-    # Check if first user
-    user_count_result = await db.execute(select(func.count()).select_from(User))
-    is_first_user = user_count_result.scalar() == 0
+    # Resolve email config once
+    from app.services.system_email_service import resolve_email_config_async
+    email_config = await resolve_email_config_async(db)
+
+    # Check if first user - Optimize with EXISTS
+    is_first_user = (await db.execute(select(User.id).limit(1))).scalar() is None
 
     # Resolve tenant
     tenant_uuid = None
@@ -361,7 +366,8 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         email=data.email,
         username=data.username,
         password=data.password,
-        is_platform_admin=is_first_user
+        is_platform_admin=is_first_user,
+        email_config=email_config,
     )
 
     # Defense-in-depth: verify the returned identity actually belongs to the
@@ -390,7 +396,8 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         display_name=data.display_name or data.username,
         role=role,
         tenant_id=tenant_uuid,
-        registration_source="web"
+        registration_source="web",
+        email_config=email_config,
     )
 
     # Seed default agents for first user
@@ -445,7 +452,7 @@ async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSes
     result = await db.execute(query)
     identity = result.scalar_one_or_none()
 
-    if not identity or not identity.password_hash or not verify_password(data.password, identity.password_hash):
+    if not identity or not identity.password_hash or not await verify_password_async(data.password, identity.password_hash):
         logger.warning(f"[LOGIN] Invalid credentials for {data.login_identifier} identity_id={identity.id if identity else 'None'}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
@@ -669,9 +676,9 @@ async def reset_password(data: ResetPasswordRequest, db: AsyncSession = Depends(
     if not identity or not identity.is_active:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
-    new_hash = hash_password(data.new_password)
+    new_hash = await hash_password_async(data.new_password)
     identity.password_hash = new_hash
-    
+
     await db.flush()
     await db.commit()
     return {"ok": True}
@@ -827,7 +834,19 @@ async def switch_tenant(
     # 4. Determine redirect URL
     # Determine redirect URL (Priority: sso_domain > ENV > Request > Fallback)
     from app.services.platform_service import platform_service
-    redirect_url = await platform_service.get_tenant_sso_base_url(db, tenant, request)
+    from app.models.system_settings import SystemSetting
+    
+    # Check if custom domain SSO redirect is enabled globally
+    setting_result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "sso_custom_domain_redirect_enabled")
+    )
+    setting_s = setting_result.scalar_one_or_none()
+    sso_redirect_enabled = setting_s.value.get("enabled", True) if setting_s else True
+
+    if not sso_redirect_enabled:
+        redirect_url = None
+    else:
+        redirect_url = await platform_service.get_tenant_sso_base_url(db, tenant, request)
 
 
     # Include token in redirect URL for cross-domain switching if needed
@@ -863,10 +882,10 @@ async def change_password(
     user = res.scalar_one()
     identity = user.identity
 
-    if not identity or not identity.password_hash or not verify_password(old_password, identity.password_hash):
+    if not identity or not identity.password_hash or not await verify_password_async(old_password, identity.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    new_hash = hash_password(new_password)
+    new_hash = await hash_password_async(new_password)
     identity.password_hash = new_hash
     
     await db.flush()
@@ -887,6 +906,42 @@ async def list_providers(
 
     providers = await auth_provider_registry.list_providers(db, str(tenant_id) if tenant_id else None)
     return [{"id": str(p.id), "provider_type": p.provider_type, "name": p.name, "is_active": p.is_active} for p in providers]
+
+
+# Redis keys for OAuth two-step tenant selection
+_OAUTH_PENDING_PREFIX = "oauth_pending:"
+_OAUTH_PENDING_TTL = 600  # 10 minutes
+
+
+async def _cache_oauth_pending(
+    pending_token: str,
+    provider_type: str,
+    user_info_dict: dict,
+    token_data: dict,
+) -> None:
+    """Store OAuth intermediate data in Redis for the two-step tenant-selection flow."""
+    import json
+    from app.core.events import get_redis
+    r = await get_redis()
+    payload = json.dumps({
+        "provider_type": provider_type,
+        "user_info": user_info_dict,
+        "token_data": token_data,
+    })
+    await r.set(f"{_OAUTH_PENDING_PREFIX}{pending_token}", payload, ex=_OAUTH_PENDING_TTL)
+
+
+async def _get_oauth_pending(pending_token: str) -> dict | None:
+    """Retrieve (and delete) cached OAuth data from Redis. Returns None if expired/missing."""
+    import json
+    from app.core.events import get_redis
+    r = await get_redis()
+    raw = await r.get(f"{_OAUTH_PENDING_PREFIX}{pending_token}")
+    if not raw:
+        return None
+    # Single-use: delete immediately after retrieval
+    await r.delete(f"{_OAUTH_PENDING_PREFIX}{pending_token}")
+    return json.loads(raw)
 
 
 @router.get("/{provider}/authorize", response_model=OAuthAuthorizeResponse)
@@ -917,36 +972,75 @@ async def authorize(
     return OAuthAuthorizeResponse(authorization_url=auth_url)
 
 
-@router.post("/{provider}/callback", response_model=TokenResponse)
+@router.post("/{provider}/callback", response_model=Any)
 async def oauth_callback(
     provider: str,
     data: OAuthCallbackRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Handle OAuth callback and login/register user."""
+    """Handle OAuth callback — supports a two-step flow for multi-tenant selection.
+
+    Step 1 (code provided): exchange code with provider, detect multiple tenants,
+    cache user_info in Redis, return MultiTenantResponse with opaque pending_token.
+
+    Step 2 (pending_token + tenant_id provided): retrieve cached user_info from Redis,
+    call find_or_create_user with the chosen tenant_id, return TokenResponse.
+    """
+    import uuid as _uuid
+    from app.models.tenant import Tenant
     from app.services.auth_registry import auth_provider_registry
 
-    # Get provider
+    # ── Step 2: User has selected a tenant ───────────────────────────────────
+    if data.pending_token and data.tenant_id:
+        pending = await _get_oauth_pending(data.pending_token)
+        if not pending:
+            raise HTTPException(
+                status_code=400,
+                detail="OAuth session expired or invalid. Please sign in again.",
+            )
+
+        auth_provider = await auth_provider_registry.get_provider(db, pending["provider_type"])
+        if not auth_provider:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Provider '{pending['provider_type']}' not supported",
+            )
+
+        from app.services.auth_provider import ExternalUserInfo
+        user_info = ExternalUserInfo(**pending["user_info"])
+
+        user, _ = await auth_provider.find_or_create_user(db, user_info, tenant_id=data.tenant_id)
+        if not user:
+            raise HTTPException(status_code=500, detail="Failed to create user")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="Account is disabled")
+
+        jwt_token = create_access_token(str(user.id), user.role)
+        return TokenResponse(
+            access_token=jwt_token,
+            user=UserOut.model_validate(user),
+            needs_company_setup=user.tenant_id is None,
+        )
+
+    # ── Step 1: Exchange code, detect multi-tenant ────────────────────────────
+    if not data.code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+
     auth_provider = await auth_provider_registry.get_provider(db, provider)
     if not auth_provider:
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not supported")
 
     try:
-        # Exchange code for token
         token_data = await auth_provider.exchange_code_for_token(data.code, data.redirect_uri)
         access_token = token_data.get("access_token")
         if not access_token:
             raise HTTPException(status_code=400, detail="Failed to get access token from provider")
 
-        # Get user info
         user_info = await auth_provider.get_user_info(access_token)
-
-        # Find or create user
         user, is_new = await auth_provider.find_or_create_user(db, user_info)
 
         if not user:
             raise HTTPException(status_code=500, detail="Failed to create user")
-
         if not user.is_active:
             raise HTTPException(status_code=403, detail="Account is disabled")
 
@@ -956,9 +1050,56 @@ async def oauth_callback(
         logger.error(f"OAuth callback failed for {provider}: {e}")
         raise HTTPException(status_code=500, detail="OAuth authentication failed")
 
-    # Generate JWT token
-    jwt_token = create_access_token(str(user.id), user.role)
+    # Check if this identity has multiple tenant memberships
+    if user.identity_id:
+        all_users_result = await db.execute(
+            select(User).where(User.identity_id == user.identity_id)
+        )
+        all_users = list(all_users_result.scalars().all())
+        tenant_users = [u for u in all_users if u.tenant_id is not None]
 
+        if len(tenant_users) > 1:
+            # Cache the full user_info in Redis so Step 2 can reconstruct it
+            pending_token = _uuid.uuid4().hex
+            await _cache_oauth_pending(
+                pending_token,
+                provider,
+                {
+                    "provider_type": user_info.provider_type,
+                    "provider_union_id": user_info.provider_union_id,
+                    "provider_user_id": user_info.provider_user_id,
+                    "name": user_info.name,
+                    "email": user_info.email,
+                    "avatar_url": user_info.avatar_url,
+                    "mobile": user_info.mobile,
+                    "raw_data": user_info.raw_data,
+                },
+                token_data,
+            )
+
+            tenant_ids = [u.tenant_id for u in tenant_users]
+            tenants_result = await db.execute(select(Tenant).where(Tenant.id.in_(tenant_ids)))
+            tenants_map = {str(t.id): t for t in tenants_result.scalars().all()}
+
+            tenant_choices = [
+                TenantChoice(
+                    tenant_id=u.tenant_id,
+                    tenant_name=tenants_map[str(u.tenant_id)].name if str(u.tenant_id) in tenants_map else "Unknown",
+                    tenant_slug=tenants_map[str(u.tenant_id)].slug if str(u.tenant_id) in tenants_map else "",
+                    logo_url=tenants_map[str(u.tenant_id)].logo_url if str(u.tenant_id) in tenants_map else None,
+                )
+                for u in tenant_users
+            ]
+
+            return MultiTenantResponse(
+                requires_tenant_selection=True,
+                login_identifier=user_info.email or "",
+                tenants=tenant_choices,
+                pending_token=pending_token,
+            )
+
+    # Single tenant (or new user with no tenant yet) — issue token directly
+    jwt_token = create_access_token(str(user.id), user.role)
     return TokenResponse(
         access_token=jwt_token,
         user=UserOut.model_validate(user),

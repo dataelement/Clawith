@@ -42,8 +42,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       AGENT_DATA_DIR: /data/agents
       AGENT_TEMPLATE_DIR: /app/agent_template
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_ROOT: /data/agents
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret}
+      PROCESS_ROLE: all
       CORS_ORIGINS: '["*"]'
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
@@ -84,9 +87,10 @@ services:
       - "${FRONTEND_PORT:-3008}:3000"
     environment:
       VITE_API_URL: http://localhost:8000
+      API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
+      MINIO_UPSTREAM: ${MINIO_UPSTREAM:-minio:9000}
     volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
+      - ./frontend/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
     networks:
       - default
     depends_on:

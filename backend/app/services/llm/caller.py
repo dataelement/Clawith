@@ -20,9 +20,19 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.config import get_settings
 from app.database import async_session
-from app.services.agent_tools import AGENT_TOOLS, execute_tool, get_agent_tools_for_llm
+
+# NOTE: agent_tools imports are deferred to function bodies to avoid circular
+# import: agent_tools → llm.finish → llm/__init__ → caller → agent_tools
+
+async def get_agent_tools_for_llm(*args, **kwargs):
+    from app.services.agent_tools import get_agent_tools_for_llm as _impl
+    return await _impl(*args, **kwargs)
+
+async def execute_tool(*args, **kwargs):
+    from app.services.agent_tools import execute_tool as _impl
+    return await _impl(*args, **kwargs)
 from app.services.token_tracker import (
     TokenUsage,
     record_token_usage,
@@ -353,9 +363,8 @@ async def _process_tool_call(
     if supports_vision and agent_id:
         try:
             from app.services.vision_inject import try_inject_screenshot_vision
-            from app.config import get_settings
             settings = get_settings()
-            ws_path = Path(settings.AGENT_DATA_DIR) / str(agent_id)
+            ws_path = Path(settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR) / str(agent_id)
             vision_content = try_inject_screenshot_vision(tool_name, str(result), ws_path)
             if vision_content:
                 tool_content = vision_content
@@ -429,6 +438,7 @@ async def call_llm(
     if skip_tools:
         tools_for_llm = [FINISH_TOOL_DEFINITION]
     else:
+        from app.services.agent_tools import AGENT_TOOLS
         tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
     allowed_tool_names = _allowed_tool_names(tools_for_llm)
 
@@ -835,7 +845,6 @@ async def call_agent_llm_with_tools(
         LLMMessage(role="user", content=user_prompt),
     ]
 
-    # Load tools
     tools_for_llm = await get_agent_tools_for_llm(agent_id)
     allowed_tool_names = _allowed_tool_names(tools_for_llm)
 

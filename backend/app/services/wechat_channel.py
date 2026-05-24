@@ -307,6 +307,7 @@ class WeChatPollManager:
     def __init__(self) -> None:
         self._tasks: dict[uuid.UUID, asyncio.Task] = {}
         self._connected: dict[uuid.UUID, bool] = {}
+        self._reconcile_interval_seconds = 30
 
     async def start_client(self, agent_id: uuid.UUID, stop_existing: bool = True) -> None:
         if stop_existing:
@@ -327,6 +328,13 @@ class WeChatPollManager:
         await self._set_connected(agent_id, False)
 
     async def start_all(self) -> None:
+        logger.info("[WeChat] Poll manager started")
+        while True:
+            await self.reconcile_clients()
+            await asyncio.sleep(self._reconcile_interval_seconds)
+
+    async def reconcile_clients(self) -> None:
+        configured_agent_ids: set[uuid.UUID] = set()
         async with async_session() as db:
             result = await db.execute(
                 select(ChannelConfig).where(
@@ -337,7 +345,16 @@ class WeChatPollManager:
             for cfg in result.scalars().all():
                 token = str((cfg.extra_config or {}).get("bot_token") or "").strip()
                 if token:
-                    await self.start_client(cfg.agent_id)
+                    configured_agent_ids.add(cfg.agent_id)
+
+        for agent_id in configured_agent_ids:
+            task = self._tasks.get(agent_id)
+            if task is None or task.done():
+                await self.start_client(agent_id)
+
+        for agent_id in list(self._tasks):
+            if agent_id not in configured_agent_ids:
+                await self.stop_client(agent_id)
 
     async def _run_client(self, agent_id: uuid.UUID) -> None:
         retry_delay = 2

@@ -86,6 +86,7 @@ const safeDisplayIcon = (icon?: string | null, fallback: React.ReactNode = <Icon
 type FocusItem = {
     id: string;
     name: string;
+    title?: string | null;
     description: string;
     done: boolean;
     inProgress: boolean;
@@ -100,6 +101,7 @@ function focusItemFromApi(item: FocusApiItem): FocusItem {
     return {
         id: item.id,
         name: item.key,
+        title: item.title,
         description: item.description || item.key,
         done,
         inProgress: !done,
@@ -2145,6 +2147,10 @@ export default function AgentDetailPage() {
     const [scopeDropdownOpen, setScopeDropdownOpen] = useState(false);
     const scopeDropdownRef = useRef<HTMLDivElement>(null);
     const [historyMsgs, setHistoryMsgs] = useState<any[]>([]);
+    const [historyOffset, setHistoryOffset] = useState(0);
+    const [historyHasMore, setHistoryHasMore] = useState(true);
+    const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+    const HISTORY_PAGE_SIZE = 20;
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
     const [agentExpired, setAgentExpired] = useState(false);
@@ -2368,6 +2374,9 @@ export default function AgentDetailPage() {
         pendingHistoryInitialScrollRef.current = !writable;
         setChatMessages([]);
         setHistoryMsgs([]);
+        setHistoryOffset(0);
+        setHistoryHasMore(true);
+        setHistoryLoadingMore(false);
         setIsStreaming(runtimeState.isStreaming);
         setIsWaiting(runtimeState.isWaiting);
         setActiveSession(sess);
@@ -2382,7 +2391,7 @@ export default function AgentDetailPage() {
         const loadSeq = ++sessionLoadSeqRef.current;
         try {
             const tkn = localStorage.getItem('token');
-            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages`, {
+            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&offset=0`, {
                 headers: { Authorization: `Bearer ${tkn}` },
                 signal: controller.signal,
             });
@@ -2398,6 +2407,7 @@ export default function AgentDetailPage() {
                 ...(m.created_at && { timestamp: m.created_at }),
                 ...(m.id && { id: m.id }),
             }));
+            setHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
 
             if (writable) {
                 setChatMessages(preParsed);
@@ -3371,11 +3381,60 @@ export default function AgentDetailPage() {
         window.setTimeout(scroll, 120);
         window.setTimeout(scroll, 360);
     }, []);
+
+    const loadMoreHistoryMessages = useCallback(async () => {
+        if (historyLoadingMore || !historyHasMore || !activeSession || !id) return;
+        const sess = activeSession;
+        const targetAgentId = id;
+        setHistoryLoadingMore(true);
+        try {
+            const tkn = localStorage.getItem('token');
+            const newOffset = historyOffset + HISTORY_PAGE_SIZE;
+            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&offset=${newOffset}`, {
+                headers: { Authorization: `Bearer ${tkn}` },
+            });
+            if (!res.ok) return;
+            const msgs = await res.json();
+            if (msgs.length === 0) {
+                setHistoryHasMore(false);
+                return;
+            }
+            const preParsed = msgs.map((m: any) => parseChatMsg({
+                role: m.role, content: m.content || '',
+                ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult, toolThinking: m.toolThinking }),
+                ...(m.thinking && { thinking: m.thinking }),
+                ...(m.created_at && { timestamp: m.created_at }),
+                ...(m.id && { id: m.id }),
+            }));
+            // Save current scroll position
+            const el = historyContainerRef.current;
+            const oldScrollHeight = el?.scrollHeight ?? 0;
+            setHistoryMsgs(prev => [...preParsed, ...prev]);
+            setHistoryOffset(newOffset);
+            setHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
+            // Restore scroll position after new messages are prepended
+            requestAnimationFrame(() => {
+                if (el) {
+                    const newScrollHeight = el.scrollHeight;
+                    el.scrollTop = newScrollHeight - oldScrollHeight;
+                }
+            });
+        } catch (err: any) {
+            console.error('Failed to load more history messages:', err);
+        } finally {
+            setHistoryLoadingMore(false);
+        }
+    }, [historyLoadingMore, historyHasMore, activeSession, id, historyOffset]);
+
     const handleHistoryScroll = () => {
         const el = historyContainerRef.current;
         if (!el) return;
         const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
         setShowHistoryScrollBtn(distFromBottom > 200);
+        // Load more when scrolling near the top
+        if (el.scrollTop < 100 && historyHasMore && !historyLoadingMore) {
+            loadMoreHistoryMessages();
+        }
     };
     const scrollHistoryToBottom = () => {
         scheduleHistoryScrollToBottom();
@@ -3868,7 +3927,7 @@ export default function AgentDetailPage() {
     const { data: schedules = [] } = useQuery({
         queryKey: ['schedules', id],
         queryFn: () => scheduleApi.list(id!),
-        enabled: !!id && activeTab === 'tasks',
+        enabled: !!id && (activeTab as string) === 'tasks',
     });
 
     // Schedule form state
@@ -4300,19 +4359,34 @@ export default function AgentDetailPage() {
         const renderFocusItem = (item: FocusItem) => {
             const isExpanded = expandedFocusIds.has(item.id);
             const itemTriggers = triggersByFocus[item.name] || [];
+            
+            const hasTitle = !!item.title;
+            const displayTitle = hasTitle ? item.title : item.name;
+            const displaySubtitle = hasTitle ? item.name : null;
+            const displayDescription = item.description;
+
             return (
                 <div key={item.id} className={`aware-side-focus ${item.done ? 'done' : ''}`}>
                     <button className="aware-side-focus-head" type="button" onClick={() => toggleExpandedFocus(item.id)}>
                         <div className="aware-side-trigger-main">
-                            <div className="aware-side-item-title">
-                                <span>{item.description || item.name}</span>
+                            <div className="aware-side-item-title" style={{ fontWeight: 500 }}>
+                                <span>{displayTitle}</span>
                                 {item.done && (
                                     <span className="aware-side-focus-badge done">
                                         {t('agent.aware.completed')}
                                     </span>
                                 )}
                             </div>
-                            {item.description && <div className="aware-side-item-meta">{item.name}</div>}
+                            {displaySubtitle && (
+                                <div className="aware-side-item-meta" style={{ fontFamily: 'monospace' }}>
+                                    {displaySubtitle}
+                                </div>
+                            )}
+                            {displayDescription && (
+                                <div className="aware-side-item-desc">
+                                    {displayDescription}
+                                </div>
+                            )}
                         </div>
                         <span className="aware-side-count">
                             {isZh ? `${itemTriggers.length} 个` : itemTriggers.length}
@@ -5066,8 +5140,11 @@ export default function AgentDetailPage() {
                         const isExpanded = expandedFocusIds.has(item.id);
                         const itemTriggers = triggersByFocus[item.name] || [];
                         const itemLogs = triggerLogsByFocus[item.name] || [];
-                        const displayTitle = item.description || item.name;
-                        const displaySubtitle = item.description ? item.name : null;
+                        
+                        const hasTitle = !!item.title;
+                        const displayTitle = hasTitle ? item.title : item.name;
+                        const displaySubtitle = hasTitle ? item.name : null;
+                        const displayDescription = item.description;
 
                         return (
                             <div key={item.id} style={{
@@ -5112,6 +5189,11 @@ export default function AgentDetailPage() {
                                         {displaySubtitle && (
                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'monospace', marginTop: '2px' }}>
                                                 {displaySubtitle}
+                                            </div>
+                                        )}
+                                        {displayDescription && (
+                                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px', whiteSpace: 'pre-wrap' }}>
+                                                {displayDescription}
                                             </div>
                                         )}
                                     </div>
@@ -5881,6 +5963,16 @@ export default function AgentDetailPage() {
                                             )}
                                         </div>
                                         <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
+                                            {historyLoadingMore && (
+                                                <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                                    Loading more messages...
+                                                </div>
+                                            )}
+                                            {!historyHasMore && historyMsgs.length > 0 && (
+                                                <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                                    All messages loaded
+                                                </div>
+                                            )}
                                             {(() => {
                                                 // For A2A sessions, determine which participant is "this agent" (left side)
                                                 // Use agent.name matching against sender_name from messages

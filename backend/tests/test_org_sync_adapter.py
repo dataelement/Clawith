@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +42,14 @@ class _FakeDB:
 
     async def flush(self):
         self.flush_calls += 1
+
+
+class _RecordingExecuteDB:
+    def __init__(self):
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
 
 
 class _SyncAdapterWithFailure(_DummyAdapter):
@@ -113,6 +122,17 @@ def test_sync_org_structure_skips_reconcile_after_member_failure():
     assert adapter.reconcile_called is False
     assert adapter.member_counts_updated is True
     assert "Reconcile skipped due to partial sync failures" in result["errors"]
+
+
+def test_reconcile_disables_session_synchronization_for_datetime_comparisons():
+    adapter = _DummyAdapter()
+    db = _RecordingExecuteDB()
+
+    asyncio.run(adapter._reconcile(db, uuid.uuid4(), datetime.now(timezone.utc)))
+
+    assert len(db.statements) == 2
+    for statement in db.statements:
+        assert statement.get_execution_options()["synchronize_session"] is False
 
 
 def test_google_workspace_adapter_parses_legacy_service_account_json_string():
