@@ -3168,6 +3168,14 @@ export default function AgentDetailPage() {
                     return [...prev, { role: 'assistant', content: d.content, _streaming: true } as any];
                 });
             } else if (d.type === 'done') {
+                // Add end marker to code output if there was any code activity
+                setLiveState(prev => {
+                    if (prev.code?.output) {
+                        const endMarker = '\n========== end ==========\n\n';
+                        return { ...prev, code: { output: prev.code.output + endMarker } };
+                    }
+                    return prev;
+                });
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
                     const thinking = (last && last.role === 'assistant' && (last as any)._streaming) ? last.thinking : undefined;
@@ -6540,6 +6548,9 @@ export default function AgentDetailPage() {
                                             ...prev,
                                             [env]: { screenshotUrl: screenshotDataUri },
                                         }));
+                                    }}
+                                    onCloseCode={() => {
+                                        setLiveState(prev => ({ ...prev, code: undefined }));
                                     }}
                                 />
                             </div>

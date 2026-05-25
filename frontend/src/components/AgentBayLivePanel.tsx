@@ -39,6 +39,8 @@ interface Props {
     onLiveUpdate?: (env: 'browser' | 'desktop', screenshotDataUri: string) => void;
     /** Called when user clicks Clear in the code output panel */
     onClearCode?: () => void;
+    /** Called when user clicks Close to dismiss the code panel */
+    onCloseCode?: () => void;
 }
 
 /* ── Tab Icons (Linear-style minimal SVGs) ── */
@@ -98,7 +100,7 @@ function calcHalfContainerWidth(): number {
     return Math.max(MIN_WIDTH, Math.floor((window.innerWidth - 60) / 2));
 }
 
-export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId, onLiveUpdate, onClearCode }: Props) {
+export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId, onLiveUpdate, onClearCode, onCloseCode }: Props) {
     const { t } = useTranslation();
 
     // Keep a ref to the latest onLiveUpdate so TakeControl callbacks always
@@ -284,6 +286,20 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
                     >
                         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M4 4l8 8M12 4l-8 8" />
+                        </svg>
+                    </button>
+                )}
+                {/* Close button for code panel */}
+                {activeTab === 'code' && liveState.code && onCloseCode && (
+                    <button
+                        className="live-panel-collapse"
+                        onClick={onCloseCode}
+                        title="Close code panel"
+                        style={{ marginRight: '2px' }}
+                    >
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="8" cy="8" r="6" />
+                            <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" />
                         </svg>
                     </button>
                 )}

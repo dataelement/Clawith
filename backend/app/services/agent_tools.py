@@ -2266,11 +2266,6 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                 result.append(tool_def)
                 db_tool_names.add(t.name)
 
-            if explicitly_disabled_names:
-                logger.info(
-                    f"[Tools] agent={agent_id} explicitly disabled: "
-                    f"{sorted(explicitly_disabled_names)}"
-                )
             if default_included_names:
                 logger.info(
                     f"[Tools] agent={agent_id} included via default fallback (no AgentTool record): "

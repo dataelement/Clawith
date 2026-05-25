@@ -33,6 +33,8 @@ interface Props {
     agentId?: string;
     sessionId?: string;
     onLiveUpdate?: (env: 'browser' | 'desktop', screenshotDataUri: string) => void;
+    /** Called when user clicks Close to dismiss the code panel */
+    onCloseCode?: () => void;
 }
 
 export type SidePanelTab = 'workspace' | 'aware' | 'browser' | 'desktop' | 'code' | 'transfer';
@@ -66,6 +68,7 @@ export default function AgentSidePanel({
     agentId,
     sessionId,
     onLiveUpdate,
+    onCloseCode,
 }: Props) {
     const { t } = useTranslation();
     const labels: Record<SidePanelTab, string> = {
@@ -187,6 +190,15 @@ export default function AgentSidePanel({
                     </button>
                 )}
                 <div className="live-panel-header-right">
+                    {activeTab === 'code' && liveState.code && onCloseCode && (
+                        <button
+                            className="live-panel-icon-btn"
+                            onClick={onCloseCode}
+                            title={t('agent.sidePanel.closeCode', 'Close code panel')}
+                        >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+                        </button>
+                    )}
                     {activeTab === 'workspace' && (
                         <>
                             <div id="workspace-header-file-actions" className="live-panel-workspace-actions" />
