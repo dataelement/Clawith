@@ -362,7 +362,7 @@ async def get_session_messages(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     limit: int = Query(20, ge=1, le=500, description="Number of messages to return"),
-    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    before: str = Query(None, description="Cursor: return messages created before this timestamp (ISO format)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -386,13 +386,21 @@ async def get_session_messages(
     # Query messages by conversation_id only (agent-to-agent uses session_agent_id)
     # Optimized: use a single query with ORDER BY and LIMIT instead of subquery
     from sqlalchemy import desc
-    msgs_result = await db.execute(
+    query = (
         select(ChatMessage)
         .where(ChatMessage.conversation_id == str(session_id))
         .order_by(desc(ChatMessage.created_at))
         .limit(limit)
-        .offset(offset)
     )
+    # Apply cursor filter if `before` timestamp is provided
+    if before:
+        from datetime import datetime as dt
+        try:
+            before_dt = dt.fromisoformat(before.replace('Z', '+00:00'))
+            query = query.where(ChatMessage.created_at < before_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid `before` timestamp format. Use ISO 8601.")
+    msgs_result = await db.execute(query)
     messages = list(reversed(msgs_result.scalars().all()))
 
     # Reading your own first-party/channel session should clear its unread state.

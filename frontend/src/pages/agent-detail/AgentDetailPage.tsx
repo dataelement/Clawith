@@ -318,7 +318,7 @@ function CopyMessageButton({ text }: { text: string }) {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
         };
-        
+
         if (navigator.clipboard && window.isSecureContext) {
             copyToClipboard(text).then(copySuccess).catch(err => console.error('Clipboard API failed', err));
         } else {
@@ -559,43 +559,44 @@ function AccessPermissionsPanel({
                     const disabled = !canManagePermissions || (scope.value === 'private' && !isOwner);
                     const selected = localScope === scope.value;
                     return (
-                    <button
-                        key={scope.value}
-                        type="button"
-                        disabled={!canManagePermissions}
-                        onClick={() => setScope(scope.value)}
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '10px',
-                            width: '100%',
-                            textAlign: 'left',
-                            padding: '12px 14px',
-                            borderRadius: '8px',
-                            cursor: disabled ? 'not-allowed' : 'pointer',
-                            border: selected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
-                            background: selected ? 'rgba(99,102,241,0.06)' : 'transparent',
-                            opacity: disabled ? 0.55 : 1,
-                            transition: 'all 0.15s',
-                        }}
-                    >
-                        <input
-                            type="radio"
-                            name="perm_scope"
-                            checked={selected}
-                            disabled={disabled}
-                            readOnly
-                            style={{ accentColor: 'var(--accent-primary)' }}
-                        />
-                        <div>
-                            <div style={{ fontWeight: 500, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                {scope.icon} {scope.label}
-                                {savingScope === scope.value && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 400 }}>{isChinese ? '保存中...' : 'Saving...'}</span>}
+                        <button
+                            key={scope.value}
+                            type="button"
+                            disabled={!canManagePermissions}
+                            onClick={() => setScope(scope.value)}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '10px',
+                                width: '100%',
+                                textAlign: 'left',
+                                padding: '12px 14px',
+                                borderRadius: '8px',
+                                cursor: disabled ? 'not-allowed' : 'pointer',
+                                border: selected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                                background: selected ? 'rgba(99,102,241,0.06)' : 'transparent',
+                                opacity: disabled ? 0.55 : 1,
+                                transition: 'all 0.15s',
+                            }}
+                        >
+                            <input
+                                type="radio"
+                                name="perm_scope"
+                                checked={selected}
+                                disabled={disabled}
+                                readOnly
+                                style={{ accentColor: 'var(--accent-primary)' }}
+                            />
+                            <div>
+                                <div style={{ fontWeight: 500, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                    {scope.icon} {scope.label}
+                                    {savingScope === scope.value && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 400 }}>{isChinese ? '保存中...' : 'Saving...'}</span>}
+                                </div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{scope.desc}</div>
                             </div>
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{scope.desc}</div>
-                        </div>
-                    </button>
-                );})}
+                        </button>
+                    );
+                })}
             </div>
 
             {permissionError && (
@@ -717,45 +718,46 @@ function AccessPermissionsPanel({
                                 const isCreatorUser = creatorId === u.id;
                                 const lockedUser = isLockedAccessUser(u);
                                 return (
-                                <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px', border: '1px solid var(--border-subtle)', borderRadius: '8px' }}>
-                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                        <div style={{ fontSize: '12px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                            {u.name}
-                                            {isCreatorUser && (
-                                                <span className="badge" style={{ fontSize: '10px', marginLeft: '6px' }}>
-                                                    {isChinese ? '创建者' : 'Creator'}
-                                                </span>
-                                            )}
-                                            {!isCreatorUser && u.required_reason === 'company_admin' && (
-                                                <span className="badge" style={{ fontSize: '10px', marginLeft: '6px' }}>
-                                                    {isChinese ? '管理员' : 'Admin'}
-                                                </span>
-                                            )}
+                                    <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px', border: '1px solid var(--border-subtle)', borderRadius: '8px' }}>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ fontSize: '12px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {u.name}
+                                                {isCreatorUser && (
+                                                    <span className="badge" style={{ fontSize: '10px', marginLeft: '6px' }}>
+                                                        {isChinese ? '创建者' : 'Creator'}
+                                                    </span>
+                                                )}
+                                                {!isCreatorUser && u.required_reason === 'company_admin' && (
+                                                    <span className="badge" style={{ fontSize: '10px', marginLeft: '6px' }}>
+                                                        {isChinese ? '管理员' : 'Admin'}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {u.email && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</div>}
                                         </div>
-                                        {u.email && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</div>}
+                                        <select
+                                            className="input"
+                                            value={lockedUser ? 'manage' : u.access_level}
+                                            disabled={lockedUser}
+                                            onChange={(e) => updateUserLevel(u.id, e.target.value as 'use' | 'manage')}
+                                            style={{ width: '92px', fontSize: '12px', opacity: lockedUser ? 0.65 : 1, cursor: lockedUser ? 'not-allowed' : 'pointer' }}
+                                            title={lockedUser ? lockedAccessTitle(u) : undefined}
+                                        >
+                                            <option value="use">{t('agent.settings.perm.useAccess', 'Use')}</option>
+                                            <option value="manage">{t('agent.settings.perm.manageAccess', 'Manage')}</option>
+                                        </select>
+                                        <button
+                                            className="btn btn-ghost btn-sm"
+                                            disabled={lockedUser}
+                                            onClick={() => removeUser(u.id)}
+                                            title={lockedUser ? lockedAccessTitle(u) : undefined}
+                                            style={{ opacity: lockedUser ? 0.35 : 1, cursor: lockedUser ? 'not-allowed' : 'pointer' }}
+                                        >
+                                            ×
+                                        </button>
                                     </div>
-                                    <select
-                                        className="input"
-                                        value={lockedUser ? 'manage' : u.access_level}
-                                        disabled={lockedUser}
-                                        onChange={(e) => updateUserLevel(u.id, e.target.value as 'use' | 'manage')}
-                                        style={{ width: '92px', fontSize: '12px', opacity: lockedUser ? 0.65 : 1, cursor: lockedUser ? 'not-allowed' : 'pointer' }}
-                                        title={lockedUser ? lockedAccessTitle(u) : undefined}
-                                    >
-                                        <option value="use">{t('agent.settings.perm.useAccess', 'Use')}</option>
-                                        <option value="manage">{t('agent.settings.perm.manageAccess', 'Manage')}</option>
-                                    </select>
-                                    <button
-                                        className="btn btn-ghost btn-sm"
-                                        disabled={lockedUser}
-                                        onClick={() => removeUser(u.id)}
-                                        title={lockedUser ? lockedAccessTitle(u) : undefined}
-                                        style={{ opacity: lockedUser ? 0.35 : 1, cursor: lockedUser ? 'not-allowed' : 'pointer' }}
-                                    >
-                                        ×
-                                    </button>
-                                </div>
-                            );})}
+                                );
+                            })}
                             {userAccess.length === 0 && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{isChinese ? '尚未指定用户。创建者会自动保留管理权限。' : 'No users selected. The creator keeps manage access automatically.'}</div>}
                         </div>
                     </div>
@@ -777,7 +779,7 @@ function AccessPermissionsPanel({
     );
 }
 
-// ── Pulse LED keyframe (shared with Chat.tsx, guarded by ID) ──────────────
+// ── Pulse LED keyframe (guarded by ID) ──────────────
 const _PULSE_STYLE_ID = 'cw-tool-pulse-style';
 if (typeof document !== 'undefined' && !document.getElementById(_PULSE_STYLE_ID)) {
     const _s = document.createElement('style');
@@ -1091,74 +1093,74 @@ function AnalysisCard({
                                                 </span>
                                             )}
                                         </div>
-                                    {hasDetail && (
-                                        <details style={{ marginTop: '8px' }}>
-                                            <summary style={{
-                                                cursor: 'pointer',
-                                                color: 'var(--text-tertiary)',
-                                                fontSize: '12px',
-                                                listStyle: 'none',
-                                                userSelect: 'none',
-                                            }}>
-                                                {t('agent.chat.viewDetails')}
-                                            </summary>
-                                            <div style={{ marginTop: '8px' }}>
-                                            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
-                                                <span style={{
-                                                    display: 'inline-flex',
-                                                    alignItems: 'center',
-                                                    height: '22px',
-                                                    padding: '0 8px',
-                                                    borderRadius: '6px',
-                                                    background: 'var(--bg-secondary)',
+                                        {hasDetail && (
+                                            <details style={{ marginTop: '8px' }}>
+                                                <summary style={{
+                                                    cursor: 'pointer',
                                                     color: 'var(--text-tertiary)',
-                                                    fontSize: '11px',
-                                                    lineHeight: 1,
+                                                    fontSize: '12px',
+                                                    listStyle: 'none',
+                                                    userSelect: 'none',
                                                 }}>
-                                                    {t('agent.chat.provider', 'Provider')}: {provider}
-                                                </span>
-                                                <span style={{
-                                                    display: 'inline-flex',
-                                                    alignItems: 'center',
-                                                    maxWidth: '100%',
-                                                    height: '22px',
-                                                    padding: '0 8px',
-                                                    borderRadius: '6px',
-                                                    background: 'var(--bg-secondary)',
-                                                    color: 'var(--text-secondary)',
-                                                    fontFamily: 'var(--font-mono)',
-                                                    fontSize: '11px',
-                                                    lineHeight: 1,
-                                                    overflow: 'hidden',
-                                                    textOverflow: 'ellipsis',
-                                                    whiteSpace: 'nowrap',
-                                                }}>
-                                                    {t('agent.chat.toolName', 'Tool')}: {tc.name || 'tool'}
-                                                </span>
-                                            </div>
-                                            {argsStr && (
-                                                <div style={{
-                                                    fontFamily: 'var(--font-mono)', fontSize: '10px',
-                                                    color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap',
-                                                    wordBreak: 'break-all', maxHeight: '80px', overflowY: 'auto',
-                                                    background: 'var(--bg-secondary)', borderRadius: '4px',
-                                                    padding: '4px 6px', marginBottom: tc.result ? '4px' : 0,
-                                                }}>{argsStr}</div>
-                                            )}
-                                            {tc.result && (
-                                                <div style={{
-                                                    fontSize: '10px', color: 'var(--text-secondary)',
-                                                    whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                                                    maxHeight: '120px', overflowY: 'auto',
-                                                    borderTop: argsStr ? '1px solid var(--border-subtle)' : 'none',
-                                                    paddingTop: argsStr ? '4px' : 0,
-                                                }}>
-                                                    {tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}
+                                                    {t('agent.chat.viewDetails')}
+                                                </summary>
+                                                <div style={{ marginTop: '8px' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                                                        <span style={{
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            height: '22px',
+                                                            padding: '0 8px',
+                                                            borderRadius: '6px',
+                                                            background: 'var(--bg-secondary)',
+                                                            color: 'var(--text-tertiary)',
+                                                            fontSize: '11px',
+                                                            lineHeight: 1,
+                                                        }}>
+                                                            {t('agent.chat.provider', 'Provider')}: {provider}
+                                                        </span>
+                                                        <span style={{
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            maxWidth: '100%',
+                                                            height: '22px',
+                                                            padding: '0 8px',
+                                                            borderRadius: '6px',
+                                                            background: 'var(--bg-secondary)',
+                                                            color: 'var(--text-secondary)',
+                                                            fontFamily: 'var(--font-mono)',
+                                                            fontSize: '11px',
+                                                            lineHeight: 1,
+                                                            overflow: 'hidden',
+                                                            textOverflow: 'ellipsis',
+                                                            whiteSpace: 'nowrap',
+                                                        }}>
+                                                            {t('agent.chat.toolName', 'Tool')}: {tc.name || 'tool'}
+                                                        </span>
+                                                    </div>
+                                                    {argsStr && (
+                                                        <div style={{
+                                                            fontFamily: 'var(--font-mono)', fontSize: '10px',
+                                                            color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap',
+                                                            wordBreak: 'break-all', maxHeight: '80px', overflowY: 'auto',
+                                                            background: 'var(--bg-secondary)', borderRadius: '4px',
+                                                            padding: '4px 6px', marginBottom: tc.result ? '4px' : 0,
+                                                        }}>{argsStr}</div>
+                                                    )}
+                                                    {tc.result && (
+                                                        <div style={{
+                                                            fontSize: '10px', color: 'var(--text-secondary)',
+                                                            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                                            maxHeight: '120px', overflowY: 'auto',
+                                                            borderTop: argsStr ? '1px solid var(--border-subtle)' : 'none',
+                                                            paddingTop: argsStr ? '4px' : 0,
+                                                        }}>
+                                                            {tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}
+                                                        </div>
+                                                    )}
                                                 </div>
-                                            )}
-                                            </div>
-                                        </details>
-                                    )}
+                                            </details>
+                                        )}
                                     </div>
                                 </div>
                             );
@@ -1167,7 +1169,7 @@ function AnalysisCard({
                             <div className="analysis-trace-row analysis-trace-row--done">
                                 <div className="analysis-trace-node-wrap">
                                     <div className="analysis-trace-node analysis-trace-node--done analysis-trace-node--pending">
-                                    <IconClock size={18} stroke={1.65} />
+                                        <IconClock size={18} stroke={1.65} />
                                     </div>
                                 </div>
                                 <div style={{ color: 'var(--text-tertiary)', fontSize: '13px', lineHeight: 1.5 }}>
@@ -1244,7 +1246,7 @@ function ThoughtDisclosure({
                     <div className="analysis-trace-row analysis-trace-row--done">
                         <div className="analysis-trace-node-wrap">
                             <div className="analysis-trace-node analysis-trace-node--done analysis-trace-node--pending">
-                            <IconClock size={18} stroke={1.65} />
+                                <IconClock size={18} stroke={1.65} />
                             </div>
                         </div>
                         <div style={{ color: 'var(--text-tertiary)', fontSize: '13px', lineHeight: 1.5 }}>
@@ -2147,10 +2149,14 @@ export default function AgentDetailPage() {
     const [scopeDropdownOpen, setScopeDropdownOpen] = useState(false);
     const scopeDropdownRef = useRef<HTMLDivElement>(null);
     const [historyMsgs, setHistoryMsgs] = useState<any[]>([]);
-    const [historyOffset, setHistoryOffset] = useState(0);
+    const [historyOldestTimestamp, setHistoryOldestTimestamp] = useState<string | null>(null);
     const [historyHasMore, setHistoryHasMore] = useState(true);
     const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
     const HISTORY_PAGE_SIZE = 20;
+    // Chat history pagination state (for writable/live sessions)
+    const [chatOldestTimestamp, setChatOldestTimestamp] = useState<string | null>(null);
+    const [chatHistoryHasMore, setChatHistoryHasMore] = useState(true);
+    const [chatHistoryLoadingMore, setChatHistoryLoadingMore] = useState(false);
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
     const [agentExpired, setAgentExpired] = useState(false);
@@ -2289,6 +2295,9 @@ export default function AgentDetailPage() {
         activeSessionIdRef.current = null;
         setActiveSession(null);
         setChatMessages([]);
+        setChatOldestTimestamp(null);
+        setChatHistoryHasMore(true);
+        setChatHistoryLoadingMore(false);
         setHistoryMsgs([]);
         setWsConnected(false);
         setIsStreaming(false);
@@ -2373,8 +2382,11 @@ export default function AgentDetailPage() {
         pendingLiveInitialScrollRef.current = writable;
         pendingHistoryInitialScrollRef.current = !writable;
         setChatMessages([]);
+        setChatOldestTimestamp(null);
+        setChatHistoryHasMore(true);
+        setChatHistoryLoadingMore(false);
         setHistoryMsgs([]);
-        setHistoryOffset(0);
+        setHistoryOldestTimestamp(null);
         setHistoryHasMore(true);
         setHistoryLoadingMore(false);
         setIsStreaming(runtimeState.isStreaming);
@@ -2391,7 +2403,7 @@ export default function AgentDetailPage() {
         const loadSeq = ++sessionLoadSeqRef.current;
         try {
             const tkn = localStorage.getItem('token');
-            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&offset=0`, {
+            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}`, {
                 headers: { Authorization: `Bearer ${tkn}` },
                 signal: controller.signal,
             });
@@ -2407,12 +2419,18 @@ export default function AgentDetailPage() {
                 ...(m.created_at && { timestamp: m.created_at }),
                 ...(m.id && { id: m.id }),
             }));
-            setHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
+
+            // Set the oldest message timestamp for cursor-based pagination
+            const oldestTimestamp = msgs.length > 0 ? msgs[0].created_at : null;
 
             if (writable) {
                 setChatMessages(preParsed);
+                setChatOldestTimestamp(oldestTimestamp);
+                setChatHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
             } else {
                 setHistoryMsgs(preParsed);
+                setHistoryOldestTimestamp(oldestTimestamp);
+                setHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
             }
             // The backend marks the session as read when the current user opens it. Mirror that
             // immediately in local state so unread badges clear without waiting for the next poll.
@@ -2465,6 +2483,9 @@ export default function AgentDetailPage() {
                 activeSessionIdRef.current = null;
                 setActiveSession(null);
                 setChatMessages([]);
+                setChatOldestTimestamp(null);
+                setChatHistoryHasMore(true);
+                setChatHistoryLoadingMore(false);
                 setHistoryMsgs([]);
                 setWsConnected(false);
                 setIsStreaming(false);
@@ -2825,6 +2846,9 @@ export default function AgentDetailPage() {
         activeSessionIdRef.current = null;
         setActiveSession(null);
         setChatMessages([]);
+        setChatOldestTimestamp(null);
+        setChatHistoryHasMore(true);
+        setChatHistoryLoadingMore(false);
         setHistoryMsgs([]);
         setIsStreaming(false);
         setIsWaiting(false);
@@ -2852,6 +2876,9 @@ export default function AgentDetailPage() {
         activeSessionIdRef.current = null;
         setActiveSession(null);
         setChatMessages([]);
+        setChatOldestTimestamp(null);
+        setChatHistoryHasMore(true);
+        setChatHistoryLoadingMore(false);
         setHistoryMsgs([]);
         setWsConnected(false);
         setIsStreaming(false);
@@ -3098,16 +3125,16 @@ export default function AgentDetailPage() {
                         collapseSidebarsForLivePanel();
                     }
                 }
-                    if (d.workspace_activity) {
-                        const activity = d.workspace_activity as WorkspaceActivity;
-                        setWorkspaceLiveDraft(null);
-                        setWorkspaceActivities(prev => [activity, ...prev.filter(item => item.path !== activity.path)].slice(0, 20));
-                        if (activity.action === 'delete' && activity.ok !== false && !activity.pendingApproval) {
-                            handleWorkspacePathDeleted(activity.path);
-                        }
-                        if (activity.action !== 'delete' && activity.ok !== false && allowWorkspaceAutoSwitch(activity.path)) {
-                            setWorkspaceActivePath(activity.path);
-                        }
+                if (d.workspace_activity) {
+                    const activity = d.workspace_activity as WorkspaceActivity;
+                    setWorkspaceLiveDraft(null);
+                    setWorkspaceActivities(prev => [activity, ...prev.filter(item => item.path !== activity.path)].slice(0, 20));
+                    if (activity.action === 'delete' && activity.ok !== false && !activity.pendingApproval) {
+                        handleWorkspacePathDeleted(activity.path);
+                    }
+                    if (activity.action !== 'delete' && activity.ok !== false && allowWorkspaceAutoSwitch(activity.path)) {
+                        setWorkspaceActivePath(activity.path);
+                    }
                     if (isFocusPath(activity.path)) {
                         openAwarePanel();
                         refetchFocusItems();
@@ -3383,14 +3410,13 @@ export default function AgentDetailPage() {
     }, []);
 
     const loadMoreHistoryMessages = useCallback(async () => {
-        if (historyLoadingMore || !historyHasMore || !activeSession || !id) return;
+        if (historyLoadingMore || !historyHasMore || !activeSession || !id || !historyOldestTimestamp) return;
         const sess = activeSession;
         const targetAgentId = id;
         setHistoryLoadingMore(true);
         try {
             const tkn = localStorage.getItem('token');
-            const newOffset = historyOffset + HISTORY_PAGE_SIZE;
-            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&offset=${newOffset}`, {
+            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&before=${encodeURIComponent(historyOldestTimestamp)}`, {
                 headers: { Authorization: `Bearer ${tkn}` },
             });
             if (!res.ok) return;
@@ -3410,7 +3436,8 @@ export default function AgentDetailPage() {
             const el = historyContainerRef.current;
             const oldScrollHeight = el?.scrollHeight ?? 0;
             setHistoryMsgs(prev => [...preParsed, ...prev]);
-            setHistoryOffset(newOffset);
+            // Update the oldest timestamp (first message in the new batch, since messages are in chronological order)
+            setHistoryOldestTimestamp(msgs[0].created_at);
             setHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
             // Restore scroll position after new messages are prepended
             requestAnimationFrame(() => {
@@ -3424,7 +3451,51 @@ export default function AgentDetailPage() {
         } finally {
             setHistoryLoadingMore(false);
         }
-    }, [historyLoadingMore, historyHasMore, activeSession, id, historyOffset]);
+    }, [historyLoadingMore, historyHasMore, activeSession, id, historyOldestTimestamp]);
+
+    const loadMoreChatHistoryMessages = useCallback(async () => {
+        if (chatHistoryLoadingMore || !chatHistoryHasMore || !activeSession || !id || !chatOldestTimestamp) return;
+        const sess = activeSession;
+        const targetAgentId = id;
+        setChatHistoryLoadingMore(true);
+        try {
+            const tkn = localStorage.getItem('token');
+            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&before=${encodeURIComponent(chatOldestTimestamp)}`, {
+                headers: { Authorization: `Bearer ${tkn}` },
+            });
+            if (!res.ok) return;
+            const msgs = await res.json();
+            if (msgs.length === 0) {
+                setChatHistoryHasMore(false);
+                return;
+            }
+            const preParsed = msgs.map((m: any) => parseChatMsg({
+                role: m.role, content: m.content || '',
+                ...(m.toolName && { toolName: m.toolName, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult, toolThinking: m.toolThinking }),
+                ...(m.thinking && { thinking: m.thinking }),
+                ...(m.created_at && { timestamp: m.created_at }),
+                ...(m.id && { id: m.id }),
+            }));
+            // Save current scroll position
+            const el = chatContainerRef.current;
+            const oldScrollHeight = el?.scrollHeight ?? 0;
+            setChatMessages(prev => [...preParsed, ...prev]);
+            // Update the oldest timestamp (first message in the new batch, since messages are in chronological order)
+            setChatOldestTimestamp(msgs[0].created_at);
+            setChatHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
+            // Restore scroll position after new messages are prepended
+            requestAnimationFrame(() => {
+                if (el) {
+                    const newScrollHeight = el.scrollHeight;
+                    el.scrollTop = newScrollHeight - oldScrollHeight;
+                }
+            });
+        } catch (err: any) {
+            console.error('Failed to load more chat history messages:', err);
+        } finally {
+            setChatHistoryLoadingMore(false);
+        }
+    }, [chatHistoryLoadingMore, chatHistoryHasMore, activeSession, id, chatOldestTimestamp]);
 
     const handleHistoryScroll = () => {
         const el = historyContainerRef.current;
@@ -3575,6 +3646,10 @@ export default function AgentDetailPage() {
             cancelLiveAutoFollow();
         }
         setShowScrollBtn(distFromBottom > 200);
+        // Load more when scrolling near the top
+        if (el.scrollTop < 100 && chatHistoryHasMore && !chatHistoryLoadingMore) {
+            loadMoreChatHistoryMessages();
+        }
     };
     const handleChatWheelCapture = (event: React.WheelEvent<HTMLDivElement>) => {
         const el = chatContainerRef.current;
@@ -4200,7 +4275,7 @@ export default function AgentDetailPage() {
                     <div className="agent-info-card-section">
                         <div className="agent-info-card-section-header">
                             <span className="agent-info-section-icon agent-info-section-icon--indigo">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4" /><path d="M20 21a8 8 0 0 0-16 0" /></svg>
                             </span>
                             <span className="agent-info-card-section-title">{t('agent.profile.title', 'Agent Profile')}</span>
                         </div>
@@ -4247,7 +4322,7 @@ export default function AgentDetailPage() {
                         <div className="agent-info-subsection">
                             <div className="agent-info-card-section-header">
                                 <span className="agent-info-section-icon agent-info-section-icon--indigo">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
                                 </span>
                                 <span className="agent-info-card-section-title">{t('agent.modelConfig.title', 'Configuration')}</span>
                             </div>
@@ -4270,7 +4345,7 @@ export default function AgentDetailPage() {
                         <div className="agent-info-subsection">
                             <div className="agent-info-card-section-header">
                                 <span className="agent-info-section-icon agent-info-section-icon--blue">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></svg>
                                 </span>
                                 <span className="agent-info-card-section-title">Token</span>
                             </div>
@@ -4359,7 +4434,7 @@ export default function AgentDetailPage() {
         const renderFocusItem = (item: FocusItem) => {
             const isExpanded = expandedFocusIds.has(item.id);
             const itemTriggers = triggersByFocus[item.name] || [];
-            
+
             const hasTitle = !!item.title;
             const displayTitle = hasTitle ? item.title : item.name;
             const displaySubtitle = hasTitle ? item.name : null;
@@ -4699,53 +4774,53 @@ export default function AgentDetailPage() {
                             onMouseLeave={scheduleCardClose}
                         >
                             <div className="agent-detail-identity-trigger">
-                            <div className="agent-detail-avatar">{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</div>
-                            <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-                                {canManage && editingName ? (
-                                    <input
-                                        className="page-title"
-                                        autoFocus
-                                        value={nameInput}
-                                        onChange={e => setNameInput(e.target.value)}
-                                        onBlur={async () => {
-                                            setEditingName(false);
-                                            if (nameInput.trim() && nameInput !== agent.name) {
-                                                await agentApi.update(id!, { name: nameInput.trim() } as any);
-                                                queryClient.invalidateQueries({ queryKey: ['agent', id] });
-                                            } else {
-                                                setNameInput(agent.name);
-                                            }
-                                        }}
-                                        onKeyDown={async e => {
-                                            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                                            if (e.key === 'Escape') { setEditingName(false); setNameInput(agent.name); }
-                                        }}
-                                        style={{
-                                            background: 'var(--bg-elevated)', border: '1px solid var(--accent-primary)',
-                                            borderRadius: '6px', color: 'var(--text-primary)',
-                                            padding: '4px 10px', minWidth: '320px', width: 'auto', outline: 'none',
-                                            marginBottom: '0', display: 'block',
-                                        }}
-                                    />
-                                ) : (
-                                    <h1 className="page-title"
-                                        title={canManage ? "Click to edit name" : undefined}
-                                        onClick={() => { if (canManage) { setNameInput(agent.name); setEditingName(true); } }}
-                                        style={{ cursor: canManage ? 'text' : 'default', borderBottom: canManage ? '1px dashed transparent' : 'none', display: 'inline-block', marginBottom: '0' }}
-                                        onMouseEnter={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)'; }}
-                                        onMouseLeave={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'transparent'; }}
-                                    >
-                                        {agent.name}
-                                    </h1>
-                                )}
-                            </div>
-                            <button
-                                className={`agent-info-chevron${infoCardOpen ? ' agent-info-chevron--open' : ''}`}
-                                onClick={e => { e.stopPropagation(); setInfoCardOpen(prev => !prev); }}
-                                aria-label="Toggle agent info"
-                            >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-                            </button>
+                                <div className="agent-detail-avatar">{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</div>
+                                <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                                    {canManage && editingName ? (
+                                        <input
+                                            className="page-title"
+                                            autoFocus
+                                            value={nameInput}
+                                            onChange={e => setNameInput(e.target.value)}
+                                            onBlur={async () => {
+                                                setEditingName(false);
+                                                if (nameInput.trim() && nameInput !== agent.name) {
+                                                    await agentApi.update(id!, { name: nameInput.trim() } as any);
+                                                    queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                                } else {
+                                                    setNameInput(agent.name);
+                                                }
+                                            }}
+                                            onKeyDown={async e => {
+                                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                                if (e.key === 'Escape') { setEditingName(false); setNameInput(agent.name); }
+                                            }}
+                                            style={{
+                                                background: 'var(--bg-elevated)', border: '1px solid var(--accent-primary)',
+                                                borderRadius: '6px', color: 'var(--text-primary)',
+                                                padding: '4px 10px', minWidth: '320px', width: 'auto', outline: 'none',
+                                                marginBottom: '0', display: 'block',
+                                            }}
+                                        />
+                                    ) : (
+                                        <h1 className="page-title"
+                                            title={canManage ? "Click to edit name" : undefined}
+                                            onClick={() => { if (canManage) { setNameInput(agent.name); setEditingName(true); } }}
+                                            style={{ cursor: canManage ? 'text' : 'default', borderBottom: canManage ? '1px dashed transparent' : 'none', display: 'inline-block', marginBottom: '0' }}
+                                            onMouseEnter={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)'; }}
+                                            onMouseLeave={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'transparent'; }}
+                                        >
+                                            {agent.name}
+                                        </h1>
+                                    )}
+                                </div>
+                                <button
+                                    className={`agent-info-chevron${infoCardOpen ? ' agent-info-chevron--open' : ''}`}
+                                    onClick={e => { e.stopPropagation(); setInfoCardOpen(prev => !prev); }}
+                                    aria-label="Toggle agent info"
+                                >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+                                </button>
                             </div>
                             {renderAgentInfoCard()}
                         </div>
@@ -4777,11 +4852,11 @@ export default function AgentDetailPage() {
                             </>
                             {(agent as any)?.agent_type !== 'openclaw' && (
                                 <>
-                                {agent.status === 'stopped' ? (
-                                    <button className="btn btn-secondary" onClick={async () => { await agentApi.start(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.start')}</button>
-                                ) : agent.status === 'running' ? (
-                                    <button className="btn btn-secondary" onClick={async () => { await agentApi.stop(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.stop')}</button>
-                                ) : null}
+                                    {agent.status === 'stopped' ? (
+                                        <button className="btn btn-secondary" onClick={async () => { await agentApi.start(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.start')}</button>
+                                    ) : agent.status === 'running' ? (
+                                        <button className="btn btn-secondary" onClick={async () => { await agentApi.stop(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.stop')}</button>
+                                    ) : null}
                                 </>
                             )}
                         </div>
@@ -5140,7 +5215,7 @@ export default function AgentDetailPage() {
                         const isExpanded = expandedFocusIds.has(item.id);
                         const itemTriggers = triggersByFocus[item.name] || [];
                         const itemLogs = triggerLogsByFocus[item.name] || [];
-                        
+
                         const hasTitle = !!item.title;
                         const displayTitle = hasTitle ? item.title : item.name;
                         const displaySubtitle = hasTitle ? item.name : null;
@@ -5718,7 +5793,7 @@ export default function AgentDetailPage() {
                                                             : t('agent.chat.otherSessions', '其他会话')
                                                         }
                                                     </span>
-                                                    <svg className={`scope-dropdown-chevron${scopeDropdownOpen ? ' scope-dropdown-chevron--open' : ''}`} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                                                    <svg className={`scope-dropdown-chevron${scopeDropdownOpen ? ' scope-dropdown-chevron--open' : ''}`} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
                                                 </button>
                                                 {scopeDropdownOpen && (
                                                     <div className="scope-dropdown-menu">
@@ -5745,7 +5820,7 @@ export default function AgentDetailPage() {
                                                 className="session-sidebar-toggle-btn"
                                                 title={t('agent.chat.collapseSidebar')}
                                             >
-                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><line x1="9" y1="3" x2="9" y2="21" /></svg>
                                             </button>
                                         )}
                                     </div>
@@ -5836,7 +5911,7 @@ export default function AgentDetailPage() {
                                                             </div>
                                                             <button className="session-del-btn" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
                                                                 title={t('chat.deleteSession', 'Delete session')}>
-                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" /><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" /></svg>
                                                             </button>
                                                         </div>
                                                     );
@@ -5929,514 +6004,514 @@ export default function AgentDetailPage() {
                                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
                                     {sessionListCollapsed && (
                                         <button onClick={() => setSessionListCollapsed(false)} className="session-sidebar-toggle-btn session-sidebar-toggle-btn--floating" title="Show chat sessions">
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><line x1="9" y1="3" x2="9" y2="21" /></svg>
                                         </button>
                                     )}
-                                {!activeSession ? (
-                                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
-                                        <div>{t('agent.chat.noSessionSelected')}</div>
-                                        {!isViewingOtherUsersSessions && (
-                                            <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
-                                        )}
-                                    </div>
-                                ) : !isWritableSession(activeSession) ? (
-                                    /* ── Read-only history view (other user's session or agent-to-agent) ── */
-                                    <>
-                                        <div
-                                            style={{
-                                                position: 'absolute',
-                                                top: '12px',
-                                                left: sessionListCollapsed ? '52px' : '16px',
-                                                zIndex: 10,
-                                                fontSize: '11px',
-                                                color: 'var(--text-tertiary)',
-                                                padding: '4px 8px',
-                                                background: 'var(--bg-secondary)',
-                                                borderRadius: '4px',
-                                                pointerEvents: 'none',
-                                            }}
-                                        >
-                                            {activeSession.source_channel === 'agent' ? (
-                                                <><IconRobot size={13} stroke={1.8} /> Agent Conversation · {activeSession.username || 'Agents'}</>
-                                            ) : (
-                                                <>Read-only · {activeSession.username || 'User'}</>
+                                    {!activeSession ? (
+                                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
+                                            <div>{t('agent.chat.noSessionSelected')}</div>
+                                            {!isViewingOtherUsersSessions && (
+                                                <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
                                             )}
                                         </div>
-                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
-                                            {historyLoadingMore && (
-                                                <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                                                    Loading more messages...
-                                                </div>
-                                            )}
-                                            {!historyHasMore && historyMsgs.length > 0 && (
-                                                <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                                                    All messages loaded
-                                                </div>
-                                            )}
-                                            {(() => {
-                                                // For A2A sessions, determine which participant is "this agent" (left side)
-                                                // Use agent.name matching against sender_name from messages
-                                                const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
-                                                const isHumanReadonly = !isA2A && !activeSession.is_group;
-                                                const thisAgentName = (agent as any)?.name;
-                                                // Find this agent's participant_id from loaded messages
-                                                const thisAgentPid = isA2A && thisAgentName
-                                                    ? historyMsgs.find((m: any) => m.sender_name === thisAgentName)?.participant_id
-                                                    : null;
-                                                return historyMsgs.map((m: any, i: number) => {
-                                                    // Determine if this message is from "this agent" (left) or peer (right)
-                                                    // Actually, "this agent" should be on the RIGHT (like 'me'), and peer on the LEFT
-                                                    const isLeft = isA2A && thisAgentPid
-                                                        ? m.participant_id !== thisAgentPid
-                                                        : m.role === 'assistant';
-                                                    if (m.role === 'tool_call') {
-                                                        const tName = m.toolName || (() => { try { return JSON.parse(m.content || '{}').name; } catch { return 'tool'; } })();
-                                                        const tArgs = m.toolArgs || (() => { try { return JSON.parse(m.content || '{}').args; } catch { return {}; } })();
-                                                        const tResult = m.toolResult ?? (() => { try { return JSON.parse(m.content || '{}').result; } catch { return ''; } })();
-                                                        return (
-                                                            <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
-                                                                <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
-                                                                    <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
-                                                                        <IconBolt size={13} stroke={1.8} />
-                                                                        <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
-                                                                        {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
-                                                                    </summary>
-                                                                    {tResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{tResult}</div></div>}
-                                                                </details>
-                                                            </div>
-                                                        );
-                                                    }
-
-                                                    {/* Assistant message with no content: show inline thinking or skip */ }
-                                                    if (m.role === 'assistant' && !m.content?.trim()) {
-                                                        if (m.thinking) {
-                                                            return (
-                                                                <ThoughtDisclosure key={i} content={m.thinking} t={t} />
-                                                            );
-                                                        }
-                                                        return null;
-                                                    }
-                                                    return (
-                                                        <React.Fragment key={i}>
-                                                            {m.role === 'assistant' && m.thinking && (
-                                                                <ThoughtDisclosure content={m.thinking} t={t} />
-                                                            )}
-                                                            <ChatMessageItem
-                                                                msg={{ ...m, thinking: undefined }}
-                                                                i={i}
-                                                                isLeft={isLeft}
-                                                                t={t}
-                                                                senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
-                                                                avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
-                                                                forceSenderLabel={isHumanReadonly}
-                                                            />
-                                                        </React.Fragment>
-                                                    );
-                                                });
-                                            })()}
-                                        </div>
-                                        {showHistoryScrollBtn && (
-                                            <button onClick={scrollHistoryToBottom} className="chat-scroll-btn" style={{ bottom: '20px' }} title="Scroll to bottom">↓</button>
-                                        )}
-                                    </>
-                                ) : (
-                                    /* ── Live WebSocket chat (own session) ── */
-                                    <div {...chatDropProps} style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0, overflow: 'hidden' }}>
-                                        {/* Drop overlay */}
-                                        {isChatDragging && (
-                                            <div className="drop-zone-overlay">
-                                                <div className="drop-zone-overlay__icon"><IconPaperclip size={28} stroke={1.8} /></div>
-                                                <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop files to attach (max 10)')}</div>
-                                            </div>
-                                        )}
-                                        {showNoModelState && renderNoModelGuide('floating')}
-                                        <div
-                                            ref={chatContainerRef}
-                                            onScroll={handleChatScroll}
-                                            onWheelCapture={handleChatWheelCapture}
-                                            onTouchStartCapture={handleChatTouchStartCapture}
-                                            onTouchMoveCapture={handleChatTouchMoveCapture}
-                                            style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}
-                                        >
-                                            {chatMessages.length === 0 && !showNoModelState && (
-                                                <div className="chat-empty-state">
-                                                    <div className="chat-empty-state__title">{activeSession?.title || t('agent.chat.startChat')}</div>
-                                                    <div className="chat-empty-state__subtitle">{t('agent.chat.startConversation', { name: agent.name })}</div>
-                                                    <div className="chat-empty-state__hint">{t('agent.chat.fileSupport')}</div>
-                                                </div>
-                                            )}
-                                            {(() => {
-                                                const visibleChatMessages = showNoModelState
-                                                    ? chatMessages.filter((msg: any) => {
-                                                        const content = String(msg?.content || msg?.message || '');
-                                                        return !(msg?.role === 'assistant' && (content.includes('no LLM model') || content.includes('No model')));
-                                                    })
-                                                    : chatMessages;
-                                                // ── Grouping Algorithm (lookahead-based) ──
-                                                //
-                                                // Goal: merge all "analysis" steps (thinking + tool calls +
-                                                // mid-flow assistant text) into a single AnalysisCard, and
-                                                // only emit a real assistant bubble for the *final* answer.
-                                                //
-                                                // Problem with naive flushing:
-                                                //   Claude and minimax sometimes emit an assistant message with
-                                                //   real content (e.g. "Let me search…") BETWEEN reasoning and
-                                                //   tool calls. The old approach flushed the group on any
-                                                //   assistant content, producing multiple fragmented cards.
-                                                //
-                                                // Solution — two-pass lookahead:
-                                                //   Pass 1: pre-classify every message as either
-                                                //     "analysis"  — part of the internal reasoning/tool loop
-                                                //     "final"     — the actual answer to show the user
-                                                //   Classification rule: an assistant message (even with content)
-                                                //   is "analysis" if there is *at least one more tool_call
-                                                //   somewhere after it in the same sequence*.
-                                                //   Pass 2: build GroupedEntry[] based on classifications.
-
-                                                // Pass 1: mark each index as 'analysis' or 'final'
-                                                const msgClass: ('analysis' | 'final')[] = new Array(visibleChatMessages.length).fill('final');
-
-                                                // Walk backwards: once we see a tool_call, all preceding
-                                                // assistant messages (until the previous user turn or start)
-                                                // are reclassified as 'analysis'.
-                                                let hasFutureTool = false;
-                                                for (let i = visibleChatMessages.length - 1; i >= 0; i--) {
-                                                    const msg = visibleChatMessages[i];
-                                                    if (msg.role === 'tool_call') {
-                                                        msgClass[i] = 'analysis';
-                                                        hasFutureTool = true;
-                                                    } else if (msg.role === 'user') {
-                                                        // User turn resets the lookahead boundary
-                                                        hasFutureTool = false;
-                                                    } else if (msg.role === 'assistant') {
-                                                        if (hasFutureTool) {
-                                                            // This assistant message (thinking-only or with content)
-                                                            // precedes more tool calls → it's part of the analysis
-                                                            msgClass[i] = 'analysis';
-                                                        }
-                                                        // else: it's a final answer, keep 'final'
-                                                    }
-                                                }
-
-                                                // Pass 2: build grouped entries
-                                                type GroupedEntry =
-                                                    | { type: 'analysis_group'; items: AnalysisItem[]; key: number }
-                                                    | { type: 'msg'; msg: any; i: number };
-                                                const grouped: GroupedEntry[] = [];
-                                                let currentGroup: AnalysisItem[] | null = null;
-                                                let groupStartKey = 0;
-                                                const flushGroup = () => {
-                                                    if (currentGroup && currentGroup.length > 0) {
-                                                        grouped.push({ type: 'analysis_group', items: currentGroup, key: groupStartKey });
-                                                        currentGroup = null;
-                                                    }
-                                                };
-                                                for (let i = 0; i < visibleChatMessages.length; i++) {
-
-                                                    const msg = visibleChatMessages[i];
-                                                    if (msgClass[i] === 'analysis') {
-                                                        // Open a new group if needed
-                                                        if (!currentGroup) { currentGroup = []; groupStartKey = i; }
-                                                        if (msg.role === 'tool_call') {
-                                                            if (msg.toolThinking?.trim()) {
-                                                                const lastItem = currentGroup[currentGroup.length - 1];
-                                                                if (!(lastItem?.type === 'thinking' && lastItem.content === msg.toolThinking)) {
-                                                                    currentGroup.push({ type: 'thinking', content: msg.toolThinking });
-                                                                }
-                                                            }
-                                                            currentGroup.push({
-                                                                type: 'tool',
-                                                                name: msg.toolName || 'tool',
-                                                                args: msg.toolArgs || {},
-                                                                status: msg.toolStatus === 'running' ? 'running' : 'done',
-                                                                result: msg.toolResult || undefined,
-                                                            });
-                                                        } else if (msg.role === 'assistant') {
-                                                            // Could be thinking-only OR has content (mid-flow text)
-                                                            const thinkingText = msg.thinking || '';
-                                                            const contentText = msg.content?.trim() || '';
-                                                            // Add thinking block first (if present)
-                                                            if (thinkingText) {
-                                                                currentGroup.push({ type: 'thinking', content: thinkingText });
-                                                            }
-                                                            // Add mid-flow content as a thinking block too
-                                                            // (displayed with slightly different style to distinguish)
-                                                            if (contentText) {
-                                                                currentGroup.push({ type: 'thinking', content: contentText });
-                                                            }
-                                                        }
-                                                    } else {
-                                                        // 'final': flush any open group first, then emit as chat bubble
-                                                        if (msg.role === 'assistant' && msg.thinking && currentGroup?.some(item => item.type === 'tool')) {
-                                                            currentGroup.push({ type: 'thinking', content: msg.thinking });
-                                                            const contentText = msg.content?.trim() || '';
-                                                            flushGroup();
-                                                            if (contentText) grouped.push({ type: 'msg', msg: { ...msg, thinking: undefined }, i });
-                                                            continue;
-                                                        }
-                                                        flushGroup();
-                                                        grouped.push({ type: 'msg', msg, i });
-                                                    }
-                                                }
-                                                flushGroup(); // flush any trailing group
-
-
-                                                return grouped.map((entry, entryIdx) => {
-                                                    const previousEntry = grouped[entryIdx - 1];
-                                                    const hideAssistantAvatar = entry.type === 'msg'
-                                                        && entry.msg.role === 'assistant'
-                                                        && previousEntry?.type === 'analysis_group';
-                                                    if (entry.type === 'analysis_group') {
-                                                        // Group is considered running if it has a running tool,
-                                                        // or if it's the very last entry and the agent is still active
-                                                        const isLastEntry = entryIdx === grouped.length - 1;
-                                                        const hasRunningTool = entry.items.some(
-                                                            it => it.type === 'tool' && it.status === 'running'
-                                                        );
-                                                        const hasToolItems = entry.items.some(it => it.type === 'tool');
-                                                        const groupIsRunning = hasRunningTool || (!hasToolItems && isLastEntry && (isWaiting || isStreaming));
-                                                        return (
-                                                            <div key={`ag-${entry.key}`} className="chat-msg-row chat-msg-row--analysis">
-                                                                <div className="chat-msg-avatar">{(((agent as any)?.name || 'Agent')[0])}</div>
-                                                                <AnalysisCard
-                                                                    items={entry.items}
-                                                                    t={t}
-                                                                    expanded={toolGroupExpandedRef.current.has(entry.key) ? !!toolGroupExpandedRef.current.get(entry.key) : false}
-                                                                    onToggle={() => toggleToolGroup(entry.key)}
-                                                                    isGroupRunning={groupIsRunning}
-                                                                />
-                                                            </div>
-                                                        );
-                                                    }
-                                                    const { msg, i } = entry;
-                                                    // All remaining messages have real content; render as chat bubbles
-                                                    if (msg.role === 'assistant' && msg.thinking) {
-                                                        const contentText = msg.content?.trim() || '';
-                                                        return (
-                                                            <React.Fragment key={i}>
-                                                                <ThoughtDisclosure
-                                                                    content={msg.thinking}
-                                                                    t={t}
-                                                                    streaming={!!((msg as any)._streaming && !contentText)}
-                                                                />
-                                                                {contentText && (
-                                                                    <ChatMessageItem
-                                                                        msg={{ ...msg, thinking: undefined }}
-                                                                        i={i}
-                                                                        isLeft
-                                                                        t={t}
-                                                                        senderLabel={(agent as any)?.name || 'Agent'}
-                                                                        avatarText={((agent as any)?.name || 'Agent')[0]}
-                                                                        hideAvatar={hideAssistantAvatar}
-                                                                    />
-                                                                )}
-                                                            </React.Fragment>
-                                                        );
-                                                    }
-                                                    return (
-                                                        <ChatMessageItem
-                                                            key={i}
-                                                            msg={msg}
-                                                            i={i}
-                                                            isLeft={msg.role === 'assistant'}
-                                                            t={t}
-                                                            senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
-                                                            avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
-                                                            hideAvatar={hideAssistantAvatar}
-                                                        />
-                                                    );
-                                                });
-                                            })()
-                                            }
-                                            {isWaiting && (
-                                                <div className="chat-msg-row">
-                                                    <div className="chat-msg-avatar">A</div>
-                                                    <div className="chat-msg-bubble chat-msg-bubble--thinking">
-                                                        <div className="thinking-indicator">
-                                                            <div className="thinking-dots">
-                                                                <span /><span /><span />
-                                                            </div>
-                                                            <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            )}
-                                            <div ref={chatEndRef} />
-                                        </div>
-                                        {showScrollBtn && (
-                                            <button onClick={scrollToBottom} className="chat-scroll-btn" style={{ bottom: `${chatScrollBtnBottom}px` }} title="Scroll to bottom">↓</button>
-                                        )}
-                                        {/* Transient info banner — e.g. fallback model switch */}
-                                        {chatInfoMsg && (
-                                            <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)', animation: 'fadeIn 0.2s ease' }}>
-                                                <span style={{ opacity: 0.7 }}>ℹ️</span>
-                                                <span style={{ flex: 1 }}>{chatInfoMsg}</span>
-                                                <button onClick={() => setChatInfoMsg(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '14px', lineHeight: 1, padding: '0 2px' }}>✕</button>
-                                            </div>
-                                        )}
-                                        {/* Transient info banner — e.g. fallback model switch */}
-                                        {chatInfoMsg && (
-                                            <div style={{ padding: '6px 14px', borderTop: '1px solid rgba(99,102,241,0.25)', background: 'rgba(99,102,241,0.07)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)', animation: 'fadeIn 0.2s ease' }}>
-                                                <span style={{ opacity: 0.7 }}>ℹ️</span>
-                                                <span style={{ flex: 1 }}>{chatInfoMsg}</span>
-                                                <button onClick={() => setChatInfoMsg(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '14px', lineHeight: 1, padding: '0 2px' }}>✕</button>
-                                            </div>
-                                        )}
-                                        {agentExpired ? (
-                                            <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
-                                                <span>⏸</span>
-                                                <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
-                                            </div>
-                                        ) : !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
-                                            <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                                <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
-                                                Connecting...
-                                            </div>
-                                        ) : null}
-                                        <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
-                                            <div className="chat-composer">
-                                            {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
-                                                <div className="chat-composer-attachments">
-                                                    {chatUploadDrafts.map((draft) => (
-                                                        <div key={draft.id} className="chat-file-pill">
-                                                            <div
-                                                                className="chat-file-pill__fill"
-                                                                style={{ width: `${draft.percent}%` }}
-                                                            />
-                                                            <div className="chat-file-pill__row">
-                                                                {draft.previewUrl ? (
-                                                                    <img className="chat-file-pill__thumb" src={draft.previewUrl} alt="" />
-                                                                ) : (
-                                                                    <span className="chat-file-pill__icon">
-                                                                        <IconPaperclip size={14} stroke={1.75} />
-                                                                    </span>
-                                                                )}
-                                                                <span className="chat-file-pill__name">{draft.name}</span>
-                                                                <span className="chat-file-pill__size">{formatFileSize(draft.sizeBytes)}</span>
-                                                                <span className="chat-file-pill__pct">{draft.percent}%</span>
-                                                                <button
-                                                                    type="button"
-                                                                    className="chat-file-pill__remove"
-                                                                    onClick={() => {
-                                                                        chatUploadAbortRef.current.get(draft.id)?.();
-                                                                    }}
-                                                                    title="Cancel upload"
-                                                                >
-                                                                    ×
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                    {attachedFiles.map((file, idx) => (
-                                                        <div
-                                                            key={`a-${idx}-${file.name}`}
-                                                            className={`chat-file-pill ${file.source === 'workspace_auto' ? 'chat-file-pill--workspace' : ''}`}
-                                                            title={file.path || file.name}
-                                                        >
-                                                            <div className="chat-file-pill__row">
-                                                                {file.imageUrl ? (
-                                                                    <img className="chat-file-pill__thumb" src={file.imageUrl} alt="" />
-                                                                ) : (
-                                                                    <span className="chat-file-pill__icon">
-                                                                        <IconPaperclip size={14} stroke={1.75} />
-                                                                    </span>
-                                                                )}
-                                                                <span className="chat-file-pill__name">{file.name}</span>
-                                                                {file.source === 'workspace_auto' && <span className="chat-file-pill__source">Workspace</span>}
-                                                                <button
-                                                                    type="button"
-                                                                    className="chat-file-pill__remove"
-                                                                    onClick={() => {
-                                                                        if (file.source === 'workspace_auto' && file.path) dismissedWorkspaceRefPath.current = file.path;
-                                                                        setAttachedFiles((prev) => prev.filter((_, i) => i !== idx));
-                                                                    }}
-                                                                    title="Remove file"
-                                                                >
-                                                                    ×
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            <div className="chat-composer-input-block">
-                                                <textarea
-                                                    ref={chatInputRef}
-                                                    className="chat-input"
-                                                    disabled={showNoModelState}
-                                                    value={chatInput}
-                                                    onChange={e => {
-                                                        setChatInput(e.target.value);
-                                                        // Auto-grow: reset height then expand to scrollHeight
-                                                        const el = e.target;
-                                                        el.style.height = 'auto';
-                                                        el.style.height = el.scrollHeight + 'px';
-                                                    }}
-                                                    onKeyDown={e => {
-                                                        // Enter sends the message; Shift+Enter inserts a newline
-                                                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
-                                                            e.preventDefault();
-                                                            sendChatMsg();
-                                                        }
-                                                    }}
-                                                    onPaste={handlePaste}
-                                                    placeholder={showNoModelState ? t('agent.chat.noModelPlaceholder', 'Configure a company model to start chatting') : (!wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? 'Connecting...' : t('chat.placeholder'))}
-                                                    rows={1}
-                                                />
-                                            </div>
-                                            <div className="chat-composer-toolbar">
-                                                <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
-                                                <button
-                                                    type="button"
-                                                    className="chat-composer-btn"
-                                                    onClick={() => fileInputRef.current?.click()}
-                                                    disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10}
-                                                    title={t('agent.workspace.uploadFile')}
-                                                >
-                                                    <IconPaperclip size={16} stroke={1.75} />
-                                                </button>
-                                                <ModelSwitcher
-                                                    value={overrideModelId}
-                                                    onChange={handleModelChange}
-                                                    tenantDefaultId={myTenant?.default_model_id || null}
-                                                    disabled={showNoModelState || !wsConnected}
-                                                />
-                                                <div style={{ flex: 1 }} />
-                                                {(isStreaming || isWaiting) ? (
-                                                    <button
-                                                        type="button"
-                                                        className="btn btn-stop-generation"
-                                                        onClick={() => {
-                                                            if (!id || !activeSession?.id) return;
-                                                            const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-                                                            const activeSocket = wsMapRef.current[activeRuntimeKey];
-                                                            if (activeSocket?.readyState === WebSocket.OPEN) {
-                                                                activeSocket.send(JSON.stringify({ type: 'abort' }));
-                                                                setIsStreaming(false);
-                                                                setIsWaiting(false);
-                                                                setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
-                                                            }
-                                                        }}
-                                                        title={t('chat.stop', 'Stop')}
-                                                    >
-                                                        <span className="stop-icon" />
-                                                    </button>
+                                    ) : !isWritableSession(activeSession) ? (
+                                        /* ── Read-only history view (other user's session or agent-to-agent) ── */
+                                        <>
+                                            <div
+                                                style={{
+                                                    position: 'absolute',
+                                                    top: '12px',
+                                                    left: sessionListCollapsed ? '52px' : '16px',
+                                                    zIndex: 10,
+                                                    fontSize: '11px',
+                                                    color: 'var(--text-tertiary)',
+                                                    padding: '4px 8px',
+                                                    background: 'var(--bg-secondary)',
+                                                    borderRadius: '4px',
+                                                    pointerEvents: 'none',
+                                                }}
+                                            >
+                                                {activeSession.source_channel === 'agent' ? (
+                                                    <><IconRobot size={13} stroke={1.8} /> Agent Conversation · {activeSession.username || 'Agents'}</>
                                                 ) : (
-                                                    <button
-                                                        type="button"
-                                                        className="btn btn-primary chat-composer-send"
-                                                        onClick={sendChatMsg}
-                                                        disabled={showNoModelState || !wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
-                                                        title={t('chat.send')}
-                                                    >
-                                                        <IconSend size={16} stroke={1.75} />
-                                                    </button>
+                                                    <>Read-only · {activeSession.username || 'User'}</>
                                                 )}
                                             </div>
+                                            <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
+                                                {historyLoadingMore && (
+                                                    <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                                        Loading more messages...
+                                                    </div>
+                                                )}
+                                                {!historyHasMore && historyMsgs.length > 0 && (
+                                                    <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                                        All messages loaded
+                                                    </div>
+                                                )}
+                                                {(() => {
+                                                    // For A2A sessions, determine which participant is "this agent" (left side)
+                                                    // Use agent.name matching against sender_name from messages
+                                                    const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
+                                                    const isHumanReadonly = !isA2A && !activeSession.is_group;
+                                                    const thisAgentName = (agent as any)?.name;
+                                                    // Find this agent's participant_id from loaded messages
+                                                    const thisAgentPid = isA2A && thisAgentName
+                                                        ? historyMsgs.find((m: any) => m.sender_name === thisAgentName)?.participant_id
+                                                        : null;
+                                                    return historyMsgs.map((m: any, i: number) => {
+                                                        // Determine if this message is from "this agent" (left) or peer (right)
+                                                        // Actually, "this agent" should be on the RIGHT (like 'me'), and peer on the LEFT
+                                                        const isLeft = isA2A && thisAgentPid
+                                                            ? m.participant_id !== thisAgentPid
+                                                            : m.role === 'assistant';
+                                                        if (m.role === 'tool_call') {
+                                                            const tName = m.toolName || (() => { try { return JSON.parse(m.content || '{}').name; } catch { return 'tool'; } })();
+                                                            const tArgs = m.toolArgs || (() => { try { return JSON.parse(m.content || '{}').args; } catch { return {}; } })();
+                                                            const tResult = m.toolResult ?? (() => { try { return JSON.parse(m.content || '{}').result; } catch { return ''; } })();
+                                                            return (
+                                                                <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
+                                                                    <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
+                                                                        <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
+                                                                            <IconBolt size={13} stroke={1.8} />
+                                                                            <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
+                                                                            {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
+                                                                        </summary>
+                                                                        {tResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{tResult}</div></div>}
+                                                                    </details>
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        {/* Assistant message with no content: show inline thinking or skip */ }
+                                                        if (m.role === 'assistant' && !m.content?.trim()) {
+                                                            if (m.thinking) {
+                                                                return (
+                                                                    <ThoughtDisclosure key={i} content={m.thinking} t={t} />
+                                                                );
+                                                            }
+                                                            return null;
+                                                        }
+                                                        return (
+                                                            <React.Fragment key={i}>
+                                                                {m.role === 'assistant' && m.thinking && (
+                                                                    <ThoughtDisclosure content={m.thinking} t={t} />
+                                                                )}
+                                                                <ChatMessageItem
+                                                                    msg={{ ...m, thinking: undefined }}
+                                                                    i={i}
+                                                                    isLeft={isLeft}
+                                                                    t={t}
+                                                                    senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
+                                                                    avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
+                                                                    forceSenderLabel={isHumanReadonly}
+                                                                />
+                                                            </React.Fragment>
+                                                        );
+                                                    });
+                                                })()}
+                                            </div>
+                                            {showHistoryScrollBtn && (
+                                                <button onClick={scrollHistoryToBottom} className="chat-scroll-btn" style={{ bottom: '20px' }} title="Scroll to bottom">↓</button>
+                                            )}
+                                        </>
+                                    ) : (
+                                        /* ── Live WebSocket chat (own session) ── */
+                                        <div {...chatDropProps} style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0, overflow: 'hidden' }}>
+                                            {/* Drop overlay */}
+                                            {isChatDragging && (
+                                                <div className="drop-zone-overlay">
+                                                    <div className="drop-zone-overlay__icon"><IconPaperclip size={28} stroke={1.8} /></div>
+                                                    <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop files to attach (max 10)')}</div>
+                                                </div>
+                                            )}
+                                            {showNoModelState && renderNoModelGuide('floating')}
+                                            <div
+                                                ref={chatContainerRef}
+                                                onScroll={handleChatScroll}
+                                                onWheelCapture={handleChatWheelCapture}
+                                                onTouchStartCapture={handleChatTouchStartCapture}
+                                                onTouchMoveCapture={handleChatTouchMoveCapture}
+                                                style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}
+                                            >
+                                                {chatMessages.length === 0 && !showNoModelState && (
+                                                    <div className="chat-empty-state">
+                                                        <div className="chat-empty-state__title">{activeSession?.title || t('agent.chat.startChat')}</div>
+                                                        <div className="chat-empty-state__subtitle">{t('agent.chat.startConversation', { name: agent.name })}</div>
+                                                        <div className="chat-empty-state__hint">{t('agent.chat.fileSupport')}</div>
+                                                    </div>
+                                                )}
+                                                {(() => {
+                                                    const visibleChatMessages = showNoModelState
+                                                        ? chatMessages.filter((msg: any) => {
+                                                            const content = String(msg?.content || msg?.message || '');
+                                                            return !(msg?.role === 'assistant' && (content.includes('no LLM model') || content.includes('No model')));
+                                                        })
+                                                        : chatMessages;
+                                                    // ── Grouping Algorithm (lookahead-based) ──
+                                                    //
+                                                    // Goal: merge all "analysis" steps (thinking + tool calls +
+                                                    // mid-flow assistant text) into a single AnalysisCard, and
+                                                    // only emit a real assistant bubble for the *final* answer.
+                                                    //
+                                                    // Problem with naive flushing:
+                                                    //   Claude and minimax sometimes emit an assistant message with
+                                                    //   real content (e.g. "Let me search…") BETWEEN reasoning and
+                                                    //   tool calls. The old approach flushed the group on any
+                                                    //   assistant content, producing multiple fragmented cards.
+                                                    //
+                                                    // Solution — two-pass lookahead:
+                                                    //   Pass 1: pre-classify every message as either
+                                                    //     "analysis"  — part of the internal reasoning/tool loop
+                                                    //     "final"     — the actual answer to show the user
+                                                    //   Classification rule: an assistant message (even with content)
+                                                    //   is "analysis" if there is *at least one more tool_call
+                                                    //   somewhere after it in the same sequence*.
+                                                    //   Pass 2: build GroupedEntry[] based on classifications.
+
+                                                    // Pass 1: mark each index as 'analysis' or 'final'
+                                                    const msgClass: ('analysis' | 'final')[] = new Array(visibleChatMessages.length).fill('final');
+
+                                                    // Walk backwards: once we see a tool_call, all preceding
+                                                    // assistant messages (until the previous user turn or start)
+                                                    // are reclassified as 'analysis'.
+                                                    let hasFutureTool = false;
+                                                    for (let i = visibleChatMessages.length - 1; i >= 0; i--) {
+                                                        const msg = visibleChatMessages[i];
+                                                        if (msg.role === 'tool_call') {
+                                                            msgClass[i] = 'analysis';
+                                                            hasFutureTool = true;
+                                                        } else if (msg.role === 'user') {
+                                                            // User turn resets the lookahead boundary
+                                                            hasFutureTool = false;
+                                                        } else if (msg.role === 'assistant') {
+                                                            if (hasFutureTool) {
+                                                                // This assistant message (thinking-only or with content)
+                                                                // precedes more tool calls → it's part of the analysis
+                                                                msgClass[i] = 'analysis';
+                                                            }
+                                                            // else: it's a final answer, keep 'final'
+                                                        }
+                                                    }
+
+                                                    // Pass 2: build grouped entries
+                                                    type GroupedEntry =
+                                                        | { type: 'analysis_group'; items: AnalysisItem[]; key: number }
+                                                        | { type: 'msg'; msg: any; i: number };
+                                                    const grouped: GroupedEntry[] = [];
+                                                    let currentGroup: AnalysisItem[] | null = null;
+                                                    let groupStartKey = 0;
+                                                    const flushGroup = () => {
+                                                        if (currentGroup && currentGroup.length > 0) {
+                                                            grouped.push({ type: 'analysis_group', items: currentGroup, key: groupStartKey });
+                                                            currentGroup = null;
+                                                        }
+                                                    };
+                                                    for (let i = 0; i < visibleChatMessages.length; i++) {
+
+                                                        const msg = visibleChatMessages[i];
+                                                        if (msgClass[i] === 'analysis') {
+                                                            // Open a new group if needed
+                                                            if (!currentGroup) { currentGroup = []; groupStartKey = i; }
+                                                            if (msg.role === 'tool_call') {
+                                                                if (msg.toolThinking?.trim()) {
+                                                                    const lastItem = currentGroup[currentGroup.length - 1];
+                                                                    if (!(lastItem?.type === 'thinking' && lastItem.content === msg.toolThinking)) {
+                                                                        currentGroup.push({ type: 'thinking', content: msg.toolThinking });
+                                                                    }
+                                                                }
+                                                                currentGroup.push({
+                                                                    type: 'tool',
+                                                                    name: msg.toolName || 'tool',
+                                                                    args: msg.toolArgs || {},
+                                                                    status: msg.toolStatus === 'running' ? 'running' : 'done',
+                                                                    result: msg.toolResult || undefined,
+                                                                });
+                                                            } else if (msg.role === 'assistant') {
+                                                                // Could be thinking-only OR has content (mid-flow text)
+                                                                const thinkingText = msg.thinking || '';
+                                                                const contentText = msg.content?.trim() || '';
+                                                                // Add thinking block first (if present)
+                                                                if (thinkingText) {
+                                                                    currentGroup.push({ type: 'thinking', content: thinkingText });
+                                                                }
+                                                                // Add mid-flow content as a thinking block too
+                                                                // (displayed with slightly different style to distinguish)
+                                                                if (contentText) {
+                                                                    currentGroup.push({ type: 'thinking', content: contentText });
+                                                                }
+                                                            }
+                                                        } else {
+                                                            // 'final': flush any open group first, then emit as chat bubble
+                                                            if (msg.role === 'assistant' && msg.thinking && currentGroup?.some(item => item.type === 'tool')) {
+                                                                currentGroup.push({ type: 'thinking', content: msg.thinking });
+                                                                const contentText = msg.content?.trim() || '';
+                                                                flushGroup();
+                                                                if (contentText) grouped.push({ type: 'msg', msg: { ...msg, thinking: undefined }, i });
+                                                                continue;
+                                                            }
+                                                            flushGroup();
+                                                            grouped.push({ type: 'msg', msg, i });
+                                                        }
+                                                    }
+                                                    flushGroup(); // flush any trailing group
+
+
+                                                    return grouped.map((entry, entryIdx) => {
+                                                        const previousEntry = grouped[entryIdx - 1];
+                                                        const hideAssistantAvatar = entry.type === 'msg'
+                                                            && entry.msg.role === 'assistant'
+                                                            && previousEntry?.type === 'analysis_group';
+                                                        if (entry.type === 'analysis_group') {
+                                                            // Group is considered running if it has a running tool,
+                                                            // or if it's the very last entry and the agent is still active
+                                                            const isLastEntry = entryIdx === grouped.length - 1;
+                                                            const hasRunningTool = entry.items.some(
+                                                                it => it.type === 'tool' && it.status === 'running'
+                                                            );
+                                                            const hasToolItems = entry.items.some(it => it.type === 'tool');
+                                                            const groupIsRunning = hasRunningTool || (!hasToolItems && isLastEntry && (isWaiting || isStreaming));
+                                                            return (
+                                                                <div key={`ag-${entry.key}`} className="chat-msg-row chat-msg-row--analysis">
+                                                                    <div className="chat-msg-avatar">{(((agent as any)?.name || 'Agent')[0])}</div>
+                                                                    <AnalysisCard
+                                                                        items={entry.items}
+                                                                        t={t}
+                                                                        expanded={toolGroupExpandedRef.current.has(entry.key) ? !!toolGroupExpandedRef.current.get(entry.key) : false}
+                                                                        onToggle={() => toggleToolGroup(entry.key)}
+                                                                        isGroupRunning={groupIsRunning}
+                                                                    />
+                                                                </div>
+                                                            );
+                                                        }
+                                                        const { msg, i } = entry;
+                                                        // All remaining messages have real content; render as chat bubbles
+                                                        if (msg.role === 'assistant' && msg.thinking) {
+                                                            const contentText = msg.content?.trim() || '';
+                                                            return (
+                                                                <React.Fragment key={i}>
+                                                                    <ThoughtDisclosure
+                                                                        content={msg.thinking}
+                                                                        t={t}
+                                                                        streaming={!!((msg as any)._streaming && !contentText)}
+                                                                    />
+                                                                    {contentText && (
+                                                                        <ChatMessageItem
+                                                                            msg={{ ...msg, thinking: undefined }}
+                                                                            i={i}
+                                                                            isLeft
+                                                                            t={t}
+                                                                            senderLabel={(agent as any)?.name || 'Agent'}
+                                                                            avatarText={((agent as any)?.name || 'Agent')[0]}
+                                                                            hideAvatar={hideAssistantAvatar}
+                                                                        />
+                                                                    )}
+                                                                </React.Fragment>
+                                                            );
+                                                        }
+                                                        return (
+                                                            <ChatMessageItem
+                                                                key={i}
+                                                                msg={msg}
+                                                                i={i}
+                                                                isLeft={msg.role === 'assistant'}
+                                                                t={t}
+                                                                senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
+                                                                avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
+                                                                hideAvatar={hideAssistantAvatar}
+                                                            />
+                                                        );
+                                                    });
+                                                })()
+                                                }
+                                                {isWaiting && (
+                                                    <div className="chat-msg-row">
+                                                        <div className="chat-msg-avatar">A</div>
+                                                        <div className="chat-msg-bubble chat-msg-bubble--thinking">
+                                                            <div className="thinking-indicator">
+                                                                <div className="thinking-dots">
+                                                                    <span /><span /><span />
+                                                                </div>
+                                                                <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                <div ref={chatEndRef} />
+                                            </div>
+                                            {showScrollBtn && (
+                                                <button onClick={scrollToBottom} className="chat-scroll-btn" style={{ bottom: `${chatScrollBtnBottom}px` }} title="Scroll to bottom">↓</button>
+                                            )}
+                                            {/* Transient info banner — e.g. fallback model switch */}
+                                            {chatInfoMsg && (
+                                                <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)', animation: 'fadeIn 0.2s ease' }}>
+                                                    <span style={{ opacity: 0.7 }}>ℹ️</span>
+                                                    <span style={{ flex: 1 }}>{chatInfoMsg}</span>
+                                                    <button onClick={() => setChatInfoMsg(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '14px', lineHeight: 1, padding: '0 2px' }}>✕</button>
+                                                </div>
+                                            )}
+                                            {/* Transient info banner — e.g. fallback model switch */}
+                                            {chatInfoMsg && (
+                                                <div style={{ padding: '6px 14px', borderTop: '1px solid rgba(99,102,241,0.25)', background: 'rgba(99,102,241,0.07)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)', animation: 'fadeIn 0.2s ease' }}>
+                                                    <span style={{ opacity: 0.7 }}>ℹ️</span>
+                                                    <span style={{ flex: 1 }}>{chatInfoMsg}</span>
+                                                    <button onClick={() => setChatInfoMsg(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '14px', lineHeight: 1, padding: '0 2px' }}>✕</button>
+                                                </div>
+                                            )}
+                                            {agentExpired ? (
+                                                <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
+                                                    <span>⏸</span>
+                                                    <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
+                                                </div>
+                                            ) : !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
+                                                <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                    <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
+                                                    Connecting...
+                                                </div>
+                                            ) : null}
+                                            <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
+                                                <div className="chat-composer">
+                                                    {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
+                                                        <div className="chat-composer-attachments">
+                                                            {chatUploadDrafts.map((draft) => (
+                                                                <div key={draft.id} className="chat-file-pill">
+                                                                    <div
+                                                                        className="chat-file-pill__fill"
+                                                                        style={{ width: `${draft.percent}%` }}
+                                                                    />
+                                                                    <div className="chat-file-pill__row">
+                                                                        {draft.previewUrl ? (
+                                                                            <img className="chat-file-pill__thumb" src={draft.previewUrl} alt="" />
+                                                                        ) : (
+                                                                            <span className="chat-file-pill__icon">
+                                                                                <IconPaperclip size={14} stroke={1.75} />
+                                                                            </span>
+                                                                        )}
+                                                                        <span className="chat-file-pill__name">{draft.name}</span>
+                                                                        <span className="chat-file-pill__size">{formatFileSize(draft.sizeBytes)}</span>
+                                                                        <span className="chat-file-pill__pct">{draft.percent}%</span>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="chat-file-pill__remove"
+                                                                            onClick={() => {
+                                                                                chatUploadAbortRef.current.get(draft.id)?.();
+                                                                            }}
+                                                                            title="Cancel upload"
+                                                                        >
+                                                                            ×
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                            {attachedFiles.map((file, idx) => (
+                                                                <div
+                                                                    key={`a-${idx}-${file.name}`}
+                                                                    className={`chat-file-pill ${file.source === 'workspace_auto' ? 'chat-file-pill--workspace' : ''}`}
+                                                                    title={file.path || file.name}
+                                                                >
+                                                                    <div className="chat-file-pill__row">
+                                                                        {file.imageUrl ? (
+                                                                            <img className="chat-file-pill__thumb" src={file.imageUrl} alt="" />
+                                                                        ) : (
+                                                                            <span className="chat-file-pill__icon">
+                                                                                <IconPaperclip size={14} stroke={1.75} />
+                                                                            </span>
+                                                                        )}
+                                                                        <span className="chat-file-pill__name">{file.name}</span>
+                                                                        {file.source === 'workspace_auto' && <span className="chat-file-pill__source">Workspace</span>}
+                                                                        <button
+                                                                            type="button"
+                                                                            className="chat-file-pill__remove"
+                                                                            onClick={() => {
+                                                                                if (file.source === 'workspace_auto' && file.path) dismissedWorkspaceRefPath.current = file.path;
+                                                                                setAttachedFiles((prev) => prev.filter((_, i) => i !== idx));
+                                                                            }}
+                                                                            title="Remove file"
+                                                                        >
+                                                                            ×
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                    <div className="chat-composer-input-block">
+                                                        <textarea
+                                                            ref={chatInputRef}
+                                                            className="chat-input"
+                                                            disabled={showNoModelState}
+                                                            value={chatInput}
+                                                            onChange={e => {
+                                                                setChatInput(e.target.value);
+                                                                // Auto-grow: reset height then expand to scrollHeight
+                                                                const el = e.target;
+                                                                el.style.height = 'auto';
+                                                                el.style.height = el.scrollHeight + 'px';
+                                                            }}
+                                                            onKeyDown={e => {
+                                                                // Enter sends the message; Shift+Enter inserts a newline
+                                                                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                                                                    e.preventDefault();
+                                                                    sendChatMsg();
+                                                                }
+                                                            }}
+                                                            onPaste={handlePaste}
+                                                            placeholder={showNoModelState ? t('agent.chat.noModelPlaceholder', 'Configure a company model to start chatting') : (!wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? 'Connecting...' : t('chat.placeholder'))}
+                                                            rows={1}
+                                                        />
+                                                    </div>
+                                                    <div className="chat-composer-toolbar">
+                                                        <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
+                                                        <button
+                                                            type="button"
+                                                            className="chat-composer-btn"
+                                                            onClick={() => fileInputRef.current?.click()}
+                                                            disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10}
+                                                            title={t('agent.workspace.uploadFile')}
+                                                        >
+                                                            <IconPaperclip size={16} stroke={1.75} />
+                                                        </button>
+                                                        <ModelSwitcher
+                                                            value={overrideModelId}
+                                                            onChange={handleModelChange}
+                                                            tenantDefaultId={myTenant?.default_model_id || null}
+                                                            disabled={showNoModelState || !wsConnected}
+                                                        />
+                                                        <div style={{ flex: 1 }} />
+                                                        {(isStreaming || isWaiting) ? (
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-stop-generation"
+                                                                onClick={() => {
+                                                                    if (!id || !activeSession?.id) return;
+                                                                    const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
+                                                                    const activeSocket = wsMapRef.current[activeRuntimeKey];
+                                                                    if (activeSocket?.readyState === WebSocket.OPEN) {
+                                                                        activeSocket.send(JSON.stringify({ type: 'abort' }));
+                                                                        setIsStreaming(false);
+                                                                        setIsWaiting(false);
+                                                                        setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                                                                    }
+                                                                }}
+                                                                title={t('chat.stop', 'Stop')}
+                                                            >
+                                                                <span className="stop-icon" />
+                                                            </button>
+                                                        ) : (
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-primary chat-composer-send"
+                                                                onClick={sendChatMsg}
+                                                                disabled={showNoModelState || !wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
+                                                                title={t('chat.send')}
+                                                            >
+                                                                <IconSend size={16} stroke={1.75} />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
-                                        </div>
-                                    </div>
-                                )}
+                                    )}
                                 </div>
                                 <AgentSidePanel
                                     liveState={liveState}
