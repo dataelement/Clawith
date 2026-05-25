@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { fetchJson } from '../services/api';
 import { useAuthStore } from '../stores';
 
@@ -11,6 +12,7 @@ interface TenantChoice {
 }
 
 export default function OAuthCallback() {
+    const { t } = useTranslation();
     const navigate = useNavigate();
     const { provider = '' } = useParams();
     const setAuth = useAuthStore((s) => s.setAuth);
@@ -31,7 +33,7 @@ export default function OAuthCallback() {
             return;
         }
         if (!provider || !code) {
-            setError('Missing OAuth callback parameters');
+            setError(t('oauth.missingParams'));
             return;
         }
 
@@ -59,9 +61,9 @@ export default function OAuthCallback() {
                 navigate('/', { replace: true });
             })
             .catch((err: any) => {
-                setError(err.message || 'OAuth login failed');
+                setError(err.message || t('oauth.oauthLoginFailed'));
             });
-    }, [navigate, provider, setAuth, tenants]);
+    }, [navigate, provider, setAuth, t, tenants]);
 
     const handleTenantSelect = async (tenantId: string) => {
         setLoading(true);
@@ -84,7 +86,7 @@ export default function OAuthCallback() {
             }
             navigate('/', { replace: true });
         } catch (err: any) {
-            setError(err.message || 'Login failed');
+            setError(err.message || t('oauth.loginFailed'));
             setLoading(false);
         }
     };
@@ -106,10 +108,10 @@ export default function OAuthCallback() {
                     boxShadow: '0 24px 80px rgba(17,17,20,0.18), 0 0 0 1px rgba(255,255,255,0.55) inset',
                 }}>
                     <h2 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '4px', color: '#17171a', textAlign: 'center' }}>
-                        选择公司
+                        {t('oauth.selectCompany')}
                     </h2>
                     <p style={{ fontSize: '13px', color: '#767681', marginBottom: '20px', textAlign: 'center', lineHeight: '1.5' }}>
-                        该账号关联了多个公司，请选择要登录的公司：
+                        {t('oauth.selectCompanyHint')}
                     </p>
 
                     {error && (
@@ -123,10 +125,10 @@ export default function OAuthCallback() {
                     )}
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {tenants.map((t) => (
+                        {tenants.map((tenant) => (
                             <button
-                                key={t.tenant_id}
-                                onClick={() => handleTenantSelect(t.tenant_id)}
+                                key={tenant.tenant_id}
+                                onClick={() => handleTenantSelect(tenant.tenant_id)}
                                 disabled={loading}
                                 style={{
                                     display: 'flex', alignItems: 'center', gap: '12px',
@@ -149,13 +151,13 @@ export default function OAuthCallback() {
                                     (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(17,17,20,0.1)';
                                 }}
                             >
-                                {t.logo_url && (
-                                    <img src={t.logo_url} alt="" style={{ width: 28, height: 28, borderRadius: 6, objectFit: 'cover' }} />
+                                {tenant.logo_url && (
+                                    <img src={tenant.logo_url} alt="" style={{ width: 28, height: 28, borderRadius: 6, objectFit: 'cover' }} />
                                 )}
                                 <div>
-                                    <div style={{ fontSize: '14px', fontWeight: 500, color: '#2b2b31' }}>{t.tenant_name}</div>
-                                    {t.tenant_slug && (
-                                        <div style={{ fontSize: '12px', color: '#767681' }}>{t.tenant_slug}</div>
+                                    <div style={{ fontSize: '14px', fontWeight: 500, color: '#2b2b31' }}>{tenant.tenant_name}</div>
+                                    {tenant.tenant_slug && (
+                                        <div style={{ fontSize: '12px', color: '#767681' }}>{tenant.tenant_slug}</div>
                                     )}
                                 </div>
                             </button>
@@ -170,7 +172,7 @@ export default function OAuthCallback() {
     if (error) {
         return (
             <div style={{ padding: '40px', textAlign: 'center' }}>
-                <h3 style={{ color: 'var(--error)' }}>OAuth Login Failed</h3>
+                <h3 style={{ color: 'var(--error)' }}>{t('oauth.loginFailedTitle')}</h3>
                 <p>{error}</p>
             </div>
         );
@@ -180,7 +182,7 @@ export default function OAuthCallback() {
     return (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', padding: '20px', textAlign: 'center' }}>
             <div className="login-spinner" style={{ width: '40px', height: '40px', marginBottom: '20px' }}></div>
-            <p>Completing sign-in...</p>
+            <p>{t('oauth.completingSignIn')}</p>
         </div>
     );
 }

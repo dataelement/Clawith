@@ -180,10 +180,10 @@ export default function SkillsTab(props: Props) {
                                             setAgentClawhubInstalling(result.slug);
                                             try {
                                                 const response = await skillApi.agentImport.fromClawhub(agentId, result.slug);
-                                                toast.success(`已安装 "${result.displayName || result.slug}"（${response.files_written} 个文件）`);
+                                                toast.success(t('common.file.skillInstalled', { name: result.displayName || result.slug }));
                                                 queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
                                             } catch (err: any) {
-                                                await dialog.alert('安装失败', { type: 'error', details: String(err?.message || err) });
+                                                await dialog.alert(t('common.error.installFailed'), { type: 'error', details: String(err?.message || err) });
                                             } finally {
                                                 setAgentClawhubInstalling(null);
                                             }
@@ -224,11 +224,11 @@ export default function SkillsTab(props: Props) {
                                     setAgentUrlImporting(true);
                                     try {
                                         const response = await skillApi.agentImport.fromUrl(agentId, agentUrlInput.trim());
-                                        toast.success(`已导入 ${response.files_written} 个文件`);
+                                        toast.success(t('common.file.filesImported', { count: response.files_written }));
                                         queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
                                         setShowAgentUrlImport(false);
                                     } catch (err: any) {
-                                        await dialog.alert('导入失败', { type: 'error', details: String(err?.message || err) });
+                                        await dialog.alert(t('common.error.importFailed'), { type: 'error', details: String(err?.message || err) });
                                     } finally {
                                         setAgentUrlImporting(false);
                                     }
@@ -292,11 +292,11 @@ export default function SkillsTab(props: Props) {
                                                 setImportingSkillId(skill.id);
                                                 try {
                                                     const response = await fileApi.importSkill(agentId, skill.id);
-                                                    toast.success(`已导入 "${skill.name}"（${response.files_written} 个文件）`);
+                                                    toast.success(t('common.file.skillImported', { name: skill.name }));
                                                     queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
                                                     setShowImportSkillModal(false);
                                                 } catch (err: any) {
-                                                    await dialog.alert('导入失败', { type: 'error', details: String(err?.message || err) });
+                                                    await dialog.alert(t('common.error.importFailed'), { type: 'error', details: String(err?.message || err) });
                                                 } finally {
                                                     setImportingSkillId(null);
                                                 }

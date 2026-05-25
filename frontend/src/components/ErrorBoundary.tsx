@@ -1,7 +1,8 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { withTranslation, WithTranslation } from 'react-i18next';
 import { IconAlertTriangle } from '@tabler/icons-react';
 
-interface Props {
+interface Props extends WithTranslation {
     children?: ReactNode;
     fallback?: ReactNode;
 }
@@ -26,6 +27,7 @@ class ErrorBoundary extends Component<Props, State> {
     }
 
     public render() {
+        const { t } = this.props;
         if (this.state.hasError) {
             if (this.props.fallback) {
                 return this.props.fallback;
@@ -33,20 +35,20 @@ class ErrorBoundary extends Component<Props, State> {
             return (
                 <div style={{ padding: '20px', color: 'var(--text-primary)', maxWidth: '600px', margin: '40px auto', background: 'var(--bg-card)', borderRadius: '8px', boxShadow: 'var(--shadow-md)' }}>
                     <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '0 0 16px 0', color: 'var(--error)' }}>
-                        <IconAlertTriangle size={24} stroke={1.8} /> Oops, something went wrong.
+                        <IconAlertTriangle size={24} stroke={1.8} /> {t('errorBoundary.title')}
                     </h2>
                     <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>
-                        An unexpected error occurred. You can try refreshing the page or contact support if the problem persists.
+                        {t('errorBoundary.description')}
                     </p>
                     <details style={{ whiteSpace: 'pre-wrap', marginBottom: '20px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '4px', fontSize: '13px', border: '1px solid var(--border-color)', color: 'var(--error)' }}>
-                        <summary style={{ cursor: 'pointer', fontWeight: 'bold', marginBottom: '8px' }}>Error Details</summary>
+                        <summary style={{ cursor: 'pointer', fontWeight: 'bold', marginBottom: '8px' }}>{t('errorBoundary.errorDetails')}</summary>
                         {this.state.error && this.state.error.toString()}
                     </details>
                     <button
                         className="btn btn-primary"
                         onClick={() => window.location.reload()}
                     >
-                        Refresh Page
+                        {t('errorBoundary.refreshPage')}
                     </button>
                 </div>
             );
@@ -56,4 +58,4 @@ class ErrorBoundary extends Component<Props, State> {
     }
 }
 
-export default ErrorBoundary;
+export default withTranslation()(ErrorBoundary);

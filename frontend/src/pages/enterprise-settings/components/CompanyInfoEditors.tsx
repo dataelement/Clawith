@@ -416,12 +416,10 @@ export function CompanyTimezoneEditor() {
     return (
         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
             <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
-                {zh ? '公司所在国家或地区' : 'Company Country or Region'}
+                {t('enterprise.timezone.countryRegionTitle', 'Company Country or Region')}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                {zh
-                    ? `用于自动设置公司默认时区和 OKR 休息日规则。当前时区：${timezone}`
-                    : `Used to set the company timezone and OKR non-workday rules. Current timezone: ${timezone}`}
+                {t('enterprise.timezone.countryRegionDescription', { timezone, defaultValue: 'Used to set the company timezone and OKR non-workday rules. Current timezone: {{timezone}}' })}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '10px', width: '100%' }}>
                 <div ref={regionPickerRef} style={{ position: 'relative', width: 'min(420px, 100%)' }}>
@@ -453,7 +451,7 @@ export function CompanyTimezoneEditor() {
                                 setRegionInput(regionLabel(selectedRegion));
                             }
                         }}
-                        placeholder={zh ? '搜索国家或地区、代码或时区' : 'Search country, code, or timezone'}
+                        placeholder={t('enterprise.timezone.searchPlaceholder', 'Search country, code, or timezone')}
                         style={{
                             width: '100%',
                             fontSize: '13px',
@@ -474,7 +472,7 @@ export function CompanyTimezoneEditor() {
                             if (!regionOpen) setRegionInput('');
                         }}
                         disabled={saving || !tenantId}
-                        aria-label={regionOpen ? (zh ? '收起地区列表' : 'Collapse region list') : (zh ? '展开地区列表' : 'Expand region list')}
+                        aria-label={regionOpen ? t('enterprise.timezone.collapseRegionList', 'Collapse region list') : t('enterprise.timezone.expandRegionList', 'Expand region list')}
                         style={{
                             position: 'absolute',
                             right: '7px',
@@ -564,7 +562,7 @@ export function CompanyTimezoneEditor() {
                                 );
                             }) : (
                                 <div style={{ padding: '12px 10px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
-                                    {zh ? '没有匹配的国家或地区' : 'No matching country or region'}
+                                    {t('enterprise.timezone.noMatch', 'No matching country or region')}
                                 </div>
                             )}
                         </div>
@@ -572,7 +570,7 @@ export function CompanyTimezoneEditor() {
                 </div>
                 {(saved || error || !tenantId) && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minHeight: '16px', flexWrap: 'wrap' }}>
-                        {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>已保存</span>}
+                        {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('common.status.saved')}</span>}
                         {error && (
                             <div style={{ fontSize: '11px', color: 'var(--error)' }}>
                                 {error}
@@ -591,13 +589,12 @@ export function CompanyTimezoneEditor() {
 }
 
 export function A2AAsyncToggle() {
-    const { t, i18n } = useTranslation();
+    const { t } = useTranslation();
     const user = useAuthStore((s) => s.user);
     const tenantId = user?.tenant_id || localStorage.getItem('current_tenant_id') || '';
     const [enabled, setEnabled] = useState(false);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
-    const zh = i18n.language?.startsWith('zh');
 
     useEffect(() => {
         if (!tenantId) return;
@@ -628,12 +625,10 @@ export function A2AAsyncToggle() {
     return (
         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
             <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
-                {zh ? 'Agent 异步协作（Beta）' : 'Agent Async Collaboration (Beta)'}
+                {t('enterprise.a2aAsync.title', 'Agent Async Collaboration (Beta)')}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                {zh
-                    ? '开启后，数字员工之间可使用 notify / task_delegate 等异步协作模式。关闭后，Agent 间消息统一走同步 consult。'
-                    : 'When enabled, agents can use async notify and task_delegate modes. When disabled, agent-to-agent messaging falls back to synchronous consult.'}
+                {t('enterprise.a2aAsync.description', 'When enabled, agents can use async notify and task_delegate modes. When disabled, agent-to-agent messaging falls back to synchronous consult.')}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '12px' }}>
                 <div style={{ width: '100%' }}>
@@ -673,14 +668,12 @@ export function A2AAsyncToggle() {
                         </span>
                     </label>
                     <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {enabled ? (zh ? '已开启' : 'Enabled') : (zh ? '已关闭' : 'Disabled')}
+                        {enabled ? t('enterprise.a2aAsync.enabled', 'Enabled') : t('enterprise.a2aAsync.disabled', 'Disabled')}
                     </span>
                 </div>
             </div>
             <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-tertiary)', maxWidth: '640px' }}>
-                {zh
-                    ? '说明：OKR 日报收集本身会优先使用更稳的同步方式，不依赖这里的异步开关。'
-                    : 'Note: OKR daily collection itself uses the more reliable synchronous path and does not depend on this toggle.'}
+                {t('enterprise.a2aAsync.note', 'Note: OKR daily collection itself uses the more reliable synchronous path and does not depend on this toggle.')}
             </div>
         </div>
     );

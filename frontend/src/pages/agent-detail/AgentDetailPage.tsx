@@ -2460,18 +2460,18 @@ export default function AgentDetailPage() {
             } else {
                 const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
                 console.error('Failed to create session:', err);
-                toast.error('创建会话失败', { details: String(err.detail || `HTTP ${res.status}`) });
+                toast.error(t('common.error.sessionCreateFailed', '创建会话失败'), { details: String(err.detail || `HTTP ${res.status}`) });
             }
         } catch (err: any) {
             console.error('Failed to create session:', err);
-            toast.error('创建会话失败', { details: String(err.message || err) });
+            toast.error(t('common.error.sessionCreateFailed', '创建会话失败'), { details: String(err.message || err) });
         }
     };
 
     const deleteSession = async (sessionId: string) => {
         const ok = await dialog.confirm(
             t('chat.deleteConfirm', 'Delete this session and all its messages? This cannot be undone.'),
-            { title: '删除会话', danger: true, confirmLabel: '删除' },
+            { title: t('common.dialog.deleteSession', '删除会话'), danger: true, confirmLabel: t('common.confirm.deleteLabel', '删除') },
         );
         if (!ok) return;
         const tkn = localStorage.getItem('token');
@@ -2494,7 +2494,7 @@ export default function AgentDetailPage() {
             await fetchMySessions(false, id);
             if (canViewAllAgentChatSessions) await fetchAllSessions();
         } catch (e: any) {
-            toast.error('删除失败', { details: String(e?.message || e) });
+            toast.error(t('common.error.deleteFailed', '删除失败'), { details: String(e?.message || e) });
         }
     };
 
@@ -2531,7 +2531,7 @@ export default function AgentDetailPage() {
             });
             queryClient.invalidateQueries({ queryKey: ['agent', id] });
             setShowExpiryModal(false);
-        } catch (e: any) { toast.error('保存失败', { details: String(e?.message || e) }); }
+        } catch (e: any) { toast.error(t('common.error.saveFailed', '保存失败'), { details: String(e?.message || e) }); }
         setExpirySaving(false);
     };
     interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolCallId?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; toolThinking?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
@@ -3758,7 +3758,7 @@ export default function AgentDetailPage() {
                 if (file.imageUrl && supportsVision) {
                     filesPrompt += `[image_data:${file.imageUrl}]\n`;
                 } else if (file.imageUrl) {
-                    filesPrompt += `[图片文件已上传: ${file.name}，保存在 ${file.path || ''}]\n`;
+                    filesPrompt += t('common.file.imageUploaded', '[图片文件已上传: {{name}}...]', { name: file.name }) + '\n';
                 } else {
                     const wsPath = file.path || '';
                     const codePath = wsPath.replace(/^workspace\//, '');
@@ -3772,7 +3772,7 @@ export default function AgentDetailPage() {
             });
 
             if (supportsVision && attachedFiles.some(f => f.imageUrl)) {
-                contentForLLM = userMsg ? `${filesPrompt}\n${userMsg}` : `${filesPrompt}\n请分析这些文件`;
+                contentForLLM = userMsg ? `${filesPrompt}\n${userMsg}` : `${filesPrompt}\n${t('common.file.analyzeFiles', '请分析这些文件')}`;
             } else {
                 contentForLLM = userMsg ? `${filesPrompt}\nQuestion: ${userMsg}` : `Please analyze these files:\n\n${filesPrompt}`;
             }
@@ -3817,7 +3817,7 @@ export default function AgentDetailPage() {
         if (!files.length) return;
         const allowedFiles = files.slice(0, 10 - attachedFiles.length);
         if (!allowedFiles.length) {
-            toast.warning('最多可附加 10 个文件');
+            toast.warning(t('common.file.maxFilesWarning', '最多可附加 {{count}} 个文件', { count: 10 }));
             return;
         }
 
@@ -4023,7 +4023,7 @@ export default function AgentDetailPage() {
         },
         onError: (err: any) => {
             const msg = err?.detail || err?.message || String(err);
-            toast.error('创建计划任务失败', { details: String(msg) });
+            toast.error(t('common.error.planCreateFailed', '创建计划任务失败'), { details: String(msg) });
         },
     });
 
@@ -5279,9 +5279,7 @@ export default function AgentDetailPage() {
                                         background: 'var(--bg-secondary)',
                                         whiteSpace: 'nowrap',
                                     }}>
-                                        {i18n.language?.startsWith('zh')
-                                            ? `${itemTriggers.length} 个触发器`
-                                            : `${itemTriggers.length} trigger${itemTriggers.length > 1 ? 's' : ''}`}
+                                        {t('common.file.triggersCount', '{{count}} 个触发器', { count: itemTriggers.length })}
                                     </span>
                                     {/* Expand arrow */}
                                     <span style={{
@@ -6721,7 +6719,7 @@ export default function AgentDetailPage() {
                                     queryClient.invalidateQueries({ queryKey: ['agents'] });
                                     navigate('/');
                                 } catch (err: any) {
-                                    await dialog.alert('删除数字员工失败', { type: 'error', details: String(err?.message || err) });
+                                    await dialog.alert(t('common.error.agentDeleteFailed', '删除数字员工失败'), { type: 'error', details: String(err?.message || err) });
                                 }
                             }}
                         />
