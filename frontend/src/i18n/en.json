@@ -963,6 +963,9 @@
       "enableWarning": "You are about to enable the A2A Async Communication feature (Beta).\n\nThis feature allows agents to communicate asynchronously via notify and task_delegate modes.\n\nKnown potential issues:\n• Agent replies may contain internal technical terms (trigger names, focus items, etc.)\n• task_delegate callbacks may occasionally be delayed or dropped due to rate limiting\n• Token consumption will increase because each async message triggers a separate agent session\n• Agent loops may occur if triggers are not properly configured\n\nIf you encounter any issues, please return to this page and disable the toggle to restore stable synchronous behavior.\n\nAre you sure you want to enable this feature?",
       "note": "Note: OKR daily collection itself uses the more reliable synchronous path and does not depend on this toggle."
     },
+    "identity": {
+      "ssoUrlEmpty": "Please enable SSO first to generate the URL"
+    },
     "invites": {
       "pageTitle": "Invitation Codes",
       "pageDesc": "Manage invitation codes for platform registration.",
