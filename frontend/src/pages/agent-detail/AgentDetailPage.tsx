@@ -3421,6 +3421,8 @@ export default function AgentDetailPage() {
             });
             if (!res.ok) return;
             const msgs = await res.json();
+            // Validate session is still active after async fetch
+            if (activeSession?.id !== sess.id) return;
             if (msgs.length === 0) {
                 setHistoryHasMore(false);
                 return;
@@ -3465,6 +3467,8 @@ export default function AgentDetailPage() {
             });
             if (!res.ok) return;
             const msgs = await res.json();
+            // Validate session is still active after async fetch
+            if (activeSession?.id !== sess.id) return;
             if (msgs.length === 0) {
                 setChatHistoryHasMore(false);
                 return;
