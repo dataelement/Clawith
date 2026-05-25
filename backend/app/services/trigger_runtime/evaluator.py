@@ -184,6 +184,12 @@ async def evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
             return False
 
     cfg = trigger.config or {}
+    if isinstance(cfg, str):
+        import json
+        try:
+            cfg = json.loads(cfg)
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
     t = trigger.type
 
     if t == "cron":
@@ -251,6 +257,12 @@ async def poll_check(trigger: AgentTrigger) -> bool:
     import httpx
 
     cfg = trigger.config or {}
+    if isinstance(cfg, str):
+        import json
+        try:
+            cfg = json.loads(cfg)
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
     url = cfg.get("url")
     if not url:
         return False
@@ -311,6 +323,12 @@ async def check_new_agent_messages(trigger: AgentTrigger) -> bool:
     from app.models.chat_session import ChatSession
 
     cfg = trigger.config or {}
+    if isinstance(cfg, str):
+        import json
+        try:
+            cfg = json.loads(cfg)
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
     from_agent_name = cfg.get("from_agent_name")
     from_user_name = cfg.get("from_user_name")
     if not from_agent_name and not from_user_name:
@@ -330,6 +348,10 @@ async def check_new_agent_messages(trigger: AgentTrigger) -> bool:
             if from_agent_name:
                 from app.models.participant import Participant
                 from app.models.agent import Agent as AgentModel
+                if isinstance(from_agent_name, list):
+                    from_agent_name = from_agent_name[0] if from_agent_name else ""
+                if not isinstance(from_agent_name, str):
+                    return False
                 safe_agent_name = from_agent_name.replace("%", "").replace("_", r"\_")
                 agent_r = await db.execute(select(AgentModel).where(AgentModel.name.ilike(f"%{safe_agent_name}%")))
                 source_agent = agent_r.scalars().first()
@@ -368,6 +390,10 @@ async def check_new_agent_messages(trigger: AgentTrigger) -> bool:
 
                 agent_r = await db.execute(select(AgentModel).where(AgentModel.id == trigger.agent_id))
                 agent = agent_r.scalar_one_or_none()
+                if isinstance(from_user_name, list):
+                    from_user_name = from_user_name[0] if from_user_name else ""
+                if not isinstance(from_user_name, str):
+                    return False
                 safe_user_name = from_user_name.replace("%", "").replace("_", r"\_")
                 query = (
                     select(User)

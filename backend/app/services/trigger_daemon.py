@@ -136,7 +136,14 @@ async def _tick():
         try:
             async with async_session() as db:
                 for t in agent_triggers:
-                    if (t.config or {}).get("_execution_id"):
+                    cfg = t.config or {}
+                    if isinstance(cfg, str):
+                        import json
+                        try:
+                            cfg = json.loads(cfg)
+                        except (json.JSONDecodeError, TypeError):
+                            cfg = {}
+                    if cfg.get("_execution_id"):
                         continue
                     result = await db.execute(
                         select(AgentTrigger).where(AgentTrigger.id == t.id)

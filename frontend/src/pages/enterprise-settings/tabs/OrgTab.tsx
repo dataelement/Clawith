@@ -452,9 +452,10 @@ export default function OrgTab({ tenant }: { tenant: any }) {
         try {
             const result = await fetchJson<any>(`/enterprise/org/sync?provider_id=${providerId}`, { method: 'POST' });
             setSyncResult({ ...result, providerId });
-            qc.invalidateQueries({ queryKey: ['org-departments'] });
-            qc.invalidateQueries({ queryKey: ['org-members'] });
-            qc.invalidateQueries({ queryKey: ['identity-providers'] });
+            // Force refetch to ensure UI updates after sync
+            await qc.invalidateQueries({ queryKey: ['org-departments'] });
+            await qc.invalidateQueries({ queryKey: ['org-members'] });
+            await qc.invalidateQueries({ queryKey: ['identity-providers'] });
         } catch (e: any) {
             setSyncResult({ error: e.message, providerId });
         }

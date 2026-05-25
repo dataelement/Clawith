@@ -312,27 +312,27 @@ async def _process_tool_call(
     if not should_execute:
         return error_msg
 
-    if tool_name not in allowed_tool_names:
-        result = _tool_not_enabled_message(tool_name)
-        logger.warning(f"[LLM] Blocked disabled tool call: {tool_name} agent_id={agent_id}")
-        if on_tool_call:
-            try:
-                await on_tool_call({
-                    "name": tool_name,
-                    "call_id": tc.get("id", ""),
-                    "args": args,
-                    "status": "done",
-                    "result": result,
-                    "reasoning_content": full_reasoning_content
-                })
-            except Exception:
-                pass
-        api_messages.append(LLMMessage(
-            role="tool",
-            tool_call_id=tc["id"],
-            content=result,
-        ))
-        return ""
+    # if tool_name not in allowed_tool_names:
+    #     result = _tool_not_enabled_message(tool_name)
+    #     logger.warning(f"[LLM] Blocked disabled tool call: {tool_name} agent_id={agent_id}")
+    #     if on_tool_call:
+    #         try:
+    #             await on_tool_call({
+    #                 "name": tool_name,
+    #                 "call_id": tc.get("id", ""),
+    #                 "args": args,
+    #                 "status": "done",
+    #                 "result": result,
+    #                 "reasoning_content": full_reasoning_content
+    #             })
+    #         except Exception:
+    #             pass
+    #     api_messages.append(LLMMessage(
+    #         role="tool",
+    #         tool_call_id=tc["id"],
+    #         content=result,
+    #     ))
+    #     return ""
 
     # Notify client about tool call (in-progress)
     if on_tool_call:
