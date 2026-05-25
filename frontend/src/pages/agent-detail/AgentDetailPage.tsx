@@ -1598,7 +1598,7 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(224,238,238,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 600, flexShrink: 0 }}>{r.member?.name?.[0] || '?'}</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{ fontWeight: 600, fontSize: '13px' }}>
-                                            {r.member?.name || '?'} <span className="badge" style={{ fontSize: '10px', marginLeft: '4px' }}>{r.relation_label}</span>
+                                            {r.member?.name || '?'} <span className="badge" style={{ fontSize: '10px', marginLeft: '4px' }}>{String(t(`agent.detail.${r.relation}`, r.relation_label))}</span>
                                             {r.access_status && r.access_status !== 'active' && (
                                                 <span
                                                     className="badge"
@@ -1718,7 +1718,7 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                                                         )}
                                                         {alreadyAdded && existingRelationship?.relation_label && (
                                                             <span className="badge" style={{ fontSize: '10px', marginLeft: '4px' }}>
-                                                                {existingRelationship.relation_label}
+                                                                {String(t(`agent.detail.${existingRelationship.relation}`, existingRelationship.relation_label))}
                                                             </span>
                                                         )}
                                                     </div>
@@ -1802,7 +1802,7 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                                     <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: 0 }}>A</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{ fontWeight: 600, fontSize: '13px' }}>
-                                            {r.target_agent?.name || '?'} <span className="badge" style={{ fontSize: '10px', marginLeft: '4px', background: 'rgba(16,185,129,0.15)', color: 'rgb(16,185,129)' }}>{r.relation_label}</span>
+                                            {r.target_agent?.name || '?'} <span className="badge" style={{ fontSize: '10px', marginLeft: '4px', background: 'rgba(16,185,129,0.15)', color: 'rgb(16,185,129)' }}>{String(t(`agent.detail.${r.relation}`, r.relation_label))}</span>
                                             {r.access_status && r.access_status !== 'active' && (
                                                 <span
                                                     className="badge"
