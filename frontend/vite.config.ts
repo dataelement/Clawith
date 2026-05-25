@@ -27,6 +27,18 @@ export default defineConfig({
             '@': path.resolve(__dirname, './src'),
         },
     },
+    build: {
+        rollupOptions: {
+            output: {
+                manualChunks: {
+                    'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+                    'vendor-charts': ['recharts'],
+                    'vendor-i18n': ['i18next', 'react-i18next', 'i18next-browser-languagedetector'],
+                    'vendor-icons': ['@tabler/icons-react'],
+                },
+            },
+        },
+    },
     server: {
         port: 3008,
         host: '0.0.0.0',
