@@ -1655,7 +1655,8 @@
     "saving": "保存中...",
     "noPermission": "你没有权限访问此页面。",
     "cancel": "取消",
-    "confirm": {
+    "confirm": "确认",
+    "confirmActions": {
       "deleteTitle": "删除确认",
       "removeTitle": "移除确认",
       "disableTitle": "禁用确认",

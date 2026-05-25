@@ -48,9 +48,9 @@ export default function PromptModal({ open, title, placeholder, onConfirm, onCan
                     style={{ width: '100%', marginBottom: '16px' }}
                 />
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                    <button className="btn btn-secondary" onClick={onCancel}>{t('common.confirm.cancelLabel')}</button>
+                    <button className="btn btn-secondary" onClick={onCancel}>{t('common.confirmActions.cancelLabel')}</button>
                     <button className="btn btn-primary" onClick={() => { if (value.trim()) onConfirm(value.trim()); }}
-                        disabled={!value.trim()}>{t('common.confirm.confirmLabel')}</button>
+                        disabled={!value.trim()}>{t('common.confirmActions.confirmLabel')}</button>
                 </div>
             </div>
         </div>

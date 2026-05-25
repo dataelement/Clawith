@@ -1564,7 +1564,8 @@
     "save": "Save",
     "saving": "Saving…",
     "cancel": "Cancel",
-    "confirm": {
+    "confirm": "Confirm",
+    "confirmActions": {
       "deleteTitle": "Delete Confirmation",
       "removeTitle": "Remove Confirmation",
       "disableTitle": "Disable Confirmation",

@@ -2471,7 +2471,7 @@ export default function AgentDetailPage() {
     const deleteSession = async (sessionId: string) => {
         const ok = await dialog.confirm(
             t('chat.deleteConfirm', 'Delete this session and all its messages? This cannot be undone.'),
-            { title: t('common.dialog.deleteSession', '删除会话'), danger: true, confirmLabel: t('common.confirm.deleteLabel', '删除') },
+            { title: t('common.dialog.deleteSession', '删除会话'), danger: true, confirmLabel: t('common.confirmActions.deleteLabel', '删除') },
         );
         if (!ok) return;
         const tkn = localStorage.getItem('token');

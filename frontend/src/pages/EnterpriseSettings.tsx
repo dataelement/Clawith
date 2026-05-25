@@ -1211,7 +1211,7 @@ export default function EnterpriseSettings() {
                                                 )}
                                                 {tool.type !== 'builtin' && (
                                                     <button className="btn btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
-                                                        const ok = await dialog.confirm(t('common.dialog.deleteToolConfirm', { name: tool.display_name }), { title: t('common.dialog.deleteTool'), danger: true, confirmLabel: t('common.confirm.deleteLabel') });
+                                                        const ok = await dialog.confirm(t('common.dialog.deleteToolConfirm', { name: tool.display_name }), { title: t('common.dialog.deleteTool'), danger: true, confirmLabel: t('common.confirmActions.deleteLabel') });
                                                         if (!ok) return;
                                                         await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
                                                         loadAllTools();

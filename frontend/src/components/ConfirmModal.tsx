@@ -15,8 +15,8 @@ interface ConfirmModalProps {
 export default function ConfirmModal({ open, title, message, confirmLabel, cancelLabel, danger, onConfirm, onCancel }: ConfirmModalProps) {
     const { t } = useTranslation();
     const btnRef = useRef<HTMLButtonElement>(null);
-    const resolvedConfirmLabel = confirmLabel ?? t('common.confirm.confirmLabel');
-    const resolvedCancelLabel = cancelLabel ?? t('common.confirm.cancelLabel');
+    const resolvedConfirmLabel = confirmLabel ?? t('common.confirmActions.confirmLabel');
+    const resolvedCancelLabel = cancelLabel ?? t('common.confirmActions.cancelLabel');
 
     useEffect(() => {
         if (open) setTimeout(() => btnRef.current?.focus(), 100);

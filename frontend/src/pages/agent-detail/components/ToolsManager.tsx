@@ -390,7 +390,7 @@ export default function ToolsManager({ agentId, canManage = false }: { agentId: 
                             onClick={async () => {
                                 const ok = await dialog.confirm(
                                     t('agent.tools.confirmDelete', `Remove "${tool.display_name}" from this agent?`),
-                                    { danger: true, confirmLabel: t('common.confirm.removeLabel') },
+                                    { danger: true, confirmLabel: t('common.confirmActions.removeLabel') },
                                 );
                                 if (!ok) return;
                                 setDeletingToolId(tool.id);

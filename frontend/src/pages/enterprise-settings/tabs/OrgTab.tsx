@@ -814,7 +814,7 @@ export default function OrgTab({ tenant }: { tenant: any }) {
                             <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>
                         )}
                         {existingProvider && (
-                            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={async () => { const ok = await dialog.confirm(t('common.dialog.deleteConfigConfirm'), { title: t('common.dialog.deleteConfig'), danger: true, confirmLabel: t('common.confirm.deleteLabel') }); if (ok) deleteProvider.mutate(existingProvider.id); }}>
+                            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={async () => { const ok = await dialog.confirm(t('common.dialog.deleteConfigConfirm'), { title: t('common.dialog.deleteConfig'), danger: true, confirmLabel: t('common.confirmActions.deleteLabel') }); if (ok) deleteProvider.mutate(existingProvider.id); }}>
                                 {t('common.delete', 'Delete')}
                             </button>
                         )}
