@@ -3980,6 +3980,13 @@ select:focus {
   font-family: inherit;
 }
 
+.chat-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
 .chat-input::placeholder {
   color: var(--text-tertiary);
   font-size: 13px;
