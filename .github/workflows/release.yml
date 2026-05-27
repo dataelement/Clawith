@@ -29,15 +29,17 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Cut release
+  propose_release:
+    name: Propose release
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout source
@@ -387,13 +389,72 @@ jobs:
             exit 0
           fi
 
+          git checkout -b "release/${TARGET_TAG}"
           git commit -m "chore(release): cut ${TARGET_TAG}"
-          git push origin HEAD:${{ github.ref_name }}
+          git push origin "release/${TARGET_TAG}"
+
+      - name: Create Pull Request
+        shell: bash
+        env:
+          TARGET_TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh pr create \
+            --title "chore(release): cut ${TARGET_TAG}" \
+            --body "Automated release PR for ${TARGET_TAG}. Merging this PR will automatically tag the release and publish it." \
+            --head "release/${TARGET_TAG}" \
+            --base "${{ github.ref_name }}"
+
+  publish_release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v')
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Extract Release Info
+        id: release_info
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          branch_name="${{ github.event.pull_request.head.ref }}"
+          tag_name="${branch_name#release/}"
+
+          python - "$tag_name" <<'PY'
+          from pathlib import Path
+          import sys
+
+          tag_name = sys.argv[1]
+          notes_path = Path("RELEASE_NOTES.md")
+          if not notes_path.exists():
+              Path("release-notes.extracted.md").write_text(f"# {tag_name}\n\nRelease cut via merge.", encoding="utf-8")
+              sys.exit(0)
+
+          content = notes_path.read_text(encoding="utf-8")
+          parts = content.split("\n\n---\n\n")
+          latest_notes = parts[0].strip()
+
+          Path("release-notes.extracted.md").write_text(latest_notes + "\n", encoding="utf-8")
+          PY
+
+          echo "tag=$tag_name" >> "$GITHUB_OUTPUT"
 
       - name: Create and push tag
         shell: bash
         env:
-          TARGET_TAG: ${{ steps.version.outputs.tag }}
+          TARGET_TAG: ${{ steps.release_info.outputs.tag }}
         run: |
           set -euo pipefail
 
@@ -403,8 +464,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: ${{ steps.version.outputs.tag }}
-          body_path: .github/release-artifacts/release-notes.generated.md
-          prerelease: ${{ inputs.prerelease }}
+          tag_name: ${{ steps.release_info.outputs.tag }}
+          name: ${{ steps.release_info.outputs.tag }}
+          body_path: release-notes.extracted.md
+          prerelease: ${{ github.event.pull_request.draft }}
           generate_release_notes: false
