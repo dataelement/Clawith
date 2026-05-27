@@ -83,6 +83,14 @@ async def claim_pending_trigger_executions(
             execution.lease_expires_at = lease_until
             claimed_pairs.append((execution, trigger))
         await db.commit()
+        # Expunge claimed objects before session.close() is called.
+        # session.close() expires every object still in the identity map;
+        # explicit expunge() detaches them WITHOUT expiry so their scalar
+        # attributes (trigger.config, execution.payload, etc.) remain
+        # readable in build_execution_runtime_trigger() outside this context.
+        for execution, trigger in claimed_pairs:
+            db.expunge(execution)
+            db.expunge(trigger)
     return claimed_pairs
 
 
