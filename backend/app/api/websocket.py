@@ -189,10 +189,18 @@ class ConnectionManager:
 
     async def get_active_session_ids(self, agent_id: str) -> list[str]:
         """Return distinct session IDs for all active WS connections of an agent."""
-        return await realtime_router.get_active_session_ids(agent_id)
+        seen: set[str] = set()
+        for _ws, session_id, _user_id in self._local_connections(agent_id):
+            if session_id:
+                seen.add(session_id)
+        seen.update(await realtime_router.get_active_session_ids(agent_id))
+        return list(seen)
 
     async def is_user_viewing_session(self, agent_id: str, session_id: str, user_id: str) -> bool:
         """Return True if the given platform user currently has this exact session open."""
+        for _ws, local_session_id, local_user_id in self._local_connections(agent_id):
+            if local_session_id == session_id and local_user_id == user_id:
+                return True
         return await realtime_router.is_user_viewing_session(
             agent_id=agent_id,
             session_id=session_id,
