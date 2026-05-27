@@ -220,6 +220,16 @@ class FeishuWSManager:
         if not _HAS_LARK:
             logger.warning("[Feishu WS] lark-oapi not installed, cannot start client")
             return
+
+        # Monkeypatch lark-oapi global event loop to use the current running event loop.
+        # This is critical because lark-oapi initializes 'loop = asyncio.get_event_loop()'
+        # at module import time, which refers to a dead loop in FastAPI/Uvicorn processes.
+        try:
+            import lark_oapi.ws.client as lark_ws_client
+            lark_ws_client.loop = asyncio.get_running_loop()
+            logger.debug("[Feishu WS] Patched lark_oapi.ws.client.loop with running loop")
+        except Exception as e:
+            logger.warning(f"[Feishu WS] Failed to patch lark-oapi event loop: {e}")
         if not app_id or not app_secret:
             logger.warning(f"[Feishu WS] Missing app_id or app_secret for {agent_id}, skipping")
             return
