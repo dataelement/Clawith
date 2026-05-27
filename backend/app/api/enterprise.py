@@ -1590,6 +1590,23 @@ def _require_tenant_admin(current_user: User) -> None:
         raise HTTPException(status_code=400, detail="No company assigned")
 
 
+async def _ensure_invitation_email_enabled(db: AsyncSession) -> None:
+    """Require enabled system email before accepting email invitations."""
+    from app.services.system_email_service import resolve_email_config_async
+
+    if await resolve_email_config_async(db):
+        return
+    if await resolve_email_config_async(db, include_disabled=True):
+        raise HTTPException(
+            status_code=400,
+            detail="System email SMTP is configured but disabled. Enable system email before sending invitations.",
+        )
+    raise HTTPException(
+        status_code=400,
+        detail="System email SMTP settings are not configured. Configure system email before sending invitations.",
+    )
+
+
 @router.post("/invitation-codes")
 async def create_invitation_codes(
     data: InvitationCodeCreate,
@@ -1640,6 +1657,8 @@ async def invite_users(
     tenant = tenant_result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Company not found")
+
+    await _ensure_invitation_email_enabled(db)
 
     base_url = await platform_service.get_public_base_url(db, request=request)
     
