@@ -389,9 +389,9 @@ jobs:
             exit 0
           fi
 
-          git checkout -b "release/${TARGET_TAG}"
+          git checkout -b "release-${TARGET_TAG}"
           git commit -m "chore(release): cut ${TARGET_TAG}"
-          git push origin "release/${TARGET_TAG}"
+          git push origin "release-${TARGET_TAG}"
 
       - name: Create Pull Request
         shell: bash
@@ -404,13 +404,13 @@ jobs:
           gh pr create \
             --title "chore(release): cut ${TARGET_TAG}" \
             --body "Automated release PR for ${TARGET_TAG}. Merging this PR will automatically tag the release and publish it." \
-            --head "release/${TARGET_TAG}" \
+            --head "release-${TARGET_TAG}" \
             --base "${{ github.ref_name }}"
 
   publish_release:
     name: Publish release
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v')
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release-v')
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -430,7 +430,7 @@ jobs:
           set -euo pipefail
 
           branch_name="${{ github.event.pull_request.head.ref }}"
-          tag_name="${branch_name#release/}"
+          tag_name="${branch_name#release-}"
 
           python - "$tag_name" <<'PY'
           from pathlib import Path
