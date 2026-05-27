@@ -267,6 +267,41 @@ async def test_skip_tools_still_exposes_finish(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_call_llm_merges_extra_system_messages(monkeypatch):
+    from app.services.llm import caller
+
+    fake_client = FakeStreamClient([_finish_response("Hello.")])
+
+    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((1, None)))
+    monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
+    monkeypatch.setattr(
+        "app.services.agent_context.build_agent_context",
+        lambda *_args, **_kwargs: _async_return(("static", "dynamic")),
+    )
+    monkeypatch.setattr(caller, "create_llm_client", lambda **_kwargs: fake_client)
+    monkeypatch.setattr(caller, "record_token_usage", lambda *_args, **_kwargs: _async_return(None))
+
+    result = await caller.call_llm(
+        _model(),
+        [
+            {"role": "system", "content": "onboarding instructions"},
+            {"role": "user", "content": "Please begin the onboarding."},
+        ],
+        "Agent",
+        "",
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        skip_tools=True,
+    )
+
+    assert result == "Hello."
+    first_round_messages = fake_client.messages_seen[0]
+    assert [msg.role for msg in first_round_messages] == ["system", "user"]
+    assert first_round_messages[0].content == "static"
+    assert first_round_messages[0].dynamic_content == "dynamic\n\nonboarding instructions"
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_finish_is_noop_control_signal(monkeypatch):
     from app.services import agent_tools
 

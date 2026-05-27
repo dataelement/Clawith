@@ -452,9 +452,26 @@ async def call_llm(
         tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
     allowed_tool_names = _allowed_tool_names(tools_for_llm)
 
-    # Convert messages to LLMMessage format
-    api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
+    # Convert messages to LLMMessage format. Some OpenAI-compatible local
+    # providers only allow one leading system message, so fold caller-supplied
+    # system instructions into the base agent context.
+    conversation_messages: list[dict] = []
+    extra_system_parts: list[str] = []
     for msg in messages:
+        if msg.get("role") == "system":
+            content = msg.get("content")
+            if isinstance(content, str):
+                extra_system_parts.append(content)
+            elif content:
+                extra_system_parts.append(json.dumps(content, ensure_ascii=False))
+            continue
+        conversation_messages.append(msg)
+    if extra_system_parts:
+        extra_system = "\n\n".join(part for part in extra_system_parts if part)
+        dynamic_prompt = f"{dynamic_prompt}\n\n{extra_system}" if dynamic_prompt else extra_system
+
+    api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
+    for msg in conversation_messages:
         api_messages.append(LLMMessage(
             role=msg.get("role", "user"),
             content=msg.get("content"),
