@@ -83,6 +83,9 @@ async def claim_pending_trigger_executions(
             execution.lease_expires_at = lease_until
             claimed_pairs.append((execution, trigger))
         await db.commit()
+        for execution, trigger in claimed_pairs:
+            db.expunge(execution)
+            db.expunge(trigger)
     return claimed_pairs
 
 

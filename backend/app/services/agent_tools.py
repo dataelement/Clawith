@@ -683,7 +683,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "send_message_to_agent",
-            "description": "Send a message to a digital employee colleague. The recipient is another AI agent, not a human. Your relationships.md lists available digital employees under 'Digital Employee Colleagues'.\n\nDECISION GUIDE for msg_type:\nAsk yourself: does the target agent need to DO WORK (analyze, research, summarize, write, compare, plan, etc.) and RETURN RESULTS to you or the user?\n\n- If YES, the target needs to do work → use task_delegate. Examples: 'summarize X', 'analyze Y', 'check Z', 'prepare a report', 'review and give feedback', 'find out X', 'confirm with X and report back'. The target works asynchronously and you will be woken when they finish.\n\n- If the target just needs to KNOW something → use notify. Examples: 'meeting cancelled', 'I updated the doc', 'heads up about X', 'FYI'. No reply expected.\n\n- If you need a quick factual answer right now → use consult. Examples: 'what is X?', 'do you know Y?'. Synchronous, blocks until reply.\n\nWhen in doubt between notify and task_delegate, prefer task_delegate — it is safer because it guarantees the user gets a result.",
+            "description": "Send a message to a digital employee colleague. The recipient is another AI agent, not a human. Refer to the 'Relationships' section in your system prompt for available digital employees.\n\nDECISION GUIDE for msg_type:\nAsk yourself: does the target agent need to DO WORK (analyze, research, summarize, write, compare, plan, etc.) and RETURN RESULTS to you or the user?\n\n- If YES, the target needs to do work → use task_delegate. Examples: 'summarize X', 'analyze Y', 'check Z', 'prepare a report', 'review and give feedback', 'find out X', 'confirm with X and report back'. The target works asynchronously and you will be woken when they finish.\n\n- If the target just needs to KNOW something → use notify. Examples: 'meeting cancelled', 'I updated the doc', 'heads up about X', 'FYI'. No reply expected.\n\n- If you need a quick factual answer right now → use consult. Examples: 'what is X?', 'do you know Y?'. Synchronous, blocks until reply.\n\nWhen in doubt between notify and task_delegate, prefer task_delegate — it is safer because it guarantees the user gets a result.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -11136,9 +11136,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     2. Fall back to Contact v3 GET /users/{open_id} if we find a match by email.
     The cache is populated by feishu.py each time a message sender is resolved.
     """
-    import httpx
     import json as _json
-    import pathlib as _pl
 
     name = (arguments.get("name") or "").strip()
     if not name:
@@ -11147,60 +11145,20 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
-    from app.services.feishu_service import feishu_service
-    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
-
-    # ── Load local contacts cache ─────────────────────────────────────────────
-    _cache_file = _pl.Path(f"/data/workspaces/{agent_id}/feishu_contacts_cache.json")
-    _cached_users: list[dict] = []
-    try:
-        if _cache_file.exists():
-            _raw = _json.loads(_cache_file.read_text())
-            _cached_users = _raw.get("users", [])
-    except Exception:
-        pass
-
-    name_lower = name.lower()
-
-    def _matches(u: dict) -> bool:
-        return (
-            name_lower in (u.get("name") or "").lower()
-            or name_lower in (u.get("en_name") or "").lower()
-        )
-
-    matched = [u for u in _cached_users if _matches(u)]
-
-    if matched:
-        lines = [f"🔍 找到 {len(matched)} 位匹配「{name}」的用户：\n"]
-        for u in matched:
-            open_id = u.get("open_id", "")
-            user_id = u.get("user_id", "")
-            display_name = u.get("name", "")
-            en_name = u.get("en_name", "")
-            email = u.get("email", "")
-            lines.append(f"• **{display_name}**{'（' + en_name + '）' if en_name else ''}")
-            if user_id:
-                lines.append(f"  user_id: `{user_id}`")
-            if open_id:
-                lines.append(f"  open_id: `{open_id}`")
-            if email:
-                lines.append(f"  邮箱: {email}")
-        return "\n".join(lines)
 
     # ── Cache miss: try OrgMember table first (has user_id from org sync) ──────
     try:
         from app.database import async_session as _async_session
-        from sqlalchemy import select as _sa_select
-        from app.models.org import OrgMember as _OrgMember
-        from app.models.agent import Agent as _AgentModel
         async with _async_session() as _db:
             _agent_tenant_id = await _db.execute(
-                _sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id)
+                select(AgentModel.tenant_id).where(AgentModel.id == agent_id)
             )
             _tid = _agent_tenant_id.scalar_one_or_none()
-            _query = _sa_select(_OrgMember).where(_OrgMember.name.ilike(f"%{name}%"))
-            if _tid:
-                _query = _query.where(_OrgMember.tenant_id == _tid)
+            _query = select(OrgMember).where(
+                AgentModel.status == "active",
+                OrgMember.name.ilike(f"%{name}%"),
+                OrgMember.tenant_id == _tid
+            )
             _r = await _db.execute(_query)
             _org_members = _r.scalars().all()
         if _org_members:
@@ -11297,8 +11255,8 @@ async def _get_email_config(agent_id: uuid.UUID) -> dict:
         )
         at = at_r.scalar_one_or_none()
         agent_config = (at.config or {}) if at else {}
-        # Merge global + agent override
-        return {**(tool.config or {}), **agent_config}
+        merged = {**(tool.config or {}), **agent_config}
+        return _decrypt_sensitive_fields(merged, tool.config_schema)
 
 
 # ── Pages: public HTML hosting ──────────────────────────

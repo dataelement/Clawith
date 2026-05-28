@@ -456,8 +456,8 @@ class WebSocketChatHandler:
             if msg.role == "tool_call":
                 try:
                     tc_data = json.loads(msg.content)
-                    tc_name = tc_data.get("name", "unknown")
-                    tc_args = tc_data.get("args", {})
+                    tc_name = tc_data.get("name") or tc_data.get("tool_name") or "unknown"
+                    tc_args = tc_data.get("args") or tc_data.get("arguments") or {}
                     tc_result = tc_data.get("result", "")
                     tc_id = f"call_{msg.id}"
                     asst_msg = {
@@ -1034,23 +1034,19 @@ class WebSocketChatHandler:
     async def _save_completed_tool_call_to_db(self, data: dict):
         """Persist completed tool calls in ChatMessage DB logs."""
         try:
+            from app.services.chat_session_service import save_tool_call_log
+            await save_tool_call_log(
+                agent_id=self.agent_id,
+                user_id=self.user.id,
+                conversation_id=self.conv_id,
+                tool_name=data.get("name", ""),
+                arguments=data.get("args"),
+                result=(data.get("result") or "")[:500],
+                status="done",
+                tool_call_id=data.get("call_id"),
+                reasoning_content=data.get("reasoning_content"),
+            )
             async with async_session() as _tc_db:
-                tc_msg = ChatMessage(
-                    agent_id=self.agent_id,
-                    user_id=self.user.id,
-                    role="tool_call",
-                    content=json.dumps(
-                        {
-                            "name": data.get("name", ""),
-                            "args": data.get("args"),
-                            "status": "done",
-                            "result": (data.get("result") or "")[:500],
-                            "reasoning_content": data.get("reasoning_content"),
-                        }
-                    ),
-                    conversation_id=self.conv_id,
-                )
-                _tc_db.add(tc_msg)
                 await maybe_mark_session_read_for_active_viewer(
                     _tc_db,
                     agent_id=self.agent_id,

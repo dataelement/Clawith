@@ -437,6 +437,24 @@ async def call_llm(
     else:
         _user_name = await _get_user_name(user_id)
 
+    # Auto-assign fallback tool call logger if none provided but conversation context exists
+    if on_tool_call is None and session_id:
+        from app.services.chat_session_service import save_tool_call_log
+        async def _default_on_tool_call(data: dict):
+            if data.get("status") == "done" and agent_id:
+                await save_tool_call_log(
+                    agent_id=agent_id,
+                    user_id=user_id or agent_id,
+                    conversation_id=session_id,
+                    tool_name=data.get("name", ""),
+                    arguments=data.get("args"),
+                    result=data.get("result"),
+                    status="done",
+                    tool_call_id=data.get("call_id"),
+                    reasoning_content=data.get("reasoning_content"),
+                )
+        on_tool_call = _default_on_tool_call
+
     # Build rich prompt with soul, memory, skills, relationships
     from app.services.agent_context import build_agent_context
     # Look up current user's display name so the agent knows who it's talking to

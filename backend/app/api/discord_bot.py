@@ -343,7 +343,14 @@ async def discord_interaction_webhook(
                 await bg_db.commit()
 
                 # Call LLM
-                reply_text = await _call_agent_llm(bg_db, agent_id, user_text, history=history)
+                reply_text = await _call_agent_llm(
+                    bg_db,
+                    agent_id,
+                    user_text,
+                    history=history,
+                    user_id=platform_user_id,
+                    session_id=session_conv_id,
+                )
                 logger.info(f"[Discord] LLM reply: {reply_text[:80]}")
 
                 # Save reply

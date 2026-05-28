@@ -368,25 +368,7 @@ async def seed_default_agents():
                     description=description,
                 ))
 
-        # ── Write relationships.md for each ──
-        if "Morty" in created_names:
-            await store_agent_bytes(
-                morty.id,
-                "relationships.md",
-                "# Relationships\n\n"
-                "## Digital Employee Colleagues\n\n"
-                "- **Meeseeks** (collaborator): Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.\n".encode("utf-8"),
-                content_type="text/markdown; charset=utf-8",
-            )
-        if "Meeseeks" in created_names:
-            await store_agent_bytes(
-                meeseeks.id,
-                "relationships.md",
-                "# Relationships\n\n"
-                "## Digital Employee Colleagues\n\n"
-                "- **Morty** (collaborator): Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.\n".encode("utf-8"),
-                content_type="text/markdown; charset=utf-8",
-            )
+
 
         await db.commit()
         logger.info(
@@ -528,14 +510,7 @@ async def seed_okr_agent():
             ).encode("utf-8"),
             content_type="text/markdown; charset=utf-8",
         )
-        await store_agent_bytes(
-            okr_agent.id,
-            "relationships.md",
-            "# Relationships\n\n"
-            "## Team Members (OKR tracking)\n\n"
-            "_Team members will be added here as they are onboarded into the OKR system._\n".encode("utf-8"),
-            content_type="text/markdown; charset=utf-8",
-        )
+
 
         # ── Assign default tools + OKR-specific tools ──
         # Default tools: all tools where is_default=True
@@ -994,14 +969,7 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
             ).encode("utf-8"),
             content_type="text/markdown; charset=utf-8",
         )
-        await store_agent_bytes(
-            okr_agent.id,
-            "relationships.md",
-            "# Relationships\n\n"
-            "## Team Members (OKR tracking)\n\n"
-            "_Team members will be added here as they are onboarded into the OKR system._\n".encode("utf-8"),
-            content_type="text/markdown; charset=utf-8",
-        )
+
 
         # ── Assign default tools ──
         default_tools_result = await db.execute(
