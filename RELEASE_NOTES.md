@@ -1,3 +1,69 @@
+# v1.9.4 — Performance Improvements & Enhanced User Interface
+
+## What's New
+
+### Logging and Performance Enhancements
+- **Dynamic Loading of Tool Relationships**: Enhanced the way tool relationships are loaded dynamically, improving overall performance.
+- **Optimized Skill Seeding**: Reduced initialization time for skill seeding, providing a faster and more reactive experience during agent creation and management.
+
+### Chat Functionality Improvements
+- **Cursor-Based Pagination for Chat History**: Implemented cursor-based pagination to improve user experience while navigating through chat history, making it more fluid and manageable.
+- **Real-Time Stream Execution**: Introduced real-time output streaming to the right-side code panel during code execution, allowing users to see results immediately, enhancing the interactive development experience.
+
+### User Interface Updates
+- **Refinements in UI Elements**: Several visual elements have been adjusted for better aesthetics and usability, such as improved styling for week view today indicators and interface transitions.
+- **New Design Elements in Atlas**: Added new SVG illustrations and reworked design components throughout the Atlas framework, improving the visual appeal and consistency of the onboarding process.
+
+### Sandboxing Enhancements
+- **Timeout Handling Improvements**: Added clearer error messages for timeout events during code execution in the sandbox, improving feedback for users.
+- **Flexible Execution Timeout Settings**: Users can now specify execution timeout settings, allowing for configurations up to 1 hour, supporting more extensive computational tasks without interruptions.
+
+### SSO and OAuth Improvements
+- **Single Sign-On Enhancements**: Features for global SSO settings have been improved, including the addition of custom domain redirects for a smoother user experience during authentication processes.
+- **Support for New OAuth Providers**: Added integration support for Google and GitHub OAuth providers, enhancing authentication options for users.
+
+## Bug Fixes
+- Resolved issues with using 'encrypted' environment variables instead of deprecated 'secret' variables.
+- Fixed event loop problems in the Feishu workspace integration.
+- Corrected errors in module imports related to chat message and session handling, preventing disruptions during message delivery.
+- Addressed customization display issues in the Atlas framework, ensuring consistency and clarity in user interfaces.
+
+## Upgrade Guide
+
+### Docker Deployment
+
+```bash
+git pull origin main
+
+# Rebuild and restart services
+docker compose down && docker compose up -d --build
+```
+
+### Source Deployment
+
+```bash
+git pull origin main
+
+# Rebuild frontend
+cd frontend && npm install && npm run build
+cd ..
+
+# Restart backend / frontend services
+```
+
+### Kubernetes / Helm
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+```
+
+## Notes
+- Continuous integration has been optimized to support a protected main branch, enhancing release stability and reliability.
+- Ensure to review and update environment variable configurations to utilize the 'encrypted' format.
+- When configuring SSO for new OAuth providers, thorough testing is recommended to ensure smooth integration with existing user accounts.
+
+---
+
 # v1.9.2 — Workspace Governance, Tool UX & Token Cache Accounting
 
 ## What's New
