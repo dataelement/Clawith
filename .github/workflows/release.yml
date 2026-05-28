@@ -26,6 +26,9 @@ on:
         required: true
         default: true
         type: boolean
+  pull_request:
+    types:
+      - closed
 
 permissions:
   contents: write
@@ -252,7 +255,7 @@ jobs:
 
           prompt = Path(".github/release-artifacts/release-prompt.txt").read_text(encoding="utf-8")
           payload = {
-              "model": "gpt-4o-mini",
+              "model": "gpt-5.4",
               "messages": [
                   {"role": "user", "content": prompt}
               ],
