@@ -14606,7 +14606,7 @@ async def _vercel_set_env(agent_id: uuid.UUID, arguments: dict) -> str:
     payload = {
         "key": key,
         "value": value,
-        "type": "secret" if key == "DATABASE_URL" else "plain",
+        "type": "encrypted" if key == "DATABASE_URL" else "plain",
         "target": target
     }
     
