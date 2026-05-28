@@ -244,21 +244,27 @@ jobs:
         if: ${{ inputs.use_ai_notes }}
         shell: bash
         env:
-          MODELS_TOKEN: ${{ secrets.MODELS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
           python <<'PY'
           from pathlib import Path
           import json
-          import os
 
           prompt = Path(".github/release-artifacts/release-prompt.txt").read_text(encoding="utf-8")
           payload = {
-              "model": "gpt-5.4",
+              "model": "openai/gpt-4.1",
               "messages": [
-                  {"role": "user", "content": prompt}
-              ],
+                  {
+                      "role": "system",
+                      "content": "You write concise, accurate release notes in markdown."
+                  },
+                  {
+                      "role": "user",
+                      "content": prompt
+                  }
+              ]
           }
           Path(".github/release-artifacts/openai-payload.json").write_text(
               json.dumps(payload, ensure_ascii=False),
@@ -266,11 +272,23 @@ jobs:
           )
           PY
 
-          curl -fsSL https://models.inference.ai.azure.com/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $MODELS_TOKEN" \
-            -d @.github/release-artifacts/openai-payload.json \
-            > .github/release-artifacts/openai-response.json
+          status_code=$(
+            curl -sS -L \
+              -o .github/release-artifacts/openai-response.json \
+              -w "%{http_code}" \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              -H "Content-Type: application/json" \
+              https://models.github.ai/orgs/dataelement/inference/chat/completions \
+              -d @.github/release-artifacts/openai-payload.json
+          )
+
+          echo "HTTP status: $status_code"
+          cat .github/release-artifacts/openai-response.json
+
+          test "$status_code" -lt 400
 
           python <<'PY'
           from pathlib import Path
