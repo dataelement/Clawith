@@ -431,8 +431,8 @@ async def get_session_messages(
             try:
                 data = json.loads(m.content)
                 entry["content"] = ""
-                entry["toolName"] = data.get("name", "")
-                entry["toolArgs"] = data.get("args")
+                entry["toolName"] = data.get("name") or data.get("tool_name") or ""
+                entry["toolArgs"] = data.get("args") or data.get("arguments")
                 entry["toolStatus"] = data.get("status", "done")
                 entry["toolResult"] = data.get("result", "")
                 entry["toolThinking"] = data.get("reasoning_content", "")

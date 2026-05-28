@@ -184,25 +184,44 @@ jobs:
           if len(lines) > 100:
               lines = lines[:100] + [f"- ... and {len(lines) - 100} more commits"]
           commit_summary = "\n".join(lines)
-
+          
           prompt = f"""You are writing Clawith release notes in markdown.
 
-          Rules:
-          - Start with a top-level heading exactly like: # {target_tag} — <short title>
-          - Keep the tone concise and product-focused.
-          - Use these sections when they make sense: ## What's New, ## Bug Fixes, ## Upgrade Guide, ## Notes
-          - Mention upgrade or migration risk only when the commits strongly imply it.
-          - Do not invent features that are not present in the commit list.
-          - Prefer grouping related changes instead of listing every commit verbatim.
+          Based on the provided commit history, analyze the changes between the previous version ({base_tag}) and the new target version ({target_tag}), and write comprehensive release notes in Markdown.
+
+          Structure of the Release Notes:
+          1. Title: Start with a top-level heading exactly formatted as: # {target_tag} — <Concise title summarizing the main theme of this release>
+          2. ## What's New:
+             - Group related changes into thematic subheadings (e.g., ### Core Features, ### UI/UX Enhancements, ### Optimizations).
+             - Specifically list all newly added features and optimization items. Explain what value they add.
+          3. ## Bug Fixes:
+             - List resolved bugs, issues, or stability improvements.
+          4. ## Upgrade Guide:
+             - Provide standard deployment instructions for upgrading to this version (e.g., rebuilding frontend, restart commands for Docker/Source/Kubernetes).
+             - Do NOT include manual database migration commands (such as `alembic upgrade heads`), as database migrations run automatically on application startup.
+             - Mimic the exact formatting, sections, and command blocks shown in the Style Reference below (excluding any manual database migration steps).
+          5. ## Notes:
+             - Add any deployment warnings, dependency updates, or configuration warnings.
+
+          Writing Style Rules:
+          - Keep the tone concise, professional, and product-focused.
+          - Prefer grouping related commits and summarizing the feature/improvement instead of listing every commit verbatim.
+          - Do NOT invent or hallucinate any features or fixes that are not present or strongly implied in the commit list.
+          - Keep the language clean and consistent with previous release notes.
+
+          Style Reference (Mimic this structure and formatting):
+          ---
+          {style_excerpt}
+          ---
 
           Context:
-          - Previous release tag: {base_tag}
-          - Target release tag: {target_tag}
-          - Release type: {release_type}
-          - Release branch: {os.environ["SOURCE_REF"]}
+          - Previous Release Tag: {base_tag}
+          - Target Release Tag (Target Version): {target_tag}
+          - Release Type: {release_type}
+          - Source Branch: {os.environ["SOURCE_REF"]}
 
           Commits included in this release:
-          {commit_summary or "- No commit bullets collected"}
+          {commit_summary or "- No commits collected"}
           """
 
           Path(".github/release-artifacts/release-prompt.txt").write_text(prompt, encoding="utf-8")

@@ -1030,9 +1030,11 @@ async def push_default_skills_to_existing_agents():
     """
     from app.models.agent import Agent
     from app.models.skill import Skill
+    from app.models.system_settings import SystemSetting
     from sqlalchemy.orm import selectinload
     from app.services.agent_manager import agent_manager
     from app.services.storage import get_storage_backend
+    import hashlib
 
     async with async_session() as db:
         # Load all is_default skills with their files
@@ -1043,12 +1045,26 @@ async def push_default_skills_to_existing_agents():
         if not default_skills:
             return
 
+        # Compute a hash of default skill folder names to detect newly added skills
+        hasher = hashlib.sha256()
+        for skill in sorted(default_skills, key=lambda s: s.folder_name):
+            hasher.update(skill.folder_name.encode("utf-8"))
+        current_hash = hasher.hexdigest()
+
+        # Check if we already synced this version of default skills
+        setting_r = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "default_skills_sync_hash")
+        )
+        setting = setting_r.scalar_one_or_none()
+        if setting and setting.value.get("hash") == current_hash:
+            logger.info(f"[SkillSeeder] Default skills sync hash '{current_hash}' matches, skipping sync for existing agents")
+            return
+
         # Load all agents
         agents_r = await db.execute(select(Agent))
         agents = agents_r.scalars().all()
 
         pushed = 0
-        updated = 0
         removed_legacy = 0
         storage = get_storage_backend()
         for agent in agents:
@@ -1063,23 +1079,29 @@ async def push_default_skills_to_existing_agents():
             for skill in default_skills:
                 if not skill.files:
                     continue
+
+                # Determine if the agent already has this skill by checking if its first file exists in storage
+                first_file_key = f"{agent_prefix}/skills/{skill.folder_name}/{skill.files[0].path}"
+                if await storage.is_file(first_file_key):
+                    continue  # Skill already exists, do not update
+
                 for sf in skill.files:
                     key = f"{agent_prefix}/skills/{skill.folder_name}/{sf.path}"
-                    if await storage.is_file(key):
-                        existing_content = await storage.read_text(key, encoding="utf-8", errors="replace")
-                        if existing_content == sf.content:
-                            continue  # already up-to-date
-                        await storage.write_text(key, sf.content, encoding="utf-8")
-                        updated += 1
-                    else:
-                        await storage.write_text(key, sf.content, encoding="utf-8")
-                        pushed += 1
-                        logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
+                    await storage.write_text(key, sf.content, encoding="utf-8")
+                    pushed += 1
+                logger.info(f"[SkillSeeder] Pushed new default skill '{skill.name}' to agent {agent.id}")
 
-        if pushed or updated or removed_legacy:
+        # Save/update the sync hash in settings
+        if setting:
+            setting.value = {"hash": current_hash}
+        else:
+            db.add(SystemSetting(key="default_skills_sync_hash", value={"hash": current_hash}))
+        await db.commit()
+
+        if pushed or removed_legacy:
             logger.info(
-                f"[SkillSeeder] Pushed {pushed} new + {updated} updated skill files "
+                f"[SkillSeeder] Pushed {pushed} new skill files "
                 f"to existing agents; removed {removed_legacy} legacy MCP installer files"
             )
         else:
-            logger.info("[SkillSeeder] All existing agents already have up-to-date default skills")
+            logger.info("[SkillSeeder] All existing agents already have all default skills")

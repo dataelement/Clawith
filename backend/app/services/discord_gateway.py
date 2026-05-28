@@ -233,7 +233,12 @@ class DiscordGatewayManager:
 
                 # Call LLM
                 reply_text = await _call_agent_llm(
-                    db, agent_id, user_text, history=history
+                    db,
+                    agent_id,
+                    user_text,
+                    history=history,
+                    user_id=platform_user_id,
+                    session_id=session_conv_id,
                 )
                 logger.info(f"[Discord GW] LLM reply for {agent_id}: {reply_text[:80]}")
 
