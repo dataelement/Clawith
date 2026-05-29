@@ -75,12 +75,7 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
         || !!currentUser?.is_platform_admin;
     const hasNoModel = enabledModels.length === 0;
     const disabledByNoModel = hasNoModel
-        ? t(
-            'postHire.noModelButtonHint',
-            isChinese
-                ? '需要先在公司设置中启用至少一个模型，才能创建模板成员。'
-                : 'Enable at least one model in company settings before creating a teammate from a template.',
-        )
+        ? t('postHire.noModelButtonHint')
         : undefined;
     const openModelSettings = () => {
         (onDone || onClose)();
@@ -117,17 +112,10 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
         mutationFn: (navigateAfter: boolean) => {
             if (!template) return Promise.reject(new Error('No template'));
             if (enabledModels.length === 0) {
-                return Promise.reject(new Error(
-                    t(
-                        'postHire.noModelError',
-                        isChinese
-                            ? '公司还没有启用可用模型，请先配置模型后再创建模板成员。'
-                            : 'No company model is enabled yet. Configure a model before creating a teammate from a template.',
-                    ),
-                ));
+                return Promise.reject(new Error(t('postHire.noModelError')));
             }
             if (!modelId) {
-                return Promise.reject(new Error(t('postHire.modelRequired', isChinese ? '请选择模型' : 'Choose a model')));
+                return Promise.reject(new Error(t('postHire.modelRequired')));
             }
             // Localize name + role_description when the UI is in Chinese so
             // the agent persists with the same labels the user saw on the
@@ -161,7 +149,7 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
             if (navigateAfter) navigate(`/agents/${agent.id}#chat`);
         },
         onError: async (err: any) => {
-            await dialog.alert(isChinese ? '创建数字员工失败' : 'Failed to create agent', {
+            await dialog.alert(t('postHire.createFailed'), {
                 type: 'error',
                 details: String(err?.message || err),
             });
@@ -192,7 +180,7 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
                 <div style={{ padding: '22px 26px 8px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
                     <div>
                         <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 600 }}>
-                            {t('postHire.title', isChinese ? '配置新成员' : 'Configure new teammate')}
+                            {t('postHire.title')}
                         </h3>
                         <p style={{ margin: '4px 0 0', fontSize: '12.5px', color: 'var(--text-secondary)' }}>
                             {template.name}
@@ -207,26 +195,26 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
                     {/* Visibility */}
                     <section>
                         <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
-                            {t('postHire.visibility', isChinese ? '可见权限' : 'Visibility')}
+                            {t('postHire.visibility')}
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             <RadioRow
                                 selected={visibility === 'company'}
                                 onClick={() => !busy && setVisibility('company')}
-                                title={t('postHire.visibilityCompanyTitle', isChinese ? '公司所有人' : 'Everyone at the company')}
-                                hint={t('postHire.visibilityCompanyHint', isChinese ? '全公司都能使用这个数字员工' : 'Everyone in the company can use this agent')}
+                                title={t('postHire.visibilityCompanyTitle')}
+                                hint={t('postHire.visibilityCompanyHint')}
                             />
                             <RadioRow
                                 selected={visibility === 'only_me'}
                                 onClick={() => !busy && setVisibility('only_me')}
-                                title={t('postHire.visibilityOnlyMeTitle', isChinese ? '仅自己' : 'Only me')}
-                                hint={t('postHire.visibilityOnlyMeHint', isChinese ? '只有你能使用，可以之后在设置里分享' : 'Only you can use it; you can share later in Settings')}
+                                title={t('postHire.visibilityOnlyMeTitle')}
+                                hint={t('postHire.visibilityOnlyMeHint')}
                             />
                             <RadioRow
                                 selected={visibility === 'custom'}
                                 onClick={() => !busy && setVisibility('custom')}
-                                title={t('postHire.visibilityCustomTitle', isChinese ? '指定成员' : 'Custom')}
-                                hint={t('postHire.visibilityCustomHint', isChinese ? '先仅创建者可管理，之后在设置里指定可使用的平台用户' : 'Start with creator access, then choose platform users in Settings')}
+                                title={t('postHire.visibilityCustomTitle')}
+                                hint={t('postHire.visibilityCustomHint')}
                             />
                         </div>
                     </section>
@@ -234,11 +222,10 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
                     {/* Model */}
                     <section>
                         <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
-                            {t('postHire.model', isChinese ? '首选模型' : 'Preferred model')}
+                            {t('postHire.model')}
                         </div>
                         {enabledModels.length === 0 ? (
                             <NoModelsNotice
-                                isChinese={isChinese}
                                 canManageModels={canManageModels}
                                 onConfigure={openModelSettings}
                                 t={t}
@@ -253,7 +240,7 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
                             >
                                 {enabledModels.map(m => (
                                     <option key={m.id} value={m.id}>
-                                        {labelFor(m)}{myTenant?.default_model_id === m.id ? ` · ${t('postHire.defaultSuffix', isChinese ? '默认' : 'default')}` : ''}
+                                        {labelFor(m)}{myTenant?.default_model_id === m.id ? ` · ${t('postHire.defaultSuffix')}` : ''}
                                     </option>
                                 ))}
                             </select>
@@ -272,7 +259,7 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
                             style={{ pointerEvents: hasNoModel ? 'none' : undefined }}
                             onClick={() => hire.mutate(false)}
                         >
-                            {busy && !hire.variables ? '...' : t('postHire.createOnly', isChinese ? '仅创建' : 'Just create')}
+                            {busy && !hire.variables ? '...' : t('postHire.createOnly')}
                         </button>
                     </span>
                     <span
@@ -285,7 +272,7 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
                             style={{ pointerEvents: hasNoModel ? 'none' : undefined }}
                             onClick={() => hire.mutate(true)}
                         >
-                            {busy ? (isChinese ? '创建中...' : 'Creating...') : t('postHire.chatNow', isChinese ? '立即对话' : 'Chat now')}
+                            {busy ? t('postHire.creating') : t('postHire.chatNow')}
                         </button>
                     </span>
                 </div>
@@ -295,15 +282,13 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
 }
 
 function NoModelsNotice({
-    isChinese,
     canManageModels,
     onConfigure,
     t,
 }: {
-    isChinese: boolean;
     canManageModels: boolean;
     onConfigure: () => void;
-    t: (key: string, fallback: string) => string;
+    t: (key: string) => string;
 }) {
     return (
         <div
@@ -321,22 +306,12 @@ function NoModelsNotice({
             <IconAlertTriangle size={17} stroke={1.8} style={{ marginTop: '1px', color: '#b45309', flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: '13px', fontWeight: 650, color: 'var(--text-primary)' }}>
-                    {t('postHire.noModelsTitle', isChinese ? '还没有可用模型' : 'No enabled model yet')}
+                    {t('postHire.noModelsTitle')}
                 </div>
                 <div style={{ marginTop: '3px', fontSize: '12px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
                     {canManageModels
-                        ? t(
-                            'postHire.noModelsAdminHint',
-                            isChinese
-                                ? '启用至少一个公司模型后，才能基于模板创建数字员工。'
-                                : 'Enable at least one company model before creating a teammate from a template.',
-                        )
-                        : t(
-                            'postHire.noModelsMemberHint',
-                            isChinese
-                                ? '请联系公司管理员先启用模型。'
-                                : 'Ask a company admin to enable a model first.',
-                        )}
+                        ? t('postHire.noModelsAdminHint')
+                        : t('postHire.noModelsMemberHint')}
                 </div>
                 {canManageModels ? (
                     <button
@@ -346,7 +321,7 @@ function NoModelsNotice({
                         style={{ marginTop: '9px', height: '30px', padding: '0 10px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                     >
                         <IconSettings size={14} stroke={1.7} />
-                        {t('postHire.configureModels', isChinese ? '配置模型' : 'Configure models')}
+                        {t('postHire.configureModels')}
                     </button>
                 ) : null}
             </div>

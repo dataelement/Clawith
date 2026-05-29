@@ -249,29 +249,18 @@ async def _save_feishu_tool_call(
     reasoning_content: str | None = None,
 ) -> None:
     """Persist a completed Feishu tool call into chat history."""
-    import json as _json
-    from app.models.audit import ChatMessage
-
-    payload = {
-        "tool_name": tool_name,
-        "arguments": arguments or {},
-        "result": result,
-        "tool_call_id": tool_call_id,
-        "status": status,
-        "reasoning_content": reasoning_content,
-    }
-    try:
-        async with db_session_factory() as _tc_db:
-            _tc_db.add(ChatMessage(
-                agent_id=agent_id,
-                user_id=user_id,
-                role="tool_call",
-                content=_json.dumps(payload, ensure_ascii=False, default=str),
-                conversation_id=conversation_id,
-            ))
-            await _tc_db.commit()
-    except Exception as e:
-        logger.warning(f"[Feishu] Failed to save tool_call: {e}")
+    from app.services.chat_session_service import save_tool_call_log
+    await save_tool_call_log(
+        agent_id=agent_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        tool_name=tool_name,
+        arguments=arguments,
+        result=result,
+        status=status,
+        tool_call_id=tool_call_id,
+        reasoning_content=reasoning_content,
+    )
 
 
 # ─── OAuth ──────────────────────────────────────────────

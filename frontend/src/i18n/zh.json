@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "Clawith",
-    "tagline": "企业数字员工平台"
+    "tagline": "Enterprise Digital Employee Platform"
   },
   "login": {
     "hero": {
@@ -1053,7 +1053,13 @@
         "America/Sao_Paulo": "美洲/圣保罗 (巴西利亚时间, UTC-3)",
         "Australia/Sydney": "澳大利亚/悉尼 (澳大利亚东部时间, UTC+10/+11)",
         "Pacific/Auckland": "太平洋/奥克兰 (新西兰时间, UTC+12/+13)"
-      }
+      },
+      "countryRegionTitle": "公司所在国家或地区",
+      "countryRegionDescription": "用于自动设置公司默认时区和 OKR 休息日规则。当前时区：{{timezone}}",
+      "searchPlaceholder": "搜索国家或地区、代码或时区",
+      "collapseRegionList": "收起地区列表",
+      "expandRegionList": "展开地区列表",
+      "noMatch": "没有匹配的国家或地区"
     },
     "systemEmail": {
       "title": "系统邮件配置",
@@ -1121,7 +1127,8 @@
       "disabled": "已关闭",
       "enabledHint": "数字员工可使用 notify、task_delegate 和 consult 三种通信模式。",
       "disabledHint": "所有数字员工消息使用同步 consult 模式。",
-      "enableWarning": "您即将开启数字员工间异步通信功能（测试版）。\n\n此功能允许数字员工通过 notify 和 task_delegate 模式进行异步通信。\n\n已知可能的问题：\n• 数字员工的回复中可能包含内部技术术语（触发器名称、关注项等）\n• task_delegate 回调可能因速率限制而偶尔延迟或丢失\n• Token 消耗将增加，因为每条异步消息都会触发一个独立的数字员工会话\n• 如果触发器配置不当，可能出现数字员工循环调用\n\n如遇到任何问题，请返回此页面关闭开关，即可恢复稳定的同步通信行为。\n\n确定要开启此功能吗？"
+      "enableWarning": "您即将开启数字员工间异步通信功能（测试版）。\n\n此功能允许数字员工通过 notify 和 task_delegate 模式进行异步通信。\n\n已知可能的问题：\n• 数字员工的回复中可能包含内部技术术语（触发器名称、关注项等）\n• task_delegate 回调可能因速率限制而偶尔延迟或丢失\n• Token 消耗将增加，因为每条异步消息都会触发一个独立的数字员工会话\n• 如果触发器配置不当，可能出现数字员工循环调用\n\n如遇到任何问题，请返回此页面关闭开关，即可恢复稳定的同步通信行为。\n\n确定要开启此功能吗？",
+      "note": "说明：OKR 日报收集本身会优先使用更稳的同步方式，不依赖这里的异步开关。"
     },
     "invites": {
       "pageTitle": "邀请码",
@@ -1427,6 +1434,13 @@
           "step3": "复制企业 ID (CorpID) 和 Secret",
           "step4": "将 CorpID 和 Secret 填入下方 → 点击保存配置",
           "step5": "如需使用企微免登：打开下方的SSO登录开关，然后在企微中配置：应用管理 → 网页授权及JS-SDK → 设置可信域名（即下方 Redirect URL 的域名部分）。分享下方的 SSO Login URL 给团队成员即可登录。"
+        },
+        "google_workspace": {
+          "step1": "在 Google Cloud 创建 OAuth Web App，并填入 Client ID 与 Client Secret。",
+          "step2": "将下方同一个 Redirect URL 配置到 Google Cloud 的 Authorized redirect URIs。",
+          "step3": "SSO 登录直接使用这套配置。",
+          "step4": "组织同步时，使用有 Directory 读取权限的 Google Workspace 管理员账号点击授权。",
+          "step5": "后端会加密保存管理员 refresh token，后续定时同步会自动刷新 access token。"
         }
       }
     },
@@ -1552,6 +1566,7 @@
       "monthly": "每月"
     },
     "identity": {
+      "ssoUrlEmpty": "请先开启 SSO 以生成地址",
       "title": "组织架构与账号同步",
       "description": "配置企业目录同步和身份提供商设置。",
       "notConfigured": "未配置",
@@ -1639,11 +1654,43 @@
     "noPermission": "你没有权限访问此页面。",
     "cancel": "取消",
     "confirm": "确认",
+    "confirmActions": {
+      "deleteTitle": "删除确认",
+      "removeTitle": "移除确认",
+      "disableTitle": "禁用确认",
+      "forceDelete": "强制删除",
+      "confirmLabel": "确定",
+      "cancelLabel": "取消",
+      "deleteLabel": "删除",
+      "removeLabel": "移除",
+      "disableLabel": "禁用"
+    },
     "delete": "删除",
     "search": "搜索",
     "loading": "加载中...",
     "noData": "暂无数据",
-    "error": "出错了",
+    "error": {
+      "saveFailed": "保存失败",
+      "deleteFailed": "删除失败",
+      "createFailed": "创建失败",
+      "updateFailed": "更新失败",
+      "importFailed": "导入失败",
+      "installFailed": "安装失败",
+      "testFailed": "测试失败",
+      "testSuccess": "测试成功",
+      "batchUpdateFailed": "批量更新失败",
+      "broadcastFailed": "广播发送失败",
+      "sessionCreateFailed": "创建会话失败",
+      "agentDeleteFailed": "删除数字员工失败",
+      "planCreateFailed": "创建计划任务失败",
+      "companySwitchFailed": "切换公司失败",
+      "triggerDeleteFailed": "删除触发器失败",
+      "serverUpdateFailed": "更新服务器失败",
+      "toolRemoveFailed": "移除工具失败",
+      "modelDeleteFailed": "删除模型失败",
+      "configDeleteFailed": "删除配置失败",
+      "companyDisableFailed": "禁用公司失败"
+    },
     "close": "关闭",
     "edit": "编辑",
     "back": "返回",
@@ -1672,7 +1719,46 @@
     "darkMode": "深色模式",
     "collapseSidebar": "折叠侧边栏",
     "expandSidebar": "展开侧边栏",
-    "deleting": "删除中..."
+    "deleting": "删除中...",
+    "status": {
+      "saved": "已保存",
+      "creating": "创建中...",
+      "exporting": "导出中...",
+      "uploading": "上传中...",
+      "analyzing": "分析中..."
+    },
+    "file": {
+      "maxFilesWarning": "最多可附加 {{count}} 个文件",
+      "imageUploaded": "[图片文件已上传: {{name}}...]",
+      "analyzeFiles": "请分析这些文件",
+      "filesImported": "已导入 {{count}} 个文件",
+      "skillInstalled": "已安装 \"{{name}}\"",
+      "skillImported": "已导入 \"{{name}}\"",
+      "triggersCount": "{{count}} 个触发器"
+    },
+    "model": {
+      "connectivityTest": "连通性测试",
+      "connectivityTestFailed": "连通性测试失败"
+    },
+    "dialog": {
+      "deleteSession": "删除会话",
+      "deleteSessionConfirm": "确定删除此会话？",
+      "deleteTool": "删除工具",
+      "deleteToolConfirm": "确定删除 {{name}}？",
+      "removeTool": "移除工具",
+      "removeToolConfirm": "确定移除此工具？",
+      "deleteModel": "删除模型",
+      "deleteConfig": "删除配置",
+      "deleteConfigConfirm": "确定要删除此配置吗？",
+      "disableCompany": "禁用公司",
+      "disableCompanyConfirm": "确定禁用此公司？",
+      "partialImportFailed": "部分导入失败",
+      "partialImportSuccess": "已导入 {{success}}/{{total}} 个工具"
+    },
+    "toast": {
+      "collapseDetails": "收起详情",
+      "viewDetails": "查看详情"
+    }
   },
   "admin": {
     "title": "公司管理",
@@ -1973,5 +2059,135 @@
     },
     "loading": "加载中...",
     "noData": "暂无数据"
+  },
+  "postHire": {
+    "title": "配置新成员",
+    "visibility": "可见权限",
+    "visibilityCompanyTitle": "公司所有人",
+    "visibilityCompanyHint": "全公司都能使用这个数字员工",
+    "visibilityOnlyMeTitle": "仅自己",
+    "visibilityOnlyMeHint": "只有你能使用，可以之后在设置里分享",
+    "visibilityCustomTitle": "指定成员",
+    "visibilityCustomHint": "先仅创建者可管理，之后在设置里指定可使用的平台用户",
+    "model": "首选模型",
+    "defaultSuffix": "默认",
+    "createOnly": "仅创建",
+    "chatNow": "立即对话",
+    "creating": "创建中...",
+    "noModelButtonHint": "需要先在公司设置中启用至少一个模型，才能创建模板成员。",
+    "noModelError": "公司还没有启用可用模型，请先配置模型后再创建模板成员。",
+    "modelRequired": "请选择模型",
+    "noModelsTitle": "还没有可用模型",
+    "noModelsAdminHint": "启用至少一个公司模型后，才能基于模板创建数字员工。",
+    "noModelsMemberHint": "请联系公司管理员先启用模型。",
+    "configureModels": "配置模型",
+    "createFailed": "创建数字员工失败"
+  },
+  "agentDetail": {
+    "errorTitle": "出了点问题",
+    "errorMessage": "加载此页面时发生了意外错误。",
+    "reloadPage": "重新加载页面"
+  },
+  "oauth": {
+    "selectCompany": "选择公司",
+    "selectCompanyHint": "该账号关联了多个公司，请选择要登录的公司：",
+    "completingSignIn": "正在完成登录...",
+    "missingParams": "缺少 OAuth 回调参数",
+    "oauthLoginFailed": "OAuth 登录失败",
+    "loginFailed": "登录失败",
+    "loginFailedTitle": "OAuth 登录失败"
+  },
+  "customAgentModal": {
+    "noModelButtonHint": "需要先在公司设置中启用至少一个模型，才能创建平台托管成员。",
+    "nameRequired": "请填写名称",
+    "noModelError": "公司还没有启用可用模型，请先配置模型或切换为外部 Agent。",
+    "modelRequired": "请选择模型",
+    "nativeTitle": "创建自定义成员",
+    "externalTitle": "连接外部 Agent",
+    "nativeSubtitle": "先完成必要信息，其余能力之后在设置中调整。",
+    "externalSubtitle": "为 OpenClaw 或其他外部运行的 Agent 创建连接入口。",
+    "nativeMode": "平台托管",
+    "externalMode": "外部 Agent",
+    "name": "名称",
+    "namePlaceholderNative": "例如：客户研究员",
+    "namePlaceholderExternal": "例如：OpenClaw 研究助手",
+    "role": "角色描述",
+    "rolePlaceholder": "一句话说明它负责什么。",
+    "visibility": "可见权限",
+    "visibilityCompany": "公司所有人",
+    "visibilityCompanyHint": "全公司都能使用这个数字员工",
+    "visibilityOnlyMe": "仅自己",
+    "visibilityOnlyMeHint": "只有你能使用，可以之后在设置里分享",
+    "visibilityCustom": "指定成员",
+    "visibilityCustomHint": "先仅创建者可管理，之后在设置里指定成员",
+    "model": "首选模型",
+    "modelFallback": "模型",
+    "defaultModel": "默认",
+    "createOnly": "仅创建",
+    "creating": "创建中...",
+    "chatNow": "立即对话",
+    "createConnection": "创建连接",
+    "noModelsTitle": "还没有可用模型",
+    "noModelsAdminHint": "启用至少一个公司模型后，才能创建平台托管的数字员工。",
+    "noModelsMemberHint": "请联系公司管理员先启用模型。",
+    "noModelsExternalHint": "如果你只是接入外部运行的 Agent，可以切换到\"外部 Agent\"。",
+    "configureModels": "配置模型",
+    "creationFailed": "创建失败",
+    "externalCreated": "连接已创建",
+    "externalCreatedDesc": "把下面的连接指令交给外部 Agent，它就能通过网关收发 Clawith 消息。",
+    "gatewayKeyEmbedded": "API Key 已包含在连接指令中",
+    "copyKey": "复制 Key",
+    "noKeyReturned": "未返回 API Key，请进入 Agent 页面重新生成。",
+    "enterAgent": "进入 Agent"
+  },
+  "takeControl": {
+    "acquiringControl": "正在获取控制权...",
+    "inControl": "已获得控制权。在截图上点击或拖拽。",
+    "dragToRelease": "拖拽中，松开鼠标完成...",
+    "dragging": "拖拽中 ({{fromX}},{{fromY}}) -> ({{toX}},{{toY}})...",
+    "dragComplete": "拖拽完成",
+    "dragFailed": "拖拽失败：{{message}}",
+    "clickingAt": "正在点击 ({{x}}, {{y}})...",
+    "clickedAt": "已点击 ({{x}}, {{y}})",
+    "clickFailed": "点击失败：{{message}}",
+    "typing": "正在输入：\"{{text}}\"",
+    "textSent": "文本已发送",
+    "typeFailed": "输入失败：{{message}}",
+    "pressing": "正在按键：{{keys}}",
+    "pressed": "已按键：{{keys}}",
+    "pressFailed": "按键失败：{{message}}",
+    "exportingCookies": "正在导出 Cookies...",
+    "loginComplete": "登录完成！已保存 {{count}} 个 Cookies。",
+    "sessionUnlocked": "会话已解锁（未导出 Cookies）。",
+    "unlockFailed": "解锁失败：{{message}}",
+    "canceling": "正在取消...",
+    "lockFailed": "获取控制权失败：{{message}}",
+    "title": "人工控制",
+    "exitWithoutSaving": "退出（不保存）",
+    "connecting": "正在连接会话...",
+    "typeToSend": "输入要发送的文本...",
+    "browserSession": "浏览器会话",
+    "saveLoginStateTo": "保存登录状态到",
+    "exit": "退出",
+    "saveLoginState": "保存登录状态",
+    "sendText": "发送文本"
+  },
+  "errorBoundary": {
+    "title": "糟糕，出了点问题。",
+    "description": "发生了意外错误。您可以尝试刷新页面，如果问题持续存在，请联系支持团队。",
+    "errorDetails": "错误详情",
+    "refreshPage": "刷新页面"
+  },
+  "sso": {
+    "missingSessionId": "缺少会话 ID",
+    "failedToLoadConfig": "加载登录配置失败",
+    "sessionExpired": "SSO 会话已过期",
+    "redirectingToLogin": "正在跳转到安全登录...",
+    "error": "错误",
+    "completingLogin": "正在完成登录...",
+    "loginTitle": "登录 Clawith",
+    "selectLoginMethod": "选择登录方式",
+    "loginWith": "使用 {{provider}} 登录",
+    "noProviders": "未配置 SSO 提供商。"
   }
 }

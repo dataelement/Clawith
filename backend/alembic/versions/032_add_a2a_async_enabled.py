@@ -16,7 +16,7 @@ def upgrade() -> None:
         "ALTER TABLE agents DROP COLUMN IF EXISTS a2a_async_enabled"
     )
     op.execute(
-        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS a2a_async_enabled BOOLEAN DEFAULT FALSE"
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS a2a_async_enabled BOOLEAN DEFAULT TRUE"
     )
 
 

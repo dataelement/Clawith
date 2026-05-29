@@ -250,7 +250,7 @@ start_frontend() {
     # closes stdin. Setting CI=true disables that stdin-end shutdown path while
     # keeping the normal dev server behavior.
     start_detached "$FRONTEND_DIR" "$FRONTEND_LOG" "$FRONTEND_PID" \
-        env CI=true node_modules/.bin/vite --host 0.0.0.0 --port $FRONTEND_PORT --strictPort
+        env CI=true BACKEND_PORT=$BACKEND_PORT node_modules/.bin/vite --host 0.0.0.0 --port $FRONTEND_PORT --strictPort
     wait_for_port $FRONTEND_PORT "Frontend" 8
 }
 

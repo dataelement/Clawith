@@ -26,7 +26,7 @@ class SSOService:
     DOMAIN_TENANT_HINTS: dict[str, str] = {}
 
     async def match_user_by_email(
-        self, db: AsyncSession, email: str, tenant_id: str | None = None
+        self, db: AsyncSession, email: str, tenant_id: str
     ) -> User | None:
         """Find existing user by email address.
 
@@ -42,35 +42,48 @@ class SSOService:
         query = (
             select(User)
             .join(User.identity)
-            .where(Identity.email == email)
+            .where(
+                Identity.email == email,
+                User.is_active == True,
+            )
             .options(selectinload(User.identity))
         )
         if tenant_id:
             query = query.where(User.tenant_id == tenant_id)
-        
+        else:
+            query = query.where(User.tenant_id.is_(None))
+
         result = await db.execute(query)
         user = result.scalars().first()
-        
+
         if user:
             return user
-            
-        # 2. If not found and tenant_id is provided, try to find an Identity
+
+        # 2. If not found, try to find an Identity and match within the tenant scope
         if email:
             id_query = select(Identity).where(Identity.email == email)
             id_result = await db.execute(id_query)
             identity = id_result.scalar_one_or_none()
             if identity:
                 # Find any user for this identity (representative)
-                u_query = select(User).where(User.identity_id == identity.id).options(selectinload(User.identity)).limit(1)
+                u_query = (
+                    select(User)
+                    .where(
+                        User.identity_id == identity.id,
+                        User.is_active == True,
+                    )
+                    .options(selectinload(User.identity))
+                    .limit(1)
+                )
                 if tenant_id:
                     u_query = u_query.where(User.tenant_id == tenant_id)
                 u_res = await db.execute(u_query)
                 return u_res.scalar_one_or_none()
-                
+
         return None
 
     async def match_user_by_mobile(
-        self, db: AsyncSession, mobile: str, tenant_id: str | None = None
+        self, db: AsyncSession, mobile: str, tenant_id: str
     ) -> User | None:
         """Find existing user by mobile phone number.
 
@@ -91,12 +104,15 @@ class SSOService:
         query = (
             select(User)
             .join(User.identity)
-            .where(Identity.phone == normalized_mobile)
+            .where(
+                Identity.phone == normalized_mobile,
+                User.is_active == True,
+            )
             .options(selectinload(User.identity))
         )
         if tenant_id:
             query = query.where(User.tenant_id == tenant_id)
-            
+
         result = await db.execute(query)
         user = result.scalars().first()
         if user:
@@ -107,11 +123,19 @@ class SSOService:
         id_result = await db.execute(id_query)
         identity = id_result.scalar_one_or_none()
         if identity:
-             u_query = select(User).where(User.identity_id == identity.id).options(selectinload(User.identity)).limit(1)
-             if tenant_id:
-                 u_query = u_query.where(User.tenant_id == tenant_id)
-             u_res = await db.execute(u_query)
-             return u_res.scalar_one_or_none()
+            u_query = (
+                select(User)
+                .where(
+                    User.identity_id == identity.id,
+                    User.is_active == True,
+                )
+                .options(selectinload(User.identity))
+                .limit(1)
+            )
+
+            u_query = u_query.where(User.tenant_id == tenant_id)
+            u_res = await db.execute(u_query)
+            return u_res.scalar_one_or_none()
 
         return None
 

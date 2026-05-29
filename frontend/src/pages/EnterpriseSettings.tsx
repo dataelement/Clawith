@@ -173,7 +173,7 @@ export default function EnterpriseSettings() {
         try {
             await fetchJson('/enterprise/tenant-quotas', { method: 'PATCH', body: JSON.stringify(quotaForm) });
             setQuotaSaved(true); setTimeout(() => setQuotaSaved(false), 2000);
-        } catch (e: any) { toast.error('保存失败', { details: String(e?.message || e) }); }
+        } catch (e: any) { toast.error(t('common.error.saveFailed', '保存失败'), { details: String(e?.message || e) }); }
         setQuotaSaving(false);
     };
     const [companyIntro, setCompanyIntro] = useState('');
@@ -1079,7 +1079,7 @@ export default function EnterpriseSettings() {
                                                                 if (errors.length > 0) {
                                                                     await dialog.alert(`已导入 ${successCount}/${tools.length} 个工具`, { type: 'warning', title: '部分导入失败', details: errors.join('\n') });
                                                                 } else if (successCount > 0) {
-                                                                    toast.success(`已导入 ${successCount} 个工具`);
+                                                                    toast.success(t('common.dialog.partialImportSuccess', { count: successCount }));
                                                                 }
                                                             }}>{t('enterprise.tools.importAll')}</button>
                                                         </div>
@@ -1141,7 +1141,7 @@ export default function EnterpriseSettings() {
                                         await fetchJson('/tools/bulk', { method: 'PUT', body: JSON.stringify(payload) });
                                         loadAllTools();
                                     } catch (err: any) {
-                                        toast.error('批量更新失败', { details: String(err?.message || err) });
+                                        toast.error(t('common.error.batchUpdateFailed'), { details: String(err?.message || err) });
                                     }
                                 };
 
@@ -1211,7 +1211,7 @@ export default function EnterpriseSettings() {
                                                 )}
                                                 {tool.type !== 'builtin' && (
                                                     <button className="btn btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={async () => {
-                                                        const ok = await dialog.confirm(`确定删除 ${tool.display_name}？`, { title: '删除工具', danger: true, confirmLabel: '删除' });
+                                                        const ok = await dialog.confirm(t('common.dialog.deleteToolConfirm', { name: tool.display_name }), { title: t('common.dialog.deleteTool'), danger: true, confirmLabel: t('common.confirmActions.deleteLabel') });
                                                         if (!ok) return;
                                                         await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
                                                         loadAllTools();
@@ -1413,7 +1413,7 @@ export default function EnterpriseSettings() {
                                                     await loadAllTools();
                                                     setEditingMcpServer(null);
                                                 } catch (e: any) {
-                                                    toast.error('更新服务器失败', { details: String(e?.message || e) });
+                                                    toast.error(t('common.error.serverUpdateFailed'), { details: String(e?.message || e) });
                                                 }
                                                 setMcpServerSaving(false);
                                             }}>{mcpServerSaving ? 'Saving...' : 'Save Changes'}</button>

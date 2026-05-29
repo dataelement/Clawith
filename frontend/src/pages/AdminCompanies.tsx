@@ -1019,7 +1019,7 @@ function CompaniesTab() {
     const handleToggle = async (id: string, currentlyActive: boolean) => {
         const action = currentlyActive ? 'disable' : 'enable';
         if (currentlyActive) {
-            const ok = await dialog.confirm(t('admin.confirmDisable', 'Disable this company? All users and agents will be paused.'), { title: '禁用公司', danger: true, confirmLabel: '禁用' });
+            const ok = await dialog.confirm(t('common.dialog.disableCompanyConfirm'), { title: t('common.dialog.disableCompany'), danger: true, confirmLabel: t('common.confirmActions.disableLabel') });
             if (!ok) return;
         }
         try {

@@ -443,6 +443,63 @@ async def test_create_on_message_trigger():
 
 
 @pytest.mark.asyncio
+async def test_create_on_message_trigger_resets_fire_count():
+    """_create_on_message_trigger should reset fire_count to 0 for an existing trigger."""
+    from app.services.agent_tools import _create_on_message_trigger
+    from app.models.trigger import AgentTrigger
+
+    agent_id = uuid.uuid4()
+
+    existing_trigger = AgentTrigger(
+        agent_id=agent_id,
+        name="test_trigger",
+        type="on_message",
+        config={"from_agent_name": "Bob"},
+        reason="Old reason",
+        focus_ref="old_focus",
+        is_enabled=False,
+        fire_count=1,
+        max_fires=1,
+    )
+
+    snap_db = RecordingDB(responses=[
+        DummyResult(scalar_value=None),
+    ])
+    trigger_db = RecordingDB(responses=[
+        DummyResult(scalar_value=existing_trigger),
+    ])
+
+    enter_count = 0
+    dbs = [snap_db, trigger_db]
+
+    async def _enter():
+        nonlocal enter_count
+        db = dbs[min(enter_count, len(dbs) - 1)]
+        enter_count += 1
+        return db
+
+    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
+         patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure:
+        mock_ensure.return_value = "new_focus"
+        mock_session_ctx.return_value.__aenter__ = AsyncMock(side_effect=_enter)
+        mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await _create_on_message_trigger(
+            agent_id=agent_id,
+            trigger_name="test_trigger",
+            from_agent_name="Bob",
+            reason="New reason",
+            focus_ref="new_focus",
+        )
+
+    assert trigger_db.committed
+    assert existing_trigger.is_enabled is True
+    assert existing_trigger.fire_count == 0
+    assert existing_trigger.reason == "New reason"
+    assert existing_trigger.focus_ref == "new_focus"
+
+
+@pytest.mark.asyncio
 async def test_wake_agent_async_calls_trigger_daemon():
     """_wake_agent_async should delegate to trigger_daemon.wake_agent_with_context."""
     from app.services.agent_tools import _wake_agent_async
@@ -629,3 +686,105 @@ async def test_feature_flag_on_uses_notify():
 
     assert "Notification sent" in result
     mock_wake.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_set_trigger_resets_fire_count():
+    """_handle_set_trigger should reset fire_count to 0 if it has reached max_fires when re-enabling."""
+    from app.services.agent_tools import _handle_set_trigger
+    from app.models.trigger import AgentTrigger
+
+    agent_id = uuid.uuid4()
+    agent_mock = MagicMock()
+    agent_mock.max_triggers = 10
+
+    existing_trigger = AgentTrigger(
+        agent_id=agent_id,
+        name="test_trigger",
+        type="once",
+        config={"at": "2026-03-10T09:00:00+08:00"},
+        reason="Old reason",
+        focus_ref="old_focus",
+        is_enabled=False,
+        fire_count=1,
+        max_fires=1,
+    )
+
+    db = RecordingDB(responses=[
+        DummyResult(scalar_value=agent_mock),  # Load agent to get per-agent trigger limit
+        DummyResult(scalar_value=0),           # Check max triggers (count)
+        DummyResult(scalar_value=existing_trigger), # Check for duplicate name
+    ])
+
+    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
+         patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure:
+        mock_ensure.return_value = "new_focus"
+        mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
+        mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        arguments = {
+            "name": "test_trigger",
+            "type": "once",
+            "config": {"at": "2026-03-10T09:00:00+08:00"},
+            "reason": "New reason",
+            "focus_ref": "new_focus",
+        }
+
+        result = await _handle_set_trigger(agent_id, arguments)
+
+    assert "re-enabled" in result
+    assert existing_trigger.is_enabled is True
+    assert existing_trigger.fire_count == 0
+    assert existing_trigger.reason == "New reason"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_failure_writes_system_message():
+    """execute_tool should write a system error message to the session if a messaging tool fails."""
+    from app.services.agent_tools import execute_tool
+
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    session_id = str(uuid.uuid4())
+
+    tenant_id = uuid.uuid4()
+    db = RecordingDB(responses=[
+        DummyResult(scalar_value=tenant_id),     # tenant_id
+        DummyResult(scalar_value=None),          # query in _send_channel_message (returns empty -> fails)
+    ])
+
+    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
+         patch("app.services.activity_logger.log_activity", new_callable=AsyncMock):
+
+        mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
+        mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        args = {
+            "member_name": "hi",
+            "message": "Hello from Ray",
+        }
+
+        result = await execute_tool(
+            "send_channel_message",
+            args,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+
+    assert result.startswith("❌")
+    assert db.committed
+    assert len(db.added) == 1
+    
+    error_msg = db.added[0]
+    assert error_msg.conversation_id == session_id
+    assert error_msg.role == "assistant"
+    assert "系统提示" in error_msg.content
+    assert "send_channel_message" in error_msg.content
+
+
+
+
+
+
+

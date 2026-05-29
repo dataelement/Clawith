@@ -590,6 +590,7 @@ async def _process_wecom_text(
         reply_text = await _call_agent_llm(
             db, agent_id, user_text,
             history=history, user_id=platform_user_id,
+            session_id=session_conv_id,
         )
         logger.info(f"[WeCom] LLM reply: {reply_text[:100]}")
 

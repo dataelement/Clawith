@@ -154,16 +154,33 @@ class SubprocessBackend(BaseSandboxBackend):
 
     def _ensure_workspace_venv(self, work_path: Path) -> None:
         venv_python = work_path / ".venv" / "bin" / "python"
-        if venv_python.exists():
-            return
+        if not venv_python.exists():
+            import subprocess
 
-        import subprocess
+            subprocess.run(
+                ["python3", "-m", "venv", str(work_path / ".venv")],
+                check=True,
+                cwd=str(work_path),
+            )
 
-        subprocess.run(
-            ["python3", "-m", "venv", str(work_path / ".venv")],
-            check=True,
-            cwd=str(work_path),
-        )
+        # Fix shebang lines in pip scripts to use bwrap-visible path
+        # venv creates scripts with absolute paths to the host Python,
+        # but bwrap only mounts /workspace, so those paths don't exist inside the sandbox
+        self._fix_pip_shebangs(work_path)
+
+    def _fix_pip_shebangs(self, work_path: Path) -> None:
+        """Fix pip script shebangs to point to /workspace/.venv/bin/python for bwrap compatibility."""
+        venv_bin = work_path / ".venv" / "bin"
+        sandbox_python = "/workspace/.venv/bin/python"
+        for script_name in ("pip", "pip3", "pip3.X"):
+            script_path = venv_bin / script_name
+            if script_path.exists():
+                content = script_path.read_text(encoding="utf-8")
+                if content.startswith("#!"):
+                    first_line, rest = content.split("\n", 1)
+                    # Only rewrite if shebang doesn't already point to sandbox python
+                    if sandbox_python not in first_line:
+                        script_path.write_text(f"#!{sandbox_python}\n{rest}", encoding="utf-8")
 
     def _build_exec_kwargs(self, work_path: Path, timeout: int, use_preexec: bool = False) -> dict:
         kwargs = {

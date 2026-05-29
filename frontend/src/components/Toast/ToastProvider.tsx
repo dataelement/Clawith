@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { IconAlertTriangle, IconCheck, IconInfoCircle, IconX } from '@tabler/icons-react';
+import { useTranslation } from 'react-i18next';
 
 type ToastType = 'info' | 'success' | 'warning' | 'error';
 
@@ -81,6 +82,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 }
 
 function ToastCard({ item, onClose }: { item: ToastItem; onClose: () => void }) {
+    const { t } = useTranslation();
     const [showDetails, setShowDetails] = useState(false);
     const [leaving, setLeaving] = useState(false);
     const timerRef = useRef<number | null>(null);
@@ -141,7 +143,7 @@ function ToastCard({ item, onClose }: { item: ToastItem; onClose: () => void }) 
                                 cursor: 'pointer', textDecoration: 'underline', marginTop: '4px',
                             }}
                         >
-                            {showDetails ? '收起详情' : '查看详情'}
+                            {showDetails ? t('common.toast.collapseDetails') : t('common.toast.viewDetails')}
                         </button>
                         {showDetails && (
                             <pre style={{

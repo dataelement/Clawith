@@ -452,9 +452,10 @@ export default function OrgTab({ tenant }: { tenant: any }) {
         try {
             const result = await fetchJson<any>(`/enterprise/org/sync?provider_id=${providerId}`, { method: 'POST' });
             setSyncResult({ ...result, providerId });
-            qc.invalidateQueries({ queryKey: ['org-departments'] });
-            qc.invalidateQueries({ queryKey: ['org-members'] });
-            qc.invalidateQueries({ queryKey: ['identity-providers'] });
+            // Force refetch to ensure UI updates after sync
+            await qc.invalidateQueries({ queryKey: ['org-departments'] });
+            await qc.invalidateQueries({ queryKey: ['org-members'] });
+            await qc.invalidateQueries({ queryKey: ['identity-providers'] });
         } catch (e: any) {
             setSyncResult({ error: e.message, providerId });
         }
@@ -594,11 +595,11 @@ export default function OrgTab({ tenant }: { tenant: any }) {
                             )}
                             {type === 'google_workspace' && (
                                 <>
-                                    <div style={{ marginBottom: '6px' }}>1. 在 Google Cloud 创建 OAuth Web App，并填入 Client ID 与 Client Secret。</div>
-                                    <div style={{ marginBottom: '6px' }}>2. 将下方同一个 Redirect URL 配置到 Google Cloud 的 Authorized redirect URIs。</div>
-                                    <div style={{ marginBottom: '6px' }}>3. SSO 登录直接使用这套配置。</div>
-                                    <div style={{ marginBottom: '6px' }}>4. 组织同步时，使用有 Directory 读取权限的 Google Workspace 管理员账号点击授权。</div>
-                                    <div style={{ marginBottom: '6px' }}>5. 后端会加密保存管理员 refresh token，后续定时同步会自动刷新 access token。</div>
+                                    {Array.from({ length: 5 }).map((_, i) => (
+                                        <div key={i} style={{ marginBottom: '6px' }}>
+                                            {i + 1}. {t(`enterprise.org.syncGuide.google_workspace.step${i + 1}`)}
+                                        </div>
+                                    ))}
                                 </>
                             )}
                             {type === 'wecom' && (
@@ -814,7 +815,7 @@ export default function OrgTab({ tenant }: { tenant: any }) {
                             <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>
                         )}
                         {existingProvider && (
-                            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={async () => { const ok = await dialog.confirm('确定要删除此配置吗？', { title: '删除配置', danger: true, confirmLabel: '删除' }); if (ok) deleteProvider.mutate(existingProvider.id); }}>
+                            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={async () => { const ok = await dialog.confirm(t('common.dialog.deleteConfigConfirm'), { title: t('common.dialog.deleteConfig'), danger: true, confirmLabel: t('common.confirmActions.deleteLabel') }); if (ok) deleteProvider.mutate(existingProvider.id); }}>
                                 {t('common.delete', 'Delete')}
                             </button>
                         )}

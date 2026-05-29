@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import { useAuthStore } from '../stores';
 import { fetchJson } from '../services/api';
 
 export default function SSOEntry() {
+    const { t } = useTranslation();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
     const setAuth = useAuthStore((s) => s.setAuth);
@@ -19,7 +21,7 @@ export default function SSOEntry() {
 
     useEffect(() => {
         if (!sid) {
-            setError('Missing session ID');
+            setError(t('sso.missingSessionId'));
             setLoading(false);
             return;
         }
@@ -54,7 +56,7 @@ export default function SSOEntry() {
                     }
                 })
                 .catch(() => {
-                    setError('Failed to load login configuration');
+                    setError(t('sso.failedToLoadConfig'));
                     setLoading(false);
                 });
         } else {
@@ -82,7 +84,7 @@ export default function SSOEntry() {
                     return;
                 }
                 if (res?.status === 'expired') {
-                    setError('SSO session expired');
+                    setError(t('sso.sessionExpired'));
                     return;
                 }
                 if (res?.error_msg) {
@@ -109,7 +111,7 @@ export default function SSOEntry() {
         return (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', padding: '20px', textAlign: 'center' }}>
                 <div className="login-spinner" style={{ width: '40px', height: '40px', marginBottom: '20px' }}></div>
-                <p>Redirecting to secure login...</p>
+                <p>{t('sso.redirectingToLogin')}</p>
             </div>
         );
     }
@@ -117,7 +119,7 @@ export default function SSOEntry() {
     if (error) {
         return (
             <div style={{ padding: '40px', textAlign: 'center' }}>
-                <h3 style={{ color: 'var(--error)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}><IconAlertTriangle size={18} stroke={1.8} /> Error</h3>
+                <h3 style={{ color: 'var(--error)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}><IconAlertTriangle size={18} stroke={1.8} /> {t('sso.error')}</h3>
                 <p>{error}</p>
             </div>
         );
@@ -128,15 +130,15 @@ export default function SSOEntry() {
         return (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', padding: '20px', textAlign: 'center' }}>
                 <div className="login-spinner" style={{ width: '40px', height: '40px', marginBottom: '20px' }}></div>
-                <p>Completing login...</p>
+                <p>{t('sso.completingLogin')}</p>
             </div>
         );
     }
 
     return (
         <div style={{ padding: '40px', textAlign: 'center' }}>
-            <h2>Login to Clawith</h2>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: '30px' }}>Select your login method</p>
+            <h2>{t('sso.loginTitle')}</h2>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '30px' }}>{t('sso.selectLoginMethod')}</p>
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {providers.map(p => (
@@ -146,13 +148,13 @@ export default function SSOEntry() {
                         style={{ padding: '12px', fontSize: '16px' }}
                         onClick={() => window.location.href = p.url}
                     >
-                        Login with {p.name}
+                        {t('sso.loginWith', { provider: p.name })}
                     </button>
                 ))}
                 
                 {providers.length === 0 && (
                     <p style={{ color: 'var(--text-tertiary)' }}>
-                        {polling ? 'Completing login...' : 'No SSO providers configured.'}
+                        {polling ? t('sso.completingLogin') : t('sso.noProviders')}
                     </p>
                 )}
             </div>

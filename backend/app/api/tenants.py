@@ -44,7 +44,7 @@ class TenantOut(BaseModel):
     is_active: bool
     sso_enabled: bool = False
     sso_domain: str | None = None
-    a2a_async_enabled: bool = False
+    a2a_async_enabled: bool = True
     default_model_id: uuid.UUID | None = None
     logo_url: str | None = None
     created_at: datetime | None = None

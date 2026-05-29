@@ -1,26 +1,27 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores';
-import { useEffect, useLayoutEffect, useState, useRef } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { authApi } from './services/api';
-import Login from './pages/Login';
-import ForgotPassword from './pages/ForgotPassword';
-import ResetPassword from './pages/ResetPassword';
-import VerifyEmail from './pages/VerifyEmail';
-import CompanySetup from './pages/CompanySetup';
-import Onboarding from './pages/Onboarding';
-import Layout from './pages/Layout';
-import Dashboard from './pages/Dashboard';
-import Plaza from './pages/Plaza';
-import AgentDetail from './pages/AgentDetail';
-import AgentCreate from './pages/AgentCreate';
-import Messages from './pages/Messages';
-import EnterpriseSettings from './pages/EnterpriseSettings';
-import InvitationCodes from './pages/InvitationCodes';
-import AdminCompanies from './pages/AdminCompanies';
-import OAuthCallback from './pages/OAuthCallback';
-import SSOEntry from './pages/SSOEntry';
-import OKR from './pages/OKR';
+
+const Login = lazy(() => import('./pages/Login'));
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
+const ResetPassword = lazy(() => import('./pages/ResetPassword'));
+const VerifyEmail = lazy(() => import('./pages/VerifyEmail'));
+const CompanySetup = lazy(() => import('./pages/CompanySetup'));
+const Onboarding = lazy(() => import('./pages/Onboarding'));
+const Layout = lazy(() => import('./pages/Layout'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Plaza = lazy(() => import('./pages/Plaza'));
+const AgentDetail = lazy(() => import('./pages/AgentDetail'));
+const AgentCreate = lazy(() => import('./pages/AgentCreate'));
+const Messages = lazy(() => import('./pages/Messages'));
+const EnterpriseSettings = lazy(() => import('./pages/EnterpriseSettings'));
+const InvitationCodes = lazy(() => import('./pages/InvitationCodes'));
+const AdminCompanies = lazy(() => import('./pages/AdminCompanies'));
+const OAuthCallback = lazy(() => import('./pages/OAuthCallback'));
+const SSOEntry = lazy(() => import('./pages/SSOEntry'));
+const OKR = lazy(() => import('./pages/OKR'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const token = useAuthStore((s) => s.token);
@@ -269,6 +270,7 @@ export default function App() {
     return (
         <>
             <NotificationBar />
+            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-tertiary)' }}>加载中...</div>}>
             <Routes>
                 <Route path="/login" element={<Login />} />
                 <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -293,6 +295,7 @@ export default function App() {
                     <Route path="admin/platform-settings" element={<AdminCompanies />} />
                 </Route>
             </Routes>
+            </Suspense>
         </>
     );
 }

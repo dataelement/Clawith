@@ -847,6 +847,104 @@ Until then, structured web search is the contract.
             },
         ],
     },
+    {
+        "name": "Full-Stack App Deploy (Vercel + Neon)",
+        "description": "Guides the agent through the planning, development, and deployment of a full-stack application (frontend, API routes, database) to Vercel and Neon. Recommend reading this skill at the project's inception to configure tokens, choose frameworks, and design the database architecture upfront, avoiding late-stage deployment surprises.",
+        "category": "deploy",
+        "icon": "🚀",
+        "folder_name": "vercel-full-stack-deploy",
+        "is_default": True,
+        "files": [
+            {
+                "path": "SKILL.md",
+                "content": """---
+name: Full-Stack App Deploy (Vercel + Neon)
+description: Guides the agent through the planning, development, and deployment of a full-stack application to Vercel and Neon, ensuring configuration, credentials, and architecture decisions are addressed early.
+---
+
+# Full-Stack App Deploy (Vercel + Neon)
+
+## When to Use
+Use this skill when the user requests a "website", "web app", or "online system" (product) that requires a database.
+If the user only requests static frontend pages without a database or backend APIs, use the existing `publish_page` tool directly.
+
+> [!IMPORTANT]
+> **Code Development and Editing Priority:**
+> Code development and editing MUST be prioritized inside the local workspace (`workspace`). First develop and edit your changes in the workspace. If the `execute_code` tool is enabled, you can run `npm run build` inside the workspace using bash to verify compilation locally. Otherwise, directly call the `vercel_deploy` tool to deploy the workspace to Vercel (using the default Direct Upload method); if the build fails, use the `vercel_get_deploy_logs` tool to retrieve build logs and fix any errors. Do not write code in remote environments or rely on external triggers.
+
+---
+
+## Step 0: Guide the User to Enable Tools and Configure Tokens
+
+> 🔔 All Vercel/Neon deployment-related tools are disabled by default and must be enabled manually by the user.
+
+**The Agent should proactively check and guide the user through the following actions:**
+
+### 0.1 Check if Vercel Tools are Enabled
+- Verify if the Vercel tools under the "deploy" category in the tool list are enabled.
+- If not enabled, inform the user:
+  "To develop and deploy full-stack applications, you need to enable the Vercel-related tools in the 'Tool Management' page under the 'Deploy' category: Deploy to Vercel, List Vercel Deployments, Get Deploy Logs, Set Environment Variable, and Create Postgres Database. You can also enable Manage Domain if you want to use custom domains."
+
+### 0.2 Guide the User to Sign Up for Vercel and Get a Token
+- If Vercel tools are enabled but the `vercel_token` is missing or empty, guide the user:
+  1. Visit https://vercel.com/signup to register (supports GitHub / Email sign up).
+  2. Once logged in, go to https://vercel.com/account/tokens.
+  3. Click "Create" to generate a new token (suggested name: "clawith", Scope: "Full Account").
+  4. Copy the generated token, return to the Clawith tool settings page, and paste it into the "Vercel Access Token" configuration field for "Deploy to Vercel" or any other Vercel tools.
+
+### 0.3 Guide the User to Sign Up for Neon and Get an API Key
+- If the project requires a database (Postgres), guide the user:
+  1. Visit https://neon.tech to register (recommending GitHub OAuth for instant registration).
+  2. Once registered, go to the API Keys section in the console settings (https://console.neon.tech/app/settings/api-keys).
+  3. Click "Create new API Key", name it (e.g., "clawith"), and copy the generated key.
+  4. Return to the Clawith tool settings page, find the `Create Postgres Database` tool, and paste the key into the "Neon API Key" configuration field.
+
+---
+
+## Step 1: Choose Framework and Initialize
+
+### 1.1 Confirm Development Framework
+Confirm the framework to be used with the user:
+- **Proactively Recommend Next.js**: Explain to the user: "Next.js is the official native framework for Vercel, offering the best integration, zero-config serverless deployments, API routes, and seamless database connections."
+- **Default Framework**: If the user has no explicit preference, default to using **Next.js** to initialize the project.
+- **Other Options**: If the user explicitly asks for a single-page app (SPA) or lighter alternatives, Vite/Astro can be used, but warn them about independent API hosting limitations.
+
+---
+
+## Step 2: Full-Stack Development and Debugging
+
+### 2.1 Initialize Boilerplate
+- Initialize the project using Next.js (prefer non-interactive setup: `npx create-next-app@latest ./ --typescript --eslint --tailwind --src-dir --app --import-alias "@/*"` or modify based on project directory).
+- Write backend APIs under `src/app/api/`.
+
+### 2.2 Optimized Deployment & Database Association Sequence (Crucial)
+To avoid unnecessary deployments, save Vercel build limits, and prevent serving a broken state without database configuration, strictly follow this sequence:
+1. **Create the Database first**: Call the `neon_create_database` tool to obtain the `DATABASE_URL`.
+   - **Important**: If the tool returns a "Neon free limit reached" warning, notify the user and guide them to delete old projects or supply an existing database connection string.
+2. **Configure Vercel Environment Variables**: Call the `vercel_set_env` tool to inject the `DATABASE_URL` into Vercel.
+   - Key: `DATABASE_URL`
+   - Value: `<The connection string obtained>`
+3. **Deploy the application**: Once the environment variables are successfully configured in Vercel, call the `vercel_deploy` tool to deploy.
+   - **Note on Deployment Security**: The deploy tool automatically sends a request to disable Vercel's Deployment Protection (SSO/password protection) on project creation and deployment. This is done to enable full-auto debugging, screenshot verification, and crawling of preview URLs by the AI Agent.
+
+### 2.3 Development, Testing, and Debugging
+- **Local Verification (Optional)**: If the `execute_code` tool is enabled, run `npm run build` inside the workspace using the `execute_code` tool (with `bash` language) to ensure there are no compilation or TypeScript errors before deploying. Otherwise, skip local verification and deploy directly.
+- **Preview Deployment**: Call `vercel_deploy` (specifying `production=False`) to get a unique Preview URL.
+- **Automated Verification**: Use the Browser tool to navigate to the Preview URL, take screenshots, and verify the UI rendering and API operations.
+- **Build and Log Debugging**: If the build fails, call `vercel_get_deploy_logs` to view compilation or runtime logs to diagnose and fix errors.
+- **Production Deployment**: Once testing is successful, call `vercel_deploy` (specifying `production=True`) to publish to production.
+
+---
+
+## Debugging and Limit Status Monitoring
+- **Build Failures** → Use `vercel_get_deploy_logs` to check build logs.
+- **Runtime Errors** → Use `vercel_get_deploy_logs` to check runtime logs.
+- **Limit Monitoring** → Whenever a deployment completes, check the build logs/Vercel status, and proactively display the Vercel bandwidth/build usage percentage and Neon project limit status (e.g. 1/1 projects). If usage exceeds 80%, highlight it in bold to warn the user.
+- **Visual Checks** → Use the Browser tool to screenshot and verify layouts.
+"""
+            }
+        ]
+    }
 ]
 
 
@@ -932,9 +1030,11 @@ async def push_default_skills_to_existing_agents():
     """
     from app.models.agent import Agent
     from app.models.skill import Skill
+    from app.models.system_settings import SystemSetting
     from sqlalchemy.orm import selectinload
     from app.services.agent_manager import agent_manager
     from app.services.storage import get_storage_backend
+    import hashlib
 
     async with async_session() as db:
         # Load all is_default skills with their files
@@ -945,12 +1045,26 @@ async def push_default_skills_to_existing_agents():
         if not default_skills:
             return
 
+        # Compute a hash of default skill folder names to detect newly added skills
+        hasher = hashlib.sha256()
+        for skill in sorted(default_skills, key=lambda s: s.folder_name):
+            hasher.update(skill.folder_name.encode("utf-8"))
+        current_hash = hasher.hexdigest()
+
+        # Check if we already synced this version of default skills
+        setting_r = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "default_skills_sync_hash")
+        )
+        setting = setting_r.scalar_one_or_none()
+        if setting and setting.value.get("hash") == current_hash:
+            logger.info(f"[SkillSeeder] Default skills sync hash '{current_hash}' matches, skipping sync for existing agents")
+            return
+
         # Load all agents
         agents_r = await db.execute(select(Agent))
         agents = agents_r.scalars().all()
 
         pushed = 0
-        updated = 0
         removed_legacy = 0
         storage = get_storage_backend()
         for agent in agents:
@@ -965,23 +1079,29 @@ async def push_default_skills_to_existing_agents():
             for skill in default_skills:
                 if not skill.files:
                     continue
+
+                # Determine if the agent already has this skill by checking if its first file exists in storage
+                first_file_key = f"{agent_prefix}/skills/{skill.folder_name}/{skill.files[0].path}"
+                if await storage.is_file(first_file_key):
+                    continue  # Skill already exists, do not update
+
                 for sf in skill.files:
                     key = f"{agent_prefix}/skills/{skill.folder_name}/{sf.path}"
-                    if await storage.is_file(key):
-                        existing_content = await storage.read_text(key, encoding="utf-8", errors="replace")
-                        if existing_content == sf.content:
-                            continue  # already up-to-date
-                        await storage.write_text(key, sf.content, encoding="utf-8")
-                        updated += 1
-                    else:
-                        await storage.write_text(key, sf.content, encoding="utf-8")
-                        pushed += 1
-                        logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
+                    await storage.write_text(key, sf.content, encoding="utf-8")
+                    pushed += 1
+                logger.info(f"[SkillSeeder] Pushed new default skill '{skill.name}' to agent {agent.id}")
 
-        if pushed or updated or removed_legacy:
+        # Save/update the sync hash in settings
+        if setting:
+            setting.value = {"hash": current_hash}
+        else:
+            db.add(SystemSetting(key="default_skills_sync_hash", value={"hash": current_hash}))
+        await db.commit()
+
+        if pushed or removed_legacy:
             logger.info(
-                f"[SkillSeeder] Pushed {pushed} new + {updated} updated skill files "
+                f"[SkillSeeder] Pushed {pushed} new skill files "
                 f"to existing agents; removed {removed_legacy} legacy MCP installer files"
             )
         else:
-            logger.info("[SkillSeeder] All existing agents already have up-to-date default skills")
+            logger.info("[SkillSeeder] All existing agents already have all default skills")

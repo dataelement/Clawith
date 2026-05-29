@@ -220,7 +220,7 @@ export default function ToolsManager({ agentId, canManage = false }: { agentId: 
                 setConfigTool(null);
             }
             loadTools();
-        } catch (e: any) { toast.error('保存失败', { details: String(e?.message || e) }); }
+        } catch (e: any) { toast.error(t('common.error.saveFailed'), { details: String(e?.message || e) }); }
         setConfigSaving(false);
     };
 
@@ -390,7 +390,7 @@ export default function ToolsManager({ agentId, canManage = false }: { agentId: 
                             onClick={async () => {
                                 const ok = await dialog.confirm(
                                     t('agent.tools.confirmDelete', `Remove "${tool.display_name}" from this agent?`),
-                                    { danger: true, confirmLabel: '移除' },
+                                    { danger: true, confirmLabel: t('common.confirmActions.removeLabel') },
                                 );
                                 if (!ok) return;
                                 setDeletingToolId(tool.id);
@@ -988,11 +988,11 @@ export default function ToolsManager({ agentId, canManage = false }: { agentId: 
                                                 });
                                                 const data = await res.json();
                                                 if (data.ok) {
-                                                    await dialog.alert(data.message || '测试成功', { type: 'success', title: '连通性测试' });
+                                                    await dialog.alert(data.message || t('common.error.testSuccess'), { type: 'success', title: t('common.model.connectivityTest') });
                                                 } else {
-                                                    await dialog.alert('测试失败', { type: 'error', title: '连通性测试', details: typeof data.error === 'string' ? data.error : JSON.stringify(data, null, 2) });
+                                                    await dialog.alert(t('common.error.testFailed'), { type: 'error', title: t('common.model.connectivityTest'), details: typeof data.error === 'string' ? data.error : JSON.stringify(data, null, 2) });
                                                 }
-                                            } catch (e: any) { await dialog.alert('测试失败', { type: 'error', title: '连通性测试', details: String(e?.message || e) }); }
+                                            } catch (e: any) { await dialog.alert(t('common.error.testFailed'), { type: 'error', title: t('common.model.connectivityTest'), details: String(e?.message || e) }); }
                                             finally { if (btn) btn.textContent = 'Test Connection'; }
                                         }}
                                         id="cat-test-btn"

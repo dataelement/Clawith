@@ -508,7 +508,7 @@ export default function Layout() {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({ detail: 'Failed to switch tenant' }));
-            toast.error('切换公司失败', { details: String(err.detail || `HTTP ${res.status}`) });
+            toast.error(t('common.error.companySwitchFailed'), { details: String(err.detail || `HTTP ${res.status}`) });
             return;
         }
         const data = await res.json();

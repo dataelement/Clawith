@@ -95,3 +95,45 @@ async def ensure_primary_platform_session(
     db.add(session)
     await db.flush()
     return session
+
+
+async def save_tool_call_log(
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: str,
+    tool_name: str,
+    arguments: dict | None,
+    result: str,
+    status: str = "done",
+    tool_call_id: str | None = None,
+    reasoning_content: str | None = None,
+) -> None:
+    """Save a tool call execution log into chat history as a ChatMessage."""
+    if not conversation_id:
+        return
+    import json
+    from app.database import async_session
+    from loguru import logger
+
+    payload = {
+        "name": tool_name,
+        "args": arguments or {},
+        "status": status,
+        "result": str(result) if result is not None else "",
+        "tool_call_id": tool_call_id,
+        "reasoning_content": reasoning_content,
+    }
+
+    try:
+        async with async_session() as db:
+            db.add(ChatMessage(
+                agent_id=agent_id,
+                user_id=user_id,
+                role="tool_call",
+                content=json.dumps(payload, ensure_ascii=False, default=str),
+                conversation_id=conversation_id,
+            ))
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to save tool call log: {e}")
+

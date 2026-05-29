@@ -197,11 +197,17 @@ async def _get_user_name(user_id) -> str | None:
         return None
     try:
         from app.models.user import User as _UserModel
+        from app.models.agent import Agent as _AgentModel
         async with async_session() as _udb:
             _ur = await _udb.execute(select(_UserModel).where(_UserModel.id == user_id))
             _u = _ur.scalar_one_or_none()
             if _u:
                 return _u.display_name or _u.username
+            # Check Agent name fallback
+            _ar = await _udb.execute(select(_AgentModel).where(_AgentModel.id == user_id))
+            _a = _ar.scalar_one_or_none()
+            if _a:
+                return _a.name
     except Exception:
         pass
     return None
@@ -312,27 +318,27 @@ async def _process_tool_call(
     if not should_execute:
         return error_msg
 
-    if tool_name not in allowed_tool_names:
-        result = _tool_not_enabled_message(tool_name)
-        logger.warning(f"[LLM] Blocked disabled tool call: {tool_name} agent_id={agent_id}")
-        if on_tool_call:
-            try:
-                await on_tool_call({
-                    "name": tool_name,
-                    "call_id": tc.get("id", ""),
-                    "args": args,
-                    "status": "done",
-                    "result": result,
-                    "reasoning_content": full_reasoning_content
-                })
-            except Exception:
-                pass
-        api_messages.append(LLMMessage(
-            role="tool",
-            tool_call_id=tc["id"],
-            content=result,
-        ))
-        return ""
+    # if tool_name not in allowed_tool_names:
+    #     result = _tool_not_enabled_message(tool_name)
+    #     logger.warning(f"[LLM] Blocked disabled tool call: {tool_name} agent_id={agent_id}")
+    #     if on_tool_call:
+    #         try:
+    #             await on_tool_call({
+    #                 "name": tool_name,
+    #                 "call_id": tc.get("id", ""),
+    #                 "args": args,
+    #                 "status": "done",
+    #                 "result": result,
+    #                 "reasoning_content": full_reasoning_content
+    #             })
+    #         except Exception:
+    #             pass
+    #     api_messages.append(LLMMessage(
+    #         role="tool",
+    #         tool_call_id=tc["id"],
+    #         content=result,
+    #     ))
+    #     return ""
 
     # Notify client about tool call (in-progress)
     if on_tool_call:
@@ -415,6 +421,7 @@ async def call_llm(
     max_tool_rounds_override: int | None = None,
     skip_tools: bool = False,
     on_code_output=None,
+    current_user_name_override: str | None = None,
 ) -> str:
     """Call LLM via unified client with function-calling tool loop."""
     # Get agent config for tool rounds
@@ -425,7 +432,28 @@ async def call_llm(
         _max_tool_rounds = max_tool_rounds_override
 
     # Get user's name for personalized context
-    _user_name = await _get_user_name(user_id)
+    if current_user_name_override:
+        _user_name = current_user_name_override
+    else:
+        _user_name = await _get_user_name(user_id)
+
+    # Auto-assign fallback tool call logger if none provided but conversation context exists
+    if on_tool_call is None and session_id:
+        from app.services.chat_session_service import save_tool_call_log
+        async def _default_on_tool_call(data: dict):
+            if data.get("status") == "done" and agent_id:
+                await save_tool_call_log(
+                    agent_id=agent_id,
+                    user_id=user_id or agent_id,
+                    conversation_id=session_id,
+                    tool_name=data.get("name", ""),
+                    arguments=data.get("args"),
+                    result=data.get("result"),
+                    status="done",
+                    tool_call_id=data.get("call_id"),
+                    reasoning_content=data.get("reasoning_content"),
+                )
+        on_tool_call = _default_on_tool_call
 
     # Build rich prompt with soul, memory, skills, relationships
     from app.services.agent_context import build_agent_context
@@ -611,6 +639,7 @@ async def call_llm_with_failover(
     on_failover=None,
     skip_tools: bool = False,
     on_code_output=None,
+    current_user_name_override: str | None = None,
 ) -> str:
     """Call LLM with automatic failover support."""
     guard = FailoverGuard()
@@ -652,6 +681,7 @@ async def call_llm_with_failover(
         supports_vision=supports_vision,
         skip_tools=skip_tools,
         on_code_output=on_code_output,
+        current_user_name_override=current_user_name_override,
     )
 
     # Check if we need to failover
@@ -715,6 +745,7 @@ async def call_llm_with_failover(
         supports_vision=getattr(fallback_model, 'supports_vision', False),
         skip_tools=skip_tools,
         on_code_output=on_code_output,
+        current_user_name_override=current_user_name_override,
     )
 
     # Combine error messages if fallback also failed

@@ -53,7 +53,7 @@ class Tenant(Base):
 
     # A2A async communication (notify / task_delegate)
     # When False, all agent-to-agent messages use synchronous consult mode
-    a2a_async_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    a2a_async_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Company default LLM model. Auto-set to the first enabled model the admin
     # adds; used as the initial primary_model_id for new agents created in this

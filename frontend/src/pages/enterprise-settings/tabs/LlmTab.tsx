@@ -150,7 +150,7 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                 const data = await res.json();
                 const agents = data.detail?.agents || [];
                 const msg = `该模型正在被 ${agents.length} 个数字员工使用：\n\n${agents.join(', ')}\n\n仍要删除吗？（对应的模型配置会被清空）`;
-                if (await dialog.confirm(msg, { title: '删除模型', danger: true, confirmLabel: '强制删除' })) {
+                if (await dialog.confirm(msg, { title: t('common.dialog.deleteModel'), danger: true, confirmLabel: t('common.confirmActions.forceDelete') })) {
                     const r2 = await fetch(`/api/enterprise/llm-models/${id}?force=true`, {
                         method: 'DELETE',
                         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },

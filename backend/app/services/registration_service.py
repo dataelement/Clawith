@@ -402,7 +402,7 @@ class RegistrationService:
 
             # Also try matching by email
             if user_info_obj.email:
-                existing_by_email = await sso_service.match_user_by_email(db, user_info_obj.email)
+                existing_by_email = await sso_service.match_user_by_email(db, user_info_obj.email, tenant_id=tenant_id)
                 if existing_by_email:
                     # Link identity to existing user
                     await sso_service.link_identity(

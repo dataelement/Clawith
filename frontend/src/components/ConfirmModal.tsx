@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface ConfirmModalProps {
     open: boolean;
@@ -11,8 +12,11 @@ interface ConfirmModalProps {
     onCancel: () => void;
 }
 
-export default function ConfirmModal({ open, title, message, confirmLabel = '确定', cancelLabel = '取消', danger, onConfirm, onCancel }: ConfirmModalProps) {
+export default function ConfirmModal({ open, title, message, confirmLabel, cancelLabel, danger, onConfirm, onCancel }: ConfirmModalProps) {
+    const { t } = useTranslation();
     const btnRef = useRef<HTMLButtonElement>(null);
+    const resolvedConfirmLabel = confirmLabel ?? t('common.confirmActions.confirmLabel');
+    const resolvedCancelLabel = cancelLabel ?? t('common.confirmActions.cancelLabel');
 
     useEffect(() => {
         if (open) setTimeout(() => btnRef.current?.focus(), 100);
@@ -34,8 +38,8 @@ export default function ConfirmModal({ open, title, message, confirmLabel = '确
                 <h4 style={{ marginBottom: '12px', fontSize: '15px' }}>{title}</h4>
                 <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px', lineHeight: 1.5 }}>{message}</p>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                    <button className="btn btn-secondary" onClick={onCancel}>{cancelLabel}</button>
-                    <button ref={btnRef} className={danger ? 'btn btn-danger' : 'btn btn-primary'} onClick={onConfirm}>{confirmLabel}</button>
+                    <button className="btn btn-secondary" onClick={onCancel}>{resolvedCancelLabel}</button>
+                    <button ref={btnRef} className={danger ? 'btn btn-danger' : 'btn btn-primary'} onClick={onConfirm}>{resolvedConfirmLabel}</button>
                 </div>
             </div>
         </div>

@@ -308,7 +308,14 @@ async def whatsapp_event_webhook(
                 await db.commit()
 
                 try:
-                    reply_text = await _call_agent_llm(db, agent_id, user_text, history=history)
+                    reply_text = await _call_agent_llm(
+                        db,
+                        agent_id,
+                        user_text,
+                        history=history,
+                        user_id=platform_user_id,
+                        session_id=session_conv_id,
+                    )
                 except Exception as exc:
                     logger.exception(f"[WhatsApp] LLM failed for agent {agent_id}: {exc}")
                     reply_text = "Sorry, I encountered an error processing your message."

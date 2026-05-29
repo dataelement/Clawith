@@ -234,6 +234,13 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
             except Exception as e:
                 logger.warning(f"Failed to persist tool call for trigger session: {e}")
 
+        from_agent_name = None
+        for t in triggers:
+            cfg = t.config or {}
+            if cfg.get("from_agent_name"):
+                from_agent_name = cfg.get("from_agent_name")
+                break
+
         reply = await call_llm(
             model=model,
             messages=messages,
@@ -244,6 +251,7 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
             session_id=str(session_id),
             on_chunk=on_chunk,
             on_tool_call=on_tool_call,
+            current_user_name_override=from_agent_name,
         )
 
         async with async_session() as db:
