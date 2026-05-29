@@ -254,7 +254,7 @@ jobs:
 
           prompt = Path(".github/release-artifacts/release-prompt.txt").read_text(encoding="utf-8")
           payload = {
-              "model": "openai/gpt-4.1",
+              "model": "openai/gpt-5.4",
               "messages": [
                   {
                       "role": "system",

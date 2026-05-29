@@ -106,10 +106,10 @@ function renderInline(text: string): string {
         .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
         // Bold
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/__(.*?)__/g, '<strong>$1</strong>')
+        .replace(/(?<!\w)__(?!\s)(.+?)(?<!\s)__(?!\w)/g, '<strong>$1</strong>')
         // Italic
         .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/_(.*?)_/g, '<em>$1</em>')
+        .replace(/(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)/g, '<em>$1</em>')
         // Strikethrough
         .replace(/~~(.*?)~~/g, '<del>$1</del>');
 
