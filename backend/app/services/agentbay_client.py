@@ -11,7 +11,11 @@ from datetime import datetime, timedelta
 from typing import Optional
 from loguru import logger
 
-from agentbay import AgentBay, BrowserOption, CreateSessionParams
+from agentbay import AgentBay, CreateSessionParams
+from app.core.logging_config import _disable_agentbay_logger_override, configure_logging
+
+_disable_agentbay_logger_override()
+configure_logging()
 
 
 @dataclass
@@ -72,7 +76,7 @@ class AgentBayClient:
             return
         try:
             await asyncio.to_thread(self._session.delete)
-            logger.info(f"[AgentBay] Closed session")
+            logger.info("[AgentBay] Closed session")
         except Exception as e:
             logger.warning(f"[AgentBay] Failed to close session: {e}")
         finally:

@@ -3,7 +3,6 @@
 import sys
 import logging
 from contextvars import ContextVar
-from typing import Optional
 
 from loguru import logger
 
@@ -36,6 +35,17 @@ def set_trace_id(trace_id: str) -> None:
     trace_id_var.set(trace_id)
 
 
+def _disable_agentbay_logger_override():
+    """Disable AgentBay SDK's logging override to prevent it from resetting loguru."""
+    if "agentbay._common.logger" in sys.modules:
+        try:
+            from agentbay._common.logger import AgentBayLogger
+            AgentBayLogger._initialized = True
+            AgentBayLogger.setup = classmethod(lambda cls, *args, **kwargs: None)
+        except Exception:
+            pass
+
+
 def configure_logging():
     """Configure loguru with custom format including trace ID."""
     # Remove default handler
@@ -51,6 +61,8 @@ def configure_logging():
         diagnose=True,
         filter=lambda record: (record["extra"].setdefault("trace_id", get_trace_id() or str(uuid4())) is not None)
     )
+
+    _disable_agentbay_logger_override()
 
     return logger
 
