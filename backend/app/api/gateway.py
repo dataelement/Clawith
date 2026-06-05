@@ -609,11 +609,17 @@ async def send_message(
             await db.commit()
             raise HTTPException(status_code=400, detail="No Feishu channel configured")
 
+        # Extract config values and release connection before Feishu HTTP calls
+        _cfg_app_id = config.app_id
+        _cfg_app_secret = config.app_secret
+        await db.commit()
+        await db.close()
+
         # Prefer user_id (tenant-stable, works across apps), fallback to open_id
         resp = None
         if target_member.external_id:
             resp = await feishu_service.send_message(
-                config.app_id, config.app_secret,
+                _cfg_app_id, _cfg_app_secret,
                 receive_id=target_member.external_id,
                 msg_type="text",
                 content=_json.dumps({"text": content}, ensure_ascii=False),
@@ -621,13 +627,12 @@ async def send_message(
             )
         if (resp is None or resp.get("code") != 0) and target_member.open_id:
             resp = await feishu_service.send_message(
-                config.app_id, config.app_secret,
+                _cfg_app_id, _cfg_app_secret,
                 receive_id=target_member.open_id,
                 msg_type="text",
                 content=_json.dumps({"text": content}, ensure_ascii=False),
                 receive_id_type="open_id",
             )
-        await db.commit()
 
         if resp and resp.get("code") == 0:
             return {

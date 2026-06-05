@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
-from app.database import get_db
+from app.database import async_session as _async_session, get_db
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
@@ -375,7 +375,15 @@ async def slack_event_webhook(
     # Save user message
     db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
     sess.last_message_at = datetime.now(timezone.utc)
+
+    # Pre-load agent/model for LLM call and extract config values before closing
+    from app.api.feishu import _load_agent_and_model
+    _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
+    _cfg_app_secret = config.app_secret or ""
+
     await db.commit()
+    # ── Phase 1 complete: release connection before slow LLM work ──
+    await db.close()
 
     # Set channel_file_sender contextvar for agent → user file delivery
     from app.services.agent_tools import channel_file_sender as _cfs_s
@@ -406,10 +414,10 @@ async def slack_event_webhook(
                 raise RuntimeError(f"Slack upload complete error: {_complete.json()}")
     _cfs_s_token = _cfs_s.set(_slack_file_sender)
 
-    # Call LLM
-    from app.api.feishu import _call_agent_llm
-    reply_text = await _call_agent_llm(
-        db,
+    # Call LLM (no DB session needed)
+    from app.api.feishu import _call_llm_with_config
+    reply_text = await _call_llm_with_config(
+        _agent_model, _llm_model, _fallback_model,
         agent_id,
         user_text,
         history=history,
@@ -419,16 +427,23 @@ async def slack_event_webhook(
     _cfs_s.reset(_cfs_s_token)
     logger.info(f"[Slack] LLM reply: {reply_text[:80]}")
 
-    # Save reply
-    db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
-    sess.last_message_at = datetime.now(timezone.utc)
-    await db.commit()
+    # Save reply (new short transaction)
+    async with _async_session() as _save_db:
+        _save_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+        # Reload session object to update last_message_at
+        from app.models.chat_session import ChatSession
+        _sess_r = await _save_db.execute(
+            select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
+        )
+        _sess_fresh = _sess_r.scalar_one_or_none()
+        if _sess_fresh:
+            _sess_fresh.last_message_at = datetime.now(timezone.utc)
+        await _save_db.commit()
 
     # Send to Slack (chunked)
-    bot_token = config.app_secret or ""
-    if bot_token and channel_id:
+    if _cfg_app_secret and channel_id:
         try:
-            await _send_slack_messages(bot_token, channel_id, reply_text)
+            await _send_slack_messages(_cfg_app_secret, channel_id, reply_text)
         except Exception as e:
             logger.error(f"[Slack] Failed to send: {e}")
 

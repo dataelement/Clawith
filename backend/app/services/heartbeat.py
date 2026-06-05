@@ -13,6 +13,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 from loguru import logger
+
+from app.core.logging_config import new_trace_id
 from sqlalchemy import select, update, exists, and_
 from app.services.storage import agent_storage_key, get_storage_backend
 
@@ -137,6 +139,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
       Phase 2: LLM tool loop (no DB connection held)
       Phase 3: Write token usage + last_heartbeat_at → commit
     """
+    new_trace_id()
     try:
         from app.database import async_session
         from app.models.agent import Agent
@@ -453,6 +456,7 @@ async def _heartbeat_tick():
     from app.services.timezone_utils import get_agent_timezone_sync
     from app.models.tenant import Tenant
 
+    new_trace_id()
     now = datetime.now(timezone.utc)
 
     try:
@@ -563,6 +567,7 @@ async def run_agent_oneshot(
 
     Returns the final reply string (for logging purposes).
     """
+    new_trace_id()
     try:
         from app.database import async_session
         from app.models.agent import Agent

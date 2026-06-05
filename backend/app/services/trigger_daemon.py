@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 from loguru import logger
 from sqlalchemy import select
 
+from app.core.logging_config import new_trace_id
 from app.database import async_session
 from app.models.trigger import AgentTrigger
 from app.services.trigger_runtime.evaluator import (
@@ -71,6 +72,7 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
     return await evaluate_trigger_runtime(trigger, now)
 
 async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTrigger]):
+    new_trace_id()
     await invoke_agent_for_triggers_runtime(agent_id, triggers)
 
 
@@ -78,6 +80,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
 
 async def _tick():
     """One daemon tick: evaluate all triggers, group by agent, invoke."""
+    new_trace_id()
     now = datetime.now(timezone.utc)
 
     async with async_session() as db:

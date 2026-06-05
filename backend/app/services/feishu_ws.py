@@ -203,8 +203,7 @@ class FeishuWSManager:
             # Import here to avoid circular dependencies
             from app.api.feishu import process_feishu_event
 
-            async with async_session() as db:
-                await process_feishu_event(agent_id, body_dict, db)
+            await process_feishu_event(agent_id, body_dict)
 
         except Exception as e:
             logger.exception(f"[Feishu WS] Error processing event for {agent_id}: {e}")

@@ -61,6 +61,8 @@ async def create_wechat_qrcode(
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can configure channel")
+    # Release connection before slow HTTP call
+    await db.close()
 
     route_tag = _route_tag(data)
     async with httpx.AsyncClient(timeout=20) as client:
@@ -86,6 +88,8 @@ async def get_wechat_qrcode_status(
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can configure channel")
+    # Release connection before slow HTTP call (timeout=40s)
+    await db.close()
 
     async with httpx.AsyncClient(timeout=40) as client:
         resp = await client.get(
