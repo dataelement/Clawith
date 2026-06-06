@@ -244,7 +244,7 @@ jobs:
         if: ${{ inputs.use_ai_notes }}
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.MODELS_TOKEN }}
         run: |
           set -euo pipefail
 
