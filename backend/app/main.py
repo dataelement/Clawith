@@ -196,10 +196,6 @@ async def lifespan(app: FastAPI):
                     await _db.commit()
                     logger.info("[startup] Default company created")
 
-                # Enable A2A async communication for all existing companies on startup/restart
-                await _db.execute(_update(Tenant).values(a2a_async_enabled=True))
-                await _db.commit()
-                logger.info("[startup] Enabled A2A async communication for all existing companies")
         except Exception as e:
             logger.warning(f"[startup] Default company seed or A2A enable failed: {e}")
 
