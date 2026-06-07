@@ -1,3 +1,59 @@
+# v1.10.1 — Chat Model Switcher & Entrypoint Permission Optimizations
+
+## What's New
+
+### Core Features
+- **Live Chat Model Switching via WebSocket**: Enables users to change the active chat model in real time through websockets, improving flexibility and responsiveness in ongoing chat sessions.
+
+### Optimizations
+- **Faster Entrypoint Permissions Check**: Refactored and optimized entrypoint permissions verification, providing faster and leaner permission handling during request routing and task dispatch.
+- **Deployment Config Adjustments**: Updated deployment configuration for improved reliability and compatibility with diverse environments.
+
+## Bug Fixes
+
+- **Chat Model Switcher Stability**: Resolved issues related to toggling chat models via websocket, ensuring seamless switching without session drops or inconsistent UI states.
+- **Entrypoint Permissions Issue**: Fixed minor permission validation defects that could block valid requests in specific workflows.
+- **Config Consistency**: Addressed deployment config edge cases related to environment-specific overrides and fallback handling.
+
+## Upgrade Guide
+
+### Docker Deployment
+
+```bash
+git pull origin main
+
+# Rebuild and restart services
+docker compose down && docker compose up -d --build
+```
+
+### Source Deployment
+
+```bash
+git pull origin main
+
+# Rebuild frontend
+cd frontend && npm install && npm run build
+cd ..
+
+# Restart backend / frontend services
+```
+
+### Kubernetes / Helm
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+```
+
+## Notes
+
+- **Live Model Switching**: No special configuration is required for enabling the websocket-based chat model switcher; feature is enabled by default.
+- **Entrypoint Permissions**: Permission check routines have changed under the hood. If you maintain custom permission middleware or gateway logic, audit integration points for compatibility.
+- **No manual database migration required**: Schema migrations run automatically on application startup.
+
+---
+
+---
+
 ---
 # v1.10.0 — Async Agent Messaging, Atlas Onboarding & Robust File/Code Streaming
 
