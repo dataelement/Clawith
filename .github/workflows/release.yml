@@ -196,6 +196,7 @@ jobs:
           1. Title: Start with a top-level heading exactly formatted as: # {target_tag} — <Concise title summarizing the main theme of this release>
           2. ## What's New:
              - Group related changes into thematic subheadings (e.g., ### Core Features, ### UI/UX Enhancements, ### Optimizations).
+             - Sort subheadings and items within each group by importance: major features first, then enhancements, then minor tweaks.
              - Specifically list all newly added features and optimization items. Explain what value they add.
           3. ## Bug Fixes:
              - List resolved bugs, issues, or stability improvements.
@@ -211,6 +212,7 @@ jobs:
           - Prefer grouping related commits and summarizing the feature/improvement instead of listing every commit verbatim.
           - Do NOT invent or hallucinate any features or fixes that are not present or strongly implied in the commit list.
           - Keep the language clean and consistent with previous release notes.
+          - IMPORTANT: Within each section (What's New, Bug Fixes, etc.), sort items by impact and importance in descending order. New core features and major enhancements come first, followed by smaller improvements. Bug fixes that affect stability or data integrity come before minor UI tweaks.
 
           Style Reference (Mimic this structure and formatting):
           ---
