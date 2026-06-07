@@ -11274,20 +11274,19 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
     if not path.lower().endswith((".html", ".htm")):
         return "Only .html and .htm files can be published"
 
-    # Resolve and check file exists
-    full_path = (ws / path).resolve()
-    if not str(full_path).startswith(str(ws.resolve())):
-        return "Path traversal not allowed"
-    if not full_path.exists() or not full_path.is_file():
+    # Resolve via storage backend (supports local FS and S3)
+    storage = get_storage_backend()
+    storage_key = normalize_storage_key(f"{agent_id}/{path}")
+    if not await storage.exists(storage_key) or not await storage.is_file(storage_key):
         return f"File not found: {path}"
 
     # Extract title from HTML
     try:
-        content = full_path.read_text(encoding="utf-8", errors="replace")
+        content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
         title_match = re.search(r"<title[^>]*>(.*?)</title>", content, re.IGNORECASE | re.DOTALL)
-        title = title_match.group(1).strip()[:200] if title_match else full_path.stem
+        title = title_match.group(1).strip()[:200] if title_match else Path(path).stem
     except Exception:
-        title = full_path.stem
+        title = Path(path).stem
 
     # Generate short_id
     short_id = secrets.token_urlsafe(6)[:8]  # 8-char URL-safe string
