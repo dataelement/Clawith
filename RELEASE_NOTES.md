@@ -1,3 +1,113 @@
+---
+# v1.10.0 — Async A2A, Atlas Design, HA Runtime & Channel Tool Logging
+
+## What's New
+
+### Async Agent-to-Agent (A2A) Communication
+- **A2A async communication enabled by default**: Tenants now have A2A async messaging activated by default; pre-existing tenants are automatically upgraded at startup.
+- **A2A trigger logic optimized**: More reliable and efficient agent trigger dispatch, with improved error handling and atomic heartbeat claim mechanism to prevent duplicate triggers.
+
+### HA Runtime & Platform Optimization
+- **High Availability (HA) runtime improvements**: Deployment and operational logic optimized for clustering, automatic job claims, and startup repair routines.
+- **DB connection pool optimization**: Reduced database exhaustion risk during LLM calls by shortening connection hold time.
+
+### Chat & Channel Tool Logging
+- **Channel tool logs persisted**: Channel and tool executions are now logged for auditing and review, improving traceability of automations and integrations.
+- **Dynamic tool relationship loading and skill seeding**: Relationship graphs for channel tools are loaded dynamically, and skill seeding is optimized for faster onboarding.
+- **File delivery injection**: Files can now be injected directly into A2A chat sessions, streamlining collaborative workflows.
+- **Live code execution streaming**: Real-time output streamed to the Code panel during execution, including proper handling on timeouts.
+
+### Atlas Design System & Onboarding
+- **Atlas design system launched**: All onboarding screens redesigned with Paper/Night themes, new SVG illustrations, and cosmographic styling for richer onboarding experiences.
+- **Login & onboarding flows unified**: Four onboarding screens now share AtlasFrame architecture, improved UI with personality chips, universe maps, pulse effects, and improved transitions.
+- **Clawith wordmark and brand elements**: Official brand assets introduced for cohesive experience.
+
+### UI/UX Enhancements
+- **Cursor-based chat history pagination**: Smooth navigation of chat sessions, optimized for performance and scalability.
+- Notification bar visibility and sticky elements improved.
+- Agent and enterprise settings UI refactored for clarity.
+- Atlas onboarding and login screens further polished for visual quality and input responsiveness.
+
+### SSO, OAuth & Tenant Features
+- **Global SSO toggle & custom domain redirect**: Admins can enable or disable SSO redirects globally; Google Workspace and GitHub OAuth flows added.
+- Adaptive theme for password reset flows.
+- Onboarding and deployment flows unified to reduce manual steps.
+
+### Core Tooling & Deployment
+- **Chromium PDF sandboxing**: Improved stability for PDF generation under Linux with automatic fallback and log enhancements.
+- GCS auto endpoint detection and improved S3-compatible API signature handling.
+- Tool panel backfill logic ensures tool list reliability.
+- Sandbox restrictions relaxed for agent workspace operations.
+
+## Bug Fixes
+
+- **Concurrency & triggers:**
+  - Fixed semaphore concurrency and race conditions in heartbeat triggers, preventing duplicate executes.
+- **Database:**
+  - Resolved alembic migration conflicts, improved migration naming for clarity.
+  - Fixed foreign key constraint in agent creation seeder.
+- **File delivery & streaming:**
+  - Eliminated sender-side DetachedInstanceError during file injection.
+  - Corrected live code execution streaming and sandbox timeout handling.
+- **UI/UX:**
+  - Various Atlas login/onboarding screen visual bugs resolved, improved pulse effects, label positioning, ring styling, and input focus.
+  - Refined notification bar stickiness and sticky element offset.
+- **SSO/OAuth:**
+  - Fixed provider routing for Google Workspace SSO and adjusted organization member link logic.
+- **Tools & chat:**
+  - Backfill tool records for agents and skip tools without records.
+  - Correctly honor user-disabled tools in LLM payloads.
+  - Hardening of AgentBay SDK logging integration.
+- **Storage:**
+  - Improved GCS S3-compatible endpoint signature and environment variable handling on Vercel.
+- **Miscellaneous:**
+  - Prevent workspace file deletion by non-managers.
+  - Resolved issues with Focus injection protocol, chat message imports, and redundant assistant avatars.
+
+## Upgrade Guide
+
+> **Standard upgrade only.** No manual DB migration steps required; migrations run automatically at startup.
+
+### Docker Deployment
+
+```bash
+git pull origin main
+
+# Rebuild and restart services
+docker compose down && docker compose up -d --build
+```
+
+### Source Deployment
+
+```bash
+git pull origin main
+
+# Rebuild frontend
+cd frontend && npm install && npm run build
+cd ..
+
+# Restart backend / frontend services
+```
+
+### Kubernetes / Helm
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+```
+
+## Notes
+
+- **A2A async communication is now default:** If your deployment previously disabled agent-to-agent async messaging, review tenant settings post-upgrade.
+- **Atlas UI:** Major onboarding UI changes; custom themes or integrations may require UI review.
+- **SSO & OAuth:** Platform now supports global SSO toggles and Google/GitHub OAuth—ensure custom domain routing matches your identity provider setup.
+- **PDF & file sandboxing:** Linux PDF sandboxing improvements may require privileged mode for backend containers. Review deployment privilege settings if running containerized.
+- **Dependency updates:** Chromium required for PDF generation; ensure your environment meets minimum version requirements.
+- **Legacy tools and skills:** Tool/skill seeding logic updated. If using legacy agent templates or custom tool panels, verify successful backfill after upgrade.
+
+---
+
+---
+
 # v1.9.2 — Workspace Governance, Tool UX & Token Cache Accounting
 
 ## What's New
