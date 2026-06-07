@@ -441,9 +441,21 @@ jobs:
         run: |
           set -euo pipefail
 
+          release_notes=""
+          if [ -s .github/release-artifacts/release-notes.generated.md ]; then
+            release_notes="$(cat .github/release-artifacts/release-notes.generated.md)"
+          fi
+
           gh pr create \
             --title "chore(release): cut ${TARGET_TAG}" \
-            --body "Automated release PR for ${TARGET_TAG}. Merging this PR will automatically tag the release and publish it." \
+            --body "$(cat <<EOF
+          Automated release PR for ${TARGET_TAG}. Merging this PR will automatically tag the release and publish it.
+
+          ---
+
+          ${release_notes}
+          EOF
+          )" \
             --head "release/${TARGET_TAG}" \
             --base "${{ github.ref_name }}"
 
