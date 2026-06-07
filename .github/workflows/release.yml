@@ -254,7 +254,7 @@ jobs:
 
           prompt = Path(".github/release-artifacts/release-prompt.txt").read_text(encoding="utf-8")
           payload = {
-              "model": "openai/gpt-4.1",
+              "model": "openai/gpt-5",
               "messages": [
                   {
                       "role": "system",
@@ -281,7 +281,7 @@ jobs:
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "X-GitHub-Api-Version: 2026-03-10" \
               -H "Content-Type: application/json" \
-              https://models.github.ai/orgs/dataelement/inference/chat/completions \
+              https://models.github.ai/inference/chat/completions \
               -d @.github/release-artifacts/openai-payload.json
           )
 
