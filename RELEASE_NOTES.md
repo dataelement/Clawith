@@ -22,6 +22,7 @@
 ```bash
 git pull origin main
 
+cd deploy
 # Rebuild and restart services
 docker compose down && docker compose up -d --build
 ```
@@ -31,11 +32,16 @@ docker compose down && docker compose up -d --build
 ```bash
 git pull origin main
 
-# Rebuild frontend
-cd frontend && npm install && npm run build
+cd backend
+alembic upgrade heads
 cd ..
 
-# Restart backend / frontend services
+cd frontend
+npm install
+npm run build
+cd ..
+
+./restart.sh
 ```
 
 ### Kubernetes / Helm
