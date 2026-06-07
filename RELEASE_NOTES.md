@@ -1,3 +1,130 @@
+---
+# v1.10.0 — Async Agent Communication, Atlas UI Redesign & HA Runtime Improvements
+
+## What's New
+
+### Core Features
+- **Async Agent-to-Agent (A2A) Communication Enabled by Default**
+  - Agents can now communicate asynchronously; all tenants are automatically migrated and enabled on startup. This unlocks richer cross-agent workflows and automated triggers.
+- **Global Single Sign-On (SSO) Domain Toggle**
+  - Admins can now control SSO custom domain redirection globally, supporting multi-tenant OAuth flows and improving SSO onboarding for Google and GitHub providers.
+- **OAuth Multi-Tenant Flow**
+  - Introduced platform OAuth providers for Google and GitHub with support for multi-tenant authentication, enabling seamless org-level onboarding and login.
+
+### UI/UX Enhancements
+
+#### Atlas Onboarding Redesign
+- **New Atlas Design System**
+  - Agent onboarding now features a four-screen Atlas design system with fresh SVG illustrations, improved Paper/Night themes, particle effects, and wordmark branding.
+  - UniverseMap, OriginPlate, and personality chip enhancements create a more engaging and modern onboarding experience.
+- **Login Flow Revamp**
+  - Reworked login screens, compass visuals, cosmography plates, and input focus behaviors for improved clarity and accessibility.
+
+#### Agent Workspace & File Delivery
+- **File Delivery Injection**
+  - Files can now be directly injected into agent-to-agent chat sessions, streamlining document sharing between AI agents and users.
+- **Workspace File Management Upgrades**
+  - File deletion restricted to managers; various improvements to workspace file handling boost security and clarity.
+
+#### Chat Experience & Pagination
+- **Cursor-Based Chat History Pagination**
+  - Chats now load via efficient cursor-based paged history, ensuring stable performance and better scalability in large conversations.
+- **Live Code Streaming**
+  - Code execution output is streamed in real time to the code panel, giving immediate feedback and smoother developer experience.
+
+#### Sandbox & Tool Reliability
+- **Configurable Code Execution Timeouts**
+  - Sandbox now reads timeout from config (up to 1 hour), properly streams partial output for timed out jobs, and provides retry hints for error cases.
+- **Tool Log Persistence & Dynamic Relationship Loading**
+  - Channel tool logs are now persisted, and relationships are loaded dynamically for robust skill seeding and auditing.
+
+#### UI Polish
+- Refined agent and enterprise settings, detail page shells, notification bar behaviors, and onboarding finish protocols.
+- Multiple Atlas UI tweaks for login, universe mapping, personality chips, and branding.
+
+### Optimizations
+
+#### High Availability & Deployment
+- **HA Runtime Improvements**
+  - Deployment scripts and heartbeat logic reworked to support more stable, concurrent high-availability runtime triggers.
+  - Atomic heartbeat claims and semaphore concurrency limits prevent duplicate scheduler triggers in multi-instance deployments.
+
+#### Performance & Stability
+- **Database Connection Pool Optimized**
+  - LLM call connection hold times shortened to prevent DB pool exhaustion and improve response latency.
+- **Workspace File Deletion Security**
+  - Workspace file deletions now strictly require manager permission, guarding against unauthorized removals.
+- **AgentTool Record Backfill**
+  - Tools panel now backfills and skips tools without records; respects user-disabled tools in LLM payloads.
+
+#### Storage & Cloud Integration
+- **Google Cloud Storage Endpoint Auto-Detection**
+  - GCS endpoint is now auto-detected, supporting correct V4 signature configs and resolving compatibility for S3-like APIs.
+
+## Bug Fixes
+
+- **Fixed Agent-to-Agent (A2A) Trigger Reliability**
+  - Race conditions and duplicate triggers eliminated with atomic claim handling and concurrency control.
+- **Fixed Google Workspace SSO Routing**
+  - Corrected provider routing and org member link handling for all Google Workspace SSO connections.
+- **Improved Markdown Rendering & Error Handling**
+  - Trigger workflows, markdown rendering, and release workflow robustness improved.
+- **Sandbox Output & Timeout Handling**
+  - Streaming output logic and truncated error messages fixed for timeout cases in code execution.
+- **Release Workflow & Protected Branches**
+  - Auto-tagging, draft model updates, and protected `main` branch workflows now handled reliably.
+- **Tool Relationship & Persistence**
+  - Conditional hiding of OKR reports, backfill record fixes, and support for user-disabled tools.
+- **UI Tweaks & Cosmetic Fixes**
+  - Atlas login visuals, personality chips, and roster labels adjusted; notification bar and sticky element behaviors improved.
+- **DetachedInstanceError & Import Path Corrections**
+  - Fixed backend errors in file delivery message injection and chat session handling.
+- **AgentBay Logging Override Disabled**
+  - Prevents accidental reset of loguru configuration during SDK operations.
+- **GCS Signature Issue Resolved**
+  - Fixed S3-compatible API SignatureDoesNotMatch for object uploads.
+
+## Upgrade Guide
+
+### Docker Deployment
+
+```bash
+git pull origin main
+
+# Rebuild and restart services
+docker compose down && docker compose up -d --build
+```
+
+### Source Deployment
+
+```bash
+git pull origin main
+
+# Rebuild frontend
+cd frontend && npm install && npm run build
+cd ..
+
+# Restart backend / frontend services
+```
+
+### Kubernetes / Helm
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+```
+
+## Notes
+- **Async A2A Communication** is now enabled for all tenants; check tenant settings if your workflow relies on synchronous agent interactions.
+- **Atlas onboarding redesign** requires frontend rebuild for new visuals and flow.
+- OAuth and SSO enhancements may require updated client secrets/config for Google and GitHub.
+- Workspace file deletion is manager-restricted; review user roles and permissions after upgrading.
+- GCS integration now auto-detects endpoints; ensure your storage configs match new signature requirements.
+- No manual database migration needed—migrations run automatically on application startup.
+
+---
+
+---
+
 # v1.9.2 — Workspace Governance, Tool UX & Token Cache Accounting
 
 ## What's New
