@@ -1,3 +1,91 @@
+---
+# v1.10.0 — Atlas UI Redesign, Enhanced A2A, Chat & SSO Upgrades
+
+## What's New
+
+### UI/UX Enhancements — Atlas & Onboarding
+- **Atlas design system launched**: Onboarding screens, login flows, and new SVG illustrations now use the Paper/Night visual foundation for improved clarity and engagement.
+- **Cosmic dark theme and particle starfield**: Dark theme and subtle animations increase onboarding delight and thematic immersion.
+- **Branding & layout polish**: Official Clawith wordmark SVG, bigger UniverseMap, OriginPlate for login, and cosmography plates unify visual identity.
+- **Onboarding improved**: Four onboarding screens now stream through the AtlasFrame for a consistent and modern starter experience.
+- **Personality chips, page transitions, and multi-select**: Enhanced navigation and agent customization via multi-select personality chips and animated transitions.
+
+### Core Features — A2A Communication, Channel Tooling, SSO, & Model Upgrades
+- **Async A2A communication enabled by default**: Tenant-wide agent-to-agent (A2A) async setup and backfill on startup, with improved trigger logic and deployment reliability.
+- **File delivery in A2A sessions**: Files can now be directly injected and streamed in agent-to-agent chat sessions, supporting richer collaborative workflows.
+- **Channel tool logs persisted**: Channel tools now record logs for improved traceability; relationships loaded dynamically, with optimized skill seeding.
+- **SSO improvements**: Global toggle added for single sign-on custom domain redirects. Google Workspace and GitHub OAuth provider routing improved, supporting easy onboarding and adaptable login.
+- **OpenAI model upgrades**: System defaults now use GPT-4.1 for larger token limits, and GPT-5 is supported for release note generation.
+- **Personal model endpoints**: Release flow and workflow integrate personal endpoints for model selection.
+
+### Optimizations — Runtime, Database, Sandbox, & Chat
+- **Database efficiency**: Reduced connection pool exhaustion risk during LLM calls by shortening hold times.
+- **HA runtime improvements**: Deployment process and daemon management streamlined for high-availability setups.
+- **Chat history pagination**: Chat views now use cursor-based pagination for faster, scalable browsing of sessions.
+- **Reduced logging noise**: AgentBay SDK logging override disabled to avoid interference with app-wide logging.
+- **PDF sandbox upgrades**: Chromium `--no-sandbox` argument enabled on Linux for more reliable HTML-to-PDF conversions and clearer error fallback logging.
+- **GCS endpoint auto-detection**: Improved Google Cloud Storage compatibility and put_object signature correctness.
+- **Subprocess/sandbox relaxed**: Local fallback and configurability for process sandboxing, supporting privileged mode and adaptability when `bwrap` is unavailable.
+
+### Sandbox & Code Streaming
+- **Real-time code execution streaming**: Output from `execute_code` tools streams live to the right-side Code panel for immediate user feedback.
+- **Timeout hints & truncated output**: Timeouts now prompt retry messages, and partial stdout/stderr are returned even when operations exceed limits.
+- **Configurable timeouts**: Sandbox reads timeout from config, allowing up to 1 hour instead of a fixed 60 seconds.
+
+## Bug Fixes
+
+- **Heartbeat trigger hardening**: Semaphore concurrency limits and atomic heartbeat claims prevent duplicate triggers.
+- **Agent tool backfill and panel logic**: Tool relations properly backfill and skip missing records; user-disabled tools respected in LLM payloads.
+- **A2A injection refinements**: Finish protocol reinforced, focus injection removed from system prompt, and ghost user bubbles prevented in agent detail view.
+- **Markdown rendering and trigger error handling**: Markdown preview and trigger workflows are more robust against formatting errors.
+- **DetachedInstanceError in file delivery**: Instance errors during file injection to agent sessions resolved.
+- **Workspace file deletion restricted**: Only managers can delete workspace files, securing knowledge areas.
+- **Chat session events**: Corrected event loop handling for Feishu workspace and improved message import paths.
+- **Styling polish**: Login and onboarding screens tweaked for chromatic consistency; minor UI misalignments corrected.
+- **Foreign key constraint fixes**: Agent creation seeder fixed, and okr/report tab visibility now adapts to settings.
+
+## Upgrade Guide
+
+### Docker Deployment
+
+```bash
+git pull origin main
+
+# Rebuild and restart services
+docker compose down && docker compose up -d --build
+```
+
+### Source Deployment
+
+```bash
+git pull origin main
+
+# Rebuild frontend
+cd frontend && npm install && npm run build
+cd ..
+
+# Restart backend / frontend services
+```
+
+### Kubernetes / Helm
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+```
+
+## Notes
+
+- The Atlas design system is now standard for new agent onboarding and login. Custom branding overrides may need review.
+- A2A async is enabled by default; ensure tenant settings are appropriately configured for agent-to-agent scenarios.
+- Default OpenAI model is GPT-4.1. If higher token or model support is needed (GPT-5), review model endpoint configuration.
+- Google Cloud Storage and SSO setup compatibility have been enhanced; verify provider configurations if using custom domains or SSO redirects.
+- Subprocess sandboxing is more flexible; privileged deployments and local fallbacks are now supported if `bwrap` is unavailable.
+- Managers-only workspace deletion improves file security; regular users cannot forcibly delete shared files.
+
+---
+
+---
+
 # v1.9.2 — Workspace Governance, Tool UX & Token Cache Accounting
 
 ## What's New
