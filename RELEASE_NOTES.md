@@ -1,3 +1,105 @@
+---
+# v1.10.0 — Async Agent Messaging, Atlas Onboarding & Robust File/Code Streaming
+
+## What's New
+
+### Async Agent-to-Agent Communication
+- **A2A (Agent-to-Agent) async messaging enabled by default**: Modernizes inter-agent communication, ensuring agents can message each other asynchronously. Existing tenants are auto-repaired on startup for seamless transition and compatibility.
+- **Optimized trigger logic and error handling**: Improves reliability when invoking agent triggers, handling edge cases more gracefully across communication workflows.
+
+### Onboarding Experience — Atlas Design System
+- **Complete onboarding rewrite using Atlas design system**: Revamped 4-screen onboarding with paper/night foundations, cosmographic visuals, personality chips, animated SVG brand marks, and responsive layouts.
+- **OriginPlate and UniverseMap branding**: Login and multi-screen flows now match latest mockups with upgraded illustrations, decorative motifs, and increased accessibility.
+- **Phase-wise UI enhancements**: Phases 1–3 implemented for core onboarding journey, improving engagement and brand cohesion.
+
+### Streaming & Workspace File Delivery
+- **Real-time file delivery injection in A2A chat sessions**: Files are now sent directly into agent-to-agent conversations, enhancing collaborative workflows.
+- **Live code execution streaming**: Code output is streamed to the right-side Code panel in real-time, including improved error handling, truncated output on timeout, and user-facing retry hints.
+- **Chromium PDF sandboxing improvements**: Improved Linux compatibility by adding `--no-sandbox` argument, ensuring stable PDF generation for workspace files.
+
+### UI/UX Enhancements
+- **Atlas login/dialog polish**: Login screens unified with refined chrome, cosmography plates, compass motifs, and improved brand mark SVG.
+- **Multi-select personality chips and dynamic transitions**: Boosts agent creation flexibility and onboarding clarity.
+- **Notification bar stabilization**: Top notification now stays fixed, with sticky elements offset below for consistent experience.
+- **Agent and enterprise settings refactoring**: Settings tabs and detail page shells recalibrated for clarity.
+
+### Chat & Pagination Improvements
+- **Cursor-based pagination for chat history**: Allows smooth scrolling through long chat sessions, reduces page load times, and supports scalable transcript navigation for end users.
+
+### Authentication & Provider Management
+- **Global Single Sign-On (SSO) custom domain toggle**: Administrators can now switch SSO redirect behavior platform-wide, including adaptive UI theming.
+- **OAuth multi-tenant flow and provider support**: Added platform-level OAuth providers for Google and GitHub, improving identity integration for organizations.
+- **Google Workspace SSO routing hardening**: Refined org member links and provider routing to support enterprise teams using Google Workspace.
+
+### Workspace & Tool Reliability
+- **Workspace file deletion restricted to managers**: Tightens workspace security by limiting destructive actions to those with management rights.
+- **S3/GCS endpoint auto-detection and compatibility**: Removes ‘SignatureDoesNotMatch’ errors; GCS endpoints now auto-configure for correct V4 signing.
+- **AgentTool relationship backfill and dynamic loading**: Ensures all configured agents have proper tool records; disables tools respected in LLM payloads.
+
+### Optimizations
+- **Reduce DB connection pool exhaustion**: Lowers risk of backend overload during LLM calls, ensuring more stable service.
+- **High-availability (HA) runtime improvements**: Backend deployment logic cleaned up for smoother scaling and reliability.
+- **Dynamic tool log persistence and optimized skill seeding**: Tool logs now persisted for channels with faster skill relationship loading, improving auditability and first-run experience.
+- **Sandbox and workspace fallback logic**: Allows local fallback when sandbox environment (bwrap) is unavailable, relaxes subprocess restrictions for broader compatibility.
+- **Improved release workflow and auto-tagging**: Protected branch deployment, auto PR tagging, and smoother release ops.
+
+## Bug Fixes
+
+- **Workspace file deletion**: Only users with manager permissions can delete workspace files, preventing unauthorized data loss.
+- **DB migration & tool record issues**: Alembic migration conflicts resolved, tool backfill now uses `commit()` for consistency, skips missing AgentTool records, and honor user-disabled tools in LLM call payloads.
+- **Chat message/file injection errors**: Corrected DetachedInstanceError and import paths for chat/file delivery, preventing communication and file transfer failures.
+- **Live event handling in Agent Detail**: Fixed ghost user bubble artifacts caused by agentbay_live events.
+- **Sandbox streaming & timeout**: Proper capturing of code execution stream output on timeout, descriptions now respect config limits (default 60s, max 1h).
+- **PDF rendering fallback logging**: Improved diagnostic messages and error traces for PDF generation under Linux.
+- **UI/UX Minor Fixes**: Numerous adjustments across Atlas screens — logo, ring gaps, cosmography, section labels, indicator lines, and login plate visuals revised for coherence.
+- **SSO, OAuth, and deployment**: Vercel env var type updated to ‘encrypted’, Google Workspace SSO provider routing adjusted, global SSO and reset password theme fixes.
+- **GCS/S3 signature errors**: GCS signature configuration auto-corrects endpoint and resolves API mismatch.
+- **Markdown rendering and workflow**: Improved markdown rendering and refined release workflow triggers.
+
+## Upgrade Guide
+
+### Docker Deployment
+
+```bash
+git pull origin main
+
+# Rebuild and restart services
+docker compose down && docker compose up -d --build
+```
+
+### Source Deployment
+
+```bash
+git pull origin main
+
+# Rebuild frontend
+cd frontend && npm install && npm run build
+cd ..
+
+# Restart backend / frontend services
+```
+
+### Kubernetes / Helm
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+```
+
+## Notes
+
+- **Atlas onboarding and agent creation screens**: UI/design foundation changed substantially. Custom themes or branding may require review.
+- **Agent-to-Agent async messaging (A2A)** is now standard. Legacy tenant configs are auto-repaired; review downstream automations if you rely on custom agent communication logic.
+- **OAuth/SSO behavior and domain redirects**: New global toggle and improved routing; check your organization’s identity provider setup for compatibility.
+- **Code execution sandboxes**: Timeout is now read from config, max timeout raised to 1h. Ensure configs are up-to-date if you leverage extended runtimes.
+- **Workspace permissions**: Only managers may delete workspace files. Review role assignments to ensure proper access control.
+- **Release workflow improvements**: Protected branch and PR auto-tagging are now supported. Update any internal release scripts if needed.
+- **GCS/S3 endpoint auto-detection**: GCS storage integrations will now self-configure for correct signature version. If you use custom endpoints, verify compatibility.
+- **No manual database migration required**: Schema migrations run automatically on application startup.
+
+---
+
+---
+
 # v1.9.2 — Workspace Governance, Tool UX & Token Cache Accounting
 
 ## What's New
