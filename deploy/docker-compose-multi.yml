@@ -48,7 +48,7 @@ services:
 
   backend-api:
     build:
-      context: ./backend
+      context: ../backend
       args:
         CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
         CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
@@ -79,10 +79,10 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
     volumes:
-      - ./backend:/app
       - ./backend/agent_data:/data/agents
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro
+    privileged: true
     cap_add:
       - SYS_ADMIN
     security_opt:
@@ -106,7 +106,7 @@ services:
 
   backend-trigger:
     build:
-      context: ./backend
+      context: ../backend
       args:
         CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
         CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
@@ -137,7 +137,6 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
     volumes:
-      - ./backend:/app
       - ./backend/agent_data:/data/agents
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro

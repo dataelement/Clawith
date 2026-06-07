@@ -31,7 +31,7 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: ../backend
       args:
         CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
         CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
@@ -59,10 +59,10 @@ services:
       # Password reset token lifetime in minutes (default: 30)
       PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
     volumes:
-      - ./backend:/app
       - ./backend/agent_data:/data/agents
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro
+    privileged: true
     cap_add:
       - SYS_ADMIN
     security_opt:
@@ -80,7 +80,7 @@ services:
         max-size: "10m"
         max-file: "3"
   frontend:
-    build: ./frontend
+    build: ../frontend
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-3008}:3000"

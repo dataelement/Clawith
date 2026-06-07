@@ -2005,17 +2005,9 @@ export default function AgentDetailPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [agent?.primary_model_id]);
 
-    const handleModelChange = useCallback(async (newModelId: string | null) => {
+    const handleModelChange = useCallback((newModelId: string | null) => {
         setOverrideModelId(newModelId);
-        if (!id || !newModelId || newModelId === agent?.primary_model_id) return;
-        if ((agent as any)?.access_level !== 'manage') return;
-        try {
-            await agentApi.update(id, { primary_model_id: newModelId });
-            queryClient.invalidateQueries({ queryKey: ['agent', id] });
-        } catch {
-            setOverrideModelId(agent?.primary_model_id || null);
-        }
-    }, [id, agent?.primary_model_id, (agent as any)?.access_level, queryClient]);
+    }, []);
 
     // Track onboarding kickoff per (agent, session) so the agent only greets
     // once per session. The agent opens the conversation itself — no visible
