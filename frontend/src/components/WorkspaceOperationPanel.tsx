@@ -47,6 +47,7 @@ interface Props {
     activities: WorkspaceActivity[];
     liveDraft?: WorkspaceLiveDraft | null;
     locked?: boolean;
+    canManageWorkspace?: boolean;
     canManageEnterpriseInfo?: boolean;
     onSelectPath: (path: string) => void;
     onToggleLock?: () => void;
@@ -393,6 +394,7 @@ export default function WorkspaceOperationPanel({
     activities,
     liveDraft,
     locked = false,
+    canManageWorkspace = false,
     canManageEnterpriseInfo = false,
     onSelectPath,
     onToggleLock,
@@ -437,7 +439,9 @@ export default function WorkspaceOperationPanel({
     const manualTreeScopeRef = useRef<TreeScope | null>(null);
 
     const ext = activePath ? extOf(activePath) : '';
-    const canModifyPath = (path?: string | null) => !isEnterprisePath(path) || canManageEnterpriseInfo;
+    const canModifyPath = (path?: string | null) => (
+        isEnterprisePath(path) ? canManageEnterpriseInfo : canManageWorkspace
+    );
     const isWritableTreeDir = (path?: string | null) => isWritableDir(path) && canModifyPath(path);
     const canEdit = !!activePath && EDITABLE_EXTS.has(ext) && canModifyPath(activePath);
     const isHtml = ext === '.html' || ext === '.htm';
@@ -1237,32 +1241,36 @@ export default function WorkspaceOperationPanel({
                     </svg>
                 </a>
             )}
-            <button
-                className="workspace-op-tree-action-btn"
-                type="button"
-                onClick={handleUploadClick}
-                title={`Upload into ${treeTargetDir}`}
-                aria-label={`Upload into ${treeTargetDir}`}
-            >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M12 16V5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-                    <path d="M8 9l4-4 4 4" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M5 19h14" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-                </svg>
-            </button>
-            <button
-                className="workspace-op-tree-action-btn"
-                type="button"
-                onClick={handleCreateFolder}
-                title={`Create folder in ${treeTargetDir}`}
-                aria-label={`Create folder in ${treeTargetDir}`}
-            >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M4 8.5A2.5 2.5 0 016.5 6H10l1.4 1.6H17.5A2.5 2.5 0 0120 10.1v6.4A2.5 2.5 0 0117.5 19h-11A2.5 2.5 0 014 16.5v-8Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-                    <path d="M12 10.5v5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                    <path d="M9.5 13h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                </svg>
-            </button>
+            {canManageWorkspace && (
+                <>
+                    <button
+                        className="workspace-op-tree-action-btn"
+                        type="button"
+                        onClick={handleUploadClick}
+                        title={`Upload into ${treeTargetDir}`}
+                        aria-label={`Upload into ${treeTargetDir}`}
+                    >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path d="M12 16V5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                            <path d="M8 9l4-4 4 4" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M5 19h14" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                        </svg>
+                    </button>
+                    <button
+                        className="workspace-op-tree-action-btn"
+                        type="button"
+                        onClick={handleCreateFolder}
+                        title={`Create folder in ${treeTargetDir}`}
+                        aria-label={`Create folder in ${treeTargetDir}`}
+                    >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path d="M4 8.5A2.5 2.5 0 016.5 6H10l1.4 1.6H17.5A2.5 2.5 0 0120 10.1v6.4A2.5 2.5 0 0117.5 19h-11A2.5 2.5 0 014 16.5v-8Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                            <path d="M12 10.5v5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                            <path d="M9.5 13h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                        </svg>
+                    </button>
+                </>
+            )}
         </div>
     );
 

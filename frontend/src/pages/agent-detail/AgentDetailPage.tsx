@@ -6562,6 +6562,7 @@ export default function AgentDetailPage() {
                                     onTabChange={setSidePanelTab}
                                     awareContent={renderAwarePreview()}
                                     workspaceLocked={workspacePreviewLocked}
+                                    canManageWorkspace={canManage}
                                     onWorkspaceSelectPath={handleWorkspaceSelectPath}
                                     onWorkspaceToggleLock={handleWorkspaceToggleLock}
                                     onWorkspaceEditingChange={handleWorkspaceEditingChange}

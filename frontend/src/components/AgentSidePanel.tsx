@@ -20,6 +20,7 @@ interface Props {
     workspaceActivities: WorkspaceActivity[];
     workspaceLiveDraft?: WorkspaceLiveDraft | null;
     workspaceLocked?: boolean;
+    canManageWorkspace?: boolean;
     canManageEnterpriseInfo?: boolean;
     visible: boolean;
     onToggle: () => void;
@@ -55,6 +56,7 @@ export default function AgentSidePanel({
     workspaceActivities,
     workspaceLiveDraft,
     workspaceLocked = false,
+    canManageWorkspace = false,
     canManageEnterpriseInfo = false,
     visible,
     onToggle,
@@ -227,6 +229,7 @@ export default function AgentSidePanel({
                         activities={workspaceActivities}
                         liveDraft={workspaceLiveDraft}
                         locked={workspaceLocked}
+                        canManageWorkspace={canManageWorkspace}
                         canManageEnterpriseInfo={canManageEnterpriseInfo}
                         onSelectPath={onWorkspaceSelectPath}
                         onToggleLock={onWorkspaceToggleLock}
