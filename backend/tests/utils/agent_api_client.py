@@ -311,9 +311,13 @@ class AgentApiClient:
         workspace_root: str = "",
         wait_timeout: float = 180.0,
         poll_interval: float = 2.0,
+        eval_artifacts: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a task run, then collect status, trace logs, task logs, and workspace zip bytes."""
-        run = await self.create_async_run(agent_id, title=title, prompt=prompt)
+        fields: dict[str, Any] = {}
+        if eval_artifacts:
+            fields["eval_artifacts"] = eval_artifacts
+        run = await self.create_async_run(agent_id, title=title, prompt=prompt, **fields)
         run_id = str(run.get("id") or run.get("task_id"))
         if not run_id:
             raise ValueError(f"create_async_run response did not include id: {run}")

@@ -100,6 +100,12 @@ async def test_agent_api_client_full_external_flow_creates_runs_and_collects_out
         if method == "POST" and path == "/api/agents/agent-1/tasks/":
             assert payload["title"] == "Run benchmark case"
             assert payload["description"] == "Complete the case and write output.txt"
+            assert payload["eval_artifacts"] == {
+                "type": "webarena_verified",
+                "task_id": "case-1",
+                "task_type": "NAVIGATE",
+                "output_root": "/tmp/webarena",
+            }
             return _response(method, path, json_payload={"id": "task-1", "status": "pending"})
         if method == "GET" and path == "/api/agents/agent-1/tasks/":
             return _response(method, path, json_payload=[
@@ -155,6 +161,12 @@ async def test_agent_api_client_full_external_flow_creates_runs_and_collects_out
         created["agent_id"],
         title="Run benchmark case",
         prompt="Complete the case and write output.txt",
+        eval_artifacts={
+            "type": "webarena_verified",
+            "task_id": "case-1",
+            "task_type": "NAVIGATE",
+            "output_root": "/tmp/webarena",
+        },
     )
 
     assert collected["status"]["status"] == "done"

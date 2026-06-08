@@ -342,6 +342,7 @@ class TaskCreate(BaseModel):
     type: str = "todo"  # todo | supervision
     priority: str = "medium"
     due_date: datetime | None = None
+    eval_artifacts: dict | None = None
     # Supervision fields
     supervision_target_name: str | None = None
     supervision_channel: str | None = None

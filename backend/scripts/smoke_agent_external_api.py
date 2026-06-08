@@ -237,7 +237,14 @@ def _events(entries: list[dict[str, Any]]) -> list[str]:
     return [str(entry.get("event")) for entry in entries]
 
 
-async def smoke_create_run_collect(base_url: str, jwt: str, spec: dict[str, Any], prompt: str) -> None:
+async def smoke_create_run_collect(
+    base_url: str,
+    jwt: str,
+    spec: dict[str, Any],
+    prompt: str,
+    *,
+    eval_artifacts: dict[str, Any] | None = None,
+) -> None:
     async with AgentApiClient(base_url, jwt, timeout=180) as api:
         created = await api.create_agent_from_spec(spec)
         agent_id = created["agent_id"]
@@ -291,6 +298,7 @@ async def smoke_create_run_collect(base_url: str, jwt: str, spec: dict[str, Any]
             prompt=prompt,
             wait_timeout=180,
             poll_interval=2,
+            eval_artifacts=eval_artifacts,
         )
         run_id = str(collected["run"].get("id") or collected["run"].get("task_id"))
         status = collected["status"]
@@ -305,6 +313,14 @@ async def smoke_create_run_collect(base_url: str, jwt: str, spec: dict[str, Any]
             names = archive.namelist()
         _ok("run collect logs + workspace", f"run_id={run_id}, files={len(names)}")
 
+        if eval_artifacts:
+            output_dir = Path(eval_artifacts["output_root"]) / eval_artifacts["task_id"]
+            response_path = output_dir / "agent_response.json"
+            har_path = output_dir / "network.har"
+            if not response_path.exists() or not har_path.exists():
+                raise SmokeFailure(f"missing WebArena artifacts under {output_dir}")
+            _ok("webarena artifacts", f"{response_path}, {har_path}")
+
 
 async def main() -> int:
     parser = argparse.ArgumentParser()
@@ -317,6 +333,9 @@ async def main() -> int:
     parser.add_argument("--prompt", default="请用一句话回复 smoke test")
     parser.add_argument("--agent-spec-json", type=Path)
     parser.add_argument("--skip-complete-flow", action="store_true")
+    parser.add_argument("--webarena-output-root", default="")
+    parser.add_argument("--webarena-task-id", default="agentbay-smoke-001")
+    parser.add_argument("--webarena-task-type", default="NAVIGATE")
     args = parser.parse_args()
 
     start = time.perf_counter()
@@ -347,7 +366,15 @@ async def main() -> int:
                 async with AgentApiClient(args.base_url, jwt, timeout=60) as api:
                     spec, summary = await build_auto_agent_spec(api)
                 _ok("discover models/tools/skills", json.dumps(summary, ensure_ascii=False))
-            await smoke_create_run_collect(args.base_url, jwt, spec, args.prompt)
+            eval_artifacts = None
+            if args.webarena_output_root:
+                eval_artifacts = {
+                    "type": "webarena_verified",
+                    "task_id": args.webarena_task_id,
+                    "task_type": args.webarena_task_type,
+                    "output_root": args.webarena_output_root,
+                }
+            await smoke_create_run_collect(args.base_url, jwt, spec, args.prompt, eval_artifacts=eval_artifacts)
         else:
             print("SKIP create/run/workspace flow - pass authenticated args or remove --skip-complete-flow")
     except Exception as exc:

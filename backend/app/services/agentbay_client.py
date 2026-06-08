@@ -663,6 +663,16 @@ _AGENTBAY_SESSION_TIMEOUT = timedelta(minutes=5)
 AGENTBAY_API_URL = "https://api.agentbay.ai/v1"
 
 
+def get_cached_agentbay_client_for_agent(
+    agent_id: uuid.UUID,
+    image_type: str,
+    session_id: str = "",
+) -> Optional[AgentBayClient]:
+    """Return a cached AgentBay client without creating a new remote session."""
+    entry = _agentbay_sessions.get((agent_id, session_id, image_type))
+    return entry[0] if entry else None
+
+
 def _is_plausible_agentbay_api_key(value: str | None) -> bool:
     """AgentBay API keys use an akm-* token format.
 
@@ -838,6 +848,8 @@ async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str, se
         await client.create_session("browser_latest")
         # Inject stored cookies after browser initialization
         await _inject_credentials(client, agent_id)
+        from app.services.webarena_agentbay_artifacts import maybe_start_webarena_recorder
+        await maybe_start_webarena_recorder(agent_id, session_id, client)
     elif image_type == "computer":
         # Read OS preference from tool config (default: windows)
         os_type = (tool_config or {}).get("os_type", "windows")

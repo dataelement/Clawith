@@ -83,6 +83,18 @@ async def create_task(
     db.add(task)
     await db.flush()
 
+    if data.eval_artifacts:
+        from app.services.webarena_agentbay_artifacts import register_webarena_agentbay_context_from_payload
+
+        try:
+            register_webarena_agentbay_context_from_payload(
+                agent_id=agent_id,
+                session_id=str(task.id),
+                payload=data.eval_artifacts,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
     task_out = await _enrich_task_out(task, db)
 
     # Commit so the background executor can see the task in its own session

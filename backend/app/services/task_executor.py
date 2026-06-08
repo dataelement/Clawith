@@ -51,6 +51,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID, trace_id: str | 
         task = result.scalar_one_or_none()
         if not task:
             logger.warning(f"[TaskExec] Task {task_id} not found")
+            await _finalize_webarena_context(task_id, agent_id, error="task_not_found")
             return
 
         task.status = "doing"
@@ -75,6 +76,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID, trace_id: str | 
                 status="failed",
                 error="agent_not_found",
             ).info("agent_loop task_end")
+            await _finalize_webarena_context(task_id, agent_id, error="agent_not_found")
             await _log_error(task_id, "数字员工未找到")
             if task_type == 'supervision':
                 await _restore_supervision_status(task_id)
@@ -146,6 +148,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
             status="failed",
             error=error_msg[:500],
         ).info("agent_loop task_end")
+        await _finalize_webarena_context(task_id, agent_id, error=error_msg)
         await _log_error(task_id, f"执行出错: {error_msg[:150]}")
         if task_type == 'supervision':
             await _restore_supervision_status(task_id)
@@ -175,6 +178,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
                 status="succeeded",
                 reply_len=len(reply or ""),
             ).info("agent_loop task_end")
+            await _finalize_webarena_context(task_id, agent_id, final_answer=reply or "")
 
     # Log activity
     from app.services.activity_logger import log_activity
@@ -192,6 +196,27 @@ async def _log_error(task_id: uuid.UUID, message: str) -> None:
     async with async_session() as db:
         db.add(TaskLog(task_id=task_id, content=f"❌ {message}"))
         await db.commit()
+
+
+async def _finalize_webarena_context(
+    task_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    final_answer: str = "",
+    error: str | None = None,
+) -> None:
+    """Finalize optional WebArena AgentBay artifacts for this task run."""
+    try:
+        from app.services.webarena_agentbay_artifacts import finalize_webarena_agentbay_context
+
+        await finalize_webarena_agentbay_context(
+            agent_id=agent_id,
+            session_id=str(task_id),
+            final_answer=final_answer,
+            error=error,
+        )
+    except Exception as exc:
+        logger.warning(f"[TaskExec] WebArena artifact finalization failed for {task_id}: {exc}")
 
 
 async def _restore_supervision_status(task_id: uuid.UUID) -> None:
