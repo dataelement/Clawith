@@ -18,6 +18,7 @@ import re
 import shlex
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -51,6 +52,7 @@ class WebArenaAgentBayContext:
     remote_script_path: str = ""
     remote_log_path: str = ""
     har_recording_error: str = ""
+    screenshot_count: int = 0
 
 
 _webarena_contexts: dict[tuple[uuid.UUID, str], WebArenaAgentBayContext] = {}
@@ -166,6 +168,57 @@ def get_webarena_agentbay_context(
     return _webarena_contexts.get((agent_id, str(session_id)))
 
 
+def record_webarena_agentbay_screenshot(
+    *,
+    agent_id: uuid.UUID,
+    session_id: str,
+    tool_name: str,
+    image_id: str,
+    raw_bytes: bytes,
+    metadata: dict[str, Any] | None = None,
+) -> Optional[Path]:
+    """Persist an AgentBay screenshot under the registered eval artifact dir."""
+    context = get_webarena_agentbay_context(agent_id, session_id)
+    if not context:
+        return None
+
+    try:
+        context.screenshot_count += 1
+        screenshot_dir = context.output_dir / "screenshots"
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_tool = _safe_name(tool_name)[:80]
+        safe_image_id = _safe_name(image_id)[:80]
+        extension = _image_extension(raw_bytes)
+        filename = f"{context.screenshot_count:04d}-{safe_tool}-{safe_image_id}.{extension}"
+        screenshot_path = screenshot_dir / filename
+        screenshot_path.write_bytes(raw_bytes)
+
+        entry = {
+            "index": context.screenshot_count,
+            "image_id": str(image_id),
+            "tool_name": str(tool_name),
+            "path": screenshot_path.relative_to(context.output_dir).as_posix(),
+            "size_bytes": len(raw_bytes),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": metadata or {},
+        }
+        manifest_path = screenshot_dir / "manifest.jsonl"
+        with manifest_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+        logger.info(
+            "[WebArenaAgentBay] Saved screenshot agent={} session={} path={}",
+            agent_id,
+            str(session_id)[:8],
+            screenshot_path,
+        )
+        return screenshot_path
+    except Exception as exc:
+        logger.warning("[WebArenaAgentBay] Failed to save screenshot artifact: {}", exc)
+        return None
+
+
 async def maybe_start_webarena_recorder(
     agent_id: uuid.UUID,
     session_id: str,
@@ -265,6 +318,12 @@ async def finalize_webarena_agentbay_context(
             "network_har_source": network_har_source,
             "har_recording_error": har_error or None,
             "recorder_started": context.recorder_started,
+            "screenshot_count": context.screenshot_count,
+            "screenshots_manifest": (
+                "screenshots/manifest.jsonl"
+                if (context.output_dir / "screenshots" / "manifest.jsonl").exists()
+                else None
+            ),
         },
     )
     logger.info(
@@ -345,6 +404,14 @@ def _get_cached_browser_client(agent_id: uuid.UUID, session_id: str) -> Optional
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _image_extension(raw_bytes: bytes) -> str:
+    if raw_bytes.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if raw_bytes.startswith(b"RIFF") and raw_bytes[8:12] == b"WEBP":
+        return "webp"
+    return "png"
 
 
 def _safe_name(value: str) -> str:

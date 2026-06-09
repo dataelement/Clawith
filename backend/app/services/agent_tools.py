@@ -11418,6 +11418,39 @@ def _agentbay_save_image_to_workspace(
         f"![{label}](/api/agents/{agent_id}/files/download?path={rel_path})"
     )
 
+
+def _agentbay_record_eval_screenshot(
+    *,
+    agent_id: Optional[uuid.UUID],
+    session_id: str,
+    tool_name: str,
+    image_id: str,
+    raw_bytes: bytes,
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    """Save screenshots for eval artifact runs without changing normal tool behavior."""
+    if not agent_id or not session_id:
+        return
+    try:
+        from app.services.webarena_agentbay_artifacts import record_webarena_agentbay_screenshot
+
+        metadata_payload = dict(metadata or {})
+        image_width, image_height = _agentbay_image_dimensions(raw_bytes)
+        if image_width is not None and image_height is not None:
+            metadata_payload.setdefault("image_width", image_width)
+            metadata_payload.setdefault("image_height", image_height)
+        record_webarena_agentbay_screenshot(
+            agent_id=agent_id,
+            session_id=session_id,
+            tool_name=tool_name,
+            image_id=image_id,
+            raw_bytes=raw_bytes,
+            metadata=metadata_payload,
+        )
+    except Exception as exc:
+        logger.warning(f"[AgentBay] Failed to persist eval screenshot artifact: {exc}")
+
+
 async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
     """AgentBay browser navigation.
 
@@ -11456,6 +11489,18 @@ async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, ar
                 # Store in memory only — vision_inject.py will consume it.
                 from app.services.vision_inject import store_temp_screenshot
                 img_id = store_temp_screenshot(raw_bytes)
+                _agentbay_record_eval_screenshot(
+                    agent_id=agent_id,
+                    session_id=_session_id,
+                    tool_name="agentbay_browser_navigate",
+                    image_id=img_id,
+                    raw_bytes=raw_bytes,
+                    metadata={
+                        "url": url,
+                        "wait_for": wait_for,
+                        "title": result.get("title"),
+                    },
+                )
                 parts.append(
                     f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
                     f"NOTE: This screenshot is for LLM vision only and is not saved to the user's workspace."
@@ -11502,6 +11547,17 @@ async def _agentbay_browser_screenshot(agent_id: Optional[uuid.UUID], ws: Path, 
         # Store in memory only — vision_inject.py will consume it for LLM vision
         from app.services.vision_inject import store_temp_screenshot
         img_id = store_temp_screenshot(raw_bytes)
+        _agentbay_record_eval_screenshot(
+            agent_id=agent_id,
+            session_id=_session_id,
+            tool_name="agentbay_browser_screenshot",
+            image_id=img_id,
+            raw_bytes=raw_bytes,
+            metadata={
+                "url": result.get("url"),
+                "title": result.get("title"),
+            },
+        )
         logger.info(f"[AgentBay] Browser screenshot stored in memory (id={img_id})")
         return (
             f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
@@ -11529,6 +11585,18 @@ async def _agentbay_browser_save_screenshot(agent_id: Optional[uuid.UUID], ws: P
         raw_bytes = _agentbay_normalize_image_bytes(result.get("screenshot"))
         if raw_bytes is None:
             return "❌ 截图保存失败：未返回可保存的图像数据"
+        _agentbay_record_eval_screenshot(
+            agent_id=agent_id,
+            session_id=_session_id,
+            tool_name="agentbay_browser_save_screenshot",
+            image_id=f"workspace-save-{uuid.uuid4().hex}",
+            raw_bytes=raw_bytes,
+            metadata={
+                "workspace_save": True,
+                "url": result.get("url"),
+                "title": result.get("title"),
+            },
+        )
         return _agentbay_save_image_to_workspace(
             agent_id=agent_id,
             ws=ws,
@@ -12275,6 +12343,7 @@ async def _agentbay_computer_screenshot(agent_id: Optional[uuid.UUID], ws: Path,
     focus_y = arguments.get("focus_y")
     focus_width = arguments.get("focus_width")
     focus_height = arguments.get("focus_height")
+    artifact_tool_name = arguments.get("_artifact_tool_name", "agentbay_computer_screenshot")
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -12325,6 +12394,26 @@ async def _agentbay_computer_screenshot(agent_id: Optional[uuid.UUID], ws: Path,
                 "pixel_scale": crop_scale,
             }
         img_id = store_temp_screenshot(analysis_bytes, grid_options=grid_options)
+        raw_image_width, raw_image_height = _agentbay_image_dimensions(raw_bytes)
+        metadata = {
+            "focus_x": focus_x,
+            "focus_y": focus_y,
+            "focus_width": focus_width,
+            "focus_height": focus_height,
+            "crop_bounds": crop_bounds,
+            "source_image_width": raw_image_width,
+            "source_image_height": raw_image_height,
+        }
+        if grid_options:
+            metadata["grid_options"] = grid_options
+        _agentbay_record_eval_screenshot(
+            agent_id=agent_id,
+            session_id=_session_id,
+            tool_name=artifact_tool_name,
+            image_id=img_id,
+            raw_bytes=analysis_bytes,
+            metadata=metadata,
+        )
         logger.info(f"[AgentBay] Desktop screenshot stored in memory (id={img_id})")
         screen_width, screen_height, screen_note = await _agentbay_get_screen_metadata(client)
         image_width, image_height = _agentbay_image_dimensions(raw_bytes)
@@ -12366,6 +12455,14 @@ async def _agentbay_computer_save_screenshot(agent_id: Optional[uuid.UUID], ws: 
         raw_bytes = _agentbay_normalize_image_bytes(result.get("data"))
         if raw_bytes is None:
             return "Screenshot save failed: captured data format is unrecognised."
+        _agentbay_record_eval_screenshot(
+            agent_id=agent_id,
+            session_id=_session_id,
+            tool_name="agentbay_computer_save_screenshot",
+            image_id=f"workspace-save-{uuid.uuid4().hex}",
+            raw_bytes=raw_bytes,
+            metadata={"workspace_save": True},
+        )
         screen_width, screen_height, screen_note = await _agentbay_get_screen_metadata(client)
         image_width, image_height = _agentbay_image_dimensions(raw_bytes)
         coordinate_note = _agentbay_desktop_coordinate_note(
@@ -12432,6 +12529,7 @@ async def _agentbay_computer_precision_screenshot(agent_id: Optional[uuid.UUID],
     precision_args["focus_y"] = expanded_y
     precision_args["focus_width"] = expanded_width
     precision_args["focus_height"] = expanded_height
+    precision_args["_artifact_tool_name"] = "agentbay_computer_precision_screenshot"
     result = await _agentbay_computer_screenshot(agent_id, ws, precision_args)
     expansion_note = ""
     if (
