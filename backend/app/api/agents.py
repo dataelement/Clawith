@@ -44,6 +44,26 @@ async def _get_active_admin_users(db: AsyncSession, tenant_id: uuid.UUID | None)
     return result.scalars().all()
 
 
+def _coerce_max_tool_rounds(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return min(max(parsed, 1), 200)
+
+
+def _max_tool_rounds_from_create(data: AgentCreate) -> int | None:
+    explicit = _coerce_max_tool_rounds(data.max_tool_rounds)
+    if explicit is not None:
+        return explicit
+    policy = data.autonomy_policy or {}
+    if isinstance(policy, dict):
+        return _coerce_max_tool_rounds(policy.get("max_rounds"))
+    return None
+
+
 def _serialize_dt(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
@@ -316,6 +336,7 @@ async def create_agent(
 
     # If the caller didn't pick a model, fall back to the tenant's default.
     effective_primary_model_id = data.primary_model_id or tenant_default_model_id
+    effective_max_tool_rounds = _max_tool_rounds_from_create(data)
     expires_at = datetime.now(tz.utc) + timedelta(hours=ttl_hours) if ttl_hours and ttl_hours > 0 else None
 
     agent = Agent(
@@ -330,6 +351,7 @@ async def create_agent(
         fallback_model_id=data.fallback_model_id,
         max_tokens_per_day=data.max_tokens_per_day,
         max_tokens_per_month=data.max_tokens_per_month,
+        max_tool_rounds=effective_max_tool_rounds or 50,
         template_id=data.template_id,
         status="creating" if data.agent_type != "openclaw" else "idle",
         expires_at=expires_at,

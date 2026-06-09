@@ -22,6 +22,14 @@ from app.models.task import Task, TaskLog
 settings = get_settings()
 
 
+def _normalize_max_tool_rounds(value) -> int:
+    try:
+        parsed = int(value or 50)
+    except (TypeError, ValueError):
+        parsed = 50
+    return min(max(parsed, 1), 200)
+
+
 async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID, trace_id: str | None = None) -> None:
     """Execute a task using the agent's configured LLM with full context.
 
@@ -82,6 +90,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID, trace_id: str | 
                 await _restore_supervision_status(task_id)
             return
         agent_name = agent.name
+        max_tool_rounds = _normalize_max_tool_rounds(agent.max_tool_rounds)
 
     # Step 3: Build full agent context (same as chat dialog)
     from app.services.agent_context import build_agent_context
@@ -130,7 +139,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
                 agent_id=agent_id,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                max_rounds=50,
+                max_rounds=max_tool_rounds,
                 session_id=str(task_id),
                 task_id=str(task_id),
             )

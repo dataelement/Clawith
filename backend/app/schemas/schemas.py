@@ -235,6 +235,7 @@ class AgentCreate(BaseModel):
     template_id: uuid.UUID | None = None
     # Autonomy
     autonomy_policy: dict | None = None
+    max_tool_rounds: int | None = Field(default=None, ge=1, le=200)
     # Token limits
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None

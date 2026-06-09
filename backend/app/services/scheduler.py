@@ -15,6 +15,14 @@ from loguru import logger
 from sqlalchemy import select, update
 
 
+def _normalize_max_tool_rounds(value) -> int:
+    try:
+        parsed = int(value or 50)
+    except (TypeError, ValueError):
+        parsed = 50
+    return min(max(parsed, 1), 200)
+
+
 def compute_next_run(cron_expr: str, after: datetime | None = None) -> datetime | None:
     """Compute the next run time from a cron expression."""
     try:
@@ -64,7 +72,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                 agent_id=agent_id,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                max_rounds=50,
+                max_rounds=_normalize_max_tool_rounds(agent.max_tool_rounds),
                 session_id=str(schedule_id),
             )
 
