@@ -14,6 +14,7 @@ from app.services.agentbay_client import (  # noqa: E402
     _build_gemini_native_grounding_payload,
     _build_openai_compatible_grounding_payload,
     _extract_gemini_native_content,
+    _extract_openai_compatible_content,
     _fallback_openai_base_url_from_native_models_base_url,
     _gemini_grounding_response_schema,
     _gemini_native_generate_content_url,
@@ -25,6 +26,8 @@ from app.services.agentbay_client import (  # noqa: E402
     _normalized_box_center_to_pixel,
     _parse_cdp_action_result,
     _parse_grounding_json,
+    _summarize_gemini_native_response,
+    _summarize_openai_compatible_response,
 )
 
 
@@ -175,3 +178,45 @@ def test_gemini_native_helpers_and_legacy_output_normalization():
     assert _grounding_result_has_usable_target(normalized) is True
     assert _grounding_result_has_usable_target({"found": True}) is False
     assert _grounding_result_has_usable_target({"found": False, "box_2d": None}) is True
+
+
+
+def test_grounding_parse_error_includes_response_summary():
+    try:
+        _parse_grounding_json("", response_summary={"candidate_count": 1, "finishReason": "STOP"})
+        raise AssertionError("expected non-json parse failure")
+    except RuntimeError as exc:
+        message = str(exc)
+
+    assert "Gemini grounding returned non-JSON content" in message
+    assert "response_summary=" in message
+    assert "candidate_count" in message
+    assert "STOP" in message
+
+
+def test_grounding_response_summaries_are_safe_and_actionable():
+    native = {
+        "candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [{"text": "not json"}]},
+        }],
+        "usageMetadata": {"totalTokenCount": 10},
+    }
+    openai = {
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": ""},
+        }],
+        "usage": {"total_tokens": 10},
+    }
+
+    native_summary = _summarize_gemini_native_response(native)
+    openai_summary = _summarize_openai_compatible_response(openai)
+
+    assert native_summary["candidate_count"] == 1
+    assert native_summary["finishReason"] == "STOP"
+    assert native_summary["parts"][0]["text_preview"] == "not json"
+    assert openai_summary["choice_count"] == 1
+    assert openai_summary["finish_reason"] == "stop"
+    assert openai_summary["content_type"] == "str"
+    assert _extract_openai_compatible_content(openai) == ""

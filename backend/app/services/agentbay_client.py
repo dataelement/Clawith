@@ -857,8 +857,12 @@ When found is false, box_2d MUST be null.
                 )
             if response.status_code >= 400:
                 raise RuntimeError(f"Grounding Gemini native API HTTP {response.status_code}: {response.text[:500]}")
+            native_data = response.json()
             native_result = _normalize_grounding_result(
-                _parse_grounding_json(_extract_gemini_native_content(response.json()) or "")
+                _parse_grounding_json(
+                    _extract_gemini_native_content(native_data) or "",
+                    response_summary=_summarize_gemini_native_response(native_data),
+                )
             )
             if not _grounding_result_has_usable_target(native_result):
                 raise RuntimeError(f"Grounding Gemini native API returned unusable target: {native_result}")
@@ -903,12 +907,13 @@ When found is false, box_2d MUST be null.
     if response.status_code >= 400:
         raise RuntimeError(f"Grounding OpenAI API HTTP {response.status_code}: {response.text[:500]}")
     data = response.json()
-    content = (
-        ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
-        if isinstance(data, dict)
-        else ""
+    content = _extract_openai_compatible_content(data)
+    return _normalize_grounding_result(
+        _parse_grounding_json(
+            content or "",
+            response_summary=_summarize_openai_compatible_response(data),
+        )
     )
-    return _normalize_grounding_result(_parse_grounding_json(content or ""))
 
 
 def _gemini_grounding_response_schema() -> dict[str, Any]:
@@ -1018,6 +1023,84 @@ def _gemini_native_generate_content_url(base_url: str, model_name: str) -> str:
     return f"{base_url.rstrip('/')}/{model_path}:generateContent"
 
 
+def _truncate_for_log(value: Any, limit: int = 500) -> Any:
+    if isinstance(value, str):
+        return value[:limit]
+    return value
+
+
+def _extract_openai_compatible_content(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    choices = data.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return ""
+    message = choices[0].get("message") or {}
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = []
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                texts.append(part["text"])
+        return "\n".join(texts)
+    return ""
+
+
+def _summarize_openai_compatible_response(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"response_type": type(data).__name__}
+    choices = data.get("choices") or []
+    first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+    message = first_choice.get("message") if isinstance(first_choice, dict) else {}
+    message = message if isinstance(message, dict) else {}
+    content = message.get("content")
+    return {
+        "response_keys": sorted(data.keys()),
+        "choice_count": len(choices) if isinstance(choices, list) else 0,
+        "finish_reason": first_choice.get("finish_reason") or first_choice.get("finishReason"),
+        "first_choice_keys": sorted(first_choice.keys()) if isinstance(first_choice, dict) else [],
+        "message_keys": sorted(message.keys()),
+        "content_type": type(content).__name__,
+        "content_preview": _truncate_for_log(content, 300) if isinstance(content, str) else "",
+        "usage": data.get("usage") or data.get("usageMetadata"),
+    }
+
+
+def _summarize_gemini_native_response(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"response_type": type(data).__name__}
+    candidates = data.get("candidates") or []
+    first_candidate = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+    content = first_candidate.get("content") if isinstance(first_candidate, dict) else {}
+    content = content if isinstance(content, dict) else {}
+    parts = content.get("parts") if isinstance(content, dict) else []
+    part_summaries = []
+    if isinstance(parts, list):
+        for part in parts[:5]:
+            if not isinstance(part, dict):
+                part_summaries.append({"type": type(part).__name__})
+                continue
+            item = {"keys": sorted(part.keys())}
+            if isinstance(part.get("text"), str):
+                item["text_preview"] = part["text"][:300]
+            part_summaries.append(item)
+    return {
+        "response_keys": sorted(data.keys()),
+        "candidate_count": len(candidates) if isinstance(candidates, list) else 0,
+        "first_candidate_keys": sorted(first_candidate.keys()) if isinstance(first_candidate, dict) else [],
+        "finishReason": first_candidate.get("finishReason"),
+        "content_keys": sorted(content.keys()) if isinstance(content, dict) else [],
+        "part_count": len(parts) if isinstance(parts, list) else 0,
+        "parts": part_summaries,
+        "promptFeedback": data.get("promptFeedback"),
+        "usageMetadata": data.get("usageMetadata"),
+    }
+
+
 def _extract_gemini_native_content(data: Any) -> str:
     if not isinstance(data, dict):
         return ""
@@ -1078,21 +1161,35 @@ async def _resolve_grounding_openai_config(agent_id: uuid.UUID, action: str) -> 
     return api_key, base_url.rstrip("/"), model_name
 
 
-def _parse_grounding_json(content: str) -> dict[str, Any]:
+def _parse_grounding_json(content: str, response_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     text = (content or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
-            raise RuntimeError(f"Gemini grounding returned non-JSON content: {content[:300]}")
-        data = json.loads(match.group(0))
+            raise RuntimeError(_grounding_non_json_error(content, response_summary)) from exc
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError as nested_exc:
+            raise RuntimeError(_grounding_non_json_error(content, response_summary)) from nested_exc
     if not isinstance(data, dict):
         raise RuntimeError(f"Gemini grounding returned non-object JSON: {data}")
     return data
+
+
+def _grounding_non_json_error(content: str, response_summary: dict[str, Any] | None = None) -> str:
+    content_preview = (content or "")[:300]
+    if not response_summary:
+        return f"Gemini grounding returned non-JSON content: {content_preview}"
+    try:
+        summary = json.dumps(response_summary, ensure_ascii=False, default=str)[:1500]
+    except Exception:
+        summary = str(response_summary)[:1500]
+    return f"Gemini grounding returned non-JSON content: {content_preview}; response_summary={summary}"
 
 
 def _grounding_result_has_usable_target(grounding: dict[str, Any]) -> bool:
