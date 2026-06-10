@@ -63,10 +63,12 @@ services:
       - ./backend/agent_data:/data/agents
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro
+    privileged: true
     cap_add:
       - SYS_ADMIN
     security_opt:
       - seccomp=unconfined
+      - apparmor=unconfined
     networks:
       - default
     depends_on:
@@ -89,7 +91,7 @@ services:
       API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
       MINIO_UPSTREAM: ${MINIO_UPSTREAM:-minio:9000}
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
     networks:
       - default
     depends_on:

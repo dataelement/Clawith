@@ -106,15 +106,15 @@ class SubprocessBackend(BaseSandboxBackend):
     def __init__(self, config: SandboxConfig):
         self.config = config
 
-    def _venv_python(self, work_path: Path) -> str:
-        return f"/workspace/{work_path.joinpath('.venv', 'bin', 'python').relative_to(work_path)}"
+    def _venv_python(self, venv_path: Path) -> str:
+        return "/workspace/.venv/bin/python"
 
     def _host_venv_python(self, work_path: Path) -> str:
         return str(work_path / ".venv" / "bin" / "python")
 
-    def _build_command(self, language: str, script_path: str, work_path: Path) -> list[str]:
+    def _build_command(self, language: str, script_path: str) -> list[str]:
         if language == "python":
-            return [self._venv_python(work_path), "-I", "-B", str(script_path)]
+            return ["/workspace/.venv/bin/python", "-I", "-B", str(script_path)]
         if language == "bash":
             return ["bash", "--noprofile", "--norc", str(script_path)]
         return ["node", str(script_path)]
@@ -152,35 +152,36 @@ class SubprocessBackend(BaseSandboxBackend):
         bind_flag = "--ro-bind" if read_only else "--bind"
         return [bind_flag, str(host), target]
 
-    def _ensure_workspace_venv(self, work_path: Path) -> None:
-        venv_python = work_path / ".venv" / "bin" / "python"
+    def _ensure_workspace_venv(self, venv_path: Path) -> None:
+        venv_python = venv_path / "bin" / "python"
         if not venv_python.exists():
             import subprocess
 
+            # Use uv to create the virtual environment for extreme speed
+            # --seed ensures pip is still present in the venv
             subprocess.run(
-                ["python3", "-m", "venv", str(work_path / ".venv")],
+                ["uv", "venv", "--seed", str(venv_path)],
                 check=True,
-                cwd=str(work_path),
+                cwd=str(venv_path.parent),
             )
 
         # Fix shebang lines in pip scripts to use bwrap-visible path
         # venv creates scripts with absolute paths to the host Python,
         # but bwrap only mounts /workspace, so those paths don't exist inside the sandbox
-        self._fix_pip_shebangs(work_path)
+        self._fix_pip_shebangs(venv_path)
 
-    def _fix_pip_shebangs(self, work_path: Path) -> None:
-        """Fix pip script shebangs to point to /workspace/.venv/bin/python for bwrap compatibility."""
-        venv_bin = work_path / ".venv" / "bin"
+    def _fix_pip_shebangs(self, venv_path: Path) -> None:
+        """Replace pip with a bash wrapper that delegates to uv pip for extreme performance."""
+        venv_bin = venv_path / "bin"
         sandbox_python = "/workspace/.venv/bin/python"
-        for script_name in ("pip", "pip3", "pip3.X"):
-            script_path = venv_bin / script_name
-            if script_path.exists():
-                content = script_path.read_text(encoding="utf-8")
-                if content.startswith("#!"):
-                    first_line, rest = content.split("\n", 1)
-                    # Only rewrite if shebang doesn't already point to sandbox python
-                    if sandbox_python not in first_line:
-                        script_path.write_text(f"#!{sandbox_python}\n{rest}", encoding="utf-8")
+        
+        wrapper_script = f"#!/bin/bash\nexec uv pip \"$@\"\n"
+        
+        for pip_cmd in ["pip", "pip3", "pip3.12"]:
+            pip_path = venv_bin / pip_cmd
+            if pip_path.parent.exists():
+                pip_path.write_text(wrapper_script, encoding="utf-8")
+                pip_path.chmod(0o755)
 
     def _build_exec_kwargs(self, work_path: Path, timeout: int, use_preexec: bool = False) -> dict:
         kwargs = {
@@ -233,7 +234,7 @@ class SubprocessBackend(BaseSandboxBackend):
 
         return _preexec
 
-    def _build_bwrap_command(self, command: list[str], work_path: Path) -> list[str] | None:
+    def _build_bwrap_command(self, command: list[str], work_path: Path, venv_path: Path) -> list[str] | None:
         bwrap = shutil.which("bwrap")
         if not bwrap:
             if not SubprocessBackend._bwrap_missing_warned:
@@ -263,7 +264,9 @@ class SubprocessBackend(BaseSandboxBackend):
             "--unshare-uts",
             "--unshare-cgroup",
             *base_binds,
+            "--bind", "/data/agents/.uv-cache", "/uv-cache",
             "--bind", str(work_path), "/workspace",
+            "--bind", str(venv_path), "/workspace/.venv",
             "--dev", "/dev",
             "--proc", "/proc",
             "--dir", "/tmp",
@@ -278,6 +281,7 @@ class SubprocessBackend(BaseSandboxBackend):
             "--setenv", "VIRTUAL_ENV", "/workspace/.venv",
             "--setenv", "PIP_CACHE_DIR", "/workspace/.tmp/pip-cache",
             "--setenv", "PIP_DISABLE_PIP_VERSION_CHECK", "1",
+            "--setenv", "UV_CACHE_DIR", "/uv-cache",
             "--chdir", "/workspace",
         ]
         if not self.config.allow_network:
@@ -317,6 +321,7 @@ class SubprocessBackend(BaseSandboxBackend):
     ) -> ExecutionResult:
         """Execute code in a subprocess."""
         on_output = kwargs.get("on_output")
+        agent_id = kwargs.get("agent_id")
         start_time = time.time()
 
         # Validate language
@@ -361,6 +366,18 @@ class SubprocessBackend(BaseSandboxBackend):
         work_path.mkdir(parents=True, exist_ok=True)
         (work_path / ".tmp").mkdir(parents=True, exist_ok=True)
         (work_path / ".tmp" / "pip-cache").mkdir(parents=True, exist_ok=True)
+        
+        # Determine persistent venv path if possible
+        if agent_id:
+            # We place the virtual environment in a persistent location
+            venv_path = Path("/data/agents").resolve() / str(agent_id) / ".venv"
+            venv_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Ensure global uv cache exists
+            uv_cache = Path("/data/agents/.uv-cache")
+            uv_cache.mkdir(parents=True, exist_ok=True)
+        else:
+            venv_path = work_path / ".venv"
 
         # Determine command and file extension
         if language == "python":
@@ -374,11 +391,11 @@ class SubprocessBackend(BaseSandboxBackend):
         script_path = work_path / f"_exec_tmp{ext}"
 
         try:
-            self._ensure_workspace_venv(work_path)
+            self._ensure_workspace_venv(venv_path)
             script_path.write_text(code, encoding="utf-8")
 
-            sandbox_command = self._build_command(language, f"/workspace/{script_path.name}", work_path)
-            bwrap_command = self._build_bwrap_command(sandbox_command, work_path)
+            sandbox_command = self._build_command(language, f"/workspace/{script_path.name}")
+            bwrap_command = self._build_bwrap_command(sandbox_command, work_path, venv_path)
             if not bwrap_command:
                 if not self.config.allow_unsafe_fallback_when_bwrap_missing:
                     duration_ms = int((time.time() - start_time) * 1000)

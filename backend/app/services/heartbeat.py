@@ -295,6 +295,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         plaza_posts_made = 0       # hard limit: 1 new post per heartbeat
         plaza_comments_made = 0    # hard limit: 2 comments per heartbeat
         _hb_accumulated_usage = None
+        _hb_unsaved_usage = None
 
         # Token tracking helpers
         from app.services.token_tracker import (
@@ -304,6 +305,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             estimate_token_usage_from_chars,
         )
         _hb_accumulated_usage = TokenUsage()
+        _hb_unsaved_usage = TokenUsage()
 
         # Convert messages to LLMMessage format
         llm_messages = [
@@ -312,6 +314,21 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         ]
 
         for round_i in range(20):  # More rounds for search + write + plaza
+            # Check token usage limit mid-loop (every 3 rounds)
+            if round_i > 0 and round_i % 3 == 0:
+                if agent_id and _hb_unsaved_usage.total_tokens > 0:
+                    async with async_session() as db:
+                        await record_token_usage(agent_id, _hb_unsaved_usage)
+                        await db.commit()
+                    _hb_unsaved_usage = TokenUsage()
+                    from app.services.llm.caller import _get_agent_config
+                    _, _token_limit_msg = await _get_agent_config(agent_id)
+                    if _token_limit_msg:
+                        logger.warning(f"[Heartbeat] Token limit exceeded mid-loop: {_token_limit_msg}")
+                        await client.close()
+                        reply = _token_limit_msg
+                        break
+
             try:
                 response = await client.complete(
                     messages=llm_messages,
@@ -330,11 +347,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 
             # Track tokens for this round
             usage = extract_token_usage(response.usage)
-            if usage:
-                _hb_accumulated_usage.add(usage)
-            else:
+            if not usage:
                 round_chars = sum(len(m.content or '') for m in llm_messages) + len(response.content or '')
-                _hb_accumulated_usage.add(estimate_token_usage_from_chars(round_chars))
+                usage = estimate_token_usage_from_chars(round_chars)
+            _hb_accumulated_usage.add(usage)
+            _hb_unsaved_usage.add(usage)
 
             if response.tool_calls:
                 # Add assistant message with tool calls
@@ -423,8 +440,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         # ── Phase 3: Write results back to DB (short transaction) ──
         async with async_session() as db:
             # Record accumulated heartbeat token usage
-            if _hb_accumulated_usage and _hb_accumulated_usage.total_tokens > 0:
-                await record_token_usage(agent_id, _hb_accumulated_usage)
+            if _hb_unsaved_usage and _hb_unsaved_usage.total_tokens > 0:
+                await record_token_usage(agent_id, _hb_unsaved_usage)
             await db.commit()
 
         # Log activity if not empty
@@ -687,8 +704,25 @@ async def run_agent_oneshot(
 
         reply = ""
         accumulated_usage = TokenUsage()
+        unsaved_usage = TokenUsage()
 
         for round_i in range(max_rounds):
+            # Check token usage limit mid-loop (every 3 rounds)
+            if round_i > 0 and round_i % 3 == 0:
+                if agent_id and unsaved_usage.total_tokens > 0:
+                    try:
+                        await record_token_usage(agent_id, unsaved_usage)
+                    except Exception as e:
+                        logger.warning(f"[Oneshot] Failed to record token usage mid-loop: {e}")
+                    unsaved_usage = TokenUsage()
+                    from app.services.llm.caller import _get_agent_config
+                    _, _token_limit_msg = await _get_agent_config(agent_id)
+                    if _token_limit_msg:
+                        logger.warning(f"[Oneshot] Token limit exceeded mid-loop: {_token_limit_msg}")
+                        await client.close()
+                        reply = _token_limit_msg
+                        break
+
             try:
                 response = await client.complete(
                     messages=llm_messages,
@@ -713,11 +747,11 @@ async def run_agent_oneshot(
 
             # Track token usage
             usage = extract_token_usage(response.usage)
-            if usage:
-                accumulated_usage.add(usage)
-            else:
+            if not usage:
                 round_chars = sum(len(m.content or "") for m in llm_messages) + len(response.content or "")
-                accumulated_usage.add(estimate_token_usage_from_chars(round_chars))
+                usage = estimate_token_usage_from_chars(round_chars)
+            accumulated_usage.add(usage)
+            unsaved_usage.add(usage)
 
             if response.tool_calls:
                 llm_messages.append(LLMMessage(
@@ -769,9 +803,9 @@ async def run_agent_oneshot(
         await client.close()
 
         # ── Phase 3: Record token usage (best-effort) ───────────────────────────
-        if accumulated_usage.total_tokens > 0:
+        if unsaved_usage.total_tokens > 0:
             try:
-                await record_token_usage(agent_id, accumulated_usage)
+                await record_token_usage(agent_id, unsaved_usage)
             except Exception as e:
                 logger.warning(f"[Oneshot] Failed to record token usage: {e}")
 

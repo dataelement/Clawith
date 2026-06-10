@@ -16,11 +16,11 @@ COPY pyproject.toml ./
 ARG CLAWITH_PIP_INDEX_URL
 ARG CLAWITH_PIP_TRUSTED_HOST
 RUN if [ -n "$CLAWITH_PIP_INDEX_URL" ] && [ -n "$CLAWITH_PIP_TRUSTED_HOST" ]; then \
-        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" --trusted-host "$CLAWITH_PIP_TRUSTED_HOST" .; \
+        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" --trusted-host "$CLAWITH_PIP_TRUSTED_HOST" . uv; \
     elif [ -n "$CLAWITH_PIP_INDEX_URL" ]; then \
-        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" .; \
+        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" . uv; \
     else \
-        pip install --no-cache-dir .; \
+        pip install --no-cache-dir . uv; \
     fi
 
 # ─── Production ─────────────────────────────────────────

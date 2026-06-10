@@ -286,6 +286,67 @@ def test_finish_is_in_always_available_core_tools():
     assert "finish" in _ALWAYS_INCLUDE_CORE
 
 
+@pytest.mark.asyncio
+async def test_mid_loop_token_limit_checking(monkeypatch):
+    from app.services.llm import caller
+    from app.services.llm.client import LLMResponse
+
+    # Setup FakeStreamClient with several rounds of dummy tool calls
+    responses = [
+        LLMResponse(
+            content="",
+            tool_calls=[{"id": f"call_{i}", "type": "function", "function": {"name": "dummy_tool", "arguments": "{}"}}],
+            usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+        )
+        for i in range(4)
+    ]
+    fake_client = FakeStreamClient(responses)
+
+    configs_called = 0
+    async def mock_get_agent_config(agent_id):
+        nonlocal configs_called
+        configs_called += 1
+        if configs_called > 1:
+            return 50, "⚠️ Daily token usage limit exceeded"
+        return 50, None
+
+    monkeypatch.setattr(caller, "_get_agent_config", mock_get_agent_config)
+    monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
+    monkeypatch.setattr(
+        "app.services.agent_context.build_agent_context",
+        lambda *_args, **_kwargs: _async_return(("static", "dynamic")),
+    )
+    monkeypatch.setattr(caller, "get_agent_tools_for_llm", lambda _agent_id: _async_return([
+        {"type": "function", "function": {"name": "dummy_tool", "description": "dummy"}}
+    ]))
+    monkeypatch.setattr(caller, "execute_tool", lambda *_args, **_kwargs: _async_return("Success"))
+    monkeypatch.setattr(caller, "create_llm_client", lambda **_kwargs: fake_client)
+
+    token_records = []
+    async def mock_record_token_usage(agent_id, usage, **_kwargs):
+        token_records.append(usage.total_tokens)
+
+    monkeypatch.setattr(caller, "record_token_usage", mock_record_token_usage)
+
+    result = await caller.call_llm(
+        _model(),
+        [{"role": "user", "content": "hello"}],
+        "Agent",
+        "",
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+    )
+
+    # In round_i = 3 (the 4th round), it should trigger the mod-3 check,
+    # find the limit is exceeded, break the loop and return the limit message.
+    assert result == "⚠️ Daily token usage limit exceeded"
+    # Should have called record_token_usage once in the mid-loop check after 3 rounds
+    # round 0, 1, 2 usage is 150*3 = 450 tokens
+    assert len(token_records) == 1
+    assert token_records[0] == 450
+    assert fake_client.closed is True
+
+
 async def _async_return(value):
     return value
 
